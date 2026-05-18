@@ -1,8 +1,9 @@
-// Command matrix-agent runs on a home host: it dials the cloud over frp
-// and surfaces local apps (ycode, shell, desktop) through the tunnel.
+// Command outpost runs on a home host: it pairs with the portal and
+// surfaces local apps (web, shell, desktop, clipboard) through a tunnel.
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -13,7 +14,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -27,12 +31,16 @@ import (
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 )
 
+// defaultPortal is the public ai.dhnt.io address used when the user
+// doesn't override it via --server or the interactive prompt.
+const defaultPortal = "https://ai.dhnt.io"
+
 func main() {
 	root := &cobra.Command{
-		Use:   "matrix-agent",
-		Short: "Matrix home-host agent — one node in your matrix",
+		Use:   "outpost",
+		Short: "Pair a home host with the portal and tunnel local apps to it",
 	}
-	root.AddCommand(startCmd(), registerCmd())
+	root.AddCommand(startCmd(), registerCmd(), stopCmd())
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -48,8 +56,17 @@ func startCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "start",
-		Short: "Start the local agent, dial the cloud frp server",
+		Short: "Start the local agent and dial the portal",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Refuse to boot a second instance — the FRP tunnel uses a
+			// fixed remote port, and two outposts fighting for the same
+			// proxy slot is a recipe for confused users. Also stamps a
+			// pidfile that `outpost stop` later resolves.
+			if err := claimPidFile(); err != nil {
+				return err
+			}
+			defer removePidFile()
+
 			cfg, err := conf.Load()
 			if err != nil {
 				return err
@@ -95,7 +112,7 @@ func startCmd() *cobra.Command {
 				cfg.ServerPort = serverPortFlag
 			}
 			if cfg.AgentName == "" {
-				return errors.New("AgentName is empty: run `matrix-agent register` first or set $AGENT_NAME")
+				return errors.New("AgentName is empty: run `outpost register` first or set $AGENT_NAME")
 			}
 
 			apps, err := buildAppRegistry(cfg.Apps)
@@ -212,103 +229,399 @@ func registerCmd() *cobra.Command {
 		out       string
 		authURL   string
 		title     string
+		assumeYes bool
 	)
 	cmd := &cobra.Command{
 		Use:   "register",
-		Short: "Exchange a one-time code from the portal for a persistent agent config",
+		Short: "Pair this host with the portal",
+		Long: `Exchange a one-time pairing code for a persistent agent config.
+
+Run with no flags for an interactive prompt that walks you through pairing.
+Or pass --code (and optionally --server / --name) to skip the prompts —
+useful for installer scripts and CI.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if serverURL == "" || code == "" || name == "" {
-				return errors.New("--server, --code, and --name are all required")
-			}
-			title = strings.TrimSpace(title)
-			trimmedAuthURL := strings.TrimSpace(authURL)
-			// A custom auth URL means the app users have no OS identity,
-			// so the OS-derived subtitle would be misleading. Require a
-			// human title in that case.
-			if trimmedAuthURL != "" && title == "" {
-				return errors.New("--title is required when --auth-url is set (no OS user to derive a subtitle from)")
-			}
+			// Scripted mode kicks in the moment --code is set on the CLI:
+			// installer scripts pipe stdin from somewhere unpredictable, so
+			// we can't fall back to "ask the user" without surprising them.
+			scripted := code != ""
+			reader := bufio.NewReader(os.Stdin)
 
-			// Report OS-side identity to the cloud so the portal can render
-			// a disambiguating subtitle and the elevate form can prefill
-			// the username. Best-effort: empty strings are fine.
-			osUser, _ := hostauth.CurrentUser()
-			osDisplay := hostauth.CurrentDisplayName()
-			osHostname, _ := os.Hostname()
-
-			payload := map[string]any{
-				"code":            code,
-				"name":            name,
-				"title":           title,
-				"os_user":         osUser,
-				"os_display_name": osDisplay,
-				"os_hostname":     osHostname,
-				"has_auth_url":    trimmedAuthURL != "",
-			}
-			body, _ := json.Marshal(payload)
-			req, err := http.NewRequestWithContext(cmd.Context(), "POST",
-				strings.TrimRight(serverURL, "/")+"/api/register/exchange",
-				bytes.NewReader(body))
-			if err != nil {
-				return err
-			}
-			req.Header.Set("Content-Type", "application/json")
-
-			client := &http.Client{Timeout: 30 * time.Second}
-			resp, err := client.Do(req)
-			if err != nil {
-				return fmt.Errorf("exchange: %w", err)
-			}
-			defer resp.Body.Close()
-			respBody, _ := io.ReadAll(resp.Body)
-			if resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("exchange failed (%d): %s", resp.StatusCode, bytes.TrimSpace(respBody))
-			}
-
-			var ex struct {
-				AgentName  string `json:"agent_name"`
-				ServerAddr string `json:"server_addr"`
-				ServerPort int    `json:"server_port"`
-				Protocol   string `json:"protocol"`
-				Token      string `json:"token"`
-				RemotePort int    `json:"remote_port"`
-			}
-			if err := json.Unmarshal(respBody, &ex); err != nil {
-				return fmt.Errorf("decode response: %w", err)
-			}
-
-			fc := &conf.FileConfig{
-				AgentName:  ex.AgentName,
-				ServerAddr: ex.ServerAddr,
-				ServerPort: ex.ServerPort,
-				Protocol:   ex.Protocol,
-				Token:      ex.Token,
-				RemotePort: ex.RemotePort,
-				AuthURL:    trimmedAuthURL,
-			}
-			path := out
-			if path == "" {
-				p, err := conf.DefaultConfigPath()
-				if err != nil {
-					return err
+			for {
+				if !scripted {
+					if err := collectInputs(reader, &serverURL, &code, &name); err != nil {
+						return err
+					}
 				}
-				path = p
+				if serverURL == "" || code == "" || name == "" {
+					return errors.New("--server, --code, and --name are all required in scripted mode")
+				}
+
+				if err := doExchange(cmd.Context(), serverURL, code, name, title, authURL, out); err == nil {
+					break
+				} else {
+					fmt.Fprintf(os.Stderr, "Registration failed: %v\n", err)
+					if scripted {
+						return err
+					}
+					again, perr := promptDefault(reader, "Try again? [Y/n]", "y")
+					if perr != nil || !isYes(again) {
+						return err
+					}
+					// Likely a bad/expired code — clear it so the next pass
+					// asks again. Keep server + name; user probably wants
+					// to keep those.
+					code = ""
+				}
 			}
-			if err := conf.SaveFile(path, fc); err != nil {
-				return fmt.Errorf("save config: %w", err)
+
+			if scripted {
+				return nil
 			}
-			fmt.Printf("Registered as %q (remote port %d). Config saved to %s\n", fc.AgentName, fc.RemotePort, path)
-			fmt.Printf("Start the agent with: matrix-agent start\n")
-			return nil
+			if !assumeYes {
+				ans, _ := promptDefault(reader, "Start outpost now? [Y/n]", "y")
+				if !isYes(ans) {
+					fmt.Println()
+					fmt.Println("To start later, run:")
+					fmt.Println("    outpost start")
+					return nil
+				}
+			}
+			return execSelfStart()
 		},
 	}
-	cmd.Flags().StringVar(&serverURL, "server", "", "Cloud portal URL, e.g. https://cloud.example.com")
-	cmd.Flags().StringVar(&code, "code", "", "One-time registration code from the portal")
-	cmd.Flags().StringVar(&name, "name", "", "Host name to display in the portal")
-	cmd.Flags().StringVar(&out, "out", "", "Output config path (default ~/.config/matrix/agent.json)")
+	cmd.Flags().StringVar(&serverURL, "server", "", "Portal URL (default https://ai.dhnt.io)")
+	cmd.Flags().StringVar(&code, "code", "", "One-time pairing code from the portal (skips the interactive prompt when set)")
+	cmd.Flags().StringVar(&name, "name", "", "Host name to display in the portal (default: this machine's hostname)")
+	cmd.Flags().StringVar(&out, "out", "", "Output config path (default: the OS-standard user-config path)")
 	cmd.Flags().StringVar(&authURL, "auth-url", "",
 		"Optional application-level auth endpoint. When set, the agent forwards {user,password} to it and trusts the returned role; the host OS is no longer consulted.")
 	cmd.Flags().StringVar(&title, "title", "",
 		"Human-readable subtitle shown in the portal (e.g. \"Family streaming box\"). Required when --auth-url is set; optional otherwise (falls back to the OS user / hostname).")
+	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "On success, start outpost immediately without asking")
 	return cmd
+}
+
+// collectInputs prompts the user for the three required fields, using
+// (in order of preference): an existing flag value, a sensible default,
+// or — for the code — nothing (the prompt won't accept an empty value).
+func collectInputs(r *bufio.Reader, serverURL, code, name *string) error {
+	if *serverURL == "" {
+		*serverURL = defaultPortal
+	}
+	got, err := promptDefault(r, "Portal", *serverURL)
+	if err != nil {
+		return err
+	}
+	*serverURL = got
+
+	got, err = promptRequired(r, "Pairing code (paste from the portal)")
+	if err != nil {
+		return err
+	}
+	*code = got
+
+	if *name == "" {
+		if h, _ := os.Hostname(); h != "" {
+			*name = h
+		}
+	}
+	got, err = promptDefault(r, "Host name", *name)
+	if err != nil {
+		return err
+	}
+	*name = got
+	return nil
+}
+
+// doExchange POSTs the pairing code to the portal and saves the returned
+// agent config to disk. Pulled out of registerCmd so the interactive loop
+// can call it repeatedly without re-stamping the prompt scaffolding.
+func doExchange(ctx context.Context, serverURL, code, name, title, authURL, out string) error {
+	title = strings.TrimSpace(title)
+	trimmedAuthURL := strings.TrimSpace(authURL)
+	// A custom auth URL means the app users have no OS identity, so the
+	// OS-derived subtitle would be misleading. Require a human title.
+	if trimmedAuthURL != "" && title == "" {
+		return errors.New("--title is required when --auth-url is set (no OS user to derive a subtitle from)")
+	}
+
+	// Report OS-side identity so the portal can render a disambiguating
+	// subtitle and the elevate form can prefill the username. Best-effort.
+	osUser, _ := hostauth.CurrentUser()
+	osDisplay := hostauth.CurrentDisplayName()
+	osHostname, _ := os.Hostname()
+
+	payload := map[string]any{
+		"code":            code,
+		"name":            name,
+		"title":           title,
+		"os_user":         osUser,
+		"os_display_name": osDisplay,
+		"os_hostname":     osHostname,
+		"has_auth_url":    trimmedAuthURL != "",
+	}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		strings.TrimRight(serverURL, "/")+"/api/register/exchange",
+		bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("exchange: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("exchange failed (%d): %s", resp.StatusCode, bytes.TrimSpace(respBody))
+	}
+
+	var ex struct {
+		AgentName  string `json:"agent_name"`
+		ServerAddr string `json:"server_addr"`
+		ServerPort int    `json:"server_port"`
+		Protocol   string `json:"protocol"`
+		Token      string `json:"token"`
+		RemotePort int    `json:"remote_port"`
+	}
+	if err := json.Unmarshal(respBody, &ex); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	fc := &conf.FileConfig{
+		AgentName:  ex.AgentName,
+		ServerAddr: ex.ServerAddr,
+		ServerPort: ex.ServerPort,
+		Protocol:   ex.Protocol,
+		Token:      ex.Token,
+		RemotePort: ex.RemotePort,
+		AuthURL:    trimmedAuthURL,
+	}
+	path := out
+	if path == "" {
+		p, err := conf.DefaultConfigPath()
+		if err != nil {
+			return err
+		}
+		path = p
+	}
+	if err := conf.SaveFile(path, fc); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+	fmt.Printf("Registered as %q. Config saved to %s\n", fc.AgentName, path)
+	return nil
+}
+
+// promptDefault prints "label [def]: " and returns either the user's
+// trimmed input or def. EOF on stdin (closed pipe, etc.) is surfaced as
+// an error so scripted callers don't loop forever.
+func promptDefault(r *bufio.Reader, label, def string) (string, error) {
+	if def != "" {
+		fmt.Printf("%s [%s]: ", label, def)
+	} else {
+		fmt.Printf("%s: ", label)
+	}
+	line, err := r.ReadString('\n')
+	if err != nil && line == "" {
+		return "", fmt.Errorf("read input: %w", err)
+	}
+	s := strings.TrimSpace(line)
+	if s == "" {
+		return def, nil
+	}
+	return s, nil
+}
+
+// promptRequired loops until the user gives a non-empty value, or stdin
+// closes (in which case we bail with an error rather than spin).
+func promptRequired(r *bufio.Reader, label string) (string, error) {
+	for {
+		fmt.Printf("%s: ", label)
+		line, err := r.ReadString('\n')
+		if err != nil && line == "" {
+			return "", fmt.Errorf("read input: %w", err)
+		}
+		s := strings.TrimSpace(line)
+		if s != "" {
+			return s, nil
+		}
+		fmt.Println("  (required — please paste the code from the portal)")
+	}
+}
+
+func isYes(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	return s == "" || s == "y" || s == "yes"
+}
+
+// execSelfStart re-execs the current binary with "start" as a detached
+// background process. The child writes logs to a cache-dir file and
+// outlives the register command — closing the terminal won't kill it.
+func execSelfStart() error {
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate executable: %w", err)
+	}
+	logPath, err := outpostLogPath()
+	if err != nil {
+		return fmt.Errorf("prepare log dir: %w", err)
+	}
+	logF, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("open log: %w", err)
+	}
+	defer logF.Close()
+
+	c := exec.Command(self, "start")
+	// Background daemon: no controlling terminal, no stdin, log->file.
+	c.Stdin = nil
+	c.Stdout = logF
+	c.Stderr = logF
+	detach(c) // platform-specific: Setsid on unix, new process group on Windows.
+
+	if err := c.Start(); err != nil {
+		return fmt.Errorf("start outpost: %w", err)
+	}
+	pid := c.Process.Pid
+	// Release so the child isn't reaped when register exits.
+	_ = c.Process.Release()
+
+	// Give the child a moment to crash-on-boot (bad config, port in use,
+	// etc.) so we can surface that immediately instead of leaving the user
+	// to discover it later.
+	time.Sleep(500 * time.Millisecond)
+	if !processAlive(pid) {
+		tail, _ := os.ReadFile(logPath)
+		fmt.Fprintln(os.Stderr, "outpost exited immediately. Tail of log:")
+		fmt.Fprintln(os.Stderr, strings.TrimSpace(string(tail)))
+		return fmt.Errorf("outpost did not stay running (logs: %s)", logPath)
+	}
+
+	fmt.Printf("Started outpost in background (pid %d).\n", pid)
+	fmt.Printf("Logs: %s\n", logPath)
+	fmt.Println("Stop with: outpost stop")
+	return nil
+}
+
+// outpostLogPath returns ~/.cache/outpost/outpost.log (or the OS
+// equivalent), creating parent directories as needed.
+func outpostLogPath() (string, error) {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(base, "outpost")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "outpost.log"), nil
+}
+
+// processAlive returns true if a process with the given pid is currently
+// running. Uses signal 0 — POSIX's "check whether you could deliver a
+// signal" no-op. Good enough for a quick post-spawn liveness check.
+func processAlive(pid int) bool {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return p.Signal(syscall.Signal(0)) == nil
+}
+
+// pidFilePath returns the path where startCmd records its pid so stopCmd
+// (and the duplicate-instance check) can find it later.
+func pidFilePath() (string, error) {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(base, "outpost")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "outpost.pid"), nil
+}
+
+// claimPidFile writes the current process's pid to the pidfile. If a
+// pidfile already exists and points at a live process, return an error
+// (refuses to start a second instance). Stale pidfiles from a previous
+// crash are silently overwritten.
+func claimPidFile() error {
+	p, err := pidFilePath()
+	if err != nil {
+		return err
+	}
+	if data, err := os.ReadFile(p); err == nil {
+		if oldPid, perr := strconv.Atoi(strings.TrimSpace(string(data))); perr == nil && oldPid > 0 && processAlive(oldPid) {
+			return fmt.Errorf("outpost is already running (pid %d). Stop it first with: outpost stop", oldPid)
+		}
+	}
+	return os.WriteFile(p, []byte(strconv.Itoa(os.Getpid())), 0o600)
+}
+
+// removePidFile clears the pidfile when startCmd exits normally. Best-
+// effort — if the user nuked the file mid-run, we don't care.
+func removePidFile() {
+	if p, err := pidFilePath(); err == nil {
+		_ = os.Remove(p)
+	}
+}
+
+// stopCmd implements `outpost stop`. SIGTERMs the recorded pid, polls
+// for up to 5 s, then escalates to SIGKILL.
+func stopCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "stop",
+		Short: "Stop a backgrounded outpost",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			p, err := pidFilePath()
+			if err != nil {
+				return err
+			}
+			data, err := os.ReadFile(p)
+			if err != nil {
+				if os.IsNotExist(err) {
+					fmt.Println("No outpost is running.")
+					return nil
+				}
+				return fmt.Errorf("read pid file: %w", err)
+			}
+			pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+			if err != nil {
+				_ = os.Remove(p)
+				return fmt.Errorf("malformed pid file (removed): %w", err)
+			}
+			if !processAlive(pid) {
+				_ = os.Remove(p)
+				fmt.Println("Stale pid file removed — outpost was not running.")
+				return nil
+			}
+			proc, err := os.FindProcess(pid)
+			if err != nil {
+				return fmt.Errorf("find process %d: %w", pid, err)
+			}
+			if err := proc.Signal(syscall.SIGTERM); err != nil {
+				return fmt.Errorf("signal pid %d: %w", pid, err)
+			}
+			// Poll for graceful exit, up to 5 s.
+			for i := 0; i < 50; i++ {
+				if !processAlive(pid) {
+					_ = os.Remove(p)
+					fmt.Printf("Stopped outpost (pid %d).\n", pid)
+					return nil
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			// SIGTERM ignored — escalate.
+			_ = proc.Signal(syscall.SIGKILL)
+			time.Sleep(200 * time.Millisecond)
+			_ = os.Remove(p)
+			fmt.Printf("Force-killed outpost (pid %d) after SIGTERM timeout.\n", pid)
+			return nil
+		},
+	}
 }
