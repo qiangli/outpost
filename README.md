@@ -1,12 +1,12 @@
 # outpost
 
-The home-host agent for [cloudbox](https://github.com/qiangli/cloudbox).
+The home-host agent for [ai.dhnt.io](https://ai.dhnt.io).
 
 One outpost binary runs on each machine you want to surface through the
-portal. It registers with a cloudbox using a one-time code, dials back
-over a frp tunnel, and serves the local apps (HTTP, shell, desktop,
+portal. It registers with the portal using a one-time code, dials back
+over a secure tunnel, and serves the local apps (HTTP, shell, desktop,
 clipboard) so that authenticated portal users can reach them through
-`https://your.cloudbox/h/<host>/app/<name>/`.
+`https://ai.dhnt.io/h/<host>/app/<name>/`.
 
 ## Install
 
@@ -14,29 +14,28 @@ clipboard) so that authenticated portal users can reach them through
 go install github.com/qiangli/outpost/cmd/outpost@latest
 ```
 
-## Pair with cloudbox
+## Pair with the portal
 
-1. Sign in to your cloudbox `/admin/`, open **Hosts**, click **Generate
-   invite code**.
+1. Sign in at <https://ai.dhnt.io/admin/>, open **Hosts**, click
+   **Generate invite code**.
 2. On the home machine:
 
    ```bash
    outpost register \
-     --server https://your.cloudbox \
+     --server https://ai.dhnt.io \
      --code   <one-time-code> \
      --name   laptop
 
    outpost start
    ```
 
-`register` exchanges the code for the agent's persistent config (saved
-to `~/.config/matrix/agent.json`) including the FRP transport — `wss`
-in prod (cloudbox terminates TLS at the edge), `websocket` for local
-dev, or `tcp` if you're self-hosting cloudbox on a Droplet with the raw
-FRP port exposed.
+`register` exchanges the code for the agent's persistent config and
+saves it to the default user-config path. The portal tells the agent
+which transport to use; `outpost start` then dials in and starts the
+local HTTP server.
 
-`start` dials the tunnel and starts the local HTTP server. By default
-ycode at `http://127.0.0.1:8765` is registered; declare more apps with:
+By default ycode at `http://127.0.0.1:8765` is registered as an app;
+declare more with:
 
 ```bash
 MATRIX_APPS="ycode=http://127.0.0.1:8765,jupyter=http://127.0.0.1:8888" \
@@ -53,8 +52,8 @@ MATRIX_APPS="ycode=http://127.0.0.1:8765,jupyter=http://127.0.0.1:8888" \
 - `/auth` — credential check against the host OS by default, or against
   a custom `--auth-url` endpoint for app-level user lists.
 
-All of these are reached only through cloudbox via the FRP tunnel —
-outpost binds its HTTP server to loopback (`127.0.0.1:<random>`).
+All of these are reached only through the portal — outpost binds its
+HTTP server to loopback (`127.0.0.1:<random>`).
 
 ## Build
 
