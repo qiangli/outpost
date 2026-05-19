@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // FileConfig is what the register command writes and `start` reads from
@@ -40,19 +41,36 @@ type FileConfig struct {
 	ClipboardEnabled *bool `json:"clipboard_enabled,omitempty"`
 }
 
-// AppConfig is one custom HTTP reverse-proxy target. It is mounted under
+// AppConfig is one custom reverse-proxy target. It is mounted under
 // /app/<name>/ on the agent and the cloud reaches it through the tunnel.
+//
+// Scheme picks the transport:
+//   - "http" / "https": classic TCP target. Use Host (default 127.0.0.1)
+//     and Port. Socket is ignored.
+//   - "unix": AF_UNIX socket at Socket. Works on Linux, macOS, and
+//     Windows (AF_UNIX since Win10 1803). Host/Port are ignored.
+//   - "npipe": Windows named pipe at Socket (e.g. \\.\pipe\docker_engine).
+//     Only supported on Windows builds; non-Windows builds reject it at
+//     request time. Host/Port are ignored.
 type AppConfig struct {
 	Name    string `json:"name"`
 	Icon    string `json:"icon,omitempty"`
-	Scheme  string `json:"scheme"` // "http" or "https"
-	Host    string `json:"host"`   // default 127.0.0.1
-	Port    int    `json:"port"`
+	Scheme  string `json:"scheme"`
+	Host    string `json:"host,omitempty"`
+	Port    int    `json:"port,omitempty"`
+	Socket  string `json:"socket,omitempty"`
 	Enabled bool   `json:"enabled"`
 	// Role is the minimum cloud-side clearance required to reach this app
 	// (guest|user|admin). Empty defaults to "user" — matches the cloud's
 	// HostRegistry default so unconfigured apps keep working unchanged.
 	Role string `json:"role,omitempty"`
+}
+
+// IsSocket reports whether ac targets a local socket (unix or npipe)
+// rather than a TCP host:port.
+func (ac AppConfig) IsSocket() bool {
+	s := strings.ToLower(strings.TrimSpace(ac.Scheme))
+	return s == "unix" || s == "npipe"
 }
 
 // ValidRole reports whether s is a recognized clearance level.

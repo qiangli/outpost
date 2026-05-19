@@ -1,10 +1,28 @@
 package agent
 
 import (
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 )
+
+// newTestRouter is a tiny gin engine that mounts only the registry's
+// /app/:name/*p proxy route. Used by the socket-proxy test below.
+func newTestRouter(reg *AppRegistry) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Any("/app/:name", reg.handler())
+	r.Any("/app/:name/*p", reg.handler())
+	return r
+}
 
 // TestRegisterFromConfig — happy path plus validation: bad scheme/port
 // must error, disabled entries must be silently skipped (so the admin UI
@@ -87,6 +105,94 @@ func TestRegisterFromConfig_RolePropagates(t *testing.T) {
 		if e.Name == "jupyter" && e.Role != "admin" {
 			t.Errorf("role on AppConfig should propagate, got %q", e.Role)
 		}
+	}
+}
+
+// TestRegisterFromConfig_UnixSocketProxy: a unix-scheme app dials the
+// configured socket regardless of the request URL. We stand up a tiny
+// HTTP server on a unix socket in a tempdir, register it, and make sure
+// `/app/<name>/ping` actually reaches it.
+func TestRegisterFromConfig_UnixSocketProxy(t *testing.T) {
+	// macOS caps sun_path at 104 chars, so the default t.TempDir() under
+	// /var/folders/... is too long. Use /tmp directly.
+	sockDir, err := os.MkdirTemp("/tmp", "outpost-sock-")
+	if err != nil {
+		t.Fatalf("tempdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sockPath := filepath.Join(sockDir, "podman.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "pong-"+r.Header.Get("X-Test"))
+	})
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	reg := NewAppRegistry()
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name:    "podman",
+		Scheme:  "unix",
+		Socket:  sockPath,
+		Enabled: true,
+		Role:    "admin",
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if target := reg.LookupTarget("podman"); target == nil || target.Host != "socket" {
+		t.Errorf("socket-backed target host = %v (want synthetic 'socket')", target)
+	}
+	roles := map[string]string{}
+	for _, e := range reg.Entries() {
+		roles[e.Name] = e.Role
+	}
+	if roles["podman"] != "admin" {
+		t.Errorf("role on socket app should propagate, got %q", roles["podman"])
+	}
+
+	// Stand up the registry behind a real httptest.Server so the full
+	// proxy path runs (gin's responseWriter.CloseNotify needs a real
+	// http.ResponseWriter — httptest.ResponseRecorder doesn't implement
+	// http.CloseNotifier).
+	front := httptest.NewServer(newTestRouter(reg))
+	t.Cleanup(front.Close)
+
+	req, _ := http.NewRequest("GET", front.URL+"/app/podman/ping", nil)
+	req.Header.Set("X-Test", "ok")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("proxy request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("proxy status = %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if got := string(body); got != "pong-ok" {
+		t.Errorf("proxy body = %q (want pong-ok)", got)
+	}
+}
+
+// TestRegisterFromConfig_SocketSchemeRequiresSocketField: scheme=unix
+// without a socket path must error at register time rather than silently
+// proxying to nowhere.
+func TestRegisterFromConfig_SocketSchemeRequiresSocketField(t *testing.T) {
+	reg := NewAppRegistry()
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "podman", Scheme: "unix", Enabled: true,
+	}); err == nil {
+		t.Error("expected error when unix scheme has no socket")
+	}
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "podman", Scheme: "npipe", Enabled: true,
+	}); err == nil {
+		t.Error("expected error when npipe scheme has no socket")
 	}
 }
 

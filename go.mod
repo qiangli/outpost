@@ -18,6 +18,7 @@ require (
 
 require (
 	github.com/Azure/go-ntlmssp v0.1.0 // indirect
+	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect

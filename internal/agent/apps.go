@@ -1,13 +1,16 @@
 package agent
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -27,6 +30,10 @@ type AppEntry struct {
 // itself is only reachable through the frp tunnel, and the agent only
 // forwards under tier-1 trust (set by the cloud server in the
 // X-Periscope-User header).
+//
+// Socket-backed entries (scheme=unix|npipe) use a per-app Transport whose
+// DialContext dials the local socket; the URL host is a synthetic "socket"
+// placeholder that the upstream daemon ignores.
 type AppRegistry struct {
 	mu    sync.RWMutex
 	apps  map[string]*url.URL
@@ -59,15 +66,26 @@ func (r *AppRegistry) RegisterWithRole(name, target, role string) error {
 	if u.Scheme == "" || u.Host == "" {
 		return fmt.Errorf("app %q target must be absolute (got %q)", name, target)
 	}
+	return r.register(name, u, role, nil)
+}
+
+// register is the unified internal entry point. target must have Scheme
+// "http" or "https". For socket-backed apps, callers pass a synthetic
+// http://socket URL plus a transport whose DialContext dials the socket.
+// role "" defaults to "user". Roles outside {guest, user, admin} are rejected.
+func (r *AppRegistry) register(name string, target *url.URL, role string, transport http.RoundTripper) error {
 	if !conf.ValidRole(role) {
 		return fmt.Errorf("app %q role %q: must be one of guest|user|admin", name, role)
 	}
 	if role == "" {
 		role = "user"
 	}
-	rp := httputil.NewSingleHostReverseProxy(u)
+	rp := httputil.NewSingleHostReverseProxy(target)
+	if transport != nil {
+		rp.Transport = transport
+	}
 	r.mu.Lock()
-	r.apps[name] = u
+	r.apps[name] = target
 	r.proxy[name] = rp
 	r.roles[name] = role
 	r.mu.Unlock()
@@ -118,9 +136,10 @@ func (r *AppRegistry) Unregister(name string) {
 	r.mu.Unlock()
 }
 
-// RegisterFromConfig is a convenience that builds scheme://host:port from
-// an AppConfig and registers it. Disabled entries are skipped (so the
-// admin UI can keep them around without proxying them).
+// RegisterFromConfig is a convenience that builds a target from an
+// AppConfig and registers it. Disabled entries are skipped (so the admin
+// UI can keep them around without proxying them). Socket-backed apps
+// (scheme=unix|npipe) get a custom Transport that dials the socket.
 func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 	if !ac.Enabled {
 		return nil
@@ -129,18 +148,47 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 	if scheme == "" {
 		scheme = "http"
 	}
-	if scheme != "http" && scheme != "https" {
-		return fmt.Errorf("app %q: scheme must be http or https (got %q)", ac.Name, ac.Scheme)
+	switch scheme {
+	case "http", "https":
+		host := strings.TrimSpace(ac.Host)
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		if ac.Port <= 0 || ac.Port > 65535 {
+			return fmt.Errorf("app %q: port %d is out of range", ac.Name, ac.Port)
+		}
+		u := &url.URL{Scheme: scheme, Host: host + ":" + strconv.Itoa(ac.Port)}
+		return r.register(ac.Name, u, ac.Role, nil)
+	case "unix", "npipe":
+		sock := strings.TrimSpace(ac.Socket)
+		if sock == "" {
+			return fmt.Errorf("app %q: socket path is required for scheme %q", ac.Name, scheme)
+		}
+		// Synthetic http://socket; the real connection is dialed by the
+		// per-app transport's DialContext. The upstream daemon (podman/
+		// docker/ollama) ignores the Host header.
+		u := &url.URL{Scheme: "http", Host: "socket"}
+		return r.register(ac.Name, u, ac.Role, socketTransport(scheme, sock))
+	default:
+		return fmt.Errorf("app %q: scheme must be one of http|https|unix|npipe (got %q)", ac.Name, ac.Scheme)
 	}
-	host := strings.TrimSpace(ac.Host)
-	if host == "" {
-		host = "127.0.0.1"
+}
+
+// socketTransport returns an http.Transport whose DialContext routes every
+// connection to a local socket regardless of the request URL's host.
+// Suitable for fronting docker.sock / podman.sock / Windows named pipes.
+// HTTP/1.1 Upgrade (used by podman's /attach and /exec) and websockets
+// continue to work because httputil.ReverseProxy hijacks the conn from
+// this transport's response — the same code path as the default transport.
+func socketTransport(scheme, socket string) http.RoundTripper {
+	return &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dialSocket(ctx, scheme, socket)
+		},
+		MaxIdleConns:       4,
+		IdleConnTimeout:    30 * time.Second,
+		DisableCompression: true,
 	}
-	if ac.Port <= 0 || ac.Port > 65535 {
-		return fmt.Errorf("app %q: port %d is out of range", ac.Name, ac.Port)
-	}
-	target := scheme + "://" + host + ":" + strconv.Itoa(ac.Port)
-	return r.RegisterWithRole(ac.Name, target, ac.Role)
 }
 
 // handler returns a gin handler that proxies `/app/:name/*p` to the

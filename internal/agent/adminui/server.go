@@ -149,6 +149,7 @@ func (s *Server) registerRoutes() {
 	api.POST("/config/register", s.handleRegister)
 	api.POST("/config/builtins", s.handleBuiltins)
 	api.GET("/apps", s.handleListApps)
+	api.GET("/apps/suggestions", s.handleListSuggestions)
 	api.POST("/apps", s.handleUpsertApp)
 	api.DELETE("/apps/:name", s.handleDeleteApp)
 	api.POST("/restart", s.handleRestart)

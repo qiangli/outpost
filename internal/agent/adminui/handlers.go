@@ -360,15 +360,27 @@ func validateApp(ac *conf.AppConfig) error {
 	if ac.Scheme == "" {
 		ac.Scheme = "http"
 	}
-	if ac.Scheme != "http" && ac.Scheme != "https" {
-		return errors.New("scheme must be http or https")
-	}
-	ac.Host = strings.TrimSpace(ac.Host)
-	if ac.Host == "" {
-		ac.Host = "127.0.0.1"
-	}
-	if ac.Port < 1 || ac.Port > 65535 {
-		return fmt.Errorf("port %d is out of range", ac.Port)
+	switch ac.Scheme {
+	case "http", "https":
+		ac.Host = strings.TrimSpace(ac.Host)
+		if ac.Host == "" {
+			ac.Host = "127.0.0.1"
+		}
+		if ac.Port < 1 || ac.Port > 65535 {
+			return fmt.Errorf("port %d is out of range", ac.Port)
+		}
+		// Clear socket so the persisted record is unambiguous.
+		ac.Socket = ""
+	case "unix", "npipe":
+		ac.Socket = strings.TrimSpace(ac.Socket)
+		if ac.Socket == "" {
+			return fmt.Errorf("socket path is required for scheme %q", ac.Scheme)
+		}
+		// Host/Port are not meaningful for socket-backed apps.
+		ac.Host = ""
+		ac.Port = 0
+	default:
+		return errors.New("scheme must be one of http|https|unix|npipe")
 	}
 	ac.Role = strings.ToLower(strings.TrimSpace(ac.Role))
 	if !conf.ValidRole(ac.Role) {

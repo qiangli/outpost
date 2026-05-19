@@ -27,6 +27,7 @@ func TestFileConfigRoundTrip(t *testing.T) {
 		Apps: []AppConfig{
 			{Name: "ycode", Scheme: "http", Host: "127.0.0.1", Port: 8765, Enabled: true},
 			{Name: "jupyter", Scheme: "http", Host: "127.0.0.1", Port: 8888, Enabled: false, Icon: "/x.png"},
+			{Name: "podman", Scheme: "unix", Socket: "/run/user/1000/podman/podman.sock", Enabled: true, Role: "admin"},
 		},
 	}
 	if err := SaveFile(tmp, in); err != nil {
@@ -43,8 +44,20 @@ func TestFileConfigRoundTrip(t *testing.T) {
 		t.Errorf("toggle round-trip: shell=%v desktop=%v clipboard=%v",
 			out.ShellOn(), out.DesktopOn(), out.ClipboardOn())
 	}
-	if len(out.Apps) != 2 || out.Apps[0].Port != 8765 || out.Apps[1].Enabled {
+	if len(out.Apps) != 3 || out.Apps[0].Port != 8765 || out.Apps[1].Enabled {
 		t.Errorf("apps round-trip: %+v", out.Apps)
+	}
+	// Socket-backed entry must round-trip Scheme + Socket and keep
+	// Host/Port at their zero values (JSON omitempty leaves them out).
+	sockApp := out.Apps[2]
+	if sockApp.Scheme != "unix" || sockApp.Socket != "/run/user/1000/podman/podman.sock" {
+		t.Errorf("socket-app round-trip: %+v", sockApp)
+	}
+	if sockApp.Host != "" || sockApp.Port != 0 {
+		t.Errorf("socket-app should not carry host/port: %+v", sockApp)
+	}
+	if !sockApp.IsSocket() {
+		t.Error("IsSocket() should return true for scheme=unix")
 	}
 }
 
