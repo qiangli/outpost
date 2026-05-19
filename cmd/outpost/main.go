@@ -4,12 +4,9 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -19,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -27,8 +25,10 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/qiangli/outpost/internal/agent"
+	"github.com/qiangli/outpost/internal/agent/adminui"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
+	"github.com/qiangli/outpost/internal/agent/portal"
 )
 
 // defaultPortal is the public ai.dhnt.io address used when the user
@@ -65,38 +65,50 @@ func startCmd() *cobra.Command {
 			if err := claimPidFile(); err != nil {
 				return err
 			}
-			defer removePidFile()
+			// Restart path clears the pidfile pre-emptively (so the child
+			// can claim it) and skips this deferred removal.
+			var restarting atomic.Bool
+			defer func() {
+				if !restarting.Load() {
+					removePidFile()
+				}
+			}()
 
 			cfg, err := conf.Load()
 			if err != nil {
 				return err
 			}
 
-			// Layer in saved file config (if any) before flag overrides.
-			if path, _ := conf.DefaultConfigPath(); path != "" {
-				if fc, _ := conf.LoadFile(path); fc != nil {
-					if cfg.AgentName == "" {
-						cfg.AgentName = fc.AgentName
-					}
-					if cfg.Token == "" {
-						cfg.Token = fc.Token
-					}
-					if cfg.RemotePort == 0 {
-						cfg.RemotePort = fc.RemotePort
-					}
-					if fc.ServerAddr != "" {
-						cfg.ServerAddr = fc.ServerAddr
-					}
-					if fc.ServerPort != 0 {
-						cfg.ServerPort = fc.ServerPort
-					}
-					if cfg.Protocol == "" {
-						cfg.Protocol = fc.Protocol
-					}
-					if cfg.AuthURL == "" {
-						cfg.AuthURL = fc.AuthURL
-					}
-				}
+			cfgPath, _ := conf.DefaultConfigPath()
+			var fc *conf.FileConfig
+			if cfgPath != "" {
+				fc, _ = conf.LoadFile(cfgPath)
+			}
+			if fc == nil {
+				fc = &conf.FileConfig{}
+			}
+
+			// Layer fc into cfg (env values stay primary unless empty).
+			if cfg.AgentName == "" {
+				cfg.AgentName = fc.AgentName
+			}
+			if cfg.Token == "" {
+				cfg.Token = fc.Token
+			}
+			if cfg.RemotePort == 0 {
+				cfg.RemotePort = fc.RemotePort
+			}
+			if fc.ServerAddr != "" {
+				cfg.ServerAddr = fc.ServerAddr
+			}
+			if fc.ServerPort != 0 {
+				cfg.ServerPort = fc.ServerPort
+			}
+			if cfg.Protocol == "" {
+				cfg.Protocol = fc.Protocol
+			}
+			if cfg.AuthURL == "" {
+				cfg.AuthURL = fc.AuthURL
 			}
 
 			if addrFlag != "" {
@@ -111,23 +123,73 @@ func startCmd() *cobra.Command {
 			if serverPortFlag != 0 {
 				cfg.ServerPort = serverPortFlag
 			}
-			if cfg.AgentName == "" {
-				return errors.New("AgentName is empty: run `outpost register` first or set $AGENT_NAME")
-			}
 
-			apps, err := buildAppRegistry(cfg.Apps)
+			apps, err := buildAppRegistry(fc, cfg.Apps)
 			if err != nil {
 				return err
+			}
+
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			// restartFn is what the admin UI calls after a save that
+			// requires the tunnel or built-in routes to reload (pairing,
+			// agent name, built-in toggles). We flag the parent's exit
+			// path so the deferred removePidFile becomes a no-op, then
+			// cancel the context so g.Wait() returns and we re-exec.
+			var shouldRestart atomic.Bool
+			restartFn := func() {
+				shouldRestart.Store(true)
+				stop()
+			}
+
+			adminAddr := os.Getenv("OUTPOST_ADMIN_ADDR")
+			if adminAddr == "" {
+				adminAddr = "127.0.0.1:17777"
+			}
+			adminSrv, err := adminui.New(adminui.Deps{
+				ConfigPath: cfgPath,
+				ListenAddr: adminAddr,
+				Auth:       hostauth.DefaultAuthenticator(),
+				Apps:       apps,
+				Restart:    restartFn,
+			})
+			if err != nil {
+				return fmt.Errorf("admin ui: %w", err)
+			}
+
+			g, gctx := errgroup.WithContext(ctx)
+			g.Go(func() error {
+				fmt.Fprintf(os.Stderr, "Admin UI: %s\n", adminSrv.URL())
+				slog.Info("outpost: admin ui listening", "url", adminSrv.URL())
+				return adminSrv.Serve(gctx)
+			})
+
+			if cfg.AgentName == "" {
+				fmt.Fprintln(os.Stderr, "Not yet configured — open the Admin UI to pair this host with the portal.")
+				slog.Info("outpost: awaiting first-run pairing through admin UI")
+				if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+					return err
+				}
+				if shouldRestart.Load() {
+					restarting.Store(true)
+					removePidFile()
+					return execSelfStart()
+				}
+				return nil
 			}
 
 			admins := agent.NewAdminSet(cfg.AdminUsers)
 			engine := gin.Default()
 			agent.RegisterRoutes(engine.Group("/"), agent.Deps{
-				AgentName: cfg.AgentName,
-				Apps:      apps,
-				Admins:    admins,
-				AuthURL:   cfg.AuthURL,
-				VNCAddr:   vncAddrFlag,
+				AgentName:         cfg.AgentName,
+				Apps:              apps,
+				Admins:            admins,
+				AuthURL:           cfg.AuthURL,
+				VNCAddr:           vncAddrFlag,
+				ShellDisabled:     !fc.ShellOn(),
+				DesktopDisabled:   !fc.DesktopOn(),
+				ClipboardDisabled: !fc.ClipboardOn(),
 			})
 
 			// Bind the local listener first so we know its port before
@@ -159,10 +221,6 @@ func startCmd() *cobra.Command {
 				return err
 			}
 
-			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
-			defer stop()
-
-			g, gctx := errgroup.WithContext(ctx)
 			g.Go(func() error {
 				slog.Info("matrix-agent: local http listening", "addr", ln.Addr().String(), "name", cfg.AgentName, "apps", apps.Names())
 				if err := localSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -183,7 +241,13 @@ func startCmd() *cobra.Command {
 				tunnel.Close()
 				return nil
 			})
-			return g.Wait()
+			err = g.Wait()
+			if shouldRestart.Load() {
+				restarting.Store(true)
+				removePidFile()
+				return execSelfStart()
+			}
+			return err
 		},
 	}
 	cmd.Flags().StringVar(&addrFlag, "addr", "", "Local loopback HTTP listen address (overrides $AGENT_ADDR)")
@@ -194,11 +258,24 @@ func startCmd() *cobra.Command {
 	return cmd
 }
 
-// buildAppRegistry parses MATRIX_APPS ("name1=url1,name2=url2") and seeds
-// `ycode → http://127.0.0.1:8765` when no apps are configured at all.
-func buildAppRegistry(specs string) (*agent.AppRegistry, error) {
+// buildAppRegistry seeds the live AppRegistry from whichever app source
+// is authoritative. Order of precedence:
+//  1. fc.Apps (structured config saved through the admin UI). Even an
+//     empty slice wins — the user has explicitly said "no apps".
+//  2. MATRIX_APPS env (legacy "name=url,..." string).
+//  3. Convenience default `ycode → http://127.0.0.1:8765` when both are
+//     absent.
+func buildAppRegistry(fc *conf.FileConfig, envSpecs string) (*agent.AppRegistry, error) {
 	reg := agent.NewAppRegistry()
-	specs = strings.TrimSpace(specs)
+	if fc != nil && fc.Apps != nil {
+		for _, ac := range fc.Apps {
+			if err := reg.RegisterFromConfig(ac); err != nil {
+				return nil, err
+			}
+		}
+		return reg, nil
+	}
+	specs := strings.TrimSpace(envSpecs)
 	if specs == "" {
 		if err := reg.Register("ycode", "http://127.0.0.1:8765"); err != nil {
 			return nil, err
@@ -333,79 +410,25 @@ func collectInputs(r *bufio.Reader, serverURL, code, name *string) error {
 	return nil
 }
 
-// doExchange POSTs the pairing code to the portal and saves the returned
-// agent config to disk. Pulled out of registerCmd so the interactive loop
-// can call it repeatedly without re-stamping the prompt scaffolding.
+// doExchange runs the pairing exchange and writes the resulting config to
+// disk. Thin wrapper over portal.Exchange — the admin UI calls the same
+// portal package directly so it can layer Apps + toggles in before saving.
 func doExchange(ctx context.Context, serverURL, code, name, title, authURL, out string) error {
-	title = strings.TrimSpace(title)
-	trimmedAuthURL := strings.TrimSpace(authURL)
-	// A custom auth URL means the app users have no OS identity, so the
-	// OS-derived subtitle would be misleading. Require a human title.
-	if trimmedAuthURL != "" && title == "" {
-		return errors.New("--title is required when --auth-url is set (no OS user to derive a subtitle from)")
-	}
-
-	// Report OS-side identity so the portal can render a disambiguating
-	// subtitle and the elevate form can prefill the username. Best-effort.
-	osUser, _ := hostauth.CurrentUser()
-	osDisplay := hostauth.CurrentDisplayName()
-	osHostname, _ := os.Hostname()
-
-	payload := map[string]any{
-		"code":            code,
-		"name":            name,
-		"title":           title,
-		"os_user":         osUser,
-		"os_display_name": osDisplay,
-		"os_hostname":     osHostname,
-		"has_auth_url":    trimmedAuthURL != "",
-	}
-	body, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, "POST",
-		strings.TrimRight(serverURL, "/")+"/api/register/exchange",
-		bytes.NewReader(body))
+	fc, err := portal.Exchange(ctx, portal.ExchangeRequest{
+		ServerURL: serverURL,
+		Code:      code,
+		Name:      name,
+		Title:     title,
+		AuthURL:   authURL,
+	})
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("exchange: %w", err)
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("exchange failed (%d): %s", resp.StatusCode, bytes.TrimSpace(respBody))
-	}
-
-	var ex struct {
-		AgentName  string `json:"agent_name"`
-		ServerAddr string `json:"server_addr"`
-		ServerPort int    `json:"server_port"`
-		Protocol   string `json:"protocol"`
-		Token      string `json:"token"`
-		RemotePort int    `json:"remote_port"`
-	}
-	if err := json.Unmarshal(respBody, &ex); err != nil {
-		return fmt.Errorf("decode response: %w", err)
-	}
-
-	fc := &conf.FileConfig{
-		AgentName:  ex.AgentName,
-		ServerAddr: ex.ServerAddr,
-		ServerPort: ex.ServerPort,
-		Protocol:   ex.Protocol,
-		Token:      ex.Token,
-		RemotePort: ex.RemotePort,
-		AuthURL:    trimmedAuthURL,
-	}
 	path := out
 	if path == "" {
-		p, err := conf.DefaultConfigPath()
-		if err != nil {
-			return err
+		p, perr := conf.DefaultConfigPath()
+		if perr != nil {
+			return perr
 		}
 		path = p
 	}

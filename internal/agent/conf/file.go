@@ -25,6 +25,44 @@ type FileConfig struct {
 	Token      string `json:"token"`
 	RemotePort int    `json:"remote_port"`
 	AuthURL    string `json:"auth_url,omitempty"`
+
+	// Apps managed through the admin UI. When this field is present (even
+	// empty), it is authoritative — the legacy MATRIX_APPS env is ignored.
+	// When absent (nil) on a config written before the admin UI shipped,
+	// `start` falls back to MATRIX_APPS for back-compat.
+	Apps []AppConfig `json:"apps,omitempty"`
+
+	// Built-in route toggles. Pointer-bool so a missing field on an old
+	// config means "default on", which matches the pre-admin-UI behavior.
+	// Use ShellOn()/DesktopOn()/ClipboardOn() to read; never deref directly.
+	ShellEnabled     *bool `json:"shell_enabled,omitempty"`
+	DesktopEnabled   *bool `json:"desktop_enabled,omitempty"`
+	ClipboardEnabled *bool `json:"clipboard_enabled,omitempty"`
+}
+
+// AppConfig is one custom HTTP reverse-proxy target. It is mounted under
+// /app/<name>/ on the agent and the cloud reaches it through the tunnel.
+type AppConfig struct {
+	Name    string `json:"name"`
+	Icon    string `json:"icon,omitempty"`
+	Scheme  string `json:"scheme"` // "http" or "https"
+	Host    string `json:"host"`   // default 127.0.0.1
+	Port    int    `json:"port"`
+	Enabled bool   `json:"enabled"`
+}
+
+// ShellOn reports whether the built-in /shell route should be mounted.
+// Missing field (old configs) defaults to true.
+func (fc *FileConfig) ShellOn() bool { return fc == nil || fc.ShellEnabled == nil || *fc.ShellEnabled }
+
+// DesktopOn reports whether the built-in /desktop route should be mounted.
+func (fc *FileConfig) DesktopOn() bool {
+	return fc == nil || fc.DesktopEnabled == nil || *fc.DesktopEnabled
+}
+
+// ClipboardOn reports whether the built-in /clipboard route should be mounted.
+func (fc *FileConfig) ClipboardOn() bool {
+	return fc == nil || fc.ClipboardEnabled == nil || *fc.ClipboardEnabled
 }
 
 // DefaultConfigPath is ~/.config/matrix/agent.json (XDG_CONFIG_HOME honored).

@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>outpost admin</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, -apple-system, sans-serif; }
+  body { margin: 0; padding: 2rem; max-width: 720px; }
+  h1 { margin-top: 0; font-size: 1.4rem; }
+  h2 { font-size: 1.05rem; margin-top: 1.8rem; }
+  fieldset { border: 1px solid #ccc4; border-radius: 6px; padding: 1rem; margin-bottom: 1rem; }
+  legend { padding: 0 0.4rem; font-weight: 600; }
+  label { display: block; margin-bottom: 0.4rem; font-size: 0.9rem; }
+  label > input, label > select { display: block; margin-top: 0.2rem; }
+  input[type=text], input[type=password], input[type=url], input[type=number], select {
+    padding: 0.4rem; border: 1px solid #8884; border-radius: 4px; width: 100%; box-sizing: border-box;
+  }
+  button { padding: 0.5rem 0.9rem; border: 0; border-radius: 4px; cursor: pointer;
+           background: #2563eb; color: white; font-weight: 600; }
+  button.secondary { background: transparent; color: inherit; border: 1px solid #8888; }
+  button.danger { background: #b91c1c; }
+  button:disabled { opacity: 0.5; cursor: wait; }
+  .row { display: flex; gap: 0.5rem; align-items: end; }
+  .row > * { flex: 1; }
+  .row > button { flex: 0 0 auto; }
+  .msg { padding: 0.5rem 0.7rem; border-radius: 4px; margin-bottom: 0.7rem; }
+  .msg.ok  { background: #16a34a22; }
+  .msg.err { background: #dc262622; }
+  table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+  th, td { text-align: left; padding: 0.4rem; border-bottom: 1px solid #8882; font-size: 0.9rem; }
+  .pill { display: inline-block; padding: 0 0.4rem; border-radius: 999px; font-size: 0.75rem;
+          background: #2563eb22; }
+  .pill.off { background: #8884; }
+  .toggle-row { display: flex; gap: 1rem; flex-wrap: wrap; }
+  .toggle-row label { display: flex; align-items: center; gap: 0.4rem; }
+</style>
+</head>
+<body>
+<h1>outpost admin</h1>
+<div id="msg-host"></div>
+<div id="app">Loading…</div>
+
+<script>
+const $ = sel => document.querySelector(sel);
+const el = (tag, attrs={}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'class') n.className = v;
+    else if (k.startsWith('on') && typeof v === 'function') n.addEventListener(k.slice(2), v);
+    else if (v === false || v == null) {} else n.setAttribute(k, v === true ? '' : v);
+  }
+  for (const k of kids.flat()) n.append(k && k.nodeType ? k : document.createTextNode(k == null ? '' : k));
+  return n;
+};
+
+function msg(kind, text) {
+  const host = $('#msg-host');
+  host.innerHTML = '';
+  host.append(el('div', {class: 'msg ' + kind}, text));
+  if (kind === 'ok') setTimeout(() => { host.innerHTML = ''; }, 4000);
+}
+
+async function api(method, path, body) {
+  const opts = { method, headers: {} };
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  const resp = await fetch(path, opts);
+  let data = {};
+  try { data = await resp.json(); } catch (_) {}
+  if (!resp.ok) {
+    const err = new Error(data.error || resp.statusText);
+    err.status = resp.status;
+    throw err;
+  }
+  return data;
+}
+
+async function render() {
+  let status;
+  try {
+    status = await api('GET', '/api/status');
+  } catch (e) {
+    if (e.status === 401) return renderLogin();
+    return renderFatal(e);
+  }
+  let cfg;
+  try {
+    cfg = await api('GET', '/api/config');
+  } catch (e) {
+    if (e.status === 401) return renderLogin();
+    return renderFatal(e);
+  }
+  renderMain(status, cfg);
+}
+
+function renderFatal(e) {
+  $('#app').innerHTML = '';
+  $('#app').append(el('div', {class: 'msg err'}, 'Failed to load: ' + (e.message || e)));
+}
+
+function renderLogin() {
+  const app = $('#app');
+  app.innerHTML = '';
+  const form = el('form', {});
+  form.append(
+    el('h2', {}, 'Sign in with your OS password'),
+    el('label', {}, 'Username',
+      el('input', {type: 'text', name: 'user', autocomplete: 'username'})),
+    el('label', {}, 'Password',
+      el('input', {type: 'password', name: 'password', autocomplete: 'current-password'})),
+    el('button', {type: 'submit'}, 'Sign in'),
+  );
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const fd = new FormData(form);
+    try {
+      await api('POST', '/api/login', { user: fd.get('user'), password: fd.get('password') });
+      msg('ok', 'Signed in');
+      render();
+    } catch (e) {
+      msg('err', e.message || 'Login failed');
+    }
+  });
+  app.append(form);
+  // Prefill the username with the running OS user if we can guess.
+  api('GET', '/api/status').then(s => {
+    if (s.current_os_user) form.querySelector('input[name=user]').value = s.current_os_user;
+  }).catch(() => {});
+}
+
+function renderMain(status, cfg) {
+  const app = $('#app');
+  app.innerHTML = '';
+
+  // Pairing section
+  const pairing = el('fieldset', {});
+  pairing.append(el('legend', {}, status.configured ? 'Re-pair host' : 'Pair host'));
+  if (status.configured) {
+    pairing.append(el('p', {}, 'Currently paired as ', el('strong', {}, status.agent_name),
+      ' on ', el('code', {}, status.server_addr || '(unknown)'), '.'));
+  } else {
+    pairing.append(el('p', {}, 'Not yet paired. Get a one-time code from the portal.'));
+  }
+  const pf = el('form', {});
+  pf.append(
+    el('label', {}, 'Portal URL',
+      el('input', {type: 'url', name: 'server', value: cfg.server_addr ? '' : (cfg.defaults.server_url || '')})),
+    el('label', {}, 'Pairing code',
+      el('input', {type: 'text', name: 'code', autocomplete: 'off', required: true})),
+    el('label', {}, 'Host name',
+      el('input', {type: 'text', name: 'name', value: cfg.agent_name || cfg.defaults.name || '', required: true})),
+    el('label', {}, 'Subtitle (optional, required if auth URL is set)',
+      el('input', {type: 'text', name: 'title'})),
+    el('label', {}, 'Custom auth URL (advanced)',
+      el('input', {type: 'url', name: 'auth_url', value: cfg.auth_url || ''})),
+    el('button', {type: 'submit'}, 'Save & restart'),
+  );
+  pf.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const fd = new FormData(pf);
+    const btn = pf.querySelector('button');
+    btn.disabled = true;
+    try {
+      await api('POST', '/api/config/register', {
+        server: (fd.get('server') || cfg.defaults.server_url || '').toString().trim(),
+        code: fd.get('code'),
+        name: fd.get('name'),
+        title: fd.get('title'),
+        auth_url: fd.get('auth_url'),
+      });
+      msg('ok', 'Saved. Restarting outpost — refresh in a few seconds.');
+      pollUntilUp();
+    } catch (e) {
+      btn.disabled = false;
+      msg('err', e.message || 'Pairing failed');
+    }
+  });
+  pairing.append(pf);
+  app.append(pairing);
+
+  // Built-in apps section
+  const built = el('fieldset', {});
+  built.append(el('legend', {}, 'Built-in apps'));
+  const builtForm = el('form', {});
+  const builtinRow = el('div', {class: 'toggle-row'});
+  for (const [key, label] of [['shell','Shell'], ['desktop','Desktop'], ['clipboard','Clipboard']]) {
+    const cb = el('input', {type: 'checkbox', name: key});
+    if (cfg[key + '_enabled']) cb.setAttribute('checked', '');
+    builtinRow.append(el('label', {}, cb, label));
+  }
+  builtForm.append(builtinRow);
+  builtForm.append(el('p', {style: 'font-size:0.85rem;opacity:0.8'},
+    'Saving rebinds these routes — outpost restarts.'));
+  builtForm.append(el('button', {type: 'submit'}, 'Save built-ins'));
+  builtForm.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const fd = new FormData(builtForm);
+    try {
+      await api('POST', '/api/config/builtins', {
+        shell: builtForm.shell.checked,
+        desktop: builtForm.desktop.checked,
+        clipboard: builtForm.clipboard.checked,
+      });
+      msg('ok', 'Saved. ' + (status.configured ? 'Restarting…' : ''));
+      if (status.configured) pollUntilUp();
+      else render();
+    } catch (e) {
+      msg('err', e.message || 'Save failed');
+    }
+  });
+  built.append(builtForm);
+  app.append(built);
+
+  // Custom apps section
+  const custom = el('fieldset', {});
+  custom.append(el('legend', {}, 'Custom apps'));
+  const table = el('table');
+  table.append(el('thead', {}, el('tr', {},
+    el('th', {}, 'Name'), el('th', {}, 'Target'), el('th', {}, 'Status'), el('th', {}, ''))));
+  const tbody = el('tbody');
+  for (const a of (cfg.apps || [])) {
+    const target = `${a.scheme}://${a.host}:${a.port}`;
+    tbody.append(el('tr', {},
+      el('td', {}, a.name),
+      el('td', {}, el('code', {}, target)),
+      el('td', {}, el('span', {class: 'pill' + (a.enabled ? '' : ' off')}, a.enabled ? 'on' : 'off')),
+      el('td', {}, el('button', {class: 'secondary danger', onclick: async () => {
+        if (!confirm(`Remove app "${a.name}"?`)) return;
+        try { await api('DELETE', '/api/apps/' + encodeURIComponent(a.name)); render(); }
+        catch (e) { msg('err', e.message); }
+      }}, 'Remove'))));
+  }
+  if ((cfg.apps || []).length === 0) {
+    tbody.append(el('tr', {}, el('td', {colspan: 4, style: 'opacity:0.6'}, 'No custom apps yet.')));
+  }
+  table.append(tbody);
+  custom.append(table);
+
+  const addForm = el('form', {});
+  addForm.append(el('h2', {}, 'Add app'),
+    el('div', {class: 'row'},
+      el('label', {}, 'Name', el('input', {name: 'name', type: 'text', required: true})),
+      el('label', {}, 'Icon URL', el('input', {name: 'icon', type: 'url'})),
+    ),
+    el('div', {class: 'row'},
+      el('label', {}, 'Scheme', (() => {
+        const s = el('select', {name: 'scheme'});
+        s.append(el('option', {value: 'http'}, 'http'), el('option', {value: 'https'}, 'https'));
+        return s;
+      })()),
+      el('label', {}, 'Host', el('input', {name: 'host', type: 'text', value: '127.0.0.1'})),
+      el('label', {}, 'Port', el('input', {name: 'port', type: 'number', min: '1', max: '65535', required: true})),
+    ),
+    el('label', {}, el('input', {name: 'enabled', type: 'checkbox', checked: true}), ' Enabled'),
+    el('button', {type: 'submit'}, 'Add app'));
+  addForm.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const fd = new FormData(addForm);
+    try {
+      await api('POST', '/api/apps', {
+        name: fd.get('name'),
+        icon: fd.get('icon'),
+        scheme: fd.get('scheme'),
+        host: fd.get('host') || '127.0.0.1',
+        port: parseInt(fd.get('port'), 10),
+        enabled: addForm.enabled.checked,
+      });
+      msg('ok', 'App added.');
+      render();
+    } catch (e) {
+      msg('err', e.message || 'Add failed');
+    }
+  });
+  custom.append(addForm);
+  app.append(custom);
+
+  // Footer actions
+  const footer = el('div', {style: 'margin-top: 1.5rem; display:flex; gap:0.5rem;'});
+  footer.append(
+    el('button', {class: 'secondary', onclick: async () => {
+      try { await api('POST', '/api/restart'); msg('ok', 'Restarting…'); pollUntilUp(); }
+      catch (e) { msg('err', e.message); }
+    }}, 'Restart outpost'),
+    el('button', {class: 'secondary', onclick: async () => {
+      try { await api('POST', '/api/logout'); render(); }
+      catch (e) { msg('err', e.message); }
+    }}, 'Sign out'),
+  );
+  app.append(footer);
+}
+
+async function pollUntilUp() {
+  for (let i = 0; i < 40; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    try {
+      await fetch('/healthz', { cache: 'no-store' });
+      // Healthz comes up immediately on the new process; give the API
+      // routes a beat to bind too, then reload.
+      setTimeout(() => render(), 250);
+      return;
+    } catch (_) {}
+  }
+  msg('err', 'Outpost did not come back. Check the logs.');
+}
+
+render();
+</script>
+</body>
+</html>

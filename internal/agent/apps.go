@@ -5,10 +5,13 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
 // AppRegistry maps app names (e.g. "ycode") to the local URL they live at
@@ -62,6 +65,39 @@ func (r *AppRegistry) LookupTarget(name string) *url.URL {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.apps[name]
+}
+
+// Unregister removes an app entry. No-op if the name is not registered.
+func (r *AppRegistry) Unregister(name string) {
+	r.mu.Lock()
+	delete(r.apps, name)
+	delete(r.proxy, name)
+	r.mu.Unlock()
+}
+
+// RegisterFromConfig is a convenience that builds scheme://host:port from
+// an AppConfig and registers it. Disabled entries are skipped (so the
+// admin UI can keep them around without proxying them).
+func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
+	if !ac.Enabled {
+		return nil
+	}
+	scheme := strings.ToLower(strings.TrimSpace(ac.Scheme))
+	if scheme == "" {
+		scheme = "http"
+	}
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("app %q: scheme must be http or https (got %q)", ac.Name, ac.Scheme)
+	}
+	host := strings.TrimSpace(ac.Host)
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	if ac.Port <= 0 || ac.Port > 65535 {
+		return fmt.Errorf("app %q: port %d is out of range", ac.Name, ac.Port)
+	}
+	target := scheme + "://" + host + ":" + strconv.Itoa(ac.Port)
+	return r.Register(ac.Name, target)
 }
 
 // handler returns a gin handler that proxies `/app/:name/*p` to the

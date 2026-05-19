@@ -29,27 +29,41 @@ go run ./cmd/outpost start
 go run ./cmd/outpost stop
 ```
 
-`register` followed by `start` is the normal pairing flow; `register` without `--code` is interactive. `register --yes` (or answering "yes" to the prompt) re-execs the binary as a detached background process — see `cmd/outpost/main.go:execSelfStart` and `detach_unix.go` / `detach_windows.go`.
+`outpost start` no longer requires `register` first — on an unpaired host it brings up the admin UI and waits. `register` still exists for installer scripts and for users who want the whole pairing in one CLI invocation; `register --yes` (or answering "yes" to the prompt) re-execs the binary as a detached background process — see `cmd/outpost/main.go:execSelfStart` and `detach_unix.go` / `detach_windows.go`.
 
 ## Architecture
 
 ### Process layout
 
-`cmd/outpost/main.go` is the entire CLI surface: `start`, `register`, `stop` (subcommands). `start` does three things in an `errgroup`:
+`cmd/outpost/main.go` is the entire CLI surface: `start`, `register`, `stop` (subcommands). `start` always launches the **admin UI** (loopback, default `127.0.0.1:17777`, override via `$OUTPOST_ADMIN_ADDR`). The admin UI is bound on its own listener — it is *never* advertised through the FRP tunnel, so it is local-machine only.
 
-1. Bind a random loopback port and serve a `gin.Engine` with `agent.RegisterRoutes`.
-2. Build an embedded FRP client (`agent.NewTunnel`) and `Run` it against `cfg.ServerAddr:ServerPort` with one TCP proxy pointing at the loopback port.
-3. Wait on `SIGINT`/`SIGTERM`, then shut both down.
+After the admin server is up `start` looks at the merged config:
+
+- **Unconfigured** (`AgentName == ""`): print the admin URL, block on signal/restart. No tunnel, no main loopback server. The user opens the admin URL, pairs, and the admin handler triggers a self-restart.
+- **Configured**: continue as before — bind a random loopback port for the main `gin.Engine` (`agent.RegisterRoutes`), build an embedded FRP client (`agent.NewTunnel`) and dial `cfg.ServerAddr:ServerPort` with one TCP proxy pointing at the loopback port. All three (admin UI, main server, FRP tunnel) run in the same `errgroup`; cancelling the context shuts them all down.
 
 `start` refuses to boot if another outpost owns the pidfile at `<UserCacheDir>/outpost/outpost.pid` (the FRP `RemotePort` is fixed, so two instances would fight over the same slot). `stop` reads that pidfile, SIGTERMs, then SIGKILLs after 5 s.
+
+### Self-restart for tunnel/identity changes
+
+The FRP tunnel is immutable after `NewTunnel`, and the built-in routes (`/shell`, `/desktop`, `/clipboard`) are mounted conditionally at boot. So any admin-UI save that changes pairing, server URL, agent name, or a built-in toggle triggers a binary self-restart:
+
+1. Handler writes the new config (`conf.SaveFile`).
+2. Handler sends its JSON response, then 250 ms later calls the `restartFn` closure threaded down from `main.go`.
+3. `restartFn` cancels the errgroup context (so all listeners drain).
+4. After `g.Wait()` returns, the parent clears the pidfile (so the child can claim it), `execSelfStart`s a detached child, and exits.
+5. The deferred `removePidFile` becomes a no-op via an `atomic.Bool` flag — without that, the parent would race-delete the child's freshly-written pidfile.
+
+Custom-app add/edit/remove do *not* restart — `AppRegistry` is concurrency-safe, so the admin handler just mutates the live registry.
 
 ### Config layering
 
 `internal/agent/conf/`:
 
 - `conf.Load()` reads env vars (`AGENT_*`, `FRP_*`, `MATRIX_APPS`, `MATRIX_ADMIN_USERS`, `MATRIX_AUTH_URL`).
-- `conf.LoadFile(path)` reads the JSON written by `register` (default path: `<UserConfigDir>/matrix/agent.json` — XDG-aware).
+- `conf.LoadFile(path)` reads the JSON written by `register` or the admin UI (default path: `<UserConfigDir>/matrix/agent.json` — XDG-aware).
 - `start` layers them: env → file (only fills empty fields) → CLI flags override. The portal-returned `Protocol`/`Token`/`RemotePort`/`ServerAddr`/`ServerPort` come from the file.
+- `FileConfig.Apps` (structured `[]AppConfig`) is the source of truth once it is present — even an empty slice wins over `MATRIX_APPS`. The legacy env path is still consulted when `fc.Apps == nil` (configs written before the admin UI shipped). Built-in toggles use `*bool` so a missing JSON key on an old config defaults to enabled; read via `fc.ShellOn() / DesktopOn() / ClipboardOn()`.
 
 ### Routes (`internal/agent/routes.go`)
 
@@ -63,7 +77,15 @@ All mounted at root:
 
 ### Apps
 
-`AppRegistry` (in `internal/agent/apps.go`) holds `name → *url.URL` plus per-app `httputil.ReverseProxy` instances. Seeded by `buildAppRegistry` in `main.go` from `MATRIX_APPS="name1=url1,name2=url2"`; if unset, registers `ycode → http://127.0.0.1:8765` by default. Path rewrite uses `singleJoin` to strip `/app/<name>` cleanly.
+`AppRegistry` (in `internal/agent/apps.go`) holds `name → *url.URL` plus per-app `httputil.ReverseProxy` instances. Concurrency-safe via `sync.RWMutex` — admin handlers `Register`/`Unregister` at runtime without touching the tunnel. `RegisterFromConfig(AppConfig)` is the helper that builds `scheme://host:port` and registers, skipping disabled entries. Seeded by `buildAppRegistry` in `main.go` from `fc.Apps` when structured config is present, else from `MATRIX_APPS="name1=url1,name2=url2"`, falling back to `ycode → http://127.0.0.1:8765` when both are absent. Path rewrite uses `singleJoin` to strip `/app/<name>` cleanly.
+
+### Admin UI (`internal/agent/adminui/`)
+
+Local-only web admin for pairing, built-in toggles, and custom apps. New package with `server.go` (gin + listener + Serve(ctx)), `sessions.go` (in-memory cookie store, 1 h TTL, wiped on restart), `middleware.go` (gate engages once `fc.AgentName` is set), `handlers.go` (the API), `ui.go` + `ui/index.html` (embedded vanilla-JS SPA via `//go:embed ui`). API: `GET /api/status`, `POST /api/login`, `POST /api/logout`, `GET /api/config` (Token redacted; presence reported as `has_token`), `POST /api/config/register`, `POST /api/config/builtins`, `GET|POST /api/apps`, `DELETE /api/apps/:name`, `POST /api/restart`. The `requireSession` middleware skips the gate while `AgentName == ""` (no paired identity to protect yet) — safe because the listener is loopback-only.
+
+### Portal exchange (`internal/agent/portal/`)
+
+`portal.Exchange(ctx, ExchangeRequest)` is the single definition of the `POST <server>/api/register/exchange` round-trip. Called by both the CLI `register` command and the admin UI's `/api/config/register` handler; keeping it in one place prevents the two callers from drifting on payload or response shape.
 
 ### FRP tunnel (`internal/agent/tunnel.go`)
 

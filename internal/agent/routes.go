@@ -28,6 +28,12 @@ type Deps struct {
 	Admins    AdminSet
 	AuthURL   string
 	VNCAddr   string // default 127.0.0.1:5900
+
+	// Built-in route toggles. Zero value = enabled, so callers that don't
+	// care about toggling keep the old default-on behavior.
+	ShellDisabled     bool
+	DesktopDisabled   bool
+	ClipboardDisabled bool
 }
 
 // RegisterRoutes attaches all matrix-agent routes onto rg. Always mounted
@@ -55,18 +61,24 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	rg.POST("/auth", authHandler(auth, deps.Admins, deps.AuthURL))
 
 	// Tier-3 interactive shell. WS upgrade; the cloud also gates on
-	// RequireElevation before proxying.
-	rg.GET("/shell", shellHandler())
+	// RequireElevation before proxying. Disabled via the admin UI.
+	if !deps.ShellDisabled {
+		rg.GET("/shell", shellHandler())
+	}
 
 	// Tier-3 remote desktop. Binary WS ↔ TCP 5900.
-	rg.GET("/desktop", desktopHandler(deps.VNCAddr))
+	if !deps.DesktopDisabled {
+		rg.GET("/desktop", desktopHandler(deps.VNCAddr))
+	}
 
 	// Tier-3 clipboard bridge. GET returns the host's clipboard text
 	// (pbpaste on macOS), POST replaces it (pbcopy). Bypasses RFB
 	// clipboard so it works on plain-HTTP origins and works around
 	// macOS Screen Sharing's non-standard clipboard protocol.
-	rg.GET("/clipboard", clipboardHandler())
-	rg.POST("/clipboard", clipboardHandler())
+	if !deps.ClipboardDisabled {
+		rg.GET("/clipboard", clipboardHandler())
+		rg.POST("/clipboard", clipboardHandler())
+	}
 
 	// Reverse-proxy every method (GET/POST/WS upgrades included).
 	rg.Any("/app/:name", apps.handler())
