@@ -43,6 +43,53 @@ func TestRegisterFromConfig(t *testing.T) {
 	}
 }
 
+// TestRegisterWithRole_DefaultsAndValidation: empty role defaults to
+// "user"; a recognised role is preserved verbatim; an unrecognised role
+// errors out at register time so misconfigured apps never reach the cloud.
+func TestRegisterWithRole_DefaultsAndValidation(t *testing.T) {
+	reg := NewAppRegistry()
+
+	if err := reg.RegisterWithRole("a", "http://127.0.0.1:9000", ""); err != nil {
+		t.Fatalf("empty role: %v", err)
+	}
+	if err := reg.RegisterWithRole("b", "http://127.0.0.1:9001", "admin"); err != nil {
+		t.Fatalf("admin role: %v", err)
+	}
+	if err := reg.RegisterWithRole("c", "http://127.0.0.1:9002", "root"); err == nil {
+		t.Fatalf("unrecognised role should error")
+	}
+
+	got := map[string]string{}
+	for _, e := range reg.Entries() {
+		got[e.Name] = e.Role
+	}
+	if got["a"] != "user" {
+		t.Errorf("empty role should default to user, got %q", got["a"])
+	}
+	if got["b"] != "admin" {
+		t.Errorf("admin role should be preserved, got %q", got["b"])
+	}
+	if _, ok := got["c"]; ok {
+		t.Errorf("unrecognised role should not have been registered")
+	}
+}
+
+// TestRegisterFromConfig_RolePropagates: AppConfig.Role flows into the
+// registry's Entries() output so /apps publishes the owner's declarations.
+func TestRegisterFromConfig_RolePropagates(t *testing.T) {
+	reg := NewAppRegistry()
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "jupyter", Scheme: "http", Port: 8888, Enabled: true, Role: "admin",
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	for _, e := range reg.Entries() {
+		if e.Name == "jupyter" && e.Role != "admin" {
+			t.Errorf("role on AppConfig should propagate, got %q", e.Role)
+		}
+	}
+}
+
 // TestUnregister removes the entry from the registry; subsequent lookups
 // must return nil, and a re-Register with a different target must take.
 func TestUnregister(t *testing.T) {

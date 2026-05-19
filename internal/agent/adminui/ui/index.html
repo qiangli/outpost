@@ -219,13 +219,14 @@ function renderMain(status, cfg) {
   custom.append(el('legend', {}, 'Custom apps'));
   const table = el('table');
   table.append(el('thead', {}, el('tr', {},
-    el('th', {}, 'Name'), el('th', {}, 'Target'), el('th', {}, 'Status'), el('th', {}, ''))));
+    el('th', {}, 'Name'), el('th', {}, 'Target'), el('th', {}, 'Role'), el('th', {}, 'Status'), el('th', {}, ''))));
   const tbody = el('tbody');
   for (const a of (cfg.apps || [])) {
     const target = `${a.scheme}://${a.host}:${a.port}`;
     tbody.append(el('tr', {},
       el('td', {}, a.name),
       el('td', {}, el('code', {}, target)),
+      el('td', {}, a.role || 'user'),
       el('td', {}, el('span', {class: 'pill' + (a.enabled ? '' : ' off')}, a.enabled ? 'on' : 'off')),
       el('td', {}, el('button', {class: 'secondary danger', onclick: async () => {
         if (!confirm(`Remove app "${a.name}"?`)) return;
@@ -234,7 +235,7 @@ function renderMain(status, cfg) {
       }}, 'Remove'))));
   }
   if ((cfg.apps || []).length === 0) {
-    tbody.append(el('tr', {}, el('td', {colspan: 4, style: 'opacity:0.6'}, 'No custom apps yet.')));
+    tbody.append(el('tr', {}, el('td', {colspan: 5, style: 'opacity:0.6'}, 'No custom apps yet.')));
   }
   table.append(tbody);
   custom.append(table);
@@ -253,6 +254,15 @@ function renderMain(status, cfg) {
       })()),
       el('label', {}, 'Host', el('input', {name: 'host', type: 'text', value: '127.0.0.1'})),
       el('label', {}, 'Port', el('input', {name: 'port', type: 'number', min: '1', max: '65535', required: true})),
+      el('label', {}, 'Role', (() => {
+        const s = el('select', {name: 'role'});
+        s.append(
+          el('option', {value: 'guest'}, 'guest — no elevation'),
+          el('option', {value: 'user', selected: ''}, 'user — basic elevation'),
+          el('option', {value: 'admin'}, 'admin — host password + admin list'),
+        );
+        return s;
+      })()),
     ),
     el('label', {}, el('input', {name: 'enabled', type: 'checkbox', checked: true}), ' Enabled'),
     el('button', {type: 'submit'}, 'Add app'));
@@ -266,6 +276,7 @@ function renderMain(status, cfg) {
         scheme: fd.get('scheme'),
         host: fd.get('host') || '127.0.0.1',
         port: parseInt(fd.get('port'), 10),
+        role: fd.get('role') || 'user',
         enabled: addForm.enabled.checked,
       });
       msg('ok', 'App added.');

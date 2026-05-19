@@ -49,6 +49,19 @@ type AppConfig struct {
 	Host    string `json:"host"`   // default 127.0.0.1
 	Port    int    `json:"port"`
 	Enabled bool   `json:"enabled"`
+	// Role is the minimum cloud-side clearance required to reach this app
+	// (guest|user|admin). Empty defaults to "user" — matches the cloud's
+	// HostRegistry default so unconfigured apps keep working unchanged.
+	Role string `json:"role,omitempty"`
+}
+
+// ValidRole reports whether s is a recognized clearance level.
+func ValidRole(s string) bool {
+	switch s {
+	case "", "guest", "user", "admin":
+		return true
+	}
+	return false
 }
 
 // ShellOn reports whether the built-in /shell route should be mounted.

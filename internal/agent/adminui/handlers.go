@@ -370,6 +370,10 @@ func validateApp(ac *conf.AppConfig) error {
 	if ac.Port < 1 || ac.Port > 65535 {
 		return fmt.Errorf("port %d is out of range", ac.Port)
 	}
+	ac.Role = strings.ToLower(strings.TrimSpace(ac.Role))
+	if !conf.ValidRole(ac.Role) {
+		return fmt.Errorf("role %q must be one of guest|user|admin", ac.Role)
+	}
 	return nil
 }
 

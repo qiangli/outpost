@@ -14,6 +14,14 @@ import (
 	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
+// AppEntry is one declared app's name + minimum clearance, as published
+// to the cloud via GET /apps. Role values match the cloud's vocabulary:
+// guest | user | admin. Empty role defaults to "user".
+type AppEntry struct {
+	Name string `json:"name"`
+	Role string `json:"role"`
+}
+
 // AppRegistry maps app names (e.g. "ycode") to the local URL they live at
 // (e.g. "http://127.0.0.1:8765"). It is loopback-only by design: the agent
 // itself is only reachable through the frp tunnel, and the agent only
@@ -23,17 +31,27 @@ type AppRegistry struct {
 	mu    sync.RWMutex
 	apps  map[string]*url.URL
 	proxy map[string]*httputil.ReverseProxy
+	roles map[string]string
 }
 
 func NewAppRegistry() *AppRegistry {
 	return &AppRegistry{
 		apps:  map[string]*url.URL{},
 		proxy: map[string]*httputil.ReverseProxy{},
+		roles: map[string]string{},
 	}
 }
 
 // Register adds (or replaces) an app entry. target must be an absolute URL.
+// Role defaults to "user" — use RegisterWithRole to set explicitly.
 func (r *AppRegistry) Register(name, target string) error {
+	return r.RegisterWithRole(name, target, "")
+}
+
+// RegisterWithRole is Register that also records the minimum clearance.
+// Empty role defaults to "user". Roles outside {guest, user, admin} are
+// rejected.
+func (r *AppRegistry) RegisterWithRole(name, target, role string) error {
 	u, err := url.Parse(target)
 	if err != nil {
 		return fmt.Errorf("app %q target: %w", name, err)
@@ -41,10 +59,17 @@ func (r *AppRegistry) Register(name, target string) error {
 	if u.Scheme == "" || u.Host == "" {
 		return fmt.Errorf("app %q target must be absolute (got %q)", name, target)
 	}
+	if !conf.ValidRole(role) {
+		return fmt.Errorf("app %q role %q: must be one of guest|user|admin", name, role)
+	}
+	if role == "" {
+		role = "user"
+	}
 	rp := httputil.NewSingleHostReverseProxy(u)
 	r.mu.Lock()
 	r.apps[name] = u
 	r.proxy[name] = rp
+	r.roles[name] = role
 	r.mu.Unlock()
 	return nil
 }
@@ -56,6 +81,23 @@ func (r *AppRegistry) Names() []string {
 	out := make([]string, 0, len(r.apps))
 	for k := range r.apps {
 		out = append(out, k)
+	}
+	return out
+}
+
+// Entries returns the registered apps with their declared roles. Used by
+// GET /apps so the cloud sees per-app role declarations and can gate
+// custom apps accurately.
+func (r *AppRegistry) Entries() []AppEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]AppEntry, 0, len(r.apps))
+	for name := range r.apps {
+		role := r.roles[name]
+		if role == "" {
+			role = "user"
+		}
+		out = append(out, AppEntry{Name: name, Role: role})
 	}
 	return out
 }
@@ -72,6 +114,7 @@ func (r *AppRegistry) Unregister(name string) {
 	r.mu.Lock()
 	delete(r.apps, name)
 	delete(r.proxy, name)
+	delete(r.roles, name)
 	r.mu.Unlock()
 }
 
@@ -97,7 +140,7 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 		return fmt.Errorf("app %q: port %d is out of range", ac.Name, ac.Port)
 	}
 	target := scheme + "://" + host + ":" + strconv.Itoa(ac.Port)
-	return r.Register(ac.Name, target)
+	return r.RegisterWithRole(ac.Name, target, ac.Role)
 }
 
 // handler returns a gin handler that proxies `/app/:name/*p` to the
