@@ -58,10 +58,10 @@ func startCmd() *cobra.Command {
 		Use:   "start",
 		Short: "Start the local agent and dial the portal",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// Refuse to boot a second instance — the FRP tunnel uses a
-			// fixed remote port, and two outposts fighting for the same
-			// proxy slot is a recipe for confused users. Also stamps a
-			// pidfile that `outpost stop` later resolves.
+			// Refuse to boot a second instance — the matrix tunnel uses
+			// a fixed remote port, and two outposts fighting for the
+			// same proxy slot is a recipe for confused users. Also
+			// stamps a pidfile that `outpost stop` later resolves.
 			if err := claimPidFile(); err != nil {
 				return err
 			}
@@ -193,7 +193,7 @@ func startCmd() *cobra.Command {
 			})
 
 			// Bind the local listener first so we know its port before
-			// telling frps how to reach us.
+			// telling the matrix-tunnel server how to reach us.
 			ln, err := net.Listen("tcp", cfg.LocalAddr)
 			if err != nil {
 				return fmt.Errorf("local listen: %w", err)
@@ -229,7 +229,7 @@ func startCmd() *cobra.Command {
 				return nil
 			})
 			g.Go(func() error {
-				slog.Info("matrix-agent: dialing frp", "server", cfg.ServerAddr, "port", cfg.ServerPort, "remotePort", cfg.RemotePort)
+				slog.Info("matrix-agent: dialing matrix tunnel", "server", cfg.ServerAddr, "port", cfg.ServerPort, "remotePort", cfg.RemotePort)
 				return tunnel.Run(gctx)
 			})
 			g.Go(func() error {
@@ -252,8 +252,8 @@ func startCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&addrFlag, "addr", "", "Local loopback HTTP listen address (overrides $AGENT_ADDR)")
 	cmd.Flags().StringVar(&nameFlag, "name", "", "Agent name displayed in the portal (overrides $AGENT_NAME)")
-	cmd.Flags().StringVar(&serverAddrFlag, "server", "", "frps host (overrides $FRP_SERVER_ADDR)")
-	cmd.Flags().IntVar(&serverPortFlag, "server-port", 0, "frps port (overrides $FRP_SERVER_PORT)")
+	cmd.Flags().StringVar(&serverAddrFlag, "server", "", "matrix-tunnel server host (overrides $MATRIX_SERVER_ADDR)")
+	cmd.Flags().IntVar(&serverPortFlag, "server-port", 0, "matrix-tunnel server port (overrides $MATRIX_SERVER_PORT)")
 	cmd.Flags().StringVar(&vncAddrFlag, "vnc-addr", "127.0.0.1:5900", "VNC server to expose for the desktop tab")
 	return cmd
 }

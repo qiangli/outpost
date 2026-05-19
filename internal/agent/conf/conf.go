@@ -10,23 +10,25 @@ import (
 // Config drives the matrix-agent binary. Env vars are the primary source;
 // CLI flags override env.
 type Config struct {
-	// Local loopback HTTP server (the cloud reaches this via frp).
+	// Local loopback HTTP server (cloudbox reaches this via the matrix
+	// tunnel).
 	LocalAddr string
 
 	// Identity displayed in the cloud portal's host list.
 	AgentName string
 
-	// frps connection.
+	// Matrix tunnel connection to cloudbox.
 	ServerAddr string
 	ServerPort int
-	// Protocol is the FRP transport ("tcp", "ws", or "wss"). When unset the
-	// agent uses raw TCP (legacy default). The register exchange usually
-	// fills this in based on how the cloud is fronted.
+	// Protocol is the matrix-tunnel transport ("tcp", "ws", or "wss").
+	// When unset the agent uses raw TCP (legacy default). The register
+	// exchange usually fills this in based on how cloudbox is fronted.
 	Protocol string
 	Token    string
 
-	// RemotePort the agent asks frps to reserve for its local HTTP server
-	// (so the cloud's HostRegistry can dial it). 0 means auto-assign.
+	// RemotePort the agent asks cloudbox to reserve for its local HTTP
+	// server (so the cloud's HostRegistry can dial it). 0 means
+	// auto-assign.
 	RemotePort int
 
 	// Apps registered with this agent. Comma-separated "name=url" pairs,
@@ -53,26 +55,26 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		LocalAddr:  getenv("AGENT_ADDR", "127.0.0.1:0"),
 		AgentName:  os.Getenv("AGENT_NAME"),
-		ServerAddr: getenv("FRP_SERVER_ADDR", "127.0.0.1"),
-		Token:      os.Getenv("FRP_TOKEN"),
+		ServerAddr: getenv("MATRIX_SERVER_ADDR", "127.0.0.1"),
+		Token:      os.Getenv("MATRIX_TOKEN"),
 	}
 
-	port, err := strconv.Atoi(getenv("FRP_SERVER_PORT", "7000"))
+	port, err := strconv.Atoi(getenv("MATRIX_SERVER_PORT", "7000"))
 	if err != nil {
-		return nil, fmt.Errorf("FRP_SERVER_PORT: %w", err)
+		return nil, fmt.Errorf("MATRIX_SERVER_PORT: %w", err)
 	}
 	cfg.ServerPort = port
 
-	remote, err := strconv.Atoi(getenv("FRP_REMOTE_PORT", "0"))
+	remote, err := strconv.Atoi(getenv("MATRIX_REMOTE_PORT", "0"))
 	if err != nil {
-		return nil, fmt.Errorf("FRP_REMOTE_PORT: %w", err)
+		return nil, fmt.Errorf("MATRIX_REMOTE_PORT: %w", err)
 	}
 	cfg.RemotePort = remote
 
 	cfg.Apps = os.Getenv("MATRIX_APPS")
 	cfg.AdminUsers = os.Getenv("MATRIX_ADMIN_USERS")
 	cfg.AuthURL = os.Getenv("MATRIX_AUTH_URL")
-	cfg.Protocol = os.Getenv("FRP_PROTOCOL")
+	cfg.Protocol = os.Getenv("MATRIX_PROTOCOL")
 
 	return cfg, nil
 }

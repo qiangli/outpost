@@ -1,5 +1,6 @@
-// Package agent runs on the home host, dials the cloud over frp, and
-// exposes local apps (ycode, shell, desktop, plus user-defined LAN services).
+// Package agent runs on the home host, dials cloudbox over the matrix
+// tunnel, and exposes local apps (ycode, shell, desktop, plus
+// user-defined LAN services).
 package agent
 
 import (
@@ -38,7 +39,7 @@ type Deps struct {
 
 // RegisterRoutes attaches all matrix-agent routes onto rg. Always mounted
 // at the root in the standalone binary; the routes are loopback-only and
-// reached from the cloud through the frp tunnel.
+// reached from cloudbox through the matrix tunnel.
 func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	rg.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 

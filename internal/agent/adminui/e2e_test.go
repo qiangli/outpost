@@ -63,7 +63,7 @@ func TestServerEndToEnd(t *testing.T) {
 	}
 
 	// Add a custom app via the API and verify it lands in the live
-	// registry (the path main.go threads through to the FRP tunnel).
+	// registry (the path main.go threads through to the matrix tunnel).
 	body, _ := json.Marshal(map[string]any{
 		"name": "jupyter", "scheme": "http", "host": "127.0.0.1", "port": 8888, "enabled": true,
 	})

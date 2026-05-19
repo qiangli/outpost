@@ -19,9 +19,9 @@ type FileConfig struct {
 	AgentName  string `json:"agent_name"`
 	ServerAddr string `json:"server_addr"`
 	ServerPort int    `json:"server_port"`
-	// Protocol is "tcp" (default for legacy raw-FRP deploys), "ws", or
-	// "wss". Returned by /api/register/exchange so the outpost knows how
-	// the cloud expects to be dialed. Empty == "tcp".
+	// Protocol is "tcp" (default for legacy raw-TCP matrix-tunnel
+	// deploys), "ws", or "wss". Returned by /api/register/exchange so
+	// the outpost knows how cloudbox expects to be dialed. Empty == "tcp".
 	Protocol   string `json:"protocol,omitempty"`
 	Token      string `json:"token"`
 	RemotePort int    `json:"remote_port"`

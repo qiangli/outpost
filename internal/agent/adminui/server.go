@@ -2,7 +2,7 @@
 //
 // The server binds its own loopback listener (default 127.0.0.1:17777,
 // override via $OUTPOST_ADMIN_ADDR). It is intentionally not part of the
-// main HTTP server that the FRP tunnel proxies — admin is local-only by
+// main HTTP server that the matrix tunnel proxies — admin is local-only by
 // design.
 //
 // On first run (no config file on disk yet) the admin API is unauthenticated:

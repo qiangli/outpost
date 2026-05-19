@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-`outpost` is the home-host agent for the cloud portal at `ai.dhnt.io`. One binary runs on each machine the user wants to surface through the portal: it `register`s once with a one-time code, then `start` dials back through an FRP tunnel and serves local apps (HTTP reverse-proxy, PTY shell, VNC desktop, clipboard, /auth) so portal users can reach them at `https://ai.dhnt.io/h/<host>/app/<name>/`.
+`outpost` is the home-host agent for the cloud portal at `ai.dhnt.io` (the **cloudbox** service). One binary runs on each machine the user wants to surface through the portal: it `register`s once with a one-time code, then `start` dials back through the matrix tunnel and serves local apps (HTTP reverse-proxy, PTY shell, VNC desktop, clipboard, /auth) so portal users can reach them at `https://ai.dhnt.io/h/<host>/app/<name>/`.
 
-The local HTTP server binds loopback only — the cloud reaches it strictly through the FRP tunnel.
+The local HTTP server binds loopback only — the cloud reaches it strictly through the matrix tunnel.
 
 ## Common commands
 
@@ -35,18 +35,18 @@ go run ./cmd/outpost stop
 
 ### Process layout
 
-`cmd/outpost/main.go` is the entire CLI surface: `start`, `register`, `stop` (subcommands). `start` always launches the **admin UI** (loopback, default `127.0.0.1:17777`, override via `$OUTPOST_ADMIN_ADDR`). The admin UI is bound on its own listener — it is *never* advertised through the FRP tunnel, so it is local-machine only.
+`cmd/outpost/main.go` is the entire CLI surface: `start`, `register`, `stop` (subcommands). `start` always launches the **admin UI** (loopback, default `127.0.0.1:17777`, override via `$OUTPOST_ADMIN_ADDR`). The admin UI is bound on its own listener — it is *never* advertised through the matrix tunnel, so it is local-machine only.
 
 After the admin server is up `start` looks at the merged config:
 
 - **Unconfigured** (`AgentName == ""`): print the admin URL, block on signal/restart. No tunnel, no main loopback server. The user opens the admin URL, pairs, and the admin handler triggers a self-restart.
-- **Configured**: continue as before — bind a random loopback port for the main `gin.Engine` (`agent.RegisterRoutes`), build an embedded FRP client (`agent.NewTunnel`) and dial `cfg.ServerAddr:ServerPort` with one TCP proxy pointing at the loopback port. All three (admin UI, main server, FRP tunnel) run in the same `errgroup`; cancelling the context shuts them all down.
+- **Configured**: continue as before — bind a random loopback port for the main `gin.Engine` (`agent.RegisterRoutes`), build an embedded matrix-tunnel client (`agent.NewTunnel`) and dial `cfg.ServerAddr:ServerPort` with one TCP proxy pointing at the loopback port. All three (admin UI, main server, matrix tunnel) run in the same `errgroup`; cancelling the context shuts them all down.
 
-`start` refuses to boot if another outpost owns the pidfile at `<UserCacheDir>/outpost/outpost.pid` (the FRP `RemotePort` is fixed, so two instances would fight over the same slot). `stop` reads that pidfile, SIGTERMs, then SIGKILLs after 5 s.
+`start` refuses to boot if another outpost owns the pidfile at `<UserCacheDir>/outpost/outpost.pid` (the matrix-tunnel `RemotePort` is fixed, so two instances would fight over the same slot). `stop` reads that pidfile, SIGTERMs, then SIGKILLs after 5 s.
 
 ### Self-restart for tunnel/identity changes
 
-The FRP tunnel is immutable after `NewTunnel`, and the built-in routes (`/shell`, `/desktop`, `/clipboard`) are mounted conditionally at boot. So any admin-UI save that changes pairing, server URL, agent name, or a built-in toggle triggers a binary self-restart:
+The matrix tunnel is immutable after `NewTunnel`, and the built-in routes (`/shell`, `/desktop`, `/clipboard`) are mounted conditionally at boot. So any admin-UI save that changes pairing, server URL, agent name, or a built-in toggle triggers a binary self-restart:
 
 1. Handler writes the new config (`conf.SaveFile`).
 2. Handler sends its JSON response, then 250 ms later calls the `restartFn` closure threaded down from `main.go`.
@@ -60,7 +60,7 @@ Custom-app add/edit/remove do *not* restart — `AppRegistry` is concurrency-saf
 
 `internal/agent/conf/`:
 
-- `conf.Load()` reads env vars (`AGENT_*`, `FRP_*`, `MATRIX_APPS`, `MATRIX_ADMIN_USERS`, `MATRIX_AUTH_URL`).
+- `conf.Load()` reads env vars (`AGENT_*`, `MATRIX_*` — including `MATRIX_SERVER_ADDR`, `MATRIX_SERVER_PORT`, `MATRIX_TOKEN`, `MATRIX_PROTOCOL`, `MATRIX_REMOTE_PORT`, `MATRIX_APPS`, `MATRIX_ADMIN_USERS`, `MATRIX_AUTH_URL`).
 - `conf.LoadFile(path)` reads the JSON written by `register` or the admin UI (default path: `<UserConfigDir>/matrix/agent.json` — XDG-aware).
 - `start` layers them: env → file (only fills empty fields) → CLI flags override. The portal-returned `Protocol`/`Token`/`RemotePort`/`ServerAddr`/`ServerPort` come from the file.
 - `FileConfig.Apps` (structured `[]AppConfig`) is the source of truth once it is present — even an empty slice wins over `MATRIX_APPS`. The legacy env path is still consulted when `fc.Apps == nil` (configs written before the admin UI shipped). Built-in toggles use `*bool` so a missing JSON key on an old config defaults to enabled; read via `fc.ShellOn() / DesktopOn() / ClipboardOn()`.
@@ -87,12 +87,12 @@ Local-only web admin for pairing, built-in toggles, and custom apps. New package
 
 `portal.Exchange(ctx, ExchangeRequest)` is the single definition of the `POST <server>/api/register/exchange` round-trip. Called by both the CLI `register` command and the admin UI's `/api/config/register` handler; keeping it in one place prevents the two callers from drifting on payload or response shape.
 
-### FRP tunnel (`internal/agent/tunnel.go`)
+### matrix tunnel (`internal/agent/tunnel.go`)
 
-Embeds `github.com/fatedier/frp/client` directly — no config file path. Builds proxies via the in-memory `source.ConfigSource`. Important transport details:
+Embeds the underlying tunnel-client library (`github.com/fatedier/frp/client`, aliased as `tunnelclient` in the imports) directly — no config file path. Builds proxies via the in-memory `source.ConfigSource`. Important transport details:
 
-- `Protocol` may be `tcp` (default), `websocket`, or `wss`. For `ws`/`wss` it sets `Transport.TLS.Enable=false` (edge already terminates TLS — double-wrap breaks the handshake) and `HeartbeatInterval=30` (Cloudflare reaps idle WS at ~100 s; FRP's default heartbeat is `-1`/disabled, which would kill the control conn). Production via Cloudflare / DO App Platform uses `wss`.
-- `LoginFailExit=false` so the agent survives cloud restarts and dials again with FRP's built-in retry.
+- `Protocol` may be `tcp` (default), `websocket`, or `wss`. For `ws`/`wss` it sets `Transport.TLS.Enable=false` (edge already terminates TLS — double-wrap breaks the handshake) and `HeartbeatInterval=30` (Cloudflare reaps idle WS at ~100 s; the tunnel library's default heartbeat is `-1`/disabled, which would kill the control conn). Production via Cloudflare / DO App Platform uses `wss`.
+- `LoginFailExit=false` so the agent survives cloud restarts and dials again with the tunnel library's built-in retry.
 
 ### Auth (`internal/agent/auth.go`, `internal/agent/hostauth/`)
 
@@ -111,4 +111,4 @@ The cloud's `/h/:host/elevate` is what proxies to `/auth`. The agent never mints
 
 - "matrix-agent" and "outpost" refer to the same thing — older log messages say `matrix-agent:`. The portal-side namespace is "matrix"; the binary was renamed to "outpost" later.
 - The portal contract for register lives at `POST <server>/api/register/exchange` and returns `{agent_name, server_addr, server_port, protocol, token, remote_port}`. Any change to that response shape needs a coordinated portal change.
-- `loopback-only` is load-bearing: do not bind the local HTTP server to anything other than `127.0.0.1` — every code path assumes the cloud's FRP proxy is the only ingress.
+- `loopback-only` is load-bearing: do not bind the local HTTP server to anything other than `127.0.0.1` — every code path assumes the matrix tunnel is the only ingress.

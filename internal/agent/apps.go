@@ -27,7 +27,7 @@ type AppEntry struct {
 
 // AppRegistry maps app names (e.g. "ycode") to the local URL they live at
 // (e.g. "http://127.0.0.1:8765"). It is loopback-only by design: the agent
-// itself is only reachable through the frp tunnel, and the agent only
+// itself is only reachable through the matrix tunnel, and the agent only
 // forwards under tier-1 trust (set by the cloud server in the
 // X-Periscope-User header).
 //
