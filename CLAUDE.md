@@ -19,9 +19,11 @@ make install    # go install ./cmd/outpost
 make tidy       # go mod tidy + go fmt ./... + go vet ./...
 make clean
 
-# Tests (only auth_test.go and clipboard_test.go exist today; no `make test` target)
+# Tests (no `make test` target). Test files: internal/agent/{auth,apps,clipboard}_test.go,
+# internal/agent/conf/file_test.go, internal/agent/adminui/{adminui,e2e,suggestions}_test.go.
 go test ./...
 go test ./internal/agent -run TestAuth
+go test ./internal/agent/adminui -run TestE2E
 
 # Run from source
 go run ./cmd/outpost register --server https://ai.dhnt.io --code <code> --name <host>
@@ -68,7 +70,8 @@ Custom-app add/edit/remove do *not* restart — `AppRegistry` is concurrency-saf
 ### Routes (`internal/agent/routes.go`)
 
 All mounted at root:
-- `GET /healthz`, `GET /apps`
+- `GET /healthz`
+- `GET /apps` — returns `{agent, apps:[{name,role}], builtins:{shell,desktop,clipboard}}`. Per-app `role` is the minimum clearance (`guest|user|admin`, default `user`) and the `builtins` map tells cloudbox which of the three built-in routes this outpost actually mounted, so the portal can hide disabled tiles. Older outposts omit `builtins`; cloudbox treats that as legacy "all on".
 - `POST /auth` — credential check (see Auth below)
 - `GET /shell` — WebSocket PTY (binary frames = bytes, text frame `{"type":"size",...}` = resize)
 - `GET /desktop` — WebSocket ↔ TCP VNC relay (`--vnc-addr`, default `127.0.0.1:5900`)
@@ -77,7 +80,12 @@ All mounted at root:
 
 ### Apps
 
-`AppRegistry` (in `internal/agent/apps.go`) holds `name → *url.URL` plus per-app `httputil.ReverseProxy` instances. Concurrency-safe via `sync.RWMutex` — admin handlers `Register`/`Unregister` at runtime without touching the tunnel. `RegisterFromConfig(AppConfig)` is the helper that builds `scheme://host:port` and registers, skipping disabled entries. Seeded by `buildAppRegistry` in `main.go` from `fc.Apps` when structured config is present, else from `MATRIX_APPS="name1=url1,name2=url2"`, falling back to `ycode → http://127.0.0.1:8765` when both are absent. Path rewrite uses `singleJoin` to strip `/app/<name>` cleanly.
+`AppRegistry` (in `internal/agent/apps.go`) holds `name → *url.URL` plus per-app `httputil.ReverseProxy` instances and a per-app role (`guest|user|admin`, empty defaults to `user` — see `conf.ValidRole`). Concurrency-safe via `sync.RWMutex` — admin handlers `Register`/`Unregister` at runtime without touching the tunnel. `RegisterFromConfig(AppConfig)` is the helper that registers based on `AppConfig.Scheme`:
+
+- `http`/`https` — TCP target built from `Host:Port` (Host defaults to `127.0.0.1`).
+- `unix`/`npipe` — socket-backed. The registry stores a synthetic `http://socket` URL and a per-app `http.Transport` whose `DialContext` dials the local socket (`internal/agent/dialer{,_other,_windows}.go`). Lets an outpost front `docker.sock` / `podman.sock` / `\\.\pipe\docker_engine` without a TCP bind. HTTP/1.1 Upgrade and websockets still work because `httputil.ReverseProxy` hijacks the conn through this transport the same way it does for the default one.
+
+Disabled entries are skipped so the admin UI can keep them around without proxying. Seeded by `buildAppRegistry` in `main.go` from `fc.Apps` when structured config is present, else from `MATRIX_APPS="name1=url1,name2=url2"`, falling back to `ycode → http://127.0.0.1:8765` when both are absent. Path rewrite uses `singleJoin` to strip `/app/<name>` cleanly. `Entries()` returns `[]AppEntry{Name, Role}` for `GET /apps`.
 
 ### Admin UI (`internal/agent/adminui/`)
 

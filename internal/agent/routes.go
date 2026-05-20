@@ -53,9 +53,19 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	}
 
 	rg.GET("/apps", func(c *gin.Context) {
-		// New shape: [{name, role}]. Cloudbox parses both this and the
-		// legacy []string output for back-compat with older outposts.
-		c.JSON(http.StatusOK, gin.H{"agent": deps.AgentName, "apps": apps.Entries()})
+		// New shape: [{name, role}] plus a `builtins` map so cloudbox knows
+		// which of /shell, /desktop, /clipboard this agent actually serves.
+		// Older outposts omit `builtins` entirely; the cloud treats that as
+		// the legacy "all builtins on" default.
+		c.JSON(http.StatusOK, gin.H{
+			"agent": deps.AgentName,
+			"apps":  apps.Entries(),
+			"builtins": gin.H{
+				"shell":     !deps.ShellDisabled,
+				"desktop":   !deps.DesktopDisabled,
+				"clipboard": !deps.ClipboardDisabled,
+			},
+		})
 	})
 
 	// Credential check (cloud's /h/:host/elevate proxies here). When
