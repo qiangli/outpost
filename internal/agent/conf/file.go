@@ -27,6 +27,13 @@ type FileConfig struct {
 	RemotePort int    `json:"remote_port"`
 	AuthURL    string `json:"auth_url,omitempty"`
 
+	// AccessToken is the per-outpost scoped JWT cloudbox issues at
+	// register time. Bearer-auth credential for /h/:host/ssh (used by
+	// `outpost ssh-proxy`) and /api/v1/ssh/* (used by `outpost
+	// ssh-config`). Distinct from Token, which is the *matrix-tunnel*
+	// shared secret used by the FRP client.
+	AccessToken string `json:"access_token,omitempty"`
+
 	// Apps managed through the admin UI. When this field is present (even
 	// empty), it is authoritative — the legacy MATRIX_APPS env is ignored.
 	// When absent (nil) on a config written before the admin UI shipped,
@@ -35,10 +42,11 @@ type FileConfig struct {
 
 	// Built-in route toggles. Pointer-bool so a missing field on an old
 	// config means "default on", which matches the pre-admin-UI behavior.
-	// Use ShellOn()/DesktopOn()/ClipboardOn() to read; never deref directly.
+	// Use ShellOn()/DesktopOn()/ClipboardOn()/SSHOn() to read; never deref directly.
 	ShellEnabled     *bool `json:"shell_enabled,omitempty"`
 	DesktopEnabled   *bool `json:"desktop_enabled,omitempty"`
 	ClipboardEnabled *bool `json:"clipboard_enabled,omitempty"`
+	SSHEnabled       *bool `json:"ssh_enabled,omitempty"`
 }
 
 // AppConfig is one custom reverse-proxy target. It is mounted under
@@ -95,6 +103,10 @@ func (fc *FileConfig) DesktopOn() bool {
 func (fc *FileConfig) ClipboardOn() bool {
 	return fc == nil || fc.ClipboardEnabled == nil || *fc.ClipboardEnabled
 }
+
+// SSHOn reports whether the built-in /ssh route (real SSH server reached
+// over WebSocket through the matrix tunnel) should be mounted.
+func (fc *FileConfig) SSHOn() bool { return fc == nil || fc.SSHEnabled == nil || *fc.SSHEnabled }
 
 // DefaultConfigPath is ~/.config/matrix/agent.json (XDG_CONFIG_HOME honored).
 func DefaultConfigPath() (string, error) {

@@ -3,6 +3,7 @@ module github.com/qiangli/outpost
 go 1.25.0
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
 	github.com/fatedier/frp v0.68.1
@@ -11,14 +12,15 @@ require (
 	github.com/msteinert/pam/v2 v2.1.0
 	github.com/samber/lo v1.47.0
 	github.com/spf13/cobra v1.10.2
+	golang.org/x/crypto v0.49.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/sys v0.42.0
+	golang.org/x/term v0.41.0
 	mvdan.cc/sh/v3 v3.0.0-00010101000000-000000000000
 )
 
 require (
 	github.com/Azure/go-ntlmssp v0.1.0 // indirect
-	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
@@ -67,10 +69,8 @@ require (
 	github.com/xtaci/kcp-go/v5 v5.6.13 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
 	golang.org/x/arch v0.22.0 // indirect
-	golang.org/x/crypto v0.49.0 // indirect
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/term v0.41.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
 	golang.org/x/time v0.10.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect

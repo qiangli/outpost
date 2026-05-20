@@ -238,7 +238,10 @@ func TestAppValidation(t *testing.T) {
 	s := newTestServer(t, configPath, nil, nil)
 	cookie, _ := s.sessions.Mint("tester")
 
-	cases := []struct{ name string; body map[string]any }{
+	cases := []struct {
+		name string
+		body map[string]any
+	}{
 		{"missing name", map[string]any{"scheme": "http", "port": 80, "enabled": true}},
 		{"slash in name", map[string]any{"name": "a/b", "scheme": "http", "port": 80, "enabled": true}},
 		{"bad scheme", map[string]any{"name": "x", "scheme": "ftp", "port": 80, "enabled": true}},

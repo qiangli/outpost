@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/ssh"
 
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 )
@@ -35,6 +36,13 @@ type Deps struct {
 	ShellDisabled     bool
 	DesktopDisabled   bool
 	ClipboardDisabled bool
+	SSHDisabled       bool
+
+	// SSHHostKey is the persistent host identity for the embedded SSH
+	// server reached at /ssh. Nil means /ssh will not mount even if
+	// SSHDisabled is false — callers pass a key loaded via
+	// LoadOrCreateHostKey() at boot.
+	SSHHostKey ssh.Signer
 }
 
 // RegisterRoutes attaches all matrix-agent routes onto rg. Always mounted
@@ -64,6 +72,7 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 				"shell":     !deps.ShellDisabled,
 				"desktop":   !deps.DesktopDisabled,
 				"clipboard": !deps.ClipboardDisabled,
+				"ssh":       !deps.SSHDisabled && deps.SSHHostKey != nil,
 			},
 		})
 	})
@@ -91,6 +100,15 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	if !deps.ClipboardDisabled {
 		rg.GET("/clipboard", clipboardHandler())
 		rg.POST("/clipboard", clipboardHandler())
+	}
+
+	// Real SSH endpoint reached over WebSocket through the matrix tunnel.
+	// Unlike /shell (browser PTY wired to the in-process qiangli/sh) this
+	// is an actual SSH server: clients use standard `ssh`/`scp`/`rsync`
+	// via the local `outpost ssh-proxy` ProxyCommand helper. Auth gate is
+	// the OS password (same hostauth path as /auth).
+	if !deps.SSHDisabled && deps.SSHHostKey != nil {
+		rg.GET("/ssh", sshHandler(deps.SSHHostKey, auth, deps.AuthURL))
 	}
 
 	// Reverse-proxy every method (GET/POST/WS upgrades included).

@@ -42,6 +42,7 @@ type safeView struct {
 	ShellEnabled     bool              `json:"shell_enabled"`
 	DesktopEnabled   bool              `json:"desktop_enabled"`
 	ClipboardEnabled bool              `json:"clipboard_enabled"`
+	SSHEnabled       bool              `json:"ssh_enabled"`
 	Defaults         map[string]string `json:"defaults"`
 }
 
@@ -68,6 +69,7 @@ func toSafeView(fc *conf.FileConfig) safeView {
 		ShellEnabled:     fc.ShellOn(),
 		DesktopEnabled:   fc.DesktopOn(),
 		ClipboardEnabled: fc.ClipboardOn(),
+		SSHEnabled:       fc.SSHOn(),
 		Defaults: map[string]string{
 			"server_url": "https://ai.dhnt.io",
 			"name":       defaultName,
@@ -203,6 +205,7 @@ func (s *Server) handleRegister(c *gin.Context) {
 	merged.Token = exchanged.Token
 	merged.RemotePort = exchanged.RemotePort
 	merged.AuthURL = exchanged.AuthURL
+	merged.AccessToken = exchanged.AccessToken
 
 	if err := conf.SaveFile(s.deps.ConfigPath, &merged); err != nil {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -216,6 +219,7 @@ type builtinsReq struct {
 	Shell     *bool `json:"shell"`
 	Desktop   *bool `json:"desktop"`
 	Clipboard *bool `json:"clipboard"`
+	SSH       *bool `json:"ssh"`
 }
 
 // handleBuiltins toggles the built-in shell/desktop/clipboard routes.
@@ -241,6 +245,9 @@ func (s *Server) handleBuiltins(c *gin.Context) {
 	}
 	if req.Clipboard != nil {
 		fc.ClipboardEnabled = req.Clipboard
+	}
+	if req.SSH != nil {
+		fc.SSHEnabled = req.SSH
 	}
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

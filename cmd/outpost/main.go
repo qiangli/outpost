@@ -22,6 +22,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/qiangli/outpost/internal/agent"
@@ -40,7 +41,7 @@ func main() {
 		Use:   "outpost",
 		Short: "Pair a home host with the portal and tunnel local apps to it",
 	}
-	root.AddCommand(startCmd(), registerCmd(), stopCmd())
+	root.AddCommand(startCmd(), registerCmd(), stopCmd(), sshProxyCmd(), sshConfigCmd(), connectCmd())
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -180,6 +181,20 @@ func startCmd() *cobra.Command {
 			}
 
 			admins := agent.NewAdminSet(cfg.AdminUsers)
+
+			// Load the SSH host key lazily — only when the SSH builtin is
+			// on. The key file is generated on first use (ed25519) and
+			// persists across re-pairings so clients' known_hosts entries
+			// stay valid.
+			var sshHostKey ssh.Signer
+			if fc.SSHOn() {
+				k, kerr := agent.LoadOrCreateHostKey()
+				if kerr != nil {
+					return fmt.Errorf("ssh host key: %w", kerr)
+				}
+				sshHostKey = k
+			}
+
 			engine := gin.Default()
 			agent.RegisterRoutes(engine.Group("/"), agent.Deps{
 				AgentName:         cfg.AgentName,
@@ -190,6 +205,8 @@ func startCmd() *cobra.Command {
 				ShellDisabled:     !fc.ShellOn(),
 				DesktopDisabled:   !fc.DesktopOn(),
 				ClipboardDisabled: !fc.ClipboardOn(),
+				SSHDisabled:       !fc.SSHOn(),
+				SSHHostKey:        sshHostKey,
 			})
 
 			// Bind the local listener first so we know its port before

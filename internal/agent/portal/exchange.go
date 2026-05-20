@@ -82,24 +82,26 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 	}
 
 	var ex struct {
-		AgentName  string `json:"agent_name"`
-		ServerAddr string `json:"server_addr"`
-		ServerPort int    `json:"server_port"`
-		Protocol   string `json:"protocol"`
-		Token      string `json:"token"`
-		RemotePort int    `json:"remote_port"`
+		AgentName   string `json:"agent_name"`
+		ServerAddr  string `json:"server_addr"`
+		ServerPort  int    `json:"server_port"`
+		Protocol    string `json:"protocol"`
+		Token       string `json:"token"`
+		RemotePort  int    `json:"remote_port"`
+		AccessToken string `json:"access_token"`
 	}
 	if err := json.Unmarshal(respBody, &ex); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
 	return &conf.FileConfig{
-		AgentName:  ex.AgentName,
-		ServerAddr: ex.ServerAddr,
-		ServerPort: ex.ServerPort,
-		Protocol:   ex.Protocol,
-		Token:      ex.Token,
-		RemotePort: ex.RemotePort,
-		AuthURL:    authURL,
+		AgentName:   ex.AgentName,
+		ServerAddr:  ex.ServerAddr,
+		ServerPort:  ex.ServerPort,
+		Protocol:    ex.Protocol,
+		Token:       ex.Token,
+		RemotePort:  ex.RemotePort,
+		AuthURL:     authURL,
+		AccessToken: ex.AccessToken,
 	}, nil
 }

@@ -16,15 +16,15 @@ import (
 // Suggestion is one auto-detected app the user can register with a
 // single click in the admin UI.
 type Suggestion struct {
-	Name    string `json:"name"`
-	Scheme  string `json:"scheme"`
-	Socket  string `json:"socket,omitempty"`
-	Host    string `json:"host,omitempty"`
-	Port    int    `json:"port,omitempty"`
-	Role    string `json:"role"`
-	Source  string `json:"source"`            // "wellKnown" | "ycodeManifest"
-	Note    string `json:"note,omitempty"`    // human-readable hint
-	Existing bool  `json:"existing,omitempty"` // already registered with this name
+	Name     string `json:"name"`
+	Scheme   string `json:"scheme"`
+	Socket   string `json:"socket,omitempty"`
+	Host     string `json:"host,omitempty"`
+	Port     int    `json:"port,omitempty"`
+	Role     string `json:"role"`
+	Source   string `json:"source"`             // "wellKnown" | "ycodeManifest"
+	Note     string `json:"note,omitempty"`     // human-readable hint
+	Existing bool   `json:"existing,omitempty"` // already registered with this name
 }
 
 // handleListSuggestions probes well-known socket paths and the local

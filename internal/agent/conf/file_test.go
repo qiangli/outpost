@@ -24,6 +24,7 @@ func TestFileConfigRoundTrip(t *testing.T) {
 		ShellEnabled:     &on,
 		DesktopEnabled:   &off,
 		ClipboardEnabled: &on,
+		SSHEnabled:       &off,
 		Apps: []AppConfig{
 			{Name: "ycode", Scheme: "http", Host: "127.0.0.1", Port: 8765, Enabled: true},
 			{Name: "jupyter", Scheme: "http", Host: "127.0.0.1", Port: 8888, Enabled: false, Icon: "/x.png"},
@@ -40,9 +41,9 @@ func TestFileConfigRoundTrip(t *testing.T) {
 	if out.AgentName != in.AgentName || out.Token != in.Token || out.RemotePort != in.RemotePort {
 		t.Errorf("scalar fields drifted: %+v vs %+v", out, in)
 	}
-	if !out.ShellOn() || out.DesktopOn() || !out.ClipboardOn() {
-		t.Errorf("toggle round-trip: shell=%v desktop=%v clipboard=%v",
-			out.ShellOn(), out.DesktopOn(), out.ClipboardOn())
+	if !out.ShellOn() || out.DesktopOn() || !out.ClipboardOn() || out.SSHOn() {
+		t.Errorf("toggle round-trip: shell=%v desktop=%v clipboard=%v ssh=%v",
+			out.ShellOn(), out.DesktopOn(), out.ClipboardOn(), out.SSHOn())
 	}
 	if len(out.Apps) != 3 || out.Apps[0].Port != 8765 || out.Apps[1].Enabled {
 		t.Errorf("apps round-trip: %+v", out.Apps)
@@ -75,9 +76,9 @@ func TestFileConfigLegacyDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !out.ShellOn() || !out.DesktopOn() || !out.ClipboardOn() {
-		t.Errorf("legacy config should default-on: shell=%v desktop=%v clipboard=%v",
-			out.ShellOn(), out.DesktopOn(), out.ClipboardOn())
+	if !out.ShellOn() || !out.DesktopOn() || !out.ClipboardOn() || !out.SSHOn() {
+		t.Errorf("legacy config should default-on: shell=%v desktop=%v clipboard=%v ssh=%v",
+			out.ShellOn(), out.DesktopOn(), out.ClipboardOn(), out.SSHOn())
 	}
 	if out.Apps != nil {
 		t.Errorf("legacy config Apps should be nil (so MATRIX_APPS env still wins): got %+v", out.Apps)
@@ -89,7 +90,7 @@ func TestFileConfigLegacyDefaults(t *testing.T) {
 // the file.
 func TestNilFileConfigAccessors(t *testing.T) {
 	var fc *FileConfig
-	if !fc.ShellOn() || !fc.DesktopOn() || !fc.ClipboardOn() {
+	if !fc.ShellOn() || !fc.DesktopOn() || !fc.ClipboardOn() || !fc.SSHOn() {
 		t.Error("nil FileConfig should default-on")
 	}
 }

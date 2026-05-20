@@ -186,7 +186,7 @@ function renderMain(status, cfg) {
   built.append(el('legend', {}, 'Built-in apps'));
   const builtForm = el('form', {});
   const builtinRow = el('div', {class: 'toggle-row'});
-  for (const [key, label] of [['shell','Shell'], ['desktop','Desktop'], ['clipboard','Clipboard']]) {
+  for (const [key, label] of [['shell','Shell'], ['desktop','Desktop'], ['clipboard','Clipboard'], ['ssh','SSH']]) {
     const cb = el('input', {type: 'checkbox', name: key});
     if (cfg[key + '_enabled']) cb.setAttribute('checked', '');
     builtinRow.append(el('label', {}, cb, label));
@@ -203,6 +203,7 @@ function renderMain(status, cfg) {
         shell: builtForm.shell.checked,
         desktop: builtForm.desktop.checked,
         clipboard: builtForm.clipboard.checked,
+        ssh: builtForm.ssh.checked,
       });
       msg('ok', 'Saved. ' + (status.configured ? 'Restarting…' : ''));
       if (status.configured) pollUntilUp();
