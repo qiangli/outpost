@@ -180,6 +180,27 @@ func startCmd() *cobra.Command {
 				return nil
 			}
 
+			// Client-only registrations are a credential vehicle: the
+			// machine uses agent.json for outbound SSH (`outpost
+			// connect` / `outpost ssh-proxy`) but has no inbound
+			// surface to expose. `outpost start` would otherwise dial
+			// the matrix tunnel for nothing. Block here, surface the
+			// admin UI for management, and wait on the context.
+			if fc.ClientOnly {
+				fmt.Fprintln(os.Stderr, "Outpost is registered in client-only mode — no matrix tunnel, no inbound routes.")
+				fmt.Fprintln(os.Stderr, "Use `outpost connect <host>` / `outpost ssh-proxy <host>` to ssh out.")
+				slog.Info("outpost: client-only mode; admin UI only")
+				if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+					return err
+				}
+				if shouldRestart.Load() {
+					restarting.Store(true)
+					removePidFile()
+					return execSelfStart()
+				}
+				return nil
+			}
+
 			admins := agent.NewAdminSet(cfg.AdminUsers)
 
 			// Load the SSH host key lazily — only when the SSH builtin is
@@ -317,13 +338,14 @@ func buildAppRegistry(fc *conf.FileConfig, envSpecs string) (*agent.AppRegistry,
 
 func registerCmd() *cobra.Command {
 	var (
-		serverURL string
-		code      string
-		name      string
-		out       string
-		authURL   string
-		title     string
-		assumeYes bool
+		serverURL  string
+		code       string
+		name       string
+		out        string
+		authURL    string
+		title      string
+		assumeYes  bool
+		clientOnly bool
 	)
 	cmd := &cobra.Command{
 		Use:   "register",
@@ -350,7 +372,7 @@ useful for installer scripts and CI.`,
 					return errors.New("--server, --code, and --name are all required in scripted mode")
 				}
 
-				if err := doExchange(cmd.Context(), serverURL, code, name, title, authURL, out); err == nil {
+				if err := doExchange(cmd.Context(), serverURL, code, name, title, authURL, out, clientOnly); err == nil {
 					break
 				} else {
 					fmt.Fprintf(os.Stderr, "Registration failed: %v\n", err)
@@ -369,6 +391,16 @@ useful for installer scripts and CI.`,
 			}
 
 			if scripted {
+				return nil
+			}
+			// Client-only registrations have no tunnel + no inbound
+			// surface, so the only thing `outpost start` would do is
+			// run the admin UI. Skip the auto-start prompt to avoid
+			// implying this machine is now "online".
+			if clientOnly {
+				fmt.Println()
+				fmt.Println("Client-only outpost paired. Use `outpost connect <host>` /")
+				fmt.Println("`outpost ssh-proxy <host>` from your shell — nothing to start.")
 				return nil
 			}
 			if !assumeYes {
@@ -392,6 +424,8 @@ useful for installer scripts and CI.`,
 	cmd.Flags().StringVar(&title, "title", "",
 		"Human-readable subtitle shown in the portal (e.g. \"Family streaming box\"). Required when --auth-url is set; optional otherwise (falls back to the OS user / hostname).")
 	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "On success, start outpost immediately without asking")
+	cmd.Flags().BoolVar(&clientOnly, "client-only", false,
+		"Pair this machine as a credential-only outpost — outbound SSH via `outpost ssh-proxy` only, no inbound listeners, no matrix tunnel. The host row shows up in cloudbox with a 'client' badge so the operator can see it; it cannot be a share target.")
 	return cmd
 }
 
@@ -430,13 +464,14 @@ func collectInputs(r *bufio.Reader, serverURL, code, name *string) error {
 // doExchange runs the pairing exchange and writes the resulting config to
 // disk. Thin wrapper over portal.Exchange — the admin UI calls the same
 // portal package directly so it can layer Apps + toggles in before saving.
-func doExchange(ctx context.Context, serverURL, code, name, title, authURL, out string) error {
+func doExchange(ctx context.Context, serverURL, code, name, title, authURL, out string, clientOnly bool) error {
 	fc, err := portal.Exchange(ctx, portal.ExchangeRequest{
-		ServerURL: serverURL,
-		Code:      code,
-		Name:      name,
-		Title:     title,
-		AuthURL:   authURL,
+		ServerURL:  serverURL,
+		Code:       code,
+		Name:       name,
+		Title:      title,
+		AuthURL:    authURL,
+		ClientOnly: clientOnly,
 	})
 	if err != nil {
 		return err

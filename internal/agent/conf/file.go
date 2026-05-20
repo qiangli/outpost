@@ -34,6 +34,13 @@ type FileConfig struct {
 	// shared secret used by the FRP client.
 	AccessToken string `json:"access_token,omitempty"`
 
+	// ClientOnly marks this machine as a credential vehicle that should
+	// never accept inbound traffic — the user wants to ssh OUT to other
+	// paired hosts but not BE one. When true: `outpost start` skips
+	// NewTunnel + the local gin server, /apps/etc. don't bind, and the
+	// admin UI is the only loopback listener (for managing this row).
+	ClientOnly bool `json:"client_only,omitempty"`
+
 	// Apps managed through the admin UI. When this field is present (even
 	// empty), it is authoritative — the legacy MATRIX_APPS env is ignored.
 	// When absent (nil) on a config written before the admin UI shipped,

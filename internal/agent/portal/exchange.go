@@ -25,12 +25,19 @@ import (
 // AuthURL, when non-empty, tells the portal that the agent will delegate
 // /auth to an external endpoint — so the portal cannot derive a subtitle
 // from an OS identity and Title is required.
+//
+// ClientOnly marks this registration as a credential-only pairing — the
+// machine will use the resulting access_token to ssh OUT to other paired
+// hosts but never accepts inbound traffic. Cloudbox skips the matrix-
+// tunnel port allocation, the launcher hides the row from its tile
+// grid, and `outpost start` becomes a no-op tunnel-less stub.
 type ExchangeRequest struct {
-	ServerURL string
-	Code      string
-	Name      string
-	Title     string
-	AuthURL   string
+	ServerURL  string
+	Code       string
+	Name       string
+	Title      string
+	AuthURL    string
+	ClientOnly bool
 }
 
 // Exchange POSTs the pairing code to the portal and returns the FileConfig
@@ -60,6 +67,7 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		"os_display_name": osDisplay,
 		"os_hostname":     osHostname,
 		"has_auth_url":    authURL != "",
+		"client_only":     req.ClientOnly,
 	}
 	body, _ := json.Marshal(payload)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -89,6 +97,7 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		Token       string `json:"token"`
 		RemotePort  int    `json:"remote_port"`
 		AccessToken string `json:"access_token"`
+		ClientOnly  bool   `json:"client_only"`
 	}
 	if err := json.Unmarshal(respBody, &ex); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
@@ -103,5 +112,6 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		RemotePort:  ex.RemotePort,
 		AuthURL:     authURL,
 		AccessToken: ex.AccessToken,
+		ClientOnly:  ex.ClientOnly,
 	}, nil
 }
