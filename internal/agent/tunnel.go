@@ -3,6 +3,9 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"sync"
+	"time"
 
 	tunnelclient "github.com/fatedier/frp/client"
 	tunnelconfig "github.com/fatedier/frp/pkg/config"
@@ -40,8 +43,27 @@ type TCPProxy struct {
 	RemotePort int
 }
 
+// Reconnect tuning for the supervisor loop in Run. Exported as vars (not
+// consts) so tests can shrink them; production paths shouldn't touch.
+var (
+	reconnectInitialBackoff = 2 * time.Second
+	reconnectMaxBackoff     = 30 * time.Second
+)
+
 // Tunnel wraps a matrix-tunnel client. Call Run, then Close.
+//
+// The embedded FRP Service is one-shot — once its Run returns, its
+// internal goroutines are torn down and it cannot be restarted. The
+// library has its own reconnect loop, but we've observed it give up
+// silently on yamux "session shutdown" (FRP client/control.go:130),
+// leaving the outpost process alive with no tunnel. Tunnel.Run wraps
+// svc.Run in a supervisor that rebuilds the service whenever it exits
+// before ctx is canceled.
 type Tunnel struct {
+	cfg     TunnelConfig
+	proxies []TCPProxy
+
+	mu  sync.Mutex
 	svc *tunnelclient.Service
 }
 
@@ -49,6 +71,17 @@ type Tunnel struct {
 // pre-registered via the in-memory ConfigSource — no config-file path
 // involved.
 func NewTunnel(tc TunnelConfig, proxies []TCPProxy) (*Tunnel, error) {
+	svc, err := newTunnelService(tc, proxies)
+	if err != nil {
+		return nil, err
+	}
+	return &Tunnel{cfg: tc, proxies: proxies, svc: svc}, nil
+}
+
+// newTunnelService builds a fresh FRP Service from the same config — used
+// both at first New and by the Run supervisor when the previous Service
+// exited.
+func newTunnelService(tc TunnelConfig, proxies []TCPProxy) (*tunnelclient.Service, error) {
 	// LoginFailExit defaults to true, which makes the agent exit if the
 	// matrix-tunnel server isn't reachable on the first dial. For a
 	// long-running home-host agent that needs to survive cloud restarts
@@ -116,16 +149,65 @@ func NewTunnel(tc TunnelConfig, proxies []TCPProxy) (*Tunnel, error) {
 	if err != nil {
 		return nil, fmt.Errorf("matrix-tunnel client new: %w", err)
 	}
-	return &Tunnel{svc: svc}, nil
+	return svc, nil
 }
 
-// Run blocks until ctx is canceled or the service stops.
+// Run blocks until ctx is canceled. If the underlying FRP service exits
+// early (e.g. yamux session shutdown that its own retry loop swallows),
+// rebuild it and try again with exponential backoff. Only ctx
+// cancellation terminates the loop.
 func (t *Tunnel) Run(ctx context.Context) error {
-	return t.svc.Run(ctx)
+	backoff := reconnectInitialBackoff
+	for {
+		t.mu.Lock()
+		svc := t.svc
+		t.mu.Unlock()
+
+		runErr := svc.Run(ctx)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if runErr != nil {
+			slog.Warn("matrix-tunnel exited; reconnecting", "err", runErr, "backoff", backoff)
+		} else {
+			slog.Warn("matrix-tunnel exited unexpectedly; reconnecting", "backoff", backoff)
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(backoff):
+		}
+
+		next, err := newTunnelService(t.cfg, t.proxies)
+		if err != nil {
+			// A rebuild failure here means our config is fundamentally
+			// rejected (bad proxy spec, etc.) — there's no point thrashing.
+			// Back off to the cap and keep trying; an operator fix can
+			// land via a restart.
+			slog.Error("matrix-tunnel rebuild failed", "err", err)
+			backoff = growBackoff(backoff)
+			continue
+		}
+		t.mu.Lock()
+		t.svc = next
+		t.mu.Unlock()
+		backoff = growBackoff(backoff)
+	}
+}
+
+func growBackoff(cur time.Duration) time.Duration {
+	next := cur * 2
+	if next > reconnectMaxBackoff {
+		return reconnectMaxBackoff
+	}
+	return next
 }
 
 // Close releases client resources.
 func (t *Tunnel) Close() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.svc.Close()
 }
 
