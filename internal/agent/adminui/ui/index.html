@@ -55,6 +55,8 @@
               border-bottom: 1px solid #8882; }
   .item-row:last-child { border-bottom: 0; }
   .item-row.dim { opacity: 0.55; }
+  .item-row.stacked { flex-direction: column; align-items: stretch; gap: 0.35rem; }
+  .item-row.stacked .line { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
   .item-row .grow { flex: 1; min-width: 0; }
   .item-row .label { font-weight: 600; min-width: 7rem; }
   .item-row a { color: #2563eb; text-decoration: none; word-break: break-all; }
@@ -480,17 +482,20 @@ function renderMain(status, cfg) {
   outbound.append(el('legend', {}, 'Outbound'));
   const obList = el('div', {class: 'item-list'});
   for (const ob of (cfg.outbound || [])) {
-    const row = el('div', {class: 'item-row'});
+    const row = el('div', {class: 'item-row stacked'});
     const localHref = `${location.origin}/${encodeURIComponent(ob.path)}/`;
     const linkOrText = ob.connected
       ? el('a', {class: 'grow', href: localHref, target: '_blank', rel: 'noopener noreferrer'}, localHref)
       : el('span', {class: 'grow'}, localHref);
-    row.append(
+    // Line 1: path + local proxy URL.
+    const line1 = el('div', {class: 'line'},
       el('span', {class: 'label'}, ob.path),
       linkOrText,
-      el('span', {class: 'hint'}, `→ ${ob.name}@${ob.host} (${ob.user})`),
-      el('span', {class: 'hint', style: 'min-width:5rem'},
-        ob.connected ? 'connected' : 'disconnected'),
+    );
+    // Line 2: app@host (user) — status — Connect/Disconnect — Remove.
+    const line2 = el('div', {class: 'line'},
+      el('span', {class: 'hint grow'}, `→ ${ob.name}@${ob.host} (${ob.user})`),
+      el('span', {class: 'hint'}, ob.connected ? 'connected' : 'disconnected'),
       ob.connected
         ? el('button', {class: 'secondary', onclick: async () => {
             try {
@@ -517,6 +522,7 @@ function renderMain(status, cfg) {
         } catch (e) { msg('err', e.message); }
       }}, 'Remove'),
     );
+    row.append(line1, line2);
     obList.append(row);
   }
   if ((cfg.outbound || []).length === 0) {
