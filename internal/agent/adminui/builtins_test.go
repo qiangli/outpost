@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 )
@@ -174,7 +175,7 @@ func TestLocalAppProxy(t *testing.T) {
 		t.Skip("cannot determine OS user")
 	}
 	s := newTestServer(t, configPath, map[string]string{user: "secret"}, nil)
-	if err := s.deps.Apps.RegisterWithRole("fake", upstream.URL, "user"); err != nil {
+	if err := s.deps.Apps.RegisterWithMeta("fake", upstream.URL, agent.AppMeta{RequireLogin: true}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 

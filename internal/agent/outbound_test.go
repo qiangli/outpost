@@ -31,9 +31,13 @@ func newFakeCloud(elevToken string) (*fakeCloud, *httptest.Server) {
 	fc := &fakeCloud{elevToken: elevToken, pingAlwaysOK: true}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/h/", func(w http.ResponseWriter, r *http.Request) {
-		// /h/<host>/elevate, /h/<host>/elevate-ping, or /h/<host>/app/<name>/*
+		// Cloudbox routes after the per-(host, app) elevation refactor:
+		//   /h/<host>/app/<name>/elevate
+		//   /h/<host>/app/<name>/elevate-ping
+		//   /h/<host>/app/<name>/<rest>     (proxied to the upstream app)
+		// parts[0]=<host>, parts[1]="app", parts[2]=<name>, parts[3]=action.
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/h/"), "/")
-		if len(parts) < 2 {
+		if len(parts) < 4 || parts[1] != "app" {
 			http.Error(w, "bad path", http.StatusBadRequest)
 			return
 		}
@@ -41,9 +45,15 @@ func newFakeCloud(elevToken string) (*fakeCloud, *httptest.Server) {
 			http.Error(w, "bad bearer", http.StatusUnauthorized)
 			return
 		}
-		switch parts[1] {
+		host, appName, action := parts[0], parts[2], parts[3]
+		// Per-(host, app) cookie scope: Path narrows to the one app so
+		// elevation cannot be replayed against a sibling app on the
+		// same host. Tests then assert via the action handler that the
+		// cookie actually came through.
+		cookiePath := "/h/" + host + "/app/" + appName
+		switch action {
 		case "elevate":
-			http.SetCookie(w, &http.Cookie{Name: "matrix_elev", Value: fc.elevToken, Path: "/h/" + parts[0]})
+			http.SetCookie(w, &http.Cookie{Name: "matrix_elev", Value: fc.elevToken, Path: cookiePath})
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		case "elevate-ping":
@@ -53,14 +63,15 @@ func newFakeCloud(elevToken string) (*fakeCloud, *httptest.Server) {
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
-		case "app":
-			// Validate elev cookie was forwarded.
+		default:
+			// Anything else under /h/<host>/app/<name>/* is treated as
+			// a proxy hit to the upstream app. Validate the elevation
+			// cookie was forwarded then echo back the residual path.
 			ck, err := r.Cookie("matrix_elev")
 			if err != nil || ck.Value != fc.elevToken {
 				http.Error(w, "missing elev", http.StatusForbidden)
 				return
 			}
-			// Echo the remainder so the test can inspect path forwarding.
 			rest := "/" + strings.Join(parts[3:], "/")
 			w.Header().Set("X-Echo-Path", rest)
 			if r.URL.RawQuery != "" {
@@ -69,8 +80,6 @@ func newFakeCloud(elevToken string) (*fakeCloud, *httptest.Server) {
 			w.WriteHeader(http.StatusOK)
 			body, _ := io.ReadAll(r.Body)
 			_, _ = w.Write(body)
-		default:
-			http.Error(w, "unknown sub", http.StatusNotFound)
 		}
 	})
 	srv := httptest.NewServer(mux)
@@ -128,7 +137,7 @@ func TestOutboundConnectRejectsBadElev(t *testing.T) {
 	// Cloud that returns OK but no matrix_elev cookie — Connect must
 	// notice and refuse.
 	mux := http.NewServeMux()
-	mux.HandleFunc("/h/foo/elevate", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/h/foo/app/a/elevate", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{}`))
 	})
@@ -184,27 +193,31 @@ func TestOutboundTCPBridge(t *testing.T) {
 		}
 	}()
 
-	// Fake cloudbox: /h/<host>/elevate hands out an elev cookie; the
-	// /h/<host>/app/<name>/ endpoint accepts the WS upgrade and bridges
-	// to the echo TCP server. The Bearer + cookie assertions match what
-	// the real cloudbox enforces.
+	// Fake cloudbox: routes mirror the per-(host, app) shape —
+	//   /h/<host>/app/<name>/elevate           → mint cookie
+	//   /h/<host>/app/<name>/<rest>            → WS bridge to echo
+	// The Bearer + cookie assertions match what the real cloudbox enforces.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/h/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-access-token" {
 			http.Error(w, "bad bearer", http.StatusUnauthorized)
 			return
 		}
-		parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/h/"), "/", 3)
-		if len(parts) < 2 {
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/h/"), "/")
+		if len(parts) < 4 || parts[1] != "app" {
 			http.Error(w, "bad path", http.StatusBadRequest)
 			return
 		}
-		switch parts[1] {
+		action := parts[3]
+		switch action {
 		case "elevate":
-			http.SetCookie(w, &http.Cookie{Name: "matrix_elev", Value: "elev-token", Path: "/"})
+			http.SetCookie(w, &http.Cookie{Name: "matrix_elev", Value: "elev-token",
+				Path: "/h/" + parts[0] + "/app/" + parts[2]})
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
-		case "app":
+		default:
+			// Treat any other path under /app/<name>/* as a proxy hit;
+			// the WS upgrade gets bridged to the echo TCP server.
 			ck, cerr := r.Cookie("matrix_elev")
 			if cerr != nil || ck.Value != "elev-token" {
 				http.Error(w, "missing elev", http.StatusForbidden)
@@ -230,8 +243,6 @@ func TestOutboundTCPBridge(t *testing.T) {
 				_, _ = io.Copy(upstream, conn)
 			}()
 			_, _ = io.Copy(conn, upstream)
-		default:
-			http.Error(w, "unknown sub", http.StatusNotFound)
 		}
 	})
 	cloud := httptest.NewServer(mux)

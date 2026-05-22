@@ -457,12 +457,16 @@ function renderMain(status, cfg) {
     // confuse the operator. Show the upstream target instead so they
     // see where it points.
     const appIsTCP = a.scheme === 'tcp';
-    const proxyHref = `${location.origin}/${encodeURIComponent(a.name)}/`;
+    // For HTTP apps the admin-UI shortcut link can include IndexPath
+    // so the operator opens the same landing page the cloud tile
+    // would. Stays a same-origin loopback URL (no cloud).
+    const idx = a.index_path || '';
+    const proxyHref = `${location.origin}/${encodeURIComponent(a.name)}${idx ? idx : '/'}`;
     let upstream;
     if (a.scheme === 'unix' || a.scheme === 'npipe') {
       upstream = `${a.scheme}://${a.socket || ''}`;
     } else {
-      upstream = `${a.scheme || 'http'}://${a.host || '127.0.0.1'}:${a.port}`;
+      upstream = `${a.scheme || 'http'}://${a.host || '127.0.0.1'}:${a.port}${idx}`;
     }
     const targetEl = appIsTCP
       ? el('span', {class: 'grow'},
@@ -487,10 +491,16 @@ function renderMain(status, cfg) {
         msg('err', e.message || 'Save failed');
       }
     });
+    // Show a 🔒 pill when the app demands cloud-side login; show an
+    // "/admin" pill when an IndexPath is set so the operator can tell
+    // the two virtual apps apart at a glance.
+    const pills = [];
+    if (a.require_login) pills.push(el('span', {class: 'hint'}, '🔒 login'));
+    if (a.index_path)    pills.push(el('span', {class: 'hint'}, a.index_path));
     row.append(
       el('span', {class: 'label'}, a.name),
       targetEl,
-      el('span', {class: 'hint'}, a.role || 'user'),
+      ...pills,
       sw.wrap,
       el('button', {class: 'secondary danger', onclick: async () => {
         if (!confirm(`Remove app "${a.name}"?`)) return;
@@ -532,12 +542,26 @@ function renderMain(status, cfg) {
   const appHostLabel = el('label', {}, 'Host', appHostInput);
   const appPortLabel = el('label', {}, 'Port', appPortInput);
 
-  const roleSel = el('select', {name: 'role', style: 'width: auto;'});
-  roleSel.append(
-    el('option', {value: 'guest'}, 'guest — no elevation'),
-    el('option', {value: 'user', selected: ''}, 'user — basic elevation'),
-    el('option', {value: 'admin'}, 'admin — host password + admin list'),
-  );
+  // Index path lets the operator open two AppConfig rows on the same
+  // upstream as separate tiles ("Class" + "Class Admin"). Default
+  // blank = land on "/". Cloudbox SPA prepends this to the tile URL;
+  // the proxy itself ignores it.
+  const appIndexInput = el('input', {name: 'index_path', type: 'text',
+    placeholder: '/ or /admin'});
+  const appIndexLabel = el('label', {}, 'Index path (optional)', appIndexInput);
+
+  // LAN-only paths: one prefix per line. Outpost 404s on these when
+  // the request came via cloudbox (X-Forwarded-Prefix set). Direct
+  // LAN/loopback access keeps working — that's where kiosk-style
+  // public-but-local endpoints belong.
+  const appLanOnlyInput = el('textarea', {name: 'lan_only_paths', rows: '2',
+    placeholder: '/kiosk\n/internal'});
+  const appLanOnlyLabel = el('label', {}, 'LAN-only paths (one per line)', appLanOnlyInput);
+
+  // Require login: cloudbox refuses to proxy this app without a valid
+  // per-(host, app) matrix_elev cookie. Default on; flip off for
+  // genuinely public surfaces (welcome page, status pings).
+  const appRequireLoginInput = el('input', {name: 'require_login', type: 'checkbox', checked: true});
 
   addForm.append(el('h2', {style: 'margin-bottom: 0.2rem;'}, 'Add app'),
     el('label', {}, 'Name', el('input', {name: 'name', type: 'text', required: true,
@@ -547,7 +571,9 @@ function renderMain(status, cfg) {
     el('label', {}, 'Protocol', appSchemeSel),
     appHostLabel,
     appPortLabel,
-    el('label', {}, 'Role', roleSel),
+    appIndexLabel,
+    appLanOnlyLabel,
+    el('label', {class: 'check'}, appRequireLoginInput, 'Require login'),
     el('label', {class: 'check'},
       el('input', {name: 'enabled', type: 'checkbox', checked: true}), 'Enabled'),
     el('button', {type: 'submit', style: 'align-self: start; margin-top: 0.3rem;'}, 'Add app'));
@@ -556,11 +582,15 @@ function renderMain(status, cfg) {
     ev.preventDefault();
     const fd = new FormData(addForm);
     const scheme = (fd.get('scheme') || 'http').toString();
+    const lanOnly = (fd.get('lan_only_paths') || '').toString()
+      .split('\n').map(s => s.trim()).filter(s => s.length > 0);
     const body = {
       name: (fd.get('name') || '').toString().trim(),
       icon: (fd.get('icon') || '').toString().trim(),
       scheme,
-      role: (fd.get('role') || 'user').toString(),
+      require_login: appRequireLoginInput.checked,
+      index_path: (fd.get('index_path') || '').toString().trim(),
+      lan_only_paths: lanOnly,
       enabled: addForm.enabled.checked,
     };
     body.host = (fd.get('host') || '').toString().trim(); // server defaults to 127.0.0.1
@@ -718,6 +748,7 @@ function renderMain(status, cfg) {
       remoteSel.append(el('option', {value: ''}, '— pick a remote —'));
       for (const s of list) {
         const label = `${s.host} / ${s.name} (${s.scheme || 'http'})`
+          + (s.require_login ? ' 🔒' : '')
           + (s.online ? '' : ' — offline')
           + (s.shared ? ' — shared' : '');
         const opt = el('option', {value: `${s.host}/${s.name}`}, label);
@@ -725,6 +756,7 @@ function renderMain(status, cfg) {
         opt.dataset.name = s.name;
         opt.dataset.user = s.os_user || '';
         opt.dataset.scheme = s.scheme || 'http';
+        opt.dataset.indexPath = s.index_path || '';
         remoteSel.append(opt);
       }
       applyRemote();

@@ -166,8 +166,15 @@ func (m *OutboundManager) Connect(path, password string) error {
 	body, _ := json.Marshal(map[string]string{"user": cfg.User, "password": password})
 	ctx, cancelReq := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelReq()
+	// Per-(host, app) elevate: cloudbox mints a cookie with Path=
+	// /h/<host>/app/<name>/ so this elevation only unlocks the one
+	// app, not the whole host. Matches the inbound model.
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		m.serverURL+"/h/"+url.PathEscape(cfg.Host)+"/elevate", bytes.NewReader(body))
+		m.serverURL+
+			"/h/"+url.PathEscape(cfg.Host)+
+			"/app/"+url.PathEscape(cfg.Name)+
+			"/elevate",
+		bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -227,8 +234,9 @@ func (m *OutboundManager) Connect(path, password string) error {
 	}
 	m.conns[path] = conn
 	host := cfg.Host
+	appName := cfg.Name
 	m.mu.Unlock()
-	go m.pinger(pingCtx, path, host)
+	go m.pinger(pingCtx, path, host, appName)
 	if listener != nil {
 		go m.tcpAcceptLoop(pingCtx, path, cfg, listener)
 	}
@@ -254,8 +262,9 @@ func (m *OutboundManager) Disconnect(path string) {
 // every 4 minutes. The cookie is idle-expired by cloudbox after 5 min;
 // pinging twice within that window keeps it warm. Hard absolute expiry
 // (1 h) is observable as a non-2xx response, which tears the conn down
-// — the operator must Connect again.
-func (m *OutboundManager) pinger(ctx context.Context, path, host string) {
+// — the operator must Connect again. Per-(host, app) scope: the ping
+// URL has to match the cookie's Path or cloudbox won't see the cookie.
+func (m *OutboundManager) pinger(ctx context.Context, path, host, appName string) {
 	t := time.NewTicker(4 * time.Minute)
 	defer t.Stop()
 	for {
@@ -271,7 +280,10 @@ func (m *OutboundManager) pinger(ctx context.Context, path, host string) {
 			return
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
-			m.serverURL+"/h/"+url.PathEscape(host)+"/elevate-ping", nil)
+			m.serverURL+
+				"/h/"+url.PathEscape(host)+
+				"/app/"+url.PathEscape(appName)+
+				"/elevate-ping", nil)
 		req.Header.Set("Authorization", "Bearer "+m.accessToken)
 		req.AddCookie(&http.Cookie{Name: "matrix_elev", Value: conn.elevCookie})
 		resp, err := m.httpClient.Do(req)

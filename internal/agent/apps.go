@@ -20,17 +20,24 @@ import (
 	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
-// AppEntry is one declared app's name + minimum clearance + transport
-// scheme, as published to the cloud via GET /apps. Role values match
-// the cloud's vocabulary: guest | user | admin (empty defaults to
-// "user"). Scheme is "http" for the reverse-proxy path or "tcp" for
-// the WS↔TCP bridge; cloudbox and the outbound-suggestions aggregator
-// use it to know whether the local-side mount needs a subpath (http)
-// or a TCP listener port (tcp).
+// AppEntry is one declared app published to the cloud via GET /apps.
+//
+//   - RequireLogin: when true, outpost (and cloudbox at the edge)
+//     require the caller to have proven local-OS auth before this
+//     app's tile/proxy is reachable. Replaces the legacy guest/user/
+//     admin role tier.
+//   - Scheme: "http" for the reverse-proxy path or "tcp" for the
+//     WS↔TCP bridge; cloudbox uses it to know whether the local-side
+//     mount needs a subpath (http) or a TCP listener port (tcp).
+//   - IndexPath: optional landing sub-path the cloudbox SPA prepends
+//     when constructing this app's tile URL. Empty = "/". Enables the
+//     "virtual app" pattern (two AppConfig rows on the same upstream
+//     opening at different paths) without any proxy-side rewriting.
 type AppEntry struct {
-	Name   string `json:"name"`
-	Role   string `json:"role"`
-	Scheme string `json:"scheme,omitempty"`
+	Name         string `json:"name"`
+	Scheme       string `json:"scheme,omitempty"`
+	RequireLogin bool   `json:"require_login"`
+	IndexPath    string `json:"index_path,omitempty"`
 }
 
 // AppRegistry maps app names (e.g. "ycode") to the local URL they live at
@@ -46,7 +53,12 @@ type AppRegistry struct {
 	mu    sync.RWMutex
 	apps  map[string]*url.URL
 	proxy map[string]*httputil.ReverseProxy
-	roles map[string]string
+	// Per-app access-control + display metadata. All keyed by app
+	// name; entries kept in lockstep with `apps`/`proxy`/`tcp` by
+	// register/registerTCP/Unregister.
+	requireLogin map[string]bool
+	lanOnly      map[string][]string
+	indexPath    map[string]string
 	// tcp holds the raw host:port destination for tcp-scheme apps. Its
 	// key set is disjoint from `proxy` — TCP apps don't speak HTTP, so
 	// they get a dedicated WS↔TCP bridge handler rather than the
@@ -56,23 +68,35 @@ type AppRegistry struct {
 
 func NewAppRegistry() *AppRegistry {
 	return &AppRegistry{
-		apps:  map[string]*url.URL{},
-		proxy: map[string]*httputil.ReverseProxy{},
-		roles: map[string]string{},
-		tcp:   map[string]string{},
+		apps:         map[string]*url.URL{},
+		proxy:        map[string]*httputil.ReverseProxy{},
+		requireLogin: map[string]bool{},
+		lanOnly:      map[string][]string{},
+		indexPath:    map[string]string{},
+		tcp:          map[string]string{},
 	}
 }
 
-// Register adds (or replaces) an app entry. target must be an absolute URL.
-// Role defaults to "user" — use RegisterWithRole to set explicitly.
-func (r *AppRegistry) Register(name, target string) error {
-	return r.RegisterWithRole(name, target, "")
+// AppMeta carries the access-control + display fields the registry
+// associates with each app. Internal to register/registerTCP. Tests
+// and the simple Register helper pass a zero-value or a partial value.
+type AppMeta struct {
+	RequireLogin bool
+	LANOnlyPaths []string
+	IndexPath    string
 }
 
-// RegisterWithRole is Register that also records the minimum clearance.
-// Empty role defaults to "user". Roles outside {guest, user, admin} are
-// rejected.
-func (r *AppRegistry) RegisterWithRole(name, target, role string) error {
+// Register adds (or replaces) an app entry with the default
+// access-control posture (RequireLogin=true, no LAN-only paths, no
+// IndexPath). target must be an absolute URL. Used by tests and by
+// callers that don't have an AppConfig handy.
+func (r *AppRegistry) Register(name, target string) error {
+	return r.RegisterWithMeta(name, target, AppMeta{RequireLogin: true})
+}
+
+// RegisterWithMeta is Register with explicit per-app metadata. Used
+// by built-in apps and tests that need to assert specific gating.
+func (r *AppRegistry) RegisterWithMeta(name, target string, meta AppMeta) error {
 	u, err := url.Parse(target)
 	if err != nil {
 		return fmt.Errorf("app %q target: %w", name, err)
@@ -80,7 +104,7 @@ func (r *AppRegistry) RegisterWithRole(name, target, role string) error {
 	if u.Scheme == "" || u.Host == "" {
 		return fmt.Errorf("app %q target must be absolute (got %q)", name, target)
 	}
-	return r.register(name, u, role, nil)
+	return r.register(name, u, meta, nil)
 }
 
 // register is the unified internal entry point. target must have Scheme
@@ -94,13 +118,7 @@ func (r *AppRegistry) RegisterWithRole(name, target, role string) error {
 // outpost. Cloudbox-supplied X-Forwarded-* values flow through
 // unchanged via the request clone; outpost only fills in defaults when
 // a header is missing (the common case for direct loopback access).
-func (r *AppRegistry) register(name string, target *url.URL, role string, transport http.RoundTripper) error {
-	if !conf.ValidRole(role) {
-		return fmt.Errorf("app %q role %q: must be one of guest|user|admin", name, role)
-	}
-	if role == "" {
-		role = "user"
-	}
+func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, transport http.RoundTripper) error {
 	rp := &httputil.ReverseProxy{
 		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -149,7 +167,9 @@ func (r *AppRegistry) register(name string, target *url.URL, role string, transp
 	r.mu.Lock()
 	r.apps[name] = target
 	r.proxy[name] = rp
-	r.roles[name] = role
+	r.requireLogin[name] = meta.RequireLogin
+	r.lanOnly[name] = append([]string(nil), meta.LANOnlyPaths...)
+	r.indexPath[name] = meta.IndexPath
 	// Mode swap: an HTTP register wins over any prior tcp entry with the
 	// same name. (Re-registers in the other direction do the inverse in
 	// registerTCP.)
@@ -172,20 +192,14 @@ func (r *AppRegistry) Names() []string {
 	return out
 }
 
-// Entries returns the registered apps with their declared roles. Used by
-// GET /apps so the cloud sees per-app role declarations and can gate
-// custom apps accurately. TCP apps are listed alongside HTTP ones; the
-// cloud doesn't need to know the difference, since transport selection
-// happens entirely inside the agent's /app/<name>/ handler.
+// Entries returns the registered apps' metadata for the GET /apps
+// publish. TCP apps are listed alongside HTTP ones; the cloud uses
+// `scheme` to pick the right tile shape.
 func (r *AppRegistry) Entries() []AppEntry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make([]AppEntry, 0, len(r.apps)+len(r.tcp))
 	for name, u := range r.apps {
-		role := r.roles[name]
-		if role == "" {
-			role = "user"
-		}
 		// u.Scheme is "http" for both http/https/unix/npipe (the synthetic
 		// http://socket URL stores "http" for socket-backed apps). That's
 		// the right value for the cloud — schemes are transport hints, not
@@ -194,14 +208,20 @@ func (r *AppRegistry) Entries() []AppEntry {
 		if scheme == "" {
 			scheme = "http"
 		}
-		out = append(out, AppEntry{Name: name, Role: role, Scheme: scheme})
+		out = append(out, AppEntry{
+			Name:         name,
+			Scheme:       scheme,
+			RequireLogin: r.requireLogin[name],
+			IndexPath:    r.indexPath[name],
+		})
 	}
 	for name := range r.tcp {
-		role := r.roles[name]
-		if role == "" {
-			role = "user"
-		}
-		out = append(out, AppEntry{Name: name, Role: role, Scheme: "tcp"})
+		out = append(out, AppEntry{
+			Name:         name,
+			Scheme:       "tcp",
+			RequireLogin: r.requireLogin[name],
+			IndexPath:    r.indexPath[name],
+		})
 	}
 	return out
 }
@@ -227,7 +247,9 @@ func (r *AppRegistry) Unregister(name string) {
 	r.mu.Lock()
 	delete(r.apps, name)
 	delete(r.proxy, name)
-	delete(r.roles, name)
+	delete(r.requireLogin, name)
+	delete(r.lanOnly, name)
+	delete(r.indexPath, name)
 	delete(r.tcp, name)
 	r.mu.Unlock()
 }
@@ -239,6 +261,11 @@ func (r *AppRegistry) Unregister(name string) {
 func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 	if !ac.Enabled {
 		return nil
+	}
+	meta := AppMeta{
+		RequireLogin: ac.RequireLogin,
+		LANOnlyPaths: ac.LANOnlyPaths,
+		IndexPath:    ac.IndexPath,
 	}
 	scheme := strings.ToLower(strings.TrimSpace(ac.Scheme))
 	if scheme == "" {
@@ -254,7 +281,7 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 			return fmt.Errorf("app %q: port %d is out of range", ac.Name, ac.Port)
 		}
 		u := &url.URL{Scheme: scheme, Host: host + ":" + strconv.Itoa(ac.Port)}
-		return r.register(ac.Name, u, ac.Role, nil)
+		return r.register(ac.Name, u, meta, nil)
 	case "unix", "npipe":
 		sock := strings.TrimSpace(ac.Socket)
 		if sock == "" {
@@ -264,7 +291,7 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 		// per-app transport's DialContext. The upstream daemon (podman/
 		// docker/ollama) ignores the Host header.
 		u := &url.URL{Scheme: "http", Host: "socket"}
-		return r.register(ac.Name, u, ac.Role, socketTransport(scheme, sock))
+		return r.register(ac.Name, u, meta, socketTransport(scheme, sock))
 	case "tcp":
 		host := strings.TrimSpace(ac.Host)
 		if host == "" {
@@ -273,7 +300,7 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 		if ac.Port <= 0 || ac.Port > 65535 {
 			return fmt.Errorf("app %q: port %d is out of range", ac.Name, ac.Port)
 		}
-		return r.registerTCP(ac.Name, net.JoinHostPort(host, strconv.Itoa(ac.Port)), ac.Role)
+		return r.registerTCP(ac.Name, net.JoinHostPort(host, strconv.Itoa(ac.Port)), meta)
 	default:
 		return fmt.Errorf("app %q: scheme must be one of http|https|tcp|unix|npipe (got %q)", ac.Name, ac.Scheme)
 	}
@@ -282,20 +309,18 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 // registerTCP records name → host:port for a tcp-scheme app. The
 // /app/<name>/ handler will accept a WebSocket upgrade and byte-bridge
 // to that address. Disjoint from the HTTP register: a name is either
-// HTTP-mode or TCP-mode, not both.
-func (r *AppRegistry) registerTCP(name, addr, role string) error {
-	if !conf.ValidRole(role) {
-		return fmt.Errorf("app %q role %q: must be one of guest|user|admin", name, role)
-	}
-	if role == "" {
-		role = "user"
-	}
+// HTTP-mode or TCP-mode, not both. LANOnlyPaths is meaningless for tcp
+// (no path concept) but we store the value verbatim so an HTTP↔TCP
+// mode swap on the same name keeps the operator's declarations intact.
+func (r *AppRegistry) registerTCP(name, addr string, meta AppMeta) error {
 	r.mu.Lock()
 	// Same name can't be both HTTP- and TCP-mode at once.
 	delete(r.apps, name)
 	delete(r.proxy, name)
 	r.tcp[name] = addr
-	r.roles[name] = role
+	r.requireLogin[name] = meta.RequireLogin
+	r.lanOnly[name] = append([]string(nil), meta.LANOnlyPaths...)
+	r.indexPath[name] = meta.IndexPath
 	r.mu.Unlock()
 	return nil
 }
@@ -340,7 +365,34 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	r.mu.RLock()
 	rp := r.proxy[name]
 	tcpAddr := r.tcp[name]
+	requireLogin := r.requireLogin[name]
+	lanOnly := r.lanOnly[name]
 	r.mu.RUnlock()
+	// Two-rule cloud-side gate. Both rules apply only when the inbound
+	// request carries X-Forwarded-Prefix (i.e. came via cloudbox).
+	// Direct loopback hits (admin UI subpath, local /app/<name>/* via
+	// the loopback main listener) are unaffected — the LAN/loopback
+	// trust boundary is what gates them.
+	if c.Request.Header.Get("X-Forwarded-Prefix") != "" {
+		// Rule 1: require_login. Cloudbox stamps X-Periscope-Role
+		// when the per-(host, app) matrix_elev cookie validates;
+		// without that header, this request hasn't proven local-OS
+		// auth and we refuse.
+		if requireLogin && c.Request.Header.Get("X-Periscope-Role") == "" {
+			c.AbortWithStatus(http.StatusForbidden)
+			return
+		}
+		// Rule 2: lan_only_paths. Kiosk-style endpoints must never
+		// leak through the cloud surface. Segment-anchored prefix
+		// match: "/kiosk" blocks "/kiosk" and "/kiosk/foo" but not
+		// "/kiosks-of-truth".
+		for _, p := range lanOnly {
+			if matchSegmentPrefix(rest, p) {
+				c.AbortWithStatus(http.StatusNotFound)
+				return
+			}
+		}
+	}
 	if tcpAddr != "" {
 		serveTCPBridge(c, name, tcpAddr)
 		return
@@ -359,6 +411,20 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	c.Request.URL.Path = rest
 	c.Request.URL.RawPath = ""
 	rp.ServeHTTP(c.Writer, c.Request)
+}
+
+// matchSegmentPrefix reports whether path begins with prefix at a
+// path-segment boundary, so "/kiosk" matches "/kiosk" and
+// "/kiosk/foo" but NOT "/kiosks-of-truth". Empty prefix never matches
+// (it would block every cloud request — a foot-gun).
+func matchSegmentPrefix(path, prefix string) bool {
+	if prefix == "" {
+		return false
+	}
+	if path == prefix {
+		return true
+	}
+	return strings.HasPrefix(path, prefix+"/")
 }
 
 // serveTCPBridge accepts the inbound WebSocket and byte-splices it onto

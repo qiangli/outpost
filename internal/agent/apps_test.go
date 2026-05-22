@@ -67,49 +67,43 @@ func TestRegisterFromConfig(t *testing.T) {
 	}
 }
 
-// TestRegisterWithRole_DefaultsAndValidation: empty role defaults to
-// "user"; a recognised role is preserved verbatim; an unrecognised role
-// errors out at register time so misconfigured apps never reach the cloud.
-func TestRegisterWithRole_DefaultsAndValidation(t *testing.T) {
+// TestRegisterWithMeta_Defaults: Register defaults to require_login=true;
+// RegisterWithMeta carries through the explicit flag.
+func TestRegisterWithMeta_Defaults(t *testing.T) {
 	reg := NewAppRegistry()
 
-	if err := reg.RegisterWithRole("a", "http://127.0.0.1:9000", ""); err != nil {
-		t.Fatalf("empty role: %v", err)
+	if err := reg.Register("a", "http://127.0.0.1:9000"); err != nil {
+		t.Fatalf("Register: %v", err)
 	}
-	if err := reg.RegisterWithRole("b", "http://127.0.0.1:9001", "admin"); err != nil {
-		t.Fatalf("admin role: %v", err)
-	}
-	if err := reg.RegisterWithRole("c", "http://127.0.0.1:9002", "root"); err == nil {
-		t.Fatalf("unrecognised role should error")
+	if err := reg.RegisterWithMeta("b", "http://127.0.0.1:9001", AppMeta{RequireLogin: false}); err != nil {
+		t.Fatalf("RegisterWithMeta: %v", err)
 	}
 
-	got := map[string]string{}
+	got := map[string]bool{}
 	for _, e := range reg.Entries() {
-		got[e.Name] = e.Role
+		got[e.Name] = e.RequireLogin
 	}
-	if got["a"] != "user" {
-		t.Errorf("empty role should default to user, got %q", got["a"])
+	if got["a"] != true {
+		t.Errorf("Register default require_login should be true, got %v", got["a"])
 	}
-	if got["b"] != "admin" {
-		t.Errorf("admin role should be preserved, got %q", got["b"])
-	}
-	if _, ok := got["c"]; ok {
-		t.Errorf("unrecognised role should not have been registered")
+	if got["b"] != false {
+		t.Errorf("RegisterWithMeta require_login=false should propagate, got %v", got["b"])
 	}
 }
 
-// TestRegisterFromConfig_RolePropagates: AppConfig.Role flows into the
-// registry's Entries() output so /apps publishes the owner's declarations.
-func TestRegisterFromConfig_RolePropagates(t *testing.T) {
+// TestRegisterFromConfig_RequireLoginPropagates: AppConfig.RequireLogin
+// flows into the registry's Entries() output so /apps publishes the
+// owner's declarations to the cloud.
+func TestRegisterFromConfig_RequireLoginPropagates(t *testing.T) {
 	reg := NewAppRegistry()
 	if err := reg.RegisterFromConfig(conf.AppConfig{
-		Name: "jupyter", Scheme: "http", Port: 8888, Enabled: true, Role: "admin",
+		Name: "jupyter", Scheme: "http", Port: 8888, Enabled: true, RequireLogin: true,
 	}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	for _, e := range reg.Entries() {
-		if e.Name == "jupyter" && e.Role != "admin" {
-			t.Errorf("role on AppConfig should propagate, got %q", e.Role)
+		if e.Name == "jupyter" && !e.RequireLogin {
+			t.Errorf("require_login on AppConfig should propagate, got %v", e.RequireLogin)
 		}
 	}
 }
@@ -143,23 +137,23 @@ func TestRegisterFromConfig_UnixSocketProxy(t *testing.T) {
 
 	reg := NewAppRegistry()
 	if err := reg.RegisterFromConfig(conf.AppConfig{
-		Name:    "podman",
-		Scheme:  "unix",
-		Socket:  sockPath,
-		Enabled: true,
-		Role:    "admin",
+		Name:         "podman",
+		Scheme:       "unix",
+		Socket:       sockPath,
+		Enabled:      true,
+		RequireLogin: true,
 	}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if target := reg.LookupTarget("podman"); target == nil || target.Host != "socket" {
 		t.Errorf("socket-backed target host = %v (want synthetic 'socket')", target)
 	}
-	roles := map[string]string{}
+	gotReqLogin := map[string]bool{}
 	for _, e := range reg.Entries() {
-		roles[e.Name] = e.Role
+		gotReqLogin[e.Name] = e.RequireLogin
 	}
-	if roles["podman"] != "admin" {
-		t.Errorf("role on socket app should propagate, got %q", roles["podman"])
+	if !gotReqLogin["podman"] {
+		t.Errorf("require_login on socket app should propagate, got %v", gotReqLogin["podman"])
 	}
 
 	// Stand up the registry behind a real httptest.Server so the full
@@ -221,6 +215,224 @@ func TestUnregister(t *testing.T) {
 	}
 	if reg.LookupTarget("ycode").Host != "127.0.0.1:9999" {
 		t.Errorf("re-register did not take")
+	}
+}
+
+// TestProxyTo_RequireLogin_BlocksCloudWithoutPeriscopeRole confirms the
+// cloud-side gate: when an app requires login, a request coming through
+// cloudbox (X-Forwarded-Prefix present) but without X-Periscope-Role
+// gets 403 and the upstream is never dialed.
+func TestProxyTo_RequireLogin_BlocksCloudWithoutPeriscopeRole(t *testing.T) {
+	var upstreamHit int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	u, _ := url.Parse(upstream.URL)
+	uhost, portStr, _ := net.SplitHostPort(u.Host)
+	port, _ := strconv.Atoi(portStr)
+
+	reg := NewAppRegistry()
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "guarded", Scheme: "http", Host: uhost, Port: port, Enabled: true, RequireLogin: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(newTestRouter(reg))
+	defer srv.Close()
+
+	req, _ := http.NewRequest("GET", srv.URL+"/app/guarded/x", nil)
+	req.Header.Set("X-Forwarded-Prefix", "/h/dragon/app/guarded")
+	// NO X-Periscope-Role — simulates an un-elevated cloud caller.
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if upstreamHit != 0 {
+		t.Fatalf("upstream was hit %d times, want 0", upstreamHit)
+	}
+}
+
+// TestProxyTo_RequireLogin_AllowsCloudWithPeriscopeRole confirms the
+// same setup proceeds normally once cloudbox has stamped X-Periscope-Role.
+func TestProxyTo_RequireLogin_AllowsCloudWithPeriscopeRole(t *testing.T) {
+	var upstreamHit int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	u, _ := url.Parse(upstream.URL)
+	uhost, portStr, _ := net.SplitHostPort(u.Host)
+	port, _ := strconv.Atoi(portStr)
+
+	reg := NewAppRegistry()
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "guarded", Scheme: "http", Host: uhost, Port: port, Enabled: true, RequireLogin: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(newTestRouter(reg))
+	defer srv.Close()
+
+	req, _ := http.NewRequest("GET", srv.URL+"/app/guarded/x", nil)
+	req.Header.Set("X-Forwarded-Prefix", "/h/dragon/app/guarded")
+	req.Header.Set("X-Periscope-Role", "user")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if upstreamHit != 1 {
+		t.Fatalf("upstream was hit %d times, want 1", upstreamHit)
+	}
+}
+
+// TestProxyTo_RequireLogin_AllowsDirectLoopback confirms that the
+// require_login gate is cloud-side-only: a direct loopback request
+// (no X-Forwarded-Prefix, e.g. the admin UI subpath route or local
+// tooling) passes even without X-Periscope-Role.
+func TestProxyTo_RequireLogin_AllowsDirectLoopback(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	u, _ := url.Parse(upstream.URL)
+	uhost, portStr, _ := net.SplitHostPort(u.Host)
+	port, _ := strconv.Atoi(portStr)
+
+	reg := NewAppRegistry()
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "guarded", Scheme: "http", Host: uhost, Port: port, Enabled: true, RequireLogin: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(newTestRouter(reg))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/app/guarded/x")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (no X-Forwarded-Prefix → gate skipped)", resp.StatusCode)
+	}
+}
+
+// TestProxyTo_LANOnlyPaths_BlocksCloud confirms LAN-only paths 404 when
+// reached via cloudbox.
+func TestProxyTo_LANOnlyPaths_BlocksCloud(t *testing.T) {
+	var upstreamHit int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	u, _ := url.Parse(upstream.URL)
+	uhost, portStr, _ := net.SplitHostPort(u.Host)
+	port, _ := strconv.Atoi(portStr)
+
+	reg := NewAppRegistry()
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "class", Scheme: "http", Host: uhost, Port: port, Enabled: true,
+		// Not require_login here so we isolate the LAN-only gate.
+		LANOnlyPaths: []string{"/kiosk"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(newTestRouter(reg))
+	defer srv.Close()
+
+	for _, tc := range []struct {
+		name, path string
+		want       int
+	}{
+		{"exact match blocked", "/app/class/kiosk", http.StatusNotFound},
+		{"deeper match blocked", "/app/class/kiosk/check-in", http.StatusNotFound},
+		{"segment boundary respected", "/app/class/kiosks-of-truth", http.StatusOK},
+		{"other path allowed", "/app/class/admin", http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, _ := http.NewRequest("GET", srv.URL+tc.path, nil)
+			req.Header.Set("X-Forwarded-Prefix", "/h/dragon/app/class")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != tc.want {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.want)
+			}
+		})
+	}
+}
+
+// TestProxyTo_LANOnlyPaths_AllowsDirect confirms LAN-only paths pass
+// through on direct loopback (no X-Forwarded-Prefix) — that's the
+// kiosk-on-LAN use case.
+func TestProxyTo_LANOnlyPaths_AllowsDirect(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	u, _ := url.Parse(upstream.URL)
+	uhost, portStr, _ := net.SplitHostPort(u.Host)
+	port, _ := strconv.Atoi(portStr)
+
+	reg := NewAppRegistry()
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "class", Scheme: "http", Host: uhost, Port: port, Enabled: true,
+		LANOnlyPaths: []string{"/kiosk"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(newTestRouter(reg))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/app/class/kiosk/check-in")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("direct LAN access blocked: %d (want 200)", resp.StatusCode)
+	}
+}
+
+// TestRegisterFromConfig_IndexPathRoundTrip confirms IndexPath flows
+// through the registry into the Entries() output (= published via
+// /apps). The proxy itself ignores it — it's a cloud-SPA UX hint.
+func TestRegisterFromConfig_IndexPathRoundTrip(t *testing.T) {
+	reg := NewAppRegistry()
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "class-admin", Scheme: "http", Host: "127.0.0.1", Port: 8080,
+		Enabled: true, RequireLogin: true, IndexPath: "/admin",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, e := range reg.Entries() {
+		if e.Name == "class-admin" {
+			found = true
+			if e.IndexPath != "/admin" {
+				t.Errorf("IndexPath = %q, want /admin", e.IndexPath)
+			}
+			if !e.RequireLogin {
+				t.Errorf("RequireLogin lost in registration")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("class-admin not registered")
 	}
 }
 

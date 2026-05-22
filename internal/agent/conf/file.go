@@ -143,9 +143,38 @@ type AppConfig struct {
 	Port    int    `json:"port,omitempty"`
 	Socket  string `json:"socket,omitempty"`
 	Enabled bool   `json:"enabled"`
-	// Role is the minimum cloud-side clearance required to reach this app
-	// (guest|user|admin). Empty defaults to "user" — matches the cloud's
-	// HostRegistry default so unconfigured apps keep working unchanged.
+
+	// RequireLogin: when true, outpost serves /app/<name>/* only when
+	// the inbound request carries cloudbox-vouched proof of local-OS
+	// authentication (the X-Periscope-Role header cloudbox stamps
+	// after a successful /elevate flow). Without it the request gets
+	// 403. Default true; the opt-out is for genuinely public surfaces.
+	// Replaces the legacy three-tier `role` field.
+	RequireLogin bool `json:"require_login"`
+
+	// LANOnlyPaths lists path prefixes (e.g. "/kiosk") that must NOT
+	// be reachable through cloudbox. Outpost 404s when the inbound
+	// request carries X-Forwarded-Prefix (= came via cloud) AND its
+	// post-/app/<name>/ path matches one of these. Direct loopback /
+	// LAN access (no cloudbox hop) keeps working — that's where
+	// kiosk-style public-but-local endpoints belong.
+	LANOnlyPaths []string `json:"lan_only_paths,omitempty"`
+
+	// IndexPath is an optional landing-page sub-path the cloudbox SPA
+	// prepends to this app's tile URL. Default empty (= "/"). Lets
+	// two AppConfig rows point at the same host:port and present as
+	// two tiles — e.g. one row "class" with IndexPath="" lands on
+	// the home page, a second row "class-admin" with
+	// IndexPath="/admin" lands on the admin page. The proxy itself
+	// does NOT use IndexPath when forwarding — it just forwards
+	// `rest` literally. The payoff is per-tier sharing: each
+	// virtual app gets its own HostShare rows, its own Connect /
+	// cookie scope, its own RequireLogin and LANOnlyPaths.
+	IndexPath string `json:"index_path,omitempty"`
+
+	// Role is deprecated. Kept for back-compat parsing of older
+	// agent.json files. NewFromJSON migrates "guest" → RequireLogin
+	// false; "user"/"admin"/empty → true.
 	Role string `json:"role,omitempty"`
 }
 
@@ -339,5 +368,34 @@ func LoadFile(path string) (*FileConfig, error) {
 	if err := json.Unmarshal(b, &fc); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	migrateLegacyRole(&fc)
 	return &fc, nil
+}
+
+// migrateLegacyRole folds the deprecated AppConfig.Role into the new
+// RequireLogin boolean. Legacy mapping: "guest" → false; "user"/"admin"/
+// "" → true. Once each app has been re-saved through the admin UI the
+// Role field disappears and this function becomes a no-op.
+func migrateLegacyRole(fc *FileConfig) {
+	if fc == nil {
+		return
+	}
+	for i := range fc.Apps {
+		legacy := strings.ToLower(strings.TrimSpace(fc.Apps[i].Role))
+		if legacy == "" {
+			continue
+		}
+		// Only set RequireLogin when the JSON didn't explicitly set
+		// it. Since the field is a non-pointer bool, "didn't set" is
+		// indistinguishable from false — but here we're being
+		// permissive: if Role says "user"/"admin", upgrade the bool.
+		// Operators who genuinely want a public app (RequireLogin=
+		// false) should drop the Role field at the same time.
+		if legacy == "guest" {
+			fc.Apps[i].RequireLogin = false
+		} else {
+			fc.Apps[i].RequireLogin = true
+		}
+		fc.Apps[i].Role = "" // drop the legacy field
+	}
 }

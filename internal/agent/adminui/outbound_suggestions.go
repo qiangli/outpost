@@ -22,14 +22,15 @@ type outboundSuggestionsResp struct {
 }
 
 type outboundSuggestion struct {
-	Host   string `json:"host"`               // outpost agent name
-	OsUser string `json:"os_user,omitempty"`  // OS user — used as the elevate `user` field
-	Name   string `json:"name"`               // app name (matches the remote outpost's /apps row)
-	Scheme string `json:"scheme,omitempty"`   // "http" or "tcp" — drives the local-mount shape
-	Role   string `json:"role,omitempty"`     // remote's minimum role for the app
-	Title  string `json:"title,omitempty"`    // host display title
-	Online bool   `json:"online"`             // last_seen_at within freshness window
-	Shared bool   `json:"shared,omitempty"`   // true if not owned by the caller
+	Host         string `json:"host"`               // outpost agent name
+	OsUser       string `json:"os_user,omitempty"`  // OS user — used as the elevate `user` field
+	Name         string `json:"name"`               // app name (matches the remote outpost's /apps row)
+	Scheme       string `json:"scheme,omitempty"`   // "http" or "tcp" — drives the local-mount shape
+	RequireLogin bool   `json:"require_login"`      // whether the remote app demands elevation
+	IndexPath    string `json:"index_path,omitempty"`
+	Title        string `json:"title,omitempty"`    // host display title
+	Online       bool   `json:"online"`             // last_seen_at within freshness window
+	Shared       bool   `json:"shared,omitempty"`   // true if not owned by the caller
 }
 
 // handleOutboundSuggestions calls cloudbox's /api/v1/hosts (the
@@ -61,14 +62,15 @@ func (s *Server) handleOutboundSuggestions(c *gin.Context) {
 				scheme = "http" // legacy outposts that don't ship the field
 			}
 			out.Suggestions = append(out.Suggestions, outboundSuggestion{
-				Host:   h.Host,
-				OsUser: h.OsUser,
-				Name:   a.Name,
-				Scheme: scheme,
-				Role:   a.Role,
-				Title:  h.Title,
-				Online: h.Online,
-				Shared: h.Shared,
+				Host:         h.Host,
+				OsUser:       h.OsUser,
+				Name:         a.Name,
+				Scheme:       scheme,
+				RequireLogin: a.RequireLogin,
+				IndexPath:    a.IndexPath,
+				Title:        h.Title,
+				Online:       h.Online,
+				Shared:       h.Shared,
 			})
 		}
 	}
@@ -88,9 +90,10 @@ type cbHostEntry struct {
 }
 
 type cbAppEntry struct {
-	Name   string `json:"name"`
-	Role   string `json:"role"`
-	Scheme string `json:"scheme"`
+	Name         string `json:"name"`
+	Scheme       string `json:"scheme"`
+	RequireLogin bool   `json:"require_login"`
+	IndexPath    string `json:"index_path"`
 }
 
 // fetchHostsFromCloudbox calls /api/v1/hosts on the configured cloudbox

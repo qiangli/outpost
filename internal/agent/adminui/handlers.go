@@ -462,11 +462,42 @@ func validateApp(ac *conf.AppConfig) error {
 	default:
 		return errors.New("scheme must be one of http|https|tcp|unix|npipe")
 	}
-	ac.Role = strings.ToLower(strings.TrimSpace(ac.Role))
-	if !conf.ValidRole(ac.Role) {
-		return fmt.Errorf("role %q must be one of guest|user|admin", ac.Role)
+	// Normalize the new access-control fields. RequireLogin is a plain
+	// bool (no normalization). LANOnlyPaths and IndexPath are path
+	// fragments — trim, prepend "/" when non-empty, strip trailing "/".
+	if ac.IndexPath != "" {
+		ac.IndexPath = normalizePathPrefix(ac.IndexPath)
 	}
+	cleaned := ac.LANOnlyPaths[:0]
+	for _, p := range ac.LANOnlyPaths {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if strings.ContainsAny(p, " \t*?") {
+			return fmt.Errorf("lan_only_paths entry %q must not contain whitespace or wildcards", p)
+		}
+		cleaned = append(cleaned, normalizePathPrefix(p))
+	}
+	ac.LANOnlyPaths = cleaned
+	// Legacy `role` field, if present from an older config, is dropped
+	// here — LoadFile already migrated it into RequireLogin.
+	ac.Role = ""
 	return nil
+}
+
+// normalizePathPrefix returns p with a leading slash and no trailing
+// slash, so /admin, admin, and /admin/ all canonicalize to "/admin".
+// Empty input stays empty.
+func normalizePathPrefix(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return strings.TrimRight(p, "/")
 }
 
 // outboundList safely returns the manager's view list (or an empty
