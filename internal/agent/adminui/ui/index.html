@@ -545,13 +545,20 @@ function renderMain(status, cfg) {
   const obList = el('div', {class: 'item-list'});
   for (const ob of (cfg.outbound || [])) {
     const row = el('div', {class: 'item-row stacked'});
-    const localHref = `${location.origin}/${encodeURIComponent(ob.path)}/`;
-    const linkOrText = ob.connected
-      ? el('a', {class: 'grow', href: localHref, target: '_blank', rel: 'noopener noreferrer'}, localHref)
-      : el('span', {class: 'grow'}, localHref);
-    // Line 1: path + local proxy URL.
+    const isTCP = ob.scheme === 'tcp';
+    // HTTP outbounds: reachable as a subpath off the admin UI origin.
+    // TCP outbounds: reachable as a raw TCP socket on 127.0.0.1:<port>
+    // (browser can't dial it, so it's plain text — no <a href>).
+    const localDisplay = isTCP
+      ? `tcp://127.0.0.1:${ob.local_port}`
+      : `${location.origin}/${encodeURIComponent(ob.path)}/`;
+    const lineLabel = isTCP ? String(ob.local_port) : ob.path;
+    const linkOrText = (!isTCP && ob.connected)
+      ? el('a', {class: 'grow', href: localDisplay, target: '_blank', rel: 'noopener noreferrer'}, localDisplay)
+      : el('span', {class: 'grow'}, localDisplay);
+    // Line 1: identifier (path or port) + local endpoint.
     const line1 = el('div', {class: 'line'},
-      el('span', {class: 'label'}, ob.path),
+      el('span', {class: 'label'}, lineLabel),
       linkOrText,
     );
     // Line 2: app@host (user) — status — Connect/Disconnect — Remove.
@@ -599,28 +606,77 @@ function renderMain(status, cfg) {
   outbound.append(obList);
 
   const addOb = el('form', {});
+  // Protocol drives which "first" field is shown:
+  //   http → Path (local mount under the admin UI listener, e.g. /ollama)
+  //   tcp  → Port (loopback TCP port the outpost binds, e.g. 5432)
+  // We keep both <input>s in the DOM but hide the inactive one so the
+  // FormData payload only carries the relevant value, and switch their
+  // `required` flag in lockstep.
+  const schemeSel = el('select', {name: 'scheme'},
+    el('option', {value: 'http'}, 'http'),
+    el('option', {value: 'tcp'}, 'tcp'));
+  const pathInput = el('input', {name: 'path', type: 'text', required: true,
+    placeholder: 'e.g. /ollama'});
+  const portInput = el('input', {name: 'local_port', type: 'number',
+    min: '1', max: '65535', placeholder: 'e.g. 5432'});
+  const pathLabel = el('label', {}, 'Path (local mount)', pathInput);
+  const portLabel = el('label', {style: 'display:none'}, 'Port (localhost)', portInput);
+  const applyScheme = () => {
+    const tcp = schemeSel.value === 'tcp';
+    pathLabel.style.display = tcp ? 'none' : '';
+    portLabel.style.display = tcp ? '' : 'none';
+    pathInput.required = !tcp;
+    portInput.required = tcp;
+  };
+  schemeSel.addEventListener('change', applyScheme);
+  applyScheme();
+  // Layout: one field per line, top-down in the order the operator
+  // fills them out — pick the transport first, then the local
+  // identifier it implies (path or port), then what's on the far end
+  // (name → host → user). The User input is narrowed because OS
+  // usernames are short and a full-width box looks wrong next to the
+  // hostname above it.
   addOb.append(el('h2', {}, 'Add outbound'),
-    el('div', {class: 'row'},
-      el('label', {}, 'Path (local mount)', el('input', {name: 'path', type: 'text', required: true,
-        placeholder: 'e.g. kg'})),
-      el('label', {}, 'Name (remote app)', el('input', {name: 'name', type: 'text', required: true,
-        placeholder: 'e.g. ollama'})),
-    ),
-    el('div', {class: 'row'},
-      el('label', {}, 'Host (remote outpost)', el('input', {name: 'host', type: 'text', required: true})),
-      el('label', {}, 'User (remote OS)', el('input', {name: 'user', type: 'text', required: true})),
-    ),
+    el('label', {}, 'Protocol', schemeSel),
+    pathLabel,
+    portLabel,
+    el('label', {}, 'Name (remote app)', el('input', {name: 'name', type: 'text', required: true,
+      placeholder: 'e.g. ollama'})),
+    el('label', {}, 'Host (remote outpost)', el('input', {name: 'host', type: 'text', required: true,
+      placeholder: 'e.g. novicortex'})),
+    el('label', {}, 'User (remote OS)', el('input', {name: 'user', type: 'text', required: true,
+      placeholder: 'e.g. noviadmin', style: 'max-width: 14rem;'})),
     el('button', {type: 'submit'}, 'Add outbound'));
   addOb.addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const fd = new FormData(addOb);
+    const scheme = (fd.get('scheme') || 'http').toString();
+    const name = (fd.get('name') || '').toString().trim();
+    const body = {
+      name,
+      host: (fd.get('host') || '').toString().trim(),
+      user: (fd.get('user') || '').toString().trim(),
+      scheme,
+    };
+    if (scheme === 'tcp') {
+      const port = parseInt(fd.get('local_port'), 10);
+      if (!Number.isFinite(port) || port < 1 || port > 65535) {
+        msg('err', 'Port must be between 1 and 65535');
+        return;
+      }
+      body.local_port = port;
+      // `path` is the server-side identifier; for tcp it's never user
+      // visible. Derive it from name+port so two tcp outbounds to the
+      // same remote app on different local ports don't collide.
+      body.path = `${name}-${port}`;
+    } else {
+      // Accept "/ollama" or "ollama"; the server requires a slash-free
+      // path, so we strip a leading slash here to keep the placeholder
+      // copy-friendly with the localHref display.
+      body.path = (fd.get('path') || '').toString().replace(/^\/+/, '').trim();
+    }
     try {
-      await api('POST', '/api/outbound', {
-        path: fd.get('path'),
-        name: fd.get('name'),
-        host: fd.get('host'),
-        user: fd.get('user'),
-      });
+      await api('POST', '/api/outbound', body);
       msg('ok', 'Outbound added.');
       render();
     } catch (e) {
