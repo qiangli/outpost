@@ -28,6 +28,19 @@ import (
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 )
 
+// DefaultAdminAddr is the loopback listener address the admin UI binds
+// when neither $OUTPOST_ADMIN_ADDR nor --admin-addr is set. The port is
+// chosen to be unprivileged (> 1024 so no root needed), below every
+// supported OS's ephemeral range (so it isn't transiently grabbed by an
+// outbound connection before bind), IANA-unregistered (no collision with
+// a documented service), and outside common dev-tool squats like 8080 /
+// 8888 / 9999 — relevant once an operator binds the admin UI to a LAN
+// address instead of loopback. Operators who need to move it should
+// override via $OUTPOST_ADMIN_ADDR or --admin-addr rather than editing
+// this constant, since the value is referenced by existing pairings,
+// bookmarks, and CLAUDE.md.
+const DefaultAdminAddr = "127.0.0.1:17777"
+
 // Deps is what main.go threads in when constructing the admin server.
 type Deps struct {
 	// ConfigPath is where to read and write the persistent FileConfig
@@ -123,7 +136,7 @@ func New(deps Deps) (*Server, error) {
 		deps.Apps = agent.NewAppRegistry()
 	}
 	if deps.ListenAddr == "" {
-		deps.ListenAddr = "127.0.0.1:17777"
+		deps.ListenAddr = DefaultAdminAddr
 	}
 
 	gin.SetMode(gin.ReleaseMode)

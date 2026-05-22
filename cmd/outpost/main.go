@@ -194,7 +194,7 @@ func startCmd() *cobra.Command {
 				adminAddr = os.Getenv("OUTPOST_ADMIN_ADDR")
 			}
 			if adminAddr == "" {
-				adminAddr = "127.0.0.1:17777"
+				adminAddr = adminui.DefaultAdminAddr
 			}
 			// Load (or generate + persist) the HMAC key for admin-UI
 			// session cookies. Storing it in the FileConfig is what lets
