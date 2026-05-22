@@ -225,7 +225,7 @@ function renderMain(status, cfg) {
     active = status.configured ? 'inbound' : 'pair';
   }
   const tabDefs = [
-    ['pair', status.configured ? 'Re-pair' : 'Pair host'],
+    ['pair', 'Pair host'],
     ['inbound', 'Inbound'],
     ['outbound', 'Outbound'],
   ];
@@ -251,7 +251,7 @@ function renderMain(status, cfg) {
 
   // Pairing section
   const pairing = el('fieldset', {});
-  pairing.append(el('legend', {}, status.configured ? 'Re-pair host' : 'Pair host'));
+  pairing.append(el('legend', {}, 'Pair host'));
   if (status.configured) {
     pairing.append(el('p', {}, 'Currently paired as ', el('strong', {}, status.agent_name),
       ' on ', el('code', {}, status.server_addr || '(unknown)'), '.'));
