@@ -218,6 +218,7 @@ func (s *Server) registerRoutes() {
 	// supplied via Deps.
 	if s.deps.Outbound != nil {
 		api.GET("/outbound", s.handleListOutbound)
+		api.GET("/outbound/suggestions", s.handleOutboundSuggestions)
 		api.POST("/outbound", s.handleAddOutbound)
 		api.DELETE("/outbound/:path", s.handleDeleteOutbound)
 		api.POST("/outbound/:path/connect", s.handleConnectOutbound)

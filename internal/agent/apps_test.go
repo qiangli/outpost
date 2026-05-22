@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -221,6 +222,86 @@ func TestUnregister(t *testing.T) {
 	if reg.LookupTarget("ycode").Host != "127.0.0.1:9999" {
 		t.Errorf("re-register did not take")
 	}
+}
+
+// TestRegisterFromConfig_XForwardedHeaders confirms the reverse proxy
+// sets X-Forwarded-* on the outbound request so well-behaved web apps
+// (Grafana et al.) can construct correct absolute URLs without an
+// outpost-side path rewrite. Defaults apply only when the inbound
+// request didn't already carry the header (cloud-supplied values win).
+func TestRegisterFromConfig_XForwardedHeaders(t *testing.T) {
+	type seen struct {
+		host, proto, prefix, forFor string
+	}
+	var got seen
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = seen{
+			host:   r.Header.Get("X-Forwarded-Host"),
+			proto:  r.Header.Get("X-Forwarded-Proto"),
+			prefix: r.Header.Get("X-Forwarded-Prefix"),
+			forFor: r.Header.Get("X-Forwarded-For"),
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	u, _ := url.Parse(upstream.URL)
+	uhost, portStr, _ := net.SplitHostPort(u.Host)
+	port, _ := strconv.Atoi(portStr)
+
+	reg := NewAppRegistry()
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "grafana", Scheme: "http", Host: uhost, Port: port, Enabled: true,
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	srv := httptest.NewServer(newTestRouter(reg))
+	defer srv.Close()
+
+	t.Run("defaults when no cloud headers", func(t *testing.T) {
+		got = seen{}
+		req, _ := http.NewRequest("GET", srv.URL+"/app/grafana/dashboards", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		_ = resp.Body.Close()
+		// httptest.NewServer listens on 127.0.0.1:<random>; that's the
+		// Host the proxy should default to.
+		if got.host == "" {
+			t.Errorf("X-Forwarded-Host not set; got empty")
+		}
+		if got.proto != "http" {
+			t.Errorf("X-Forwarded-Proto = %q, want http", got.proto)
+		}
+		if got.prefix != "/app/grafana" {
+			t.Errorf("X-Forwarded-Prefix = %q, want /app/grafana", got.prefix)
+		}
+		if got.forFor == "" {
+			t.Errorf("X-Forwarded-For not set")
+		}
+	})
+
+	t.Run("cloud-supplied values win", func(t *testing.T) {
+		got = seen{}
+		req, _ := http.NewRequest("GET", srv.URL+"/app/grafana/dashboards", nil)
+		req.Header.Set("X-Forwarded-Host", "ai.dhnt.io")
+		req.Header.Set("X-Forwarded-Proto", "https")
+		req.Header.Set("X-Forwarded-Prefix", "/h/novicortex/app/grafana")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		_ = resp.Body.Close()
+		if got.host != "ai.dhnt.io" {
+			t.Errorf("X-Forwarded-Host = %q, want ai.dhnt.io", got.host)
+		}
+		if got.proto != "https" {
+			t.Errorf("X-Forwarded-Proto = %q, want https", got.proto)
+		}
+		if got.prefix != "/h/novicortex/app/grafana" {
+			t.Errorf("X-Forwarded-Prefix = %q, want /h/novicortex/app/grafana", got.prefix)
+		}
+	})
 }
 
 // TestRegisterFromConfig_TCPBridge spins up a tiny upstream TCP echo,

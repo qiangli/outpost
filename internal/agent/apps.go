@@ -20,12 +20,17 @@ import (
 	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
-// AppEntry is one declared app's name + minimum clearance, as published
-// to the cloud via GET /apps. Role values match the cloud's vocabulary:
-// guest | user | admin. Empty role defaults to "user".
+// AppEntry is one declared app's name + minimum clearance + transport
+// scheme, as published to the cloud via GET /apps. Role values match
+// the cloud's vocabulary: guest | user | admin (empty defaults to
+// "user"). Scheme is "http" for the reverse-proxy path or "tcp" for
+// the WS↔TCP bridge; cloudbox and the outbound-suggestions aggregator
+// use it to know whether the local-side mount needs a subpath (http)
+// or a TCP listener port (tcp).
 type AppEntry struct {
-	Name string `json:"name"`
-	Role string `json:"role"`
+	Name   string `json:"name"`
+	Role   string `json:"role"`
+	Scheme string `json:"scheme,omitempty"`
 }
 
 // AppRegistry maps app names (e.g. "ycode") to the local URL they live at
@@ -82,6 +87,13 @@ func (r *AppRegistry) RegisterWithRole(name, target, role string) error {
 // "http" or "https". For socket-backed apps, callers pass a synthetic
 // http://socket URL plus a transport whose DialContext dials the socket.
 // role "" defaults to "user". Roles outside {guest, user, admin} are rejected.
+//
+// The Rewrite callback sets X-Forwarded-* headers so well-behaved
+// upstream web apps (Grafana, JupyterLab, code-server, …) can compute
+// correct absolute URLs without needing per-app rewrite rules on
+// outpost. Cloudbox-supplied X-Forwarded-* values flow through
+// unchanged via the request clone; outpost only fills in defaults when
+// a header is missing (the common case for direct loopback access).
 func (r *AppRegistry) register(name string, target *url.URL, role string, transport http.RoundTripper) error {
 	if !conf.ValidRole(role) {
 		return fmt.Errorf("app %q role %q: must be one of guest|user|admin", name, role)
@@ -89,9 +101,50 @@ func (r *AppRegistry) register(name string, target *url.URL, role string, transp
 	if role == "" {
 		role = "user"
 	}
-	rp := httputil.NewSingleHostReverseProxy(target)
-	if transport != nil {
-		rp.Transport = transport
+	rp := &httputil.ReverseProxy{
+		Transport: transport,
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(target)
+			// httputil.ReverseProxy strips the four standard X-Forwarded-*
+			// headers from pr.Out before calling Rewrite (anti-smuggling
+			// for the case where outpost is reached directly by an
+			// untrusted client). We read pr.In — where cloudbox's values
+			// still live — and selectively re-emit them on pr.Out so the
+			// upstream app can build correct absolute URLs.
+			inHost := pr.In.Header.Get("X-Forwarded-Host")
+			if inHost == "" {
+				inHost = pr.In.Host
+			}
+			if inHost != "" {
+				pr.Out.Header.Set("X-Forwarded-Host", inHost)
+			}
+			inProto := pr.In.Header.Get("X-Forwarded-Proto")
+			if inProto == "" {
+				inProto = "http"
+				if pr.In.TLS != nil {
+					inProto = "https"
+				}
+			}
+			pr.Out.Header.Set("X-Forwarded-Proto", inProto)
+			// X-Forwarded-Prefix lets the app know its public mount
+			// point. Cloudbox should set it to the full external prefix
+			// (e.g. /h/<host>/app/<name>); we fall back to /app/<name>
+			// so the loopback admin UI still produces a usable value.
+			inPrefix := pr.In.Header.Get("X-Forwarded-Prefix")
+			if inPrefix == "" {
+				inPrefix = "/app/" + name
+			}
+			pr.Out.Header.Set("X-Forwarded-Prefix", inPrefix)
+			// X-Forwarded-For: append the immediate client IP to any
+			// existing chain from pr.In.
+			if clientIP, _, err := net.SplitHostPort(pr.In.RemoteAddr); err == nil {
+				prior := pr.In.Header.Values("X-Forwarded-For")
+				if len(prior) > 0 {
+					clientIP = strings.Join(prior, ", ") + ", " + clientIP
+				}
+				pr.Out.Header.Set("X-Forwarded-For", clientIP)
+			}
+		},
 	}
 	r.mu.Lock()
 	r.apps[name] = target
@@ -128,19 +181,27 @@ func (r *AppRegistry) Entries() []AppEntry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make([]AppEntry, 0, len(r.apps)+len(r.tcp))
-	for name := range r.apps {
+	for name, u := range r.apps {
 		role := r.roles[name]
 		if role == "" {
 			role = "user"
 		}
-		out = append(out, AppEntry{Name: name, Role: role})
+		// u.Scheme is "http" for both http/https/unix/npipe (the synthetic
+		// http://socket URL stores "http" for socket-backed apps). That's
+		// the right value for the cloud — schemes are transport hints, not
+		// the on-disk AppConfig.Scheme. Socket apps proxy HTTP, period.
+		scheme := u.Scheme
+		if scheme == "" {
+			scheme = "http"
+		}
+		out = append(out, AppEntry{Name: name, Role: role, Scheme: scheme})
 	}
 	for name := range r.tcp {
 		role := r.roles[name]
 		if role == "" {
 			role = "user"
 		}
-		out = append(out, AppEntry{Name: name, Role: role})
+		out = append(out, AppEntry{Name: name, Role: role, Scheme: "tcp"})
 	}
 	return out
 }
@@ -278,7 +339,6 @@ func (r *AppRegistry) handler() gin.HandlerFunc {
 func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	r.mu.RLock()
 	rp := r.proxy[name]
-	target := r.apps[name]
 	tcpAddr := r.tcp[name]
 	r.mu.RUnlock()
 	if tcpAddr != "" {
@@ -292,7 +352,11 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	if rest == "" {
 		rest = "/"
 	}
-	c.Request.URL.Path = singleJoin(target.Path, rest)
+	// Let httputil.ReverseProxy's director do the target-path prefix
+	// join — it uses the same single-slash semantics our `singleJoin`
+	// did, but does it exactly once. Pre-joining here would prepend
+	// target.Path twice for apps with a non-empty upstream base path.
+	c.Request.URL.Path = rest
 	c.Request.URL.RawPath = ""
 	rp.ServeHTTP(c.Writer, c.Request)
 }
@@ -339,15 +403,3 @@ func serveTCPBridge(c *gin.Context, name, addr string) {
 	_, _ = io.Copy(wsConn, upstream)
 }
 
-func singleJoin(a, b string) string {
-	switch {
-	case a == "" || a == "/":
-		return b
-	case strings.HasSuffix(a, "/") && strings.HasPrefix(b, "/"):
-		return a + b[1:]
-	case !strings.HasSuffix(a, "/") && !strings.HasPrefix(b, "/"):
-		return a + "/" + b
-	default:
-		return a + b
-	}
-}

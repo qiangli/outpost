@@ -445,24 +445,32 @@ function renderMain(status, cfg) {
   const appsList = el('div', {class: 'item-list'});
   for (const a of (cfg.apps || [])) {
     const row = el('div', {class: 'item-row'});
-    // Each registered app is also reachable on this admin-UI listener at
-    // `<origin>/<name>/` (proxied to the underlying target). That's the
-    // clickable URL — opening it goes through outpost's proxy with the
-    // current admin session, so unix sockets and loopback-only daemons
-    // become reachable from this browser too.
+    // Each HTTP-registered app is reachable on this admin-UI listener
+    // at `<origin>/<name>/` (proxied to the underlying target). That's
+    // the clickable URL — opening it goes through outpost's proxy with
+    // the current admin session, so unix sockets and loopback-only
+    // daemons become reachable from this browser too.
+    //
+    // TCP-scheme apps deliberately don't get a clickable link: the
+    // /<name>/ route is a WebSocket bridge to a raw TCP service (ssh,
+    // postgres, …); a plain browser GET against it would 4xx and
+    // confuse the operator. Show the upstream target instead so they
+    // see where it points.
+    const appIsTCP = a.scheme === 'tcp';
     const proxyHref = `${location.origin}/${encodeURIComponent(a.name)}/`;
-    // Show the underlying target as a quieter hint so the user can see
-    // *where* the proxy points.
     let upstream;
     if (a.scheme === 'unix' || a.scheme === 'npipe') {
       upstream = `${a.scheme}://${a.socket || ''}`;
     } else {
       upstream = `${a.scheme || 'http'}://${a.host || '127.0.0.1'}:${a.port}`;
     }
-    const targetEl = el('span', {class: 'grow'},
-      el('a', {href: proxyHref, target: '_blank', rel: 'noopener noreferrer'}, proxyHref),
-      el('span', {class: 'hint', style: 'margin-left:0.5rem'}, '→ ' + upstream),
-    );
+    const targetEl = appIsTCP
+      ? el('span', {class: 'grow'},
+          el('span', {}, upstream),
+          el('span', {class: 'hint', style: 'margin-left:0.5rem'}, '(tcp bridge — no http path)'))
+      : el('span', {class: 'grow'},
+          el('a', {href: proxyHref, target: '_blank', rel: 'noopener noreferrer'}, proxyHref),
+          el('span', {class: 'hint', style: 'margin-left:0.5rem'}, '→ ' + upstream));
     const sw = switchEl({checked: !!a.enabled});
     sw.input.addEventListener('change', async () => {
       const newVal = sw.input.checked;
@@ -497,37 +505,73 @@ function renderMain(status, cfg) {
   }
   custom.append(appsList);
 
-  const addForm = el('form', {});
-  addForm.append(el('h2', {}, 'Add app'),
-    el('div', {class: 'row'},
-      el('label', {}, 'Name', el('input', {name: 'name', type: 'text', required: true})),
-      el('label', {}, 'Icon URL', el('input', {name: 'icon', type: 'url'})),
-    ),
-    el('label', {}, 'URL',
-      el('input', {name: 'url', type: 'text', required: true,
-        placeholder: 'http://localhost:8080 or unix:///run/podman/podman.sock'})),
-    el('label', {}, 'Role', (() => {
-      const s = el('select', {name: 'role'});
-      s.append(
-        el('option', {value: 'guest'}, 'guest — no elevation'),
-        el('option', {value: 'user', selected: ''}, 'user — basic elevation'),
-        el('option', {value: 'admin'}, 'admin — host password + admin list'),
-      );
-      return s;
-    })()),
-    el('label', {class: 'check'}, el('input', {name: 'enabled', type: 'checkbox', checked: true}), 'Enabled'),
-    el('button', {type: 'submit'}, 'Add app'));
+  // Match the outbound form's visual rhythm: 22rem cap, flex-column,
+  // gap, one field per line. Protocol dropdown drives whether the
+  // target is host:port (http/https/tcp) or a socket path (unix/npipe).
+  const addForm = el('form', {style: 'max-width: 22rem; display: flex; flex-direction: column; gap: 0.55rem;'});
+
+  // Only the user-relevant schemes — http/https for web apps, tcp for
+  // ssh/postgres/etc. unix and npipe are still accepted by the server
+  // API (so the built-in podman/ollama toggles keep working), but the
+  // Add-app form deliberately doesn't expose them.
+  const appSchemeSel = el('select', {name: 'scheme', style: 'width: auto;'},
+    el('option', {value: 'http'}, 'http'),
+    el('option', {value: 'https'}, 'https'),
+    el('option', {value: 'tcp'}, 'tcp'));
+
+  // app-prefixed names avoid colliding with the same-named consts the
+  // outbound form below declares in the same renderMain() scope.
+  // No "upstream path" field by design: outpost relies on X-Forwarded-*
+  // headers to let well-behaved web apps (Grafana, JupyterLab,
+  // code-server, …) compute their own absolute URLs. Apps that need a
+  // subpath should be told their public URL via their own config knob
+  // (GF_SERVER_ROOT_URL etc.), not via a proxy-side rewrite.
+  const appHostInput = el('input', {name: 'host', type: 'text', placeholder: '127.0.0.1'});
+  const appPortInput = el('input', {name: 'port', type: 'number', min: '1', max: '65535', required: true, placeholder: 'e.g. 8080'});
+
+  const appHostLabel = el('label', {}, 'Host', appHostInput);
+  const appPortLabel = el('label', {}, 'Port', appPortInput);
+
+  const roleSel = el('select', {name: 'role', style: 'width: auto;'});
+  roleSel.append(
+    el('option', {value: 'guest'}, 'guest — no elevation'),
+    el('option', {value: 'user', selected: ''}, 'user — basic elevation'),
+    el('option', {value: 'admin'}, 'admin — host password + admin list'),
+  );
+
+  addForm.append(el('h2', {style: 'margin-bottom: 0.2rem;'}, 'Add app'),
+    el('label', {}, 'Name', el('input', {name: 'name', type: 'text', required: true,
+      placeholder: 'e.g. grafana'})),
+    el('label', {}, 'Icon URL', el('input', {name: 'icon', type: 'url',
+      placeholder: 'optional'})),
+    el('label', {}, 'Protocol', appSchemeSel),
+    appHostLabel,
+    appPortLabel,
+    el('label', {}, 'Role', roleSel),
+    el('label', {class: 'check'},
+      el('input', {name: 'enabled', type: 'checkbox', checked: true}), 'Enabled'),
+    el('button', {type: 'submit', style: 'align-self: start; margin-top: 0.3rem;'}, 'Add app'));
+
   addForm.addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const fd = new FormData(addForm);
+    const scheme = (fd.get('scheme') || 'http').toString();
+    const body = {
+      name: (fd.get('name') || '').toString().trim(),
+      icon: (fd.get('icon') || '').toString().trim(),
+      scheme,
+      role: (fd.get('role') || 'user').toString(),
+      enabled: addForm.enabled.checked,
+    };
+    body.host = (fd.get('host') || '').toString().trim(); // server defaults to 127.0.0.1
+    const p = parseInt(fd.get('port'), 10);
+    if (!Number.isFinite(p) || p < 1 || p > 65535) {
+      msg('err', 'Port must be between 1 and 65535');
+      return;
+    }
+    body.port = p;
     try {
-      await api('POST', '/api/apps', {
-        name: fd.get('name'),
-        icon: fd.get('icon'),
-        url: (fd.get('url') || '').toString().trim(),
-        role: fd.get('role') || 'user',
-        enabled: addForm.enabled.checked,
-      });
+      await api('POST', '/api/apps', body);
       msg('ok', 'App added.');
       render();
     } catch (e) {
@@ -605,75 +649,120 @@ function renderMain(status, cfg) {
   }
   outbound.append(obList);
 
-  const addOb = el('form', {});
+  // Cap the form's width so the inputs don't span the whole 720px page —
+  // these fields hold short identifiers (hostnames, usernames, ports),
+  // not URLs or paragraphs. flex-column + gap gives a steadier vertical
+  // rhythm than relying on label margins.
+  const addOb = el('form', {style: 'max-width: 22rem; display: flex; flex-direction: column; gap: 0.55rem;'});
   // Protocol drives which "first" field is shown:
   //   http → Path (local mount under the admin UI listener, e.g. /ollama)
   //   tcp  → Port (loopback TCP port the outpost binds, e.g. 5432)
   // We keep both <input>s in the DOM but hide the inactive one so the
   // FormData payload only carries the relevant value, and switch their
-  // `required` flag in lockstep.
-  const schemeSel = el('select', {name: 'scheme'},
-    el('option', {value: 'http'}, 'http'),
-    el('option', {value: 'tcp'}, 'tcp'));
-  const pathInput = el('input', {name: 'path', type: 'text', required: true,
+  // The "Remote" dropdown is populated asynchronously from
+  // /api/outbound/suggestions (which aggregates cloudbox's
+  // /api/v1/hosts). Each <option> carries its host/name/scheme/user
+  // in data-* attrs so the submit handler can read them back without
+  // hidden fields. Until the fetch resolves the dropdown shows a
+  // single "Loading remotes…" placeholder; if the fetch fails (no
+  // access token / cloudbox unreachable) we render an inline error.
+  const remoteSel = el('select', {name: 'remote', required: true},
+    el('option', {value: ''}, 'Loading remotes…'));
+  // Local-mount inputs: path for http remotes, port for tcp. Toggled
+  // by the picked remote's scheme (see applyRemote below).
+  const pathInput = el('input', {name: 'path', type: 'text',
     placeholder: 'e.g. /ollama'});
   const portInput = el('input', {name: 'local_port', type: 'number',
     min: '1', max: '65535', placeholder: 'e.g. 5432'});
-  const pathLabel = el('label', {}, 'Path (local mount)', pathInput);
+  const pathLabel = el('label', {style: 'display:none'}, 'Path (local mount)', pathInput);
   const portLabel = el('label', {style: 'display:none'}, 'Port (localhost)', portInput);
-  const applyScheme = () => {
-    const tcp = schemeSel.value === 'tcp';
-    pathLabel.style.display = tcp ? 'none' : '';
-    portLabel.style.display = tcp ? '' : 'none';
-    pathInput.required = !tcp;
-    portInput.required = tcp;
+  // Status hint that shows the auto-filled host/user for the currently
+  // picked remote, so the operator can confirm what they're connecting
+  // to without us re-displaying it as raw input fields.
+  const remoteHint = el('div', {class: 'hint', style: 'margin-top:-0.3rem; min-height:1em;'}, '');
+  const applyRemote = () => {
+    const opt = remoteSel.selectedOptions[0];
+    const scheme = (opt && opt.dataset.scheme) || '';
+    pathLabel.style.display = scheme === 'http' ? '' : 'none';
+    portLabel.style.display = scheme === 'tcp'  ? '' : 'none';
+    pathInput.required = scheme === 'http';
+    portInput.required = scheme === 'tcp';
+    remoteHint.textContent = (opt && opt.dataset.host)
+      ? `${opt.dataset.host} · ${opt.dataset.user || '(no os user)'} · ${scheme}`
+      : '';
   };
-  schemeSel.addEventListener('change', applyScheme);
-  applyScheme();
-  // Layout: one field per line, top-down in the order the operator
-  // fills them out — pick the transport first, then the local
-  // identifier it implies (path or port), then what's on the far end
-  // (name → host → user). The User input is narrowed because OS
-  // usernames are short and a full-width box looks wrong next to the
-  // hostname above it.
-  addOb.append(el('h2', {}, 'Add outbound'),
-    el('label', {}, 'Protocol', schemeSel),
+  remoteSel.addEventListener('change', applyRemote);
+
+  addOb.append(el('h2', {style: 'margin-bottom: 0.2rem;'}, 'Add outbound'),
+    el('label', {}, 'Remote', remoteSel),
+    remoteHint,
     pathLabel,
     portLabel,
-    el('label', {}, 'Name (remote app)', el('input', {name: 'name', type: 'text', required: true,
-      placeholder: 'e.g. ollama'})),
-    el('label', {}, 'Host (remote outpost)', el('input', {name: 'host', type: 'text', required: true,
-      placeholder: 'e.g. novicortex'})),
-    el('label', {}, 'User (remote OS)', el('input', {name: 'user', type: 'text', required: true,
-      placeholder: 'e.g. noviadmin', style: 'max-width: 14rem;'})),
-    el('button', {type: 'submit'}, 'Add outbound'));
+    el('button', {type: 'submit', style: 'align-self: start; margin-top: 0.3rem;'}, 'Add outbound'));
+
+  // Kick off the fetch after the form is in the DOM so the user sees
+  // the placeholder option immediately. The result populates the
+  // dropdown in place.
+  (async () => {
+    try {
+      const r = await api('GET', '/api/outbound/suggestions');
+      const list = (r && r.suggestions) || [];
+      remoteSel.innerHTML = '';
+      if (list.length === 0) {
+        remoteSel.append(el('option', {value: ''}, '(no remote apps available)'));
+        applyRemote();
+        return;
+      }
+      // Empty placeholder first so the user has to make a deliberate
+      // choice rather than silently inheriting the first row.
+      remoteSel.append(el('option', {value: ''}, '— pick a remote —'));
+      for (const s of list) {
+        const label = `${s.host} / ${s.name} (${s.scheme || 'http'})`
+          + (s.online ? '' : ' — offline')
+          + (s.shared ? ' — shared' : '');
+        const opt = el('option', {value: `${s.host}/${s.name}`}, label);
+        opt.dataset.host = s.host;
+        opt.dataset.name = s.name;
+        opt.dataset.user = s.os_user || '';
+        opt.dataset.scheme = s.scheme || 'http';
+        remoteSel.append(opt);
+      }
+      applyRemote();
+    } catch (e) {
+      remoteSel.innerHTML = '';
+      remoteSel.append(el('option', {value: ''}, '— failed to load remotes —'));
+      msg('err', 'Could not load remote apps: ' + (e.message || e));
+    }
+  })();
+
   addOb.addEventListener('submit', async (ev) => {
     ev.preventDefault();
-    const fd = new FormData(addOb);
-    const scheme = (fd.get('scheme') || 'http').toString();
-    const name = (fd.get('name') || '').toString().trim();
-    const body = {
-      name,
-      host: (fd.get('host') || '').toString().trim(),
-      user: (fd.get('user') || '').toString().trim(),
-      scheme,
-    };
+    const opt = remoteSel.selectedOptions[0];
+    if (!opt || !opt.dataset.host) {
+      msg('err', 'Pick a remote to mount.');
+      return;
+    }
+    const scheme = opt.dataset.scheme || 'http';
+    const host = opt.dataset.host;
+    const name = opt.dataset.name;
+    const user = opt.dataset.user;
+    const body = { host, name, user, scheme };
     if (scheme === 'tcp') {
-      const port = parseInt(fd.get('local_port'), 10);
+      const port = parseInt(portInput.value, 10);
       if (!Number.isFinite(port) || port < 1 || port > 65535) {
         msg('err', 'Port must be between 1 and 65535');
         return;
       }
       body.local_port = port;
-      // `path` is the server-side identifier; for tcp it's never user
-      // visible. Derive it from name+port so two tcp outbounds to the
-      // same remote app on different local ports don't collide.
       body.path = `${name}-${port}`;
     } else {
-      // Accept "/ollama" or "ollama"; the server requires a slash-free
-      // path, so we strip a leading slash here to keep the placeholder
-      // copy-friendly with the localHref display.
-      body.path = (fd.get('path') || '').toString().replace(/^\/+/, '').trim();
+      // Accept "/ollama" or "ollama"; server requires a slash-free path,
+      // so strip a leading slash here.
+      body.path = pathInput.value.replace(/^\/+/, '').trim();
+      if (!body.path) {
+        msg('err', 'Path is required.');
+        return;
+      }
     }
     try {
       await api('POST', '/api/outbound', body);

@@ -441,7 +441,7 @@ func validateApp(ac *conf.AppConfig) error {
 		ac.Scheme = "http"
 	}
 	switch ac.Scheme {
-	case "http", "https":
+	case "http", "https", "tcp":
 		ac.Host = strings.TrimSpace(ac.Host)
 		if ac.Host == "" {
 			ac.Host = "127.0.0.1"
@@ -460,7 +460,7 @@ func validateApp(ac *conf.AppConfig) error {
 		ac.Host = ""
 		ac.Port = 0
 	default:
-		return errors.New("scheme must be one of http|https|unix|npipe")
+		return errors.New("scheme must be one of http|https|tcp|unix|npipe")
 	}
 	ac.Role = strings.ToLower(strings.TrimSpace(ac.Role))
 	if !conf.ValidRole(ac.Role) {
