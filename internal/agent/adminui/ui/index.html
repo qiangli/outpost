@@ -620,14 +620,16 @@ function renderMain(status, cfg) {
   for (const ob of (cfg.outbound || [])) {
     const row = el('div', {class: 'item-row stacked'});
     const isTCP = ob.scheme === 'tcp';
+    const isSSH = ob.scheme === 'ssh';
+    const isListenerMount = isTCP || isSSH;
     // HTTP outbounds: reachable as a subpath off the admin UI origin.
-    // TCP outbounds: reachable as a raw TCP socket on 127.0.0.1:<port>
-    // (browser can't dial it, so it's plain text — no <a href>).
-    const localDisplay = isTCP
+    // TCP / SSH outbounds: reachable as a raw TCP socket on
+    // 127.0.0.1:<port> (browser can't dial it, so plain text — no <a>).
+    const localDisplay = isListenerMount
       ? `tcp://127.0.0.1:${ob.local_port}`
       : `${location.origin}/${encodeURIComponent(ob.path)}/`;
-    const lineLabel = isTCP ? String(ob.local_port) : ob.path;
-    const linkOrText = (!isTCP && ob.connected)
+    const lineLabel = isListenerMount ? String(ob.local_port) : ob.path;
+    const linkOrText = (!isListenerMount && ob.connected)
       ? el('a', {class: 'grow', href: localDisplay, target: '_blank', rel: 'noopener noreferrer'}, localDisplay)
       : el('span', {class: 'grow'}, localDisplay);
     // Line 1: identifier (path or port) + local endpoint.
@@ -636,8 +638,13 @@ function renderMain(status, cfg) {
       linkOrText,
     );
     // Line 2: app@host (user) — status — Connect/Disconnect — Remove.
+    //   SSH outbounds target the remote outpost's built-in /ssh (no app
+    //   name); show "built-in ssh" instead of an "app@" mention.
+    const targetLabel = isSSH
+      ? `→ built-in ssh @ ${ob.host} (${ob.user})`
+      : `→ ${ob.name}@${ob.host} (${ob.user})`;
     const line2 = el('div', {class: 'line'},
-      el('span', {class: 'hint grow'}, `→ ${ob.name}@${ob.host} (${ob.user})`),
+      el('span', {class: 'hint grow'}, targetLabel),
       el('span', {class: 'hint'}, ob.connected ? 'connected' : 'disconnected'),
       ob.connected
         ? el('button', {class: 'secondary', onclick: async () => {
@@ -648,8 +655,11 @@ function renderMain(status, cfg) {
             } catch (e) { msg('err', e.message); }
           }}, 'Disconnect')
         : el('button', {onclick: async () => {
+            const dlgTitle = isSSH
+              ? `Connect to built-in ssh @ ${ob.host}`
+              : `Connect to ${ob.name}@${ob.host}`;
             const ok = await passwordDialog({
-              title: `Connect to ${ob.name}@${ob.host}`,
+              title: dlgTitle,
               description: `Enter the OS password for ${ob.user}@${ob.host}.`,
               submitText: 'Connect',
               onSubmit: async (pw) => {
@@ -713,10 +723,11 @@ function renderMain(status, cfg) {
   const applyRemote = () => {
     const opt = remoteSel.selectedOptions[0];
     const scheme = (opt && opt.dataset.scheme) || '';
+    const isListener = scheme === 'tcp' || scheme === 'ssh';
     pathLabel.style.display = scheme === 'http' ? '' : 'none';
-    portLabel.style.display = scheme === 'tcp'  ? '' : 'none';
+    portLabel.style.display = isListener ? '' : 'none';
     pathInput.required = scheme === 'http';
-    portInput.required = scheme === 'tcp';
+    portInput.required = isListener;
     remoteHint.textContent = (opt && opt.dataset.host)
       ? `${opt.dataset.host} · ${opt.dataset.user || '(no os user)'} · ${scheme}`
       : '';
@@ -747,13 +758,18 @@ function renderMain(status, cfg) {
       // choice rather than silently inheriting the first row.
       remoteSel.append(el('option', {value: ''}, '— pick a remote —'));
       for (const s of list) {
-        const label = `${s.host} / ${s.name} (${s.scheme || 'http'})`
+        // SSH-builtin suggestions ship with name="" — render them as
+        // "host / built-in ssh (ssh)" so the dropdown reads sensibly.
+        const isSSHBuiltin = s.scheme === 'ssh';
+        const displayName = isSSHBuiltin ? 'built-in ssh' : s.name;
+        const label = `${s.host} / ${displayName} (${s.scheme || 'http'})`
           + (s.require_login ? ' 🔒' : '')
           + (s.online ? '' : ' — offline')
           + (s.shared ? ' — shared' : '');
-        const opt = el('option', {value: `${s.host}/${s.name}`}, label);
+        const opt = el('option',
+          {value: `${s.host}/${isSSHBuiltin ? '__ssh__' : s.name}`}, label);
         opt.dataset.host = s.host;
-        opt.dataset.name = s.name;
+        opt.dataset.name = s.name; // empty for ssh-builtin; submit handler keys off scheme
         opt.dataset.user = s.os_user || '';
         opt.dataset.scheme = s.scheme || 'http';
         opt.dataset.indexPath = s.index_path || '';
@@ -779,14 +795,18 @@ function renderMain(status, cfg) {
     const name = opt.dataset.name;
     const user = opt.dataset.user;
     const body = { host, name, user, scheme };
-    if (scheme === 'tcp') {
+    if (scheme === 'tcp' || scheme === 'ssh') {
       const port = parseInt(portInput.value, 10);
       if (!Number.isFinite(port) || port < 1 || port > 65535) {
         msg('err', 'Port must be between 1 and 65535');
         return;
       }
       body.local_port = port;
-      body.path = `${name}-${port}`;
+      // Synthesize a path identifier: <host>-<name>-<port> for tcp, or
+      // <host>-ssh-<port> for the built-in ssh mount (no app name).
+      body.path = scheme === 'ssh'
+        ? `${host}-ssh-${port}`
+        : `${name}-${port}`;
     } else {
       // Accept "/ollama" or "ollama"; server requires a slash-free path,
       // so strip a leading slash here.

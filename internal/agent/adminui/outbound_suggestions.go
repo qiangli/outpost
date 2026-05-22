@@ -73,6 +73,23 @@ func (s *Server) handleOutboundSuggestions(c *gin.Context) {
 				Shared:       h.Shared,
 			})
 		}
+		// Synthetic suggestion for the host's built-in /ssh server (no app
+		// registration required). Scheme="ssh" tells the UI to render a
+		// "Port" field and submit with name="" (the validator strips it).
+		// Only emitted when the remote outpost actually has /ssh mounted —
+		// older outposts omit `builtins`, which we treat as "all on" for
+		// backward compat (matches the convention elsewhere in this code).
+		if h.Builtins == nil || h.Builtins.SSH == nil || *h.Builtins.SSH {
+			out.Suggestions = append(out.Suggestions, outboundSuggestion{
+				Host:   h.Host,
+				OsUser: h.OsUser,
+				Name:   "", // signals built-in /ssh to the front-end
+				Scheme: "ssh",
+				Title:  h.Title,
+				Online: h.Online,
+				Shared: h.Shared,
+			})
+		}
 	}
 	c.JSON(http.StatusOK, out)
 }
@@ -81,12 +98,13 @@ func (s *Server) handleOutboundSuggestions(c *gin.Context) {
 // locally so this package stays decoupled from any internal cloudbox
 // types — the field set is intentionally narrow.
 type cbHostEntry struct {
-	Host   string        `json:"host"`
-	OsUser string        `json:"os_user"`
-	Title  string        `json:"title"`
-	Online bool          `json:"online"`
-	Shared bool          `json:"shared"`
-	Apps   []cbAppEntry  `json:"apps"`
+	Host     string        `json:"host"`
+	OsUser   string        `json:"os_user"`
+	Title    string        `json:"title"`
+	Online   bool          `json:"online"`
+	Shared   bool          `json:"shared"`
+	Apps     []cbAppEntry  `json:"apps"`
+	Builtins *cbBuiltins   `json:"builtins,omitempty"`
 }
 
 type cbAppEntry struct {
@@ -94,6 +112,17 @@ type cbAppEntry struct {
 	Scheme       string `json:"scheme"`
 	RequireLogin bool   `json:"require_login"`
 	IndexPath    string `json:"index_path"`
+}
+
+// cbBuiltins mirrors the `builtins` map cloudbox exposes per host. Fields
+// are pointers so we can distinguish "absent (legacy outpost)" from
+// "explicitly false". The synthetic-ssh-suggestion path treats nil as
+// "enabled" for backward compat with old configs.
+type cbBuiltins struct {
+	Shell     *bool `json:"shell,omitempty"`
+	Desktop   *bool `json:"desktop,omitempty"`
+	Clipboard *bool `json:"clipboard,omitempty"`
+	SSH       *bool `json:"ssh,omitempty"`
 }
 
 // fetchHostsFromCloudbox calls /api/v1/hosts on the configured cloudbox
