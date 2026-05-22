@@ -28,7 +28,20 @@
   .row > button { flex: 0 0 auto; }
   .msg { padding: 0.5rem 0.7rem; border-radius: 4px; margin-bottom: 0.7rem; }
   .msg.ok  { background: #16a34a22; }
-  .msg.err { background: #dc262622; }
+  .msg.err { background: #dc262622; color: #fca5a5; border-left: 3px solid #dc2626; }
+  /* Modal dialog used for outbound Connect (replaces the native prompt). */
+  dialog.auth-dialog { background: #1a1d23; color: inherit; border: 1px solid #8884;
+                       border-radius: 8px; padding: 1.2rem 1.4rem;
+                       min-width: 340px; max-width: 90vw;
+                       color-scheme: dark; }
+  dialog.auth-dialog::backdrop { background: rgba(0,0,0,0.55); }
+  dialog.auth-dialog h2 { margin: 0 0 0.4rem; font-size: 1.05rem; }
+  dialog.auth-dialog p  { margin: 0 0 0.8rem; font-size: 0.85rem; opacity: 0.8; }
+  dialog.auth-dialog form { display: flex; flex-direction: column; gap: 0.7rem; }
+  dialog.auth-dialog .dialog-error { color: #fca5a5; font-size: 0.85rem;
+                                     min-height: 1rem; font-weight: 600; }
+  dialog.auth-dialog .actions { display: flex; gap: 0.5rem; justify-content: flex-end;
+                                margin-top: 0.4rem; }
   table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
   th, td { text-align: left; padding: 0.4rem; border-bottom: 1px solid #8882; font-size: 0.9rem; }
   .pill { display: inline-block; padding: 0 0.4rem; border-radius: 999px; font-size: 0.75rem;
@@ -134,6 +147,55 @@ function coinLogo(size = 28, holeColor = 'transparent') {
     <rect x="40" y="40" width="20" height="20" fill="${holeColor}"/>
   </svg>`;
   return wrap.firstElementChild;
+}
+
+// passwordDialog renders a modal asking for a password and runs the
+// caller-supplied onSubmit(password) when the user submits. If onSubmit
+// throws, the dialog stays open and shows the error message in red
+// instead of dismissing — so the operator can correct a typo without
+// retyping the form. Resolves with true on success, false on cancel.
+function passwordDialog({title, description, submitText = 'Connect', onSubmit}) {
+  return new Promise((resolve) => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'auth-dialog';
+    const form = el('form', {},
+      el('h2', {}, title),
+      description ? el('p', {}, description) : '',
+      el('label', {}, 'Password',
+        el('input', {type: 'password', name: 'password', autocomplete: 'current-password', required: true})),
+      el('div', {class: 'dialog-error'}, ''),
+      el('div', {class: 'actions'},
+        el('button', {type: 'button', class: 'secondary cancel'}, 'Cancel'),
+        el('button', {type: 'submit', class: 'submit'}, submitText),
+      ),
+    );
+    dlg.append(form);
+    document.body.append(dlg);
+    const input = dlg.querySelector('input');
+    const errEl = dlg.querySelector('.dialog-error');
+    const cancelBtn = dlg.querySelector('.cancel');
+    const submitBtn = dlg.querySelector('.submit');
+
+    const close = (ok) => { dlg.close(); dlg.remove(); resolve(ok); };
+    cancelBtn.addEventListener('click', () => close(false));
+    dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); close(false); });
+    form.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      errEl.textContent = '';
+      submitBtn.disabled = true;
+      try {
+        await onSubmit(input.value);
+        close(true);
+      } catch (e) {
+        errEl.textContent = e.message || 'Failed';
+        submitBtn.disabled = false;
+        input.select();
+      }
+    });
+
+    dlg.showModal();
+    setTimeout(() => input.focus(), 0);
+  });
 }
 
 // switchEl builds an iOS-style toggle: a hidden checkbox + a styled span.
@@ -505,14 +567,19 @@ function renderMain(status, cfg) {
             } catch (e) { msg('err', e.message); }
           }}, 'Disconnect')
         : el('button', {onclick: async () => {
-            const pw = prompt(`Password for ${ob.user}@${ob.host}:`);
-            if (pw == null || pw === '') return;
-            try {
-              await api('POST', `/api/outbound/${encodeURIComponent(ob.path)}/connect`,
-                {password: pw});
+            const ok = await passwordDialog({
+              title: `Connect to ${ob.name}@${ob.host}`,
+              description: `Enter the OS password for ${ob.user}@${ob.host}.`,
+              submitText: 'Connect',
+              onSubmit: async (pw) => {
+                await api('POST', `/api/outbound/${encodeURIComponent(ob.path)}/connect`,
+                  {password: pw});
+              },
+            });
+            if (ok) {
               msg('ok', `${ob.path} connected.`);
               render();
-            } catch (e) { msg('err', e.message || 'Connect failed'); }
+            }
           }}, 'Connect'),
       el('button', {class: 'secondary danger', onclick: async () => {
         if (!confirm(`Remove outbound "${ob.path}"?`)) return;
