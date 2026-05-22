@@ -77,7 +77,7 @@ Custom-app add/edit/remove do *not* restart — `AppRegistry` is concurrency-saf
 
 All mounted at root:
 - `GET /healthz`
-- `GET /apps` — returns `{agent, apps:[{name,role}], builtins:{shell,desktop,clipboard,ssh}}`. Per-app `role` is the minimum clearance (`guest|user|admin`, default `user`) and the `builtins` map tells cloudbox which built-in routes this outpost actually mounted, so the portal can hide disabled tiles. Older outposts omit `builtins`; cloudbox treats that as legacy "all on".
+- `GET /apps` — returns `{agent, apps:[AppEntry...], builtins:{shell,desktop,clipboard,ssh}}`. Each `AppEntry` is `{name, scheme, require_login, index_path}`. The `builtins` map tells cloudbox which built-in routes this outpost actually mounted, so the portal can hide disabled tiles. Older outposts omit `builtins`; cloudbox treats that as legacy "all on".
 - `POST /auth` — credential check (see Auth below)
 - `GET /shell` — WebSocket PTY (binary frames = bytes, text frame `{"type":"size",...}` = resize)
 - `GET /desktop` — WebSocket ↔ TCP VNC relay (`--vnc-addr`, default `127.0.0.1:5900`)
@@ -89,13 +89,21 @@ All mounted at root:
 
 ### Apps
 
-`AppRegistry` (in `internal/agent/apps.go`) holds `name → *url.URL` plus per-app `httputil.ReverseProxy` instances and a per-app role (`guest|user|admin`, empty defaults to `user` — see `conf.ValidRole`). Concurrency-safe via `sync.RWMutex` — admin handlers `Register`/`Unregister` at runtime without touching the tunnel. `RegisterFromConfig(AppConfig)` is the helper that registers based on `AppConfig.Scheme`:
+`AppRegistry` (in `internal/agent/apps.go`) holds `name → *url.URL` plus per-app `httputil.ReverseProxy` instances and per-app `AppMeta{RequireLogin, LANOnlyPaths, IndexPath}`. Concurrency-safe via `sync.RWMutex` — admin handlers `Register`/`Unregister` at runtime without touching the tunnel. `RegisterFromConfig(AppConfig)` is the helper that registers based on `AppConfig.Scheme`:
 
 - `http`/`https` — TCP target built from `Host:Port` (Host defaults to `127.0.0.1`).
 - `unix`/`npipe` — socket-backed. The registry stores a synthetic `http://socket` URL and a per-app `http.Transport` whose `DialContext` dials the local socket (`internal/agent/dialer{,_other,_windows}.go`). Lets an outpost front `docker.sock` / `podman.sock` / `\\.\pipe\docker_engine` without a TCP bind. HTTP/1.1 Upgrade and websockets still work because `httputil.ReverseProxy` hijacks the conn through this transport the same way it does for the default one.
 - `tcp` — raw TCP target at `Host:Port` (e.g. `127.0.0.1:22` or `127.0.0.1:5432`). The `/app/:name/*p` handler doesn't run the reverse proxy for these; it accepts a WebSocket upgrade and byte-splices to the TCP target via `serveTCPBridge`. Paired with a `tcp`-scheme `OutboundConfig` on a peer outpost (see "Outbound mounts"). HTTP-mode and TCP-mode names are mutually exclusive — re-registering a name under a different scheme automatically clears the old mode.
 
-Disabled entries are skipped so the admin UI can keep them around without proxying. Seeded by `buildAppRegistry` in `main.go` from `fc.Apps` when structured config is present, else from `MATRIX_APPS="name1=url1,name2=url2"`, falling back to `ycode → http://127.0.0.1:8765` when both are absent. Path rewrite uses `singleJoin` to strip `/app/<name>` cleanly. `Entries()` returns `[]AppEntry{Name, Role}` for `GET /apps`.
+Disabled entries are skipped so the admin UI can keep them around without proxying. Seeded by `buildAppRegistry` in `main.go` from `fc.Apps` when structured config is present, else from `MATRIX_APPS="name1=url1,name2=url2"`, falling back to `ycode → http://127.0.0.1:8765` when both are absent. Path rewrite uses `singleJoin` to strip `/app/<name>` cleanly. `Entries()` returns `[]AppEntry{Name, Scheme, RequireLogin, IndexPath}` for `GET /apps`.
+
+### Per-app access control (`ProxyTo` gate in `apps.go`)
+
+The legacy `guest|user|admin` tier was replaced by three orthogonal knobs on `AppConfig` (commit fbe403f). `LoadFile` migrates old configs: `role:"guest"` → `RequireLogin=false`, `role:"user"|"admin"` → `RequireLogin=true`. `conf.ValidRole` is gone.
+
+- **`RequireLogin` (bool)** — when true, the proxy refuses requests that came from cloudbox (i.e. carry `X-Forwarded-Prefix`) unless they also carry `X-Periscope-Role`. That header is stamped only after the caller cleared the per-(host, app) `matrix_elev` cookie via cloudbox's elevate flow. Loopback hits (admin UI subpath, local `/app/<name>/*`) bypass the gate entirely — the LAN/loopback boundary is what gates them.
+- **`LANOnlyPaths` ([]string)** — segment-anchored prefix list. A request matching one of these is 404'd when `X-Forwarded-Prefix` is present, so kiosk-style endpoints (e.g. `/kiosk`) can be reachable on the LAN but invisible through the cloud surface. `matchSegmentPrefix` makes `/kiosk` match `/kiosk` and `/kiosk/foo` but not `/kiosks-of-truth`.
+- **`IndexPath` (string)** — landing sub-path the cloudbox SPA prepends when constructing this tile's URL. Lets two `AppConfig` rows on the same upstream open at different paths ("Class" and "Class Admin" pointing at one app, each with its own tile + Connect button + cookie scope). Outpost itself doesn't rewrite anything; the field is published via `/apps` for the cloud's benefit.
 
 ### Admin UI (`internal/agent/adminui/`)
 
@@ -153,7 +161,7 @@ Two halves — a server inside the outpost agent and client-side CLI helpers:
 cfg only ── elev cookie + pinger ── back to cfg-only
 ```
 
-`Connect` calls cloudbox's `POST /h/<host>/elevate` with `Bearer <access_token>` + `{user, password}`, captures the `matrix_elev` cookie, and starts a 4-minute pinger to slide the idle TTL. `Disconnect` (or a pinger failure indicating absolute expiry) drops the cookie; the operator must `Connect` again. Cookies are **never** persisted to disk — only `conf.OutboundConfig` is (stored in `FileConfig.Outbound`). Outbound paths share the local `NoRoute` namespace with custom apps — the admin handler refuses to register an outbound that would shadow a local app name.
+`Connect` calls cloudbox's `POST /h/<host>/app/<name>/elevate` with `Bearer <access_token>` + `{user, password}` (per-(host, app) since commit fbe403f — the cookie's Path scopes to `/h/<host>/app/<name>/` so two mounts to the same remote host genuinely have isolated cookies), captures the `matrix_elev` cookie, and starts a 4-minute pinger to slide the idle TTL. `Disconnect` (or a pinger failure indicating absolute expiry) drops the cookie; the operator must `Connect` again. Cookies are **never** persisted to disk — only `conf.OutboundConfig` is (stored in `FileConfig.Outbound`). Outbound paths share the local `NoRoute` namespace with custom apps — the admin handler refuses to register an outbound that would shadow a local app name.
 
 The manager is only constructed when `fc.AccessToken` is present, so unpaired outposts don't expose the outbound endpoints.
 
