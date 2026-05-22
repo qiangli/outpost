@@ -165,7 +165,10 @@ cfg only ── elev cookie + pinger ── back to cfg-only
 
 The manager is only constructed when `fc.AccessToken` is present, so unpaired outposts don't expose the outbound endpoints.
 
-**Two transports:** `OutboundConfig.Scheme` selects either `http` (default — admin-UI subpath at `http://localhost:17777/<path>/...` proxied through cloudbox to the remote app's HTTP endpoint) or `tcp` (a `127.0.0.1:<local_port>` listener that byte-bridges every accepted TCP conn to the remote outpost via WSS). The TCP mode is what lets unmodified clients reach non-HTTP services as if they were local — `ssh -p <local_port> alice@127.0.0.1`, `psql -h 127.0.0.1 -p <local_port>`, `mysql -h 127.0.0.1 -P <local_port>`, etc.
+**Three transports:** `OutboundConfig.Scheme` selects:
+- `http` (default) — admin-UI subpath at `http://localhost:17777/<path>/...` proxied through cloudbox to the remote app's HTTP endpoint.
+- `tcp` — a `127.0.0.1:<local_port>` listener that byte-bridges every accepted TCP conn to the remote outpost via WSS to `/h/<host>/app/<name>/`. Requires a matching `tcp`-scheme `AppConfig` on the remote outpost. Lets unmodified clients reach non-HTTP services hosted on the remote machine — `psql -h 127.0.0.1 -p <local_port>`, `mysql -h 127.0.0.1 -P <local_port>`, etc.
+- `ssh` — same listener+WS-bridge shape as `tcp`, but the bridge targets the remote outpost's **built-in `/ssh` endpoint** (the in-process `golang.org/x/crypto/ssh` server) directly, dialing `wss://<cloudbox>/h/<host>/ssh`. No `AppConfig` on the remote required. The `Name` field is ignored. Elevate flow uses host-level `/h/<host>/elevate` (the same one `outpost ssh-proxy` / `outpost connect` use), so the `matrix_elev` cookie is host-scoped. Use case: `ssh -p <local_port> noviadmin@127.0.0.1` from a roaming dragon to reach a paired outpost's built-in SSH without needing a host-OS sshd port mapping.
 
 TCP-mode wire flow (one accepted conn):
 

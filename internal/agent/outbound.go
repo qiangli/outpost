@@ -166,15 +166,18 @@ func (m *OutboundManager) Connect(path, password string) error {
 	body, _ := json.Marshal(map[string]string{"user": cfg.User, "password": password})
 	ctx, cancelReq := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelReq()
-	// Per-(host, app) elevate: cloudbox mints a cookie with Path=
-	// /h/<host>/app/<name>/ so this elevation only unlocks the one
-	// app, not the whole host. Matches the inbound model.
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		m.serverURL+
-			"/h/"+url.PathEscape(cfg.Host)+
-			"/app/"+url.PathEscape(cfg.Name)+
-			"/elevate",
-		bytes.NewReader(body))
+	// Elevate URL depends on what we're targeting:
+	//   - http/tcp scheme → per-(host, app): /h/<host>/app/<name>/elevate
+	//     (cookie scoped to that one app only — matches the inbound model)
+	//   - ssh scheme      → host-level: /h/<host>/elevate
+	//     (cookie scoped to /h/<host>/, same as outpost ssh-proxy)
+	elevateURL := m.serverURL + "/h/" + url.PathEscape(cfg.Host)
+	if cfg.BuiltinSSH() {
+		elevateURL += "/elevate"
+	} else {
+		elevateURL += "/app/" + url.PathEscape(cfg.Name) + "/elevate"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, elevateURL, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -200,14 +203,14 @@ func (m *OutboundManager) Connect(path, password string) error {
 		return fmt.Errorf("elevate succeeded but no matrix_elev cookie returned")
 	}
 
-	// For tcp-scheme mounts: bind the loopback listener BEFORE we publish
-	// the conn, so a port-bind failure surfaces synchronously to the
-	// caller instead of getting lost in a background goroutine. The
-	// listener is loopback-only — same security model as the rest of
-	// the agent (only the matrix tunnel is supposed to be addressable
+	// For tcp/ssh-scheme mounts: bind the loopback listener BEFORE we
+	// publish the conn, so a port-bind failure surfaces synchronously
+	// to the caller instead of getting lost in a background goroutine.
+	// The listener is loopback-only — same security model as the rest
+	// of the agent (only the matrix tunnel is supposed to be addressable
 	// off-machine).
 	var listener net.Listener
-	if cfg.SchemeNorm() == "tcp" {
+	if cfg.BindsListener() {
 		if cfg.LocalPort < 1 || cfg.LocalPort > 65535 {
 			return fmt.Errorf("outbound %q: local_port %d is out of range", path, cfg.LocalPort)
 		}
@@ -233,10 +236,8 @@ func (m *OutboundManager) Connect(path, password string) error {
 		listener:    listener,
 	}
 	m.conns[path] = conn
-	host := cfg.Host
-	appName := cfg.Name
 	m.mu.Unlock()
-	go m.pinger(pingCtx, path, host, appName)
+	go m.pinger(pingCtx, path, cfg)
 	if listener != nil {
 		go m.tcpAcceptLoop(pingCtx, path, cfg, listener)
 	}
@@ -262,9 +263,16 @@ func (m *OutboundManager) Disconnect(path string) {
 // every 4 minutes. The cookie is idle-expired by cloudbox after 5 min;
 // pinging twice within that window keeps it warm. Hard absolute expiry
 // (1 h) is observable as a non-2xx response, which tears the conn down
-// — the operator must Connect again. Per-(host, app) scope: the ping
-// URL has to match the cookie's Path or cloudbox won't see the cookie.
-func (m *OutboundManager) pinger(ctx context.Context, path, host, appName string) {
+// — the operator must Connect again. The ping URL has to match the
+// cookie's Path or cloudbox won't see the cookie: per-(host, app) for
+// http/tcp scheme, host-level for ssh scheme.
+func (m *OutboundManager) pinger(ctx context.Context, path string, cfg conf.OutboundConfig) {
+	pingURL := m.serverURL + "/h/" + url.PathEscape(cfg.Host)
+	if cfg.BuiltinSSH() {
+		pingURL += "/elevate-ping"
+	} else {
+		pingURL += "/app/" + url.PathEscape(cfg.Name) + "/elevate-ping"
+	}
 	t := time.NewTicker(4 * time.Minute)
 	defer t.Stop()
 	for {
@@ -279,11 +287,7 @@ func (m *OutboundManager) pinger(ctx context.Context, path, host, appName string
 		if conn == nil {
 			return
 		}
-		req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
-			m.serverURL+
-				"/h/"+url.PathEscape(host)+
-				"/app/"+url.PathEscape(appName)+
-				"/elevate-ping", nil)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, pingURL, nil)
 		req.Header.Set("Authorization", "Bearer "+m.accessToken)
 		req.AddCookie(&http.Cookie{Name: "matrix_elev", Value: conn.elevCookie})
 		resp, err := m.httpClient.Do(req)
@@ -314,12 +318,12 @@ func (m *OutboundManager) ProxyTo(c *gin.Context, path, rest string) {
 		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "unknown outbound path"})
 		return
 	}
-	if cfg.SchemeNorm() == "tcp" {
-		// HTTP requests to a tcp-scheme outbound are a category error —
-		// the local mount for a tcp outbound is a 127.0.0.1:<local_port>
-		// TCP listener, not an admin-UI subpath.
+	if cfg.BindsListener() {
+		// HTTP requests to a tcp/ssh-scheme outbound are a category
+		// error — those mounts expose a 127.0.0.1:<local_port> TCP
+		// listener, not an admin-UI subpath.
 		c.AbortWithStatusJSON(http.StatusBadRequest,
-			gin.H{"error": fmt.Sprintf("outbound %q is tcp — connect to 127.0.0.1:%d, not the admin UI", path, cfg.LocalPort)})
+			gin.H{"error": fmt.Sprintf("outbound %q is %s — connect to 127.0.0.1:%d, not the admin UI", path, cfg.SchemeNorm(), cfg.LocalPort)})
 		return
 	}
 	if conn == nil {
@@ -392,11 +396,12 @@ func (m *OutboundManager) Stop() {
 	}
 }
 
-// tcpAcceptLoop owns the listener for one tcp-scheme outbound. Each
-// accepted client connection spawns a goroutine that opens a WSS to
-// cloudbox at /h/<host>/app/<name>/ and byte-splices the two ends.
-// When ctx is cancelled (Disconnect / Stop / Register-removal) the
-// listener Close races us out of Accept.
+// tcpAcceptLoop owns the listener for one tcp/ssh-scheme outbound.
+// Each accepted client connection spawns a goroutine that opens a WSS
+// to cloudbox — at /h/<host>/app/<name>/ for tcp or /h/<host>/ssh for
+// ssh — and byte-splices the two ends. When ctx is cancelled
+// (Disconnect / Stop / Register-removal) the listener Close races us
+// out of Accept.
 func (m *OutboundManager) tcpAcceptLoop(ctx context.Context, path string, cfg conf.OutboundConfig, l net.Listener) {
 	for {
 		conn, err := l.Accept()
@@ -412,8 +417,9 @@ func (m *OutboundManager) tcpAcceptLoop(ctx context.Context, path string, cfg co
 }
 
 // bridgeTCP carries a single local TCP connection over the WSS tunnel
-// to the remote outpost's tcp app. The matrix_elev cookie that gates
-// access is captured at Connect time and replayed here per-conn.
+// to either the remote outpost's tcp app (scheme="tcp") or its built-in
+// /ssh WebSocket SSH server (scheme="ssh"). The matrix_elev cookie that
+// gates access is captured at Connect time and replayed here per-conn.
 func (m *OutboundManager) bridgeTCP(ctx context.Context, path string, cfg conf.OutboundConfig, client net.Conn) {
 	defer client.Close()
 
@@ -427,9 +433,12 @@ func (m *OutboundManager) bridgeTCP(ctx context.Context, path string, cfg conf.O
 	}
 	cookie := state.elevCookie
 
-	wsURL := strings.Replace(m.serverURL, "http", "ws", 1) +
-		"/h/" + url.PathEscape(cfg.Host) +
-		"/app/" + url.PathEscape(cfg.Name) + "/"
+	wsURL := strings.Replace(m.serverURL, "http", "ws", 1) + "/h/" + url.PathEscape(cfg.Host)
+	if cfg.BuiltinSSH() {
+		wsURL += "/ssh"
+	} else {
+		wsURL += "/app/" + url.PathEscape(cfg.Name) + "/"
+	}
 
 	dialCtx, cancelDial := context.WithTimeout(ctx, 15*time.Second)
 	defer cancelDial()

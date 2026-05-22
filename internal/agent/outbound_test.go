@@ -400,3 +400,150 @@ func TestOutboundRegisterTearsDownRemovedConns(t *testing.T) {
 	// Give the goroutine a moment to exit.
 	time.Sleep(50 * time.Millisecond)
 }
+
+// TestOutboundSSHBridge exercises the ssh-scheme outbound path end-to-end:
+// a fake cloudbox accepts WSS at /h/<host>/ssh (host-level, no /app/...) and
+// stitches it to a backing TCP echo standing in for a remote outpost's
+// built-in /ssh server. The OutboundManager opens a 127.0.0.1 listener
+// after Connect, and a plain net.Dial against it round-trips through the WS.
+//
+// This is the only test that exercises the host-level elevate URL path
+// (/h/<host>/elevate vs /h/<host>/app/<name>/elevate); coverage of the
+// other modes lives in TestOutboundConnectAndProxy / TestOutboundTCPBridge.
+func TestOutboundSSHBridge(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	echo, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("echo listen: %v", err)
+	}
+	t.Cleanup(func() { _ = echo.Close() })
+	go func() {
+		for {
+			c, aerr := echo.Accept()
+			if aerr != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				_, _ = io.Copy(conn, conn)
+			}(c)
+		}
+	}()
+
+	var elevateHits, sshHits int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/h/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-access-token" {
+			http.Error(w, "bad bearer", http.StatusUnauthorized)
+			return
+		}
+		// Strip "/h/<host>/" prefix and dispatch by the remaining path.
+		parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/h/"), "/", 2)
+		if len(parts) < 2 {
+			http.Error(w, "bad path", http.StatusBadRequest)
+			return
+		}
+		host, rest := parts[0], parts[1]
+		switch rest {
+		case "elevate":
+			elevateHits++
+			http.SetCookie(w, &http.Cookie{Name: "matrix_elev", Value: "ssh-elev-token",
+				Path: "/h/" + host + "/"})
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		case "ssh":
+			sshHits++
+			ck, cerr := r.Cookie("matrix_elev")
+			if cerr != nil || ck.Value != "ssh-elev-token" {
+				http.Error(w, "missing elev", http.StatusForbidden)
+				return
+			}
+			ws, werr := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+			if werr != nil {
+				return
+			}
+			defer ws.Close(websocket.StatusInternalError, "closing")
+			ctx, cancel := context.WithCancel(r.Context())
+			defer cancel()
+			upstream, derr := net.Dial("tcp", echo.Addr().String())
+			if derr != nil {
+				_ = ws.Close(websocket.StatusBadGateway, "dial")
+				return
+			}
+			defer upstream.Close()
+			conn := websocket.NetConn(ctx, ws, websocket.MessageBinary)
+			defer conn.Close()
+			go func() { defer cancel(); _, _ = io.Copy(upstream, conn) }()
+			_, _ = io.Copy(conn, upstream)
+		default:
+			http.Error(w, "unexpected path "+r.URL.Path, http.StatusNotFound)
+		}
+	})
+	cloud := httptest.NewServer(mux)
+	t.Cleanup(cloud.Close)
+
+	// Find a free local port to bind the SSH outbound listener.
+	tmp, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("scratch listen: %v", err)
+	}
+	localPort := tmp.Addr().(*net.TCPAddr).Port
+	_ = tmp.Close()
+
+	m := NewOutboundManager(cloud.URL, "test-access-token", nil)
+	t.Cleanup(m.Stop)
+	// scheme="ssh" with Name intentionally empty — the manager must not
+	// build /app/<name>/ paths for ssh outbounds.
+	m.Register([]conf.OutboundConfig{
+		{Path: "novicortex-ssh", Host: "novicortex", User: "noviadmin", Scheme: "ssh", LocalPort: localPort},
+	})
+
+	if err := m.Connect("novicortex-ssh", "pw"); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if elevateHits != 1 {
+		t.Fatalf("elevate hits = %d, want 1 (ssh scheme must hit host-level /elevate)", elevateHits)
+	}
+	if !m.List()[0].Connected {
+		t.Fatalf("List should report connected")
+	}
+
+	// Round-trip a few bytes through the whole chain.
+	var client net.Conn
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		client, err = net.Dial("tcp", net.JoinHostPort("127.0.0.1", itoa(localPort)))
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("dial local ssh listener: %v", err)
+	}
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+
+	msg := []byte("SSH-2.0-test\r\n")
+	if _, err := client.Write(msg); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got := make([]byte, len(msg))
+	if _, err := io.ReadFull(client, got); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != string(msg) {
+		t.Fatalf("echo got %q, want %q", got, msg)
+	}
+	if sshHits != 1 {
+		t.Fatalf("ssh WS hits = %d, want 1", sshHits)
+	}
+
+	m.Disconnect("novicortex-ssh")
+	time.Sleep(50 * time.Millisecond)
+	if c, derr := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", itoa(localPort)), 200*time.Millisecond); derr == nil {
+		_ = c.Close()
+		t.Fatalf("listener still accepting after Disconnect")
+	}
+}

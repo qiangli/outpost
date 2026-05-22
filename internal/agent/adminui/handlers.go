@@ -560,14 +560,15 @@ func (s *Server) handleAddOutbound(c *gin.Context) {
 		Scheme:    req.Scheme,
 		LocalPort: req.LocalPort,
 	}
-	// A tcp outbound MUST NOT collide on local_port with any other tcp
-	// outbound — both would race to bind 127.0.0.1:<port>.
-	if newCfg.SchemeNorm() == "tcp" {
+	// A listener-binding outbound (tcp or ssh) MUST NOT collide on
+	// local_port with any other listener-binding outbound — both would
+	// race to bind 127.0.0.1:<port>.
+	if newCfg.BindsListener() {
 		for _, ob := range fc.Outbound {
 			if ob.Path == newCfg.Path {
 				continue
 			}
-			if ob.SchemeNorm() == "tcp" && ob.LocalPort == newCfg.LocalPort {
+			if ob.BindsListener() && ob.LocalPort == newCfg.LocalPort {
 				c.AbortWithStatusJSON(http.StatusConflict,
 					gin.H{"error": fmt.Sprintf("local_port %d already used by outbound %q", newCfg.LocalPort, ob.Path)})
 				return
@@ -648,15 +649,17 @@ func (s *Server) handleDisconnectOutbound(c *gin.Context) {
 
 // validateOutbound trims and sanity-checks the incoming fields. Path must
 // be safe as a URL segment (no slashes/whitespace) AND must not collide
-// with the admin UI's reserved paths. Scheme is normalized to "http" or
-// "tcp"; tcp requires local_port in [1, 65535].
+// with the admin UI's reserved paths. Scheme is normalized to "http",
+// "tcp", or "ssh". tcp+ssh require local_port in [1, 65535]; ssh does
+// not require name (it targets the remote outpost's built-in /ssh, not
+// a registered app).
 func validateOutbound(req *outboundUpsertReq) error {
 	req.Path = strings.TrimSpace(req.Path)
 	req.Name = strings.TrimSpace(req.Name)
 	req.Host = strings.TrimSpace(req.Host)
 	req.User = strings.TrimSpace(req.User)
-	if req.Path == "" || req.Name == "" || req.Host == "" || req.User == "" {
-		return errors.New("path, name, host, and user are all required")
+	if req.Path == "" || req.Host == "" || req.User == "" {
+		return errors.New("path, host, and user are all required")
 	}
 	if strings.ContainsAny(req.Path, "/ \t") {
 		return errors.New("path cannot contain slashes or whitespace")
@@ -670,12 +673,26 @@ func validateOutbound(req *outboundUpsertReq) error {
 	case "", "http":
 		req.Scheme = "" // store empty for back-compat — defaults to "http"
 		req.LocalPort = 0
+		if req.Name == "" {
+			return errors.New("name is required for http outbound")
+		}
 	case "tcp":
+		if req.Name == "" {
+			return errors.New("name is required for tcp outbound")
+		}
 		if req.LocalPort < 1 || req.LocalPort > 65535 {
 			return fmt.Errorf("local_port %d is out of range (required for scheme tcp)", req.LocalPort)
 		}
+	case "ssh":
+		// Targets the remote outpost's built-in /ssh endpoint. Name is
+		// ignored — stored empty for clarity rather than letting stale
+		// values linger.
+		req.Name = ""
+		if req.LocalPort < 1 || req.LocalPort > 65535 {
+			return fmt.Errorf("local_port %d is out of range (required for scheme ssh)", req.LocalPort)
+		}
 	default:
-		return fmt.Errorf("scheme %q must be one of http|tcp", req.Scheme)
+		return fmt.Errorf("scheme %q must be one of http|tcp|ssh", req.Scheme)
 	}
 	return nil
 }

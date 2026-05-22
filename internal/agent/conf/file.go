@@ -93,13 +93,24 @@ type FileConfig struct {
 //   - Host : the remote outpost's name as registered with cloudbox.
 //   - User : the OS user on the remote outpost (used at Connect time
 //     when POSTing to /h/<host>/elevate).
-//   - Scheme: "http" (default) or "tcp". For "tcp" the local outpost
-//     opens a 127.0.0.1:LocalPort listener after Connect and bridges
-//     every accepted TCP conn through cloudbox as a WebSocket to the
-//     remote outpost's matching tcp-scheme app. Lets tools that don't
-//     speak HTTP (ssh, psql, mysql, …) reach the remote service "as if
-//     local".
-//   - LocalPort: required for Scheme=="tcp". Ignored otherwise.
+//   - Scheme:
+//     - "http" (default): local mount is the admin-UI subpath
+//       http://localhost:17777/<Path>/... proxied through cloudbox to
+//       the remote outpost's /app/<Name>/ http app.
+//     - "tcp": local outpost opens a 127.0.0.1:LocalPort listener
+//       after Connect and bridges every accepted TCP conn through
+//       cloudbox as a WebSocket to the remote outpost's tcp-scheme
+//       app named <Name>. Lets unmodified clients reach non-HTTP
+//       services (ssh, psql, mysql) the remote outpost has registered
+//       as TCP apps.
+//     - "ssh": same listener+WS-bridge shape as "tcp", but the bridge
+//       targets the remote outpost's built-in /ssh endpoint (the
+//       in-process Go SSH server) directly — no app registration on
+//       the remote required. Name is ignored. Elevate flow uses
+//       host-level /h/<Host>/elevate (the same one outpost ssh-proxy
+//       /outpost connect uses), so the matrix_elev cookie scope is the
+//       whole host rather than a single app.
+//   - LocalPort: required for Scheme=="tcp" or "ssh". Ignored otherwise.
 type OutboundConfig struct {
 	Path      string `json:"path"`
 	Name      string `json:"name"`
@@ -111,12 +122,29 @@ type OutboundConfig struct {
 
 // SchemeNorm returns the effective scheme — empty defaults to "http" so
 // configs written before TCP support landed keep their old behavior.
+// Recognized values: "http", "tcp", "ssh".
 func (oc OutboundConfig) SchemeNorm() string {
 	s := strings.ToLower(strings.TrimSpace(oc.Scheme))
 	if s == "" {
 		return "http"
 	}
 	return s
+}
+
+// BindsListener reports whether this outbound, when Connected, owns a
+// 127.0.0.1:LocalPort TCP listener. True for "tcp" and "ssh" (both
+// expose the remote service as a local port); false for "http" (which
+// is served as a subpath under the admin-UI listener).
+func (oc OutboundConfig) BindsListener() bool {
+	s := oc.SchemeNorm()
+	return s == "tcp" || s == "ssh"
+}
+
+// BuiltinSSH reports whether this outbound targets the remote outpost's
+// built-in /ssh WebSocket endpoint (rather than a registered app under
+// /app/<name>/). True only for Scheme=="ssh".
+func (oc OutboundConfig) BuiltinSSH() bool {
+	return oc.SchemeNorm() == "ssh"
 }
 
 // AppConfig is one custom reverse-proxy target. It is mounted under
