@@ -183,9 +183,14 @@ func postElevate(ctx context.Context, fc *conf.FileConfig, bearer, host, user, p
 	return "", errors.New("server accepted credentials but returned no matrix_elev cookie")
 }
 
-// buildElevateURL constructs the http(s) URL for /h/<host>/elevate from
-// the server-addr fields cached in agent.json. Mirrors buildSSHWSURL in
-// ssh.go but stays on http/https (POST is not a WebSocket upgrade).
+// buildElevateURL constructs the http(s) URL for the SSH-builtin elevate
+// endpoint from the server-addr fields cached in agent.json. The cloudbox
+// route shape is `/h/<host>/<builtin>/elevate` since the host-wide
+// /h/<host>/elevate was retired (cloudbox returns 410 with a hint to use
+// the per-builtin or per-app form). `outpost connect` only ever needed
+// the cookie for the built-in /ssh endpoint, so the builtin is hard-coded
+// to "ssh" here. Mirrors buildSSHWSURL in ssh.go but stays on http/https
+// (POST is not a WebSocket upgrade).
 func buildElevateURL(server string, port int, protocol, host string) (string, error) {
 	s := strings.TrimSpace(server)
 	if !strings.Contains(s, "://") {
@@ -203,7 +208,7 @@ func buildElevateURL(server string, port int, protocol, host string) (string, er
 	if u.Port() == "" && port > 0 {
 		u.Host = u.Hostname() + ":" + strconv.Itoa(port)
 	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/h/" + url.PathEscape(host) + "/elevate"
+	u.Path = strings.TrimRight(u.Path, "/") + "/h/" + url.PathEscape(host) + "/ssh/elevate"
 	return u.String(), nil
 }
 

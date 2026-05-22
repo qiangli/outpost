@@ -30,12 +30,16 @@ import (
 //	  Register      Connect(pw)           Disconnect / pinger-failure
 //	cfg only ── elev cookie + pinger ── back to cfg-only
 //
-// Connect calls cloudbox's POST /h/<host>/elevate with Bearer
-// access_token + {user, password}, captures the matrix_elev cookie, and
-// starts a 4-minute pinger to slide the idle TTL. Disconnect (or a
-// pinger failure indicating absolute expiry) drops the cookie; the
-// operator must Connect again. Cookies are NEVER persisted to disk —
-// only the OutboundConfig is.
+// Connect mints a matrix_elev cookie via cloudbox's per-app or
+// per-builtin elevate endpoint (Bearer access_token + {user, password}):
+//   - http / tcp scheme → POST /h/<host>/app/<name>/elevate
+//   - ssh scheme        → POST /h/<host>/ssh/elevate
+// The cookie's Path narrows to the specific (host, app|builtin), so an
+// elevation cannot be replayed against a sibling app. Starts a 4-minute
+// pinger to slide the idle TTL. Disconnect (or a pinger failure
+// indicating absolute expiry) drops the cookie; the operator must
+// Connect again. Cookies are NEVER persisted to disk — only the
+// OutboundConfig is.
 type OutboundManager struct {
 	serverURL   string // base URL of cloudbox HTTP, e.g. https://ai.dhnt.io
 	accessToken string
@@ -167,13 +171,14 @@ func (m *OutboundManager) Connect(path, password string) error {
 	ctx, cancelReq := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelReq()
 	// Elevate URL depends on what we're targeting:
-	//   - http/tcp scheme → per-(host, app): /h/<host>/app/<name>/elevate
-	//     (cookie scoped to that one app only — matches the inbound model)
-	//   - ssh scheme      → host-level: /h/<host>/elevate
-	//     (cookie scoped to /h/<host>/, same as outpost ssh-proxy)
+	//   - http/tcp scheme → per-(host, app):  /h/<host>/app/<name>/elevate
+	//   - ssh scheme      → per-(host, builtin): /h/<host>/ssh/elevate
+	// Cloudbox retired the host-wide /h/<host>/elevate form (returns 410
+	// pointing here) so every elevation scopes to a specific
+	// app-or-builtin and the matrix_elev cookie's Path narrows to match.
 	elevateURL := m.serverURL + "/h/" + url.PathEscape(cfg.Host)
 	if cfg.BuiltinSSH() {
-		elevateURL += "/elevate"
+		elevateURL += "/ssh/elevate"
 	} else {
 		elevateURL += "/app/" + url.PathEscape(cfg.Name) + "/elevate"
 	}
@@ -269,7 +274,7 @@ func (m *OutboundManager) Disconnect(path string) {
 func (m *OutboundManager) pinger(ctx context.Context, path string, cfg conf.OutboundConfig) {
 	pingURL := m.serverURL + "/h/" + url.PathEscape(cfg.Host)
 	if cfg.BuiltinSSH() {
-		pingURL += "/elevate-ping"
+		pingURL += "/ssh/elevate-ping"
 	} else {
 		pingURL += "/app/" + url.PathEscape(cfg.Name) + "/elevate-ping"
 	}

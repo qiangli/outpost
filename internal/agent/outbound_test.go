@@ -446,10 +446,10 @@ func TestOutboundSSHBridge(t *testing.T) {
 		}
 		host, rest := parts[0], parts[1]
 		switch rest {
-		case "elevate":
+		case "ssh/elevate":
 			elevateHits++
 			http.SetCookie(w, &http.Cookie{Name: "matrix_elev", Value: "ssh-elev-token",
-				Path: "/h/" + host + "/"})
+				Path: "/h/" + host + "/ssh"})
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		case "ssh":
