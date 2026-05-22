@@ -171,6 +171,15 @@ func postElevate(ctx context.Context, fc *conf.FileConfig, bearer, host, user, p
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("elevation failed (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
+	// Defense in depth against URL-shape drift: cloudbox returns
+	// Content-Type=application/json on the real elevate endpoint and
+	// text/html for the SPA fallback. A 200 with HTML is what we got
+	// when an old client posted to a path that didn't match any route,
+	// and the bare "no cookie returned" error was unhelpful — the URL
+	// is the actual bug. Surface it early.
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		return "", fmt.Errorf("elevation reply was not JSON (Content-Type=%q at %s) — likely a cloudbox route mismatch", ct, elevateURL)
+	}
 
 	// Grab the matrix_elev cookie value. cookiejar scopes it under
 	// /h/<host>, so we read by host+path rather than by domain alone.
@@ -185,12 +194,13 @@ func postElevate(ctx context.Context, fc *conf.FileConfig, bearer, host, user, p
 
 // buildElevateURL constructs the http(s) URL for the SSH-builtin elevate
 // endpoint from the server-addr fields cached in agent.json. The cloudbox
-// route shape is `/h/<host>/<builtin>/elevate` since the host-wide
-// /h/<host>/elevate was retired (cloudbox returns 410 with a hint to use
-// the per-builtin or per-app form). `outpost connect` only ever needed
-// the cookie for the built-in /ssh endpoint, so the builtin is hard-coded
-// to "ssh" here. Mirrors buildSSHWSURL in ssh.go but stays on http/https
-// (POST is not a WebSocket upgrade).
+// route shape is `POST /h/<host>/elev/<builtin>` (not `/h/<host>/<builtin>/elevate`
+// — the 410 handler that replaced the legacy /h/<host>/elevate hints at
+// the latter, but the actual route uses `/elev/` as a literal segment to
+// avoid colliding with gin's catch-all `*p` wildcard on /h/:host/app/:name).
+// `outpost connect` only ever needed the cookie for the built-in /ssh
+// endpoint, so the builtin is hard-coded to "ssh" here. Mirrors
+// buildSSHWSURL in ssh.go but stays on http/https (POST is not a WS upgrade).
 func buildElevateURL(server string, port int, protocol, host string) (string, error) {
 	s := strings.TrimSpace(server)
 	if !strings.Contains(s, "://") {
@@ -208,7 +218,7 @@ func buildElevateURL(server string, port int, protocol, host string) (string, er
 	if u.Port() == "" && port > 0 {
 		u.Host = u.Hostname() + ":" + strconv.Itoa(port)
 	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/h/" + url.PathEscape(host) + "/ssh/elevate"
+	u.Path = strings.TrimRight(u.Path, "/") + "/h/" + url.PathEscape(host) + "/elev/ssh"
 	return u.String(), nil
 }
 

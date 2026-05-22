@@ -161,14 +161,20 @@ Two halves — a server inside the outpost agent and client-side CLI helpers:
 cfg only ── elev cookie + pinger ── back to cfg-only
 ```
 
-`Connect` calls cloudbox's `POST /h/<host>/app/<name>/elevate` with `Bearer <access_token>` + `{user, password}` (per-(host, app) since commit fbe403f — the cookie's Path scopes to `/h/<host>/app/<name>/` so two mounts to the same remote host genuinely have isolated cookies), captures the `matrix_elev` cookie, and starts a 4-minute pinger to slide the idle TTL. `Disconnect` (or a pinger failure indicating absolute expiry) drops the cookie; the operator must `Connect` again. Cookies are **never** persisted to disk — only `conf.OutboundConfig` is (stored in `FileConfig.Outbound`). Outbound paths share the local `NoRoute` namespace with custom apps — the admin handler refuses to register an outbound that would shadow a local app name.
+`Connect` calls cloudbox's elevate endpoint with `Bearer <access_token>` + `{user, password}`:
+- http/tcp scheme → `POST /h/<host>/elev/app/<name>` (cookie Path scopes to `/h/<host>/app/<name>` — two mounts to the same remote host have isolated cookies)
+- ssh scheme → `POST /h/<host>/elev/ssh` (cookie Path scopes to `/h/<host>/ssh`)
+
+`/elev/` is a literal path segment in the cloudbox routing tree (not a suffix), introduced to avoid collision with gin's catch-all wildcard on `/h/:host/app/:name`. The legacy `/h/<host>/elevate` returns 410; its hint message names a suffix-style URL that **doesn't actually exist** — the real routes all sit under `/h/<host>/elev/...`.
+
+Captures the `matrix_elev` cookie and starts a 4-minute pinger (`/h/<host>/elev/<app|ssh>/ping`) to slide the idle TTL. `Disconnect` (or a pinger failure indicating absolute expiry) drops the cookie; the operator must `Connect` again. Cookies are **never** persisted to disk — only `conf.OutboundConfig` is (stored in `FileConfig.Outbound`). Outbound paths share the local `NoRoute` namespace with custom apps — the admin handler refuses to register an outbound that would shadow a local app name.
 
 The manager is only constructed when `fc.AccessToken` is present, so unpaired outposts don't expose the outbound endpoints.
 
 **Three transports:** `OutboundConfig.Scheme` selects:
 - `http` (default) — admin-UI subpath at `http://localhost:17777/<path>/...` proxied through cloudbox to the remote app's HTTP endpoint.
 - `tcp` — a `127.0.0.1:<local_port>` listener that byte-bridges every accepted TCP conn to the remote outpost via WSS to `/h/<host>/app/<name>/`. Requires a matching `tcp`-scheme `AppConfig` on the remote outpost. Lets unmodified clients reach non-HTTP services hosted on the remote machine — `psql -h 127.0.0.1 -p <local_port>`, `mysql -h 127.0.0.1 -P <local_port>`, etc.
-- `ssh` — same listener+WS-bridge shape as `tcp`, but the bridge targets the remote outpost's **built-in `/ssh` endpoint** (the in-process `golang.org/x/crypto/ssh` server) directly, dialing `wss://<cloudbox>/h/<host>/ssh`. No `AppConfig` on the remote required. The `Name` field is ignored. Elevate flow uses the per-builtin endpoint `POST /h/<host>/ssh/elevate` (the same one `outpost ssh-proxy` / `outpost connect` use post the cloudbox 410 migration that retired the host-wide `/h/<host>/elevate`). Use case: `ssh -p <local_port> noviadmin@127.0.0.1` from a roaming dragon to reach a paired outpost's built-in SSH without needing a host-OS sshd port mapping.
+- `ssh` — same listener+WS-bridge shape as `tcp`, but the bridge targets the remote outpost's **built-in `/ssh` endpoint** (the in-process `golang.org/x/crypto/ssh` server) directly, dialing `wss://<cloudbox>/h/<host>/ssh`. No `AppConfig` on the remote required. The `Name` field is ignored. Elevate flow uses the per-builtin cloudbox endpoint `POST /h/<host>/elev/ssh` (with `elev` as a literal segment — *not* `/h/<host>/ssh/elevate`, even though the 410 handler that replaced the legacy host-wide `/h/<host>/elevate` hints at the suffix form; the real route uses `/elev/` to avoid colliding with gin's catch-all on `/h/:host/app/:name`). Pinger hits `/h/<host>/elev/ssh/ping`. Use case: `ssh -p <local_port> noviadmin@127.0.0.1` from a roaming dragon to reach a paired outpost's built-in SSH without needing a host-OS sshd port mapping.
 
 TCP-mode wire flow (one accepted conn):
 

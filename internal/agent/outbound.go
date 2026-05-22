@@ -171,16 +171,17 @@ func (m *OutboundManager) Connect(path, password string) error {
 	ctx, cancelReq := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelReq()
 	// Elevate URL depends on what we're targeting:
-	//   - http/tcp scheme → per-(host, app):  /h/<host>/app/<name>/elevate
-	//   - ssh scheme      → per-(host, builtin): /h/<host>/ssh/elevate
-	// Cloudbox retired the host-wide /h/<host>/elevate form (returns 410
-	// pointing here) so every elevation scopes to a specific
-	// app-or-builtin and the matrix_elev cookie's Path narrows to match.
-	elevateURL := m.serverURL + "/h/" + url.PathEscape(cfg.Host)
+	//   - http/tcp scheme → per-(host, app):     /h/<host>/elev/app/<name>
+	//   - ssh scheme      → per-(host, builtin): /h/<host>/elev/ssh
+	// Cloudbox uses `/elev/` as a literal segment (not a suffix on the
+	// data URL) so the per-(host, app) elevate endpoint doesn't collide
+	// with the gin catch-all wildcard for HostProxy at /h/:host/app/:name.
+	// The host-wide /h/<host>/elevate form returns 410.
+	elevateURL := m.serverURL + "/h/" + url.PathEscape(cfg.Host) + "/elev"
 	if cfg.BuiltinSSH() {
-		elevateURL += "/ssh/elevate"
+		elevateURL += "/ssh"
 	} else {
-		elevateURL += "/app/" + url.PathEscape(cfg.Name) + "/elevate"
+		elevateURL += "/app/" + url.PathEscape(cfg.Name)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, elevateURL, bytes.NewReader(body))
 	if err != nil {
@@ -272,11 +273,11 @@ func (m *OutboundManager) Disconnect(path string) {
 // cookie's Path or cloudbox won't see the cookie: per-(host, app) for
 // http/tcp scheme, host-level for ssh scheme.
 func (m *OutboundManager) pinger(ctx context.Context, path string, cfg conf.OutboundConfig) {
-	pingURL := m.serverURL + "/h/" + url.PathEscape(cfg.Host)
+	pingURL := m.serverURL + "/h/" + url.PathEscape(cfg.Host) + "/elev"
 	if cfg.BuiltinSSH() {
-		pingURL += "/ssh/elevate-ping"
+		pingURL += "/ssh/ping"
 	} else {
-		pingURL += "/app/" + url.PathEscape(cfg.Name) + "/elevate-ping"
+		pingURL += "/app/" + url.PathEscape(cfg.Name) + "/ping"
 	}
 	t := time.NewTicker(4 * time.Minute)
 	defer t.Stop()
