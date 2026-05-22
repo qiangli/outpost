@@ -64,6 +64,12 @@
                        margin-bottom: 1rem; gap: 1rem; flex-wrap: wrap; }
   header.app-header h1 { margin: 0; }
   header.app-header .actions { display: flex; gap: 0.5rem; }
+  /* Section-group heading — Inbound, Outbound. Renders heavier than the
+     fieldset legends below it so the grouping reads as the dominant
+     hierarchy. */
+  .section-head { font-size: 1.05rem; font-weight: 700; letter-spacing: 0.04em;
+                  text-transform: uppercase; opacity: 0.75;
+                  margin: 1.6rem 0 0.4rem; }
 </style>
 </head>
 <body>
@@ -232,6 +238,11 @@ function renderMain(status, cfg) {
   pairing.append(pf);
   app.append(pairing);
 
+  // Section header: Inbound — built-in + custom apps. These are routes
+  // *this* outpost exposes to cloudbox (or to its own admin-UI listener
+  // via the local /<name>/ proxy).
+  app.append(el('div', {class: 'section-head'}, 'Inbound'));
+
   // Built-in apps section — one per line, toggle switches, auto-save on
   // change (no separate Save button). Each flip POSTs the single changed
   // field; the server's debounced restart collapses rapid flips into one
@@ -380,6 +391,10 @@ function renderMain(status, cfg) {
   });
   custom.append(addForm);
   app.append(custom);
+
+  // Section header: Outbound — routes this outpost *consumes* from
+  // remote outposts via cloudbox.
+  app.append(el('div', {class: 'section-head'}, 'Outbound'));
 
   // Outbound — local mount paths that proxy through cloudbox to remote
   // outposts' apps. Connect captures a remote elevation cookie; while
