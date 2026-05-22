@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -12,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
@@ -39,6 +42,11 @@ type AppRegistry struct {
 	apps  map[string]*url.URL
 	proxy map[string]*httputil.ReverseProxy
 	roles map[string]string
+	// tcp holds the raw host:port destination for tcp-scheme apps. Its
+	// key set is disjoint from `proxy` — TCP apps don't speak HTTP, so
+	// they get a dedicated WS↔TCP bridge handler rather than the
+	// ReverseProxy path.
+	tcp map[string]string
 }
 
 func NewAppRegistry() *AppRegistry {
@@ -46,6 +54,7 @@ func NewAppRegistry() *AppRegistry {
 		apps:  map[string]*url.URL{},
 		proxy: map[string]*httputil.ReverseProxy{},
 		roles: map[string]string{},
+		tcp:   map[string]string{},
 	}
 }
 
@@ -88,16 +97,23 @@ func (r *AppRegistry) register(name string, target *url.URL, role string, transp
 	r.apps[name] = target
 	r.proxy[name] = rp
 	r.roles[name] = role
+	// Mode swap: an HTTP register wins over any prior tcp entry with the
+	// same name. (Re-registers in the other direction do the inverse in
+	// registerTCP.)
+	delete(r.tcp, name)
 	r.mu.Unlock()
 	return nil
 }
 
-// Names returns registered app names.
+// Names returns registered app names (HTTP and TCP combined).
 func (r *AppRegistry) Names() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]string, 0, len(r.apps))
+	out := make([]string, 0, len(r.apps)+len(r.tcp))
 	for k := range r.apps {
+		out = append(out, k)
+	}
+	for k := range r.tcp {
 		out = append(out, k)
 	}
 	return out
@@ -105,12 +121,21 @@ func (r *AppRegistry) Names() []string {
 
 // Entries returns the registered apps with their declared roles. Used by
 // GET /apps so the cloud sees per-app role declarations and can gate
-// custom apps accurately.
+// custom apps accurately. TCP apps are listed alongside HTTP ones; the
+// cloud doesn't need to know the difference, since transport selection
+// happens entirely inside the agent's /app/<name>/ handler.
 func (r *AppRegistry) Entries() []AppEntry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]AppEntry, 0, len(r.apps))
+	out := make([]AppEntry, 0, len(r.apps)+len(r.tcp))
 	for name := range r.apps {
+		role := r.roles[name]
+		if role == "" {
+			role = "user"
+		}
+		out = append(out, AppEntry{Name: name, Role: role})
+	}
+	for name := range r.tcp {
 		role := r.roles[name]
 		if role == "" {
 			role = "user"
@@ -120,11 +145,20 @@ func (r *AppRegistry) Entries() []AppEntry {
 	return out
 }
 
-// LookupTarget returns the registered target URL (or nil).
+// LookupTarget returns the registered HTTP target URL (or nil). TCP-mode
+// apps have no URL; use LookupTCP for those.
 func (r *AppRegistry) LookupTarget(name string) *url.URL {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.apps[name]
+}
+
+// LookupTCP returns the registered TCP target "host:port" (or "" when
+// name is not a TCP-mode app).
+func (r *AppRegistry) LookupTCP(name string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.tcp[name]
 }
 
 // Unregister removes an app entry. No-op if the name is not registered.
@@ -133,6 +167,7 @@ func (r *AppRegistry) Unregister(name string) {
 	delete(r.apps, name)
 	delete(r.proxy, name)
 	delete(r.roles, name)
+	delete(r.tcp, name)
 	r.mu.Unlock()
 }
 
@@ -169,9 +204,39 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 		// docker/ollama) ignores the Host header.
 		u := &url.URL{Scheme: "http", Host: "socket"}
 		return r.register(ac.Name, u, ac.Role, socketTransport(scheme, sock))
+	case "tcp":
+		host := strings.TrimSpace(ac.Host)
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		if ac.Port <= 0 || ac.Port > 65535 {
+			return fmt.Errorf("app %q: port %d is out of range", ac.Name, ac.Port)
+		}
+		return r.registerTCP(ac.Name, net.JoinHostPort(host, strconv.Itoa(ac.Port)), ac.Role)
 	default:
-		return fmt.Errorf("app %q: scheme must be one of http|https|unix|npipe (got %q)", ac.Name, ac.Scheme)
+		return fmt.Errorf("app %q: scheme must be one of http|https|tcp|unix|npipe (got %q)", ac.Name, ac.Scheme)
 	}
+}
+
+// registerTCP records name → host:port for a tcp-scheme app. The
+// /app/<name>/ handler will accept a WebSocket upgrade and byte-bridge
+// to that address. Disjoint from the HTTP register: a name is either
+// HTTP-mode or TCP-mode, not both.
+func (r *AppRegistry) registerTCP(name, addr, role string) error {
+	if !conf.ValidRole(role) {
+		return fmt.Errorf("app %q role %q: must be one of guest|user|admin", name, role)
+	}
+	if role == "" {
+		role = "user"
+	}
+	r.mu.Lock()
+	// Same name can't be both HTTP- and TCP-mode at once.
+	delete(r.apps, name)
+	delete(r.proxy, name)
+	r.tcp[name] = addr
+	r.roles[name] = role
+	r.mu.Unlock()
+	return nil
 }
 
 // socketTransport returns an http.Transport whose DialContext routes every
@@ -206,11 +271,20 @@ func (r *AppRegistry) handler() gin.HandlerFunc {
 // going through the cloudbox tunnel). Callers pass the captured wildcard
 // `rest` as the upstream path to forward (leading slash included; an
 // empty value is treated as "/").
+//
+// For TCP-mode apps (ssh, postgres, …) the same route accepts a
+// WebSocket upgrade and byte-bridges to the registered host:port. The
+// `rest` argument is ignored — TCP has no notion of a sub-path.
 func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	r.mu.RLock()
 	rp := r.proxy[name]
 	target := r.apps[name]
+	tcpAddr := r.tcp[name]
 	r.mu.RUnlock()
+	if tcpAddr != "" {
+		serveTCPBridge(c, name, tcpAddr)
+		return
+	}
 	if rp == nil {
 		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "unknown app: " + name})
 		return
@@ -221,6 +295,48 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	c.Request.URL.Path = singleJoin(target.Path, rest)
 	c.Request.URL.RawPath = ""
 	rp.ServeHTTP(c.Writer, c.Request)
+}
+
+// serveTCPBridge accepts the inbound WebSocket and byte-splices it onto
+// a freshly-dialed TCP conn to addr. Both ends are closed when either
+// side EOFs or the request context cancels.
+//
+// Trust note: this handler does no auth of its own — same as /shell and
+// /desktop, it relies on cloudbox's elev-cookie gate to fence access at
+// the edge. The agent listens loopback-only; the only ingress is the
+// matrix tunnel.
+func serveTCPBridge(c *gin.Context, name, addr string) {
+	ws, err := websocket.Accept(c.Writer, c.Request, &websocket.AcceptOptions{
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		slog.Warn("tcp-app ws accept", "app", name, "err", err)
+		return
+	}
+	defer ws.Close(websocket.StatusInternalError, "closing")
+
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	defer cancel()
+
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+	upstream, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		slog.Warn("tcp-app dial", "app", name, "addr", addr, "err", err)
+		_ = ws.Close(websocket.StatusBadGateway, "dial upstream failed")
+		return
+	}
+	defer upstream.Close()
+
+	wsConn := websocket.NetConn(ctx, ws, websocket.MessageBinary)
+	defer wsConn.Close()
+
+	// Two copies in opposite directions; either return triggers cancel,
+	// which causes the other side to unblock and return too.
+	go func() {
+		defer cancel()
+		_, _ = io.Copy(upstream, wsConn)
+	}()
+	_, _ = io.Copy(wsConn, upstream)
 }
 
 func singleJoin(a, b string) string {

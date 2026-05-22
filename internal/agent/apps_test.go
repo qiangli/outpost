@@ -1,14 +1,19 @@
 package agent
 
 import (
+	"context"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
@@ -215,5 +220,109 @@ func TestUnregister(t *testing.T) {
 	}
 	if reg.LookupTarget("ycode").Host != "127.0.0.1:9999" {
 		t.Errorf("re-register did not take")
+	}
+}
+
+// TestRegisterFromConfig_TCPBridge spins up a tiny upstream TCP echo,
+// registers it as a tcp-scheme app, dials a WebSocket against the gin
+// router, and confirms the bridge byte-splices both directions. This is
+// the same code path /app/<name>/ runs in production for ssh/postgres.
+func TestRegisterFromConfig_TCPBridge(t *testing.T) {
+	// Upstream: trivial echo server on a random loopback port.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, aerr := l.Accept()
+			if aerr != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				_, _ = io.Copy(conn, conn)
+			}(c)
+		}
+	}()
+	host, portStr, _ := net.SplitHostPort(l.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+
+	reg := NewAppRegistry()
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "echo", Scheme: "tcp", Host: host, Port: port, Enabled: true, Role: "user",
+	}); err != nil {
+		t.Fatalf("register tcp: %v", err)
+	}
+	if got := reg.LookupTCP("echo"); got == "" {
+		t.Fatalf("LookupTCP returned empty")
+	}
+	if reg.LookupTarget("echo") != nil {
+		t.Fatalf("tcp app should not have a URL target")
+	}
+
+	srv := httptest.NewServer(newTestRouter(reg))
+	defer srv.Close()
+
+	wsURL := strings.Replace(srv.URL, "http", "ws", 1) + "/app/echo/"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer ws.Close(websocket.StatusNormalClosure, "done")
+
+	// Treat the WS as a stream and confirm the echo round-trips.
+	conn := websocket.NetConn(ctx, ws, websocket.MessageBinary)
+	defer conn.Close()
+	want := []byte("hello tcp bridge")
+	if _, err := conn.Write(want); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got := make([]byte, len(want))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("echo got %q, want %q", got, want)
+	}
+}
+
+// TestRegisterFromConfig_TCPModeSwap confirms that re-registering a name
+// under a different scheme (http→tcp or vice versa) cleanly replaces the
+// previous mode instead of leaving stale state behind.
+func TestRegisterFromConfig_TCPModeSwap(t *testing.T) {
+	reg := NewAppRegistry()
+	// Start http.
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "x", Scheme: "http", Host: "127.0.0.1", Port: 9000, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if reg.LookupTarget("x") == nil {
+		t.Fatal("http target should be set")
+	}
+	// Swap to tcp on the same name.
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "x", Scheme: "tcp", Host: "127.0.0.1", Port: 22, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if reg.LookupTarget("x") != nil {
+		t.Errorf("http target should have been cleared on tcp register")
+	}
+	if reg.LookupTCP("x") == "" {
+		t.Errorf("tcp target should be set after swap")
+	}
+	// Swap back to http; tcp target must clear.
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "x", Scheme: "http", Host: "127.0.0.1", Port: 8080, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if reg.LookupTCP("x") != "" {
+		t.Errorf("tcp target should have been cleared on http register")
 	}
 }

@@ -486,10 +486,12 @@ func (s *Server) handleListOutbound(c *gin.Context) {
 }
 
 type outboundUpsertReq struct {
-	Path string `json:"path"`
-	Name string `json:"name"`
-	Host string `json:"host"`
-	User string `json:"user"`
+	Path      string `json:"path"`
+	Name      string `json:"name"`
+	Host      string `json:"host"`
+	User      string `json:"user"`
+	Scheme    string `json:"scheme,omitempty"`
+	LocalPort int    `json:"local_port,omitempty"`
 }
 
 func (s *Server) handleAddOutbound(c *gin.Context) {
@@ -519,17 +521,39 @@ func (s *Server) handleAddOutbound(c *gin.Context) {
 			return
 		}
 	}
+	newCfg := conf.OutboundConfig{
+		Path:      req.Path,
+		Name:      req.Name,
+		Host:      req.Host,
+		User:      req.User,
+		Scheme:    req.Scheme,
+		LocalPort: req.LocalPort,
+	}
+	// A tcp outbound MUST NOT collide on local_port with any other tcp
+	// outbound — both would race to bind 127.0.0.1:<port>.
+	if newCfg.SchemeNorm() == "tcp" {
+		for _, ob := range fc.Outbound {
+			if ob.Path == newCfg.Path {
+				continue
+			}
+			if ob.SchemeNorm() == "tcp" && ob.LocalPort == newCfg.LocalPort {
+				c.AbortWithStatusJSON(http.StatusConflict,
+					gin.H{"error": fmt.Sprintf("local_port %d already used by outbound %q", newCfg.LocalPort, ob.Path)})
+				return
+			}
+		}
+	}
 	// Upsert by path.
 	replaced := false
 	for i, ob := range fc.Outbound {
 		if ob.Path == req.Path {
-			fc.Outbound[i] = conf.OutboundConfig{Path: req.Path, Name: req.Name, Host: req.Host, User: req.User}
+			fc.Outbound[i] = newCfg
 			replaced = true
 			break
 		}
 	}
 	if !replaced {
-		fc.Outbound = append(fc.Outbound, conf.OutboundConfig{Path: req.Path, Name: req.Name, Host: req.Host, User: req.User})
+		fc.Outbound = append(fc.Outbound, newCfg)
 	}
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -593,7 +617,8 @@ func (s *Server) handleDisconnectOutbound(c *gin.Context) {
 
 // validateOutbound trims and sanity-checks the incoming fields. Path must
 // be safe as a URL segment (no slashes/whitespace) AND must not collide
-// with the admin UI's reserved paths.
+// with the admin UI's reserved paths. Scheme is normalized to "http" or
+// "tcp"; tcp requires local_port in [1, 65535].
 func validateOutbound(req *outboundUpsertReq) error {
 	req.Path = strings.TrimSpace(req.Path)
 	req.Name = strings.TrimSpace(req.Name)
@@ -608,6 +633,18 @@ func validateOutbound(req *outboundUpsertReq) error {
 	switch strings.ToLower(req.Path) {
 	case "api", "static", "healthz", "index.html", "app":
 		return fmt.Errorf("path %q is reserved by the admin UI", req.Path)
+	}
+	req.Scheme = strings.ToLower(strings.TrimSpace(req.Scheme))
+	switch req.Scheme {
+	case "", "http":
+		req.Scheme = "" // store empty for back-compat — defaults to "http"
+		req.LocalPort = 0
+	case "tcp":
+		if req.LocalPort < 1 || req.LocalPort > 65535 {
+			return fmt.Errorf("local_port %d is out of range (required for scheme tcp)", req.LocalPort)
+		}
+	default:
+		return fmt.Errorf("scheme %q must be one of http|tcp", req.Scheme)
 	}
 	return nil
 }

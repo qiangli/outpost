@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -14,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
@@ -48,6 +51,9 @@ type outboundConn struct {
 	elevCookie  string
 	connectedAt time.Time
 	cancel      context.CancelFunc
+	// listener is set only for tcp-scheme mounts. Disconnect closes it
+	// so the accept goroutine exits and pending TCP clients drop.
+	listener net.Listener
 }
 
 // OutboundView is the API shape the admin UI consumes — config + status.
@@ -56,6 +62,8 @@ type OutboundView struct {
 	Name        string `json:"name"`
 	Host        string `json:"host"`
 	User        string `json:"user"`
+	Scheme      string `json:"scheme"`
+	LocalPort   int    `json:"local_port,omitempty"`
 	Connected   bool   `json:"connected"`
 	ConnectedAt string `json:"connected_at,omitempty"`
 }
@@ -81,9 +89,11 @@ func NewOutboundManager(serverURL, accessToken string, client *http.Client) *Out
 }
 
 // Register replaces the registered config set with cfgs. Mounts that
-// disappeared get their pinger torn down. Mounts that survived keep
-// their live connection — the cfg itself didn't change, just the
-// surrounding set.
+// disappeared get their pinger torn down. A surviving mount keeps its
+// live connection only when its cfg is byte-identical to the previous
+// one — any change to scheme/local_port/name/host/user invalidates the
+// existing conn (in particular, a stale TCP listener on the old port
+// must be closed before we'd be willing to bind a new one).
 func (m *OutboundManager) Register(cfgs []conf.OutboundConfig) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -92,8 +102,12 @@ func (m *OutboundManager) Register(cfgs []conf.OutboundConfig) {
 		next[c.Path] = c
 	}
 	for path, conn := range m.conns {
-		if _, ok := next[path]; !ok {
+		newCfg, kept := next[path]
+		if !kept || newCfg != m.configs[path] {
 			conn.cancel()
+			if conn.listener != nil {
+				_ = conn.listener.Close()
+			}
 			delete(m.conns, path)
 		}
 	}
@@ -106,7 +120,14 @@ func (m *OutboundManager) List() []OutboundView {
 	defer m.mu.RUnlock()
 	out := make([]OutboundView, 0, len(m.configs))
 	for _, cfg := range m.configs {
-		v := OutboundView{Path: cfg.Path, Name: cfg.Name, Host: cfg.Host, User: cfg.User}
+		v := OutboundView{
+			Path:      cfg.Path,
+			Name:      cfg.Name,
+			Host:      cfg.Host,
+			User:      cfg.User,
+			Scheme:    cfg.SchemeNorm(),
+			LocalPort: cfg.LocalPort,
+		}
 		if conn, ok := m.conns[cfg.Path]; ok {
 			v.Connected = true
 			v.ConnectedAt = conn.connectedAt.UTC().Format(time.RFC3339)
@@ -172,29 +193,59 @@ func (m *OutboundManager) Connect(path, password string) error {
 		return fmt.Errorf("elevate succeeded but no matrix_elev cookie returned")
 	}
 
+	// For tcp-scheme mounts: bind the loopback listener BEFORE we publish
+	// the conn, so a port-bind failure surfaces synchronously to the
+	// caller instead of getting lost in a background goroutine. The
+	// listener is loopback-only — same security model as the rest of
+	// the agent (only the matrix tunnel is supposed to be addressable
+	// off-machine).
+	var listener net.Listener
+	if cfg.SchemeNorm() == "tcp" {
+		if cfg.LocalPort < 1 || cfg.LocalPort > 65535 {
+			return fmt.Errorf("outbound %q: local_port %d is out of range", path, cfg.LocalPort)
+		}
+		l, lerr := net.Listen("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", cfg.LocalPort)))
+		if lerr != nil {
+			return fmt.Errorf("outbound %q: bind 127.0.0.1:%d: %w", path, cfg.LocalPort, lerr)
+		}
+		listener = l
+	}
+
 	m.mu.Lock()
 	if old, ok := m.conns[path]; ok {
 		old.cancel()
+		if old.listener != nil {
+			_ = old.listener.Close()
+		}
 	}
 	pingCtx, cancelPing := context.WithCancel(context.Background())
-	m.conns[path] = &outboundConn{
+	conn := &outboundConn{
 		elevCookie:  elev,
 		connectedAt: time.Now(),
 		cancel:      cancelPing,
+		listener:    listener,
 	}
+	m.conns[path] = conn
 	host := cfg.Host
 	m.mu.Unlock()
 	go m.pinger(pingCtx, path, host)
+	if listener != nil {
+		go m.tcpAcceptLoop(pingCtx, path, cfg, listener)
+	}
 	return nil
 }
 
-// Disconnect drops the in-memory cookie for path and stops the pinger.
-// No server-side revocation — cloudbox's matrix_elev is a stateless JWT.
+// Disconnect drops the in-memory cookie for path, stops the pinger, and
+// — for tcp mounts — closes the loopback listener. No server-side
+// revocation: cloudbox's matrix_elev is a stateless JWT.
 func (m *OutboundManager) Disconnect(path string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if conn, ok := m.conns[path]; ok {
 		conn.cancel()
+		if conn.listener != nil {
+			_ = conn.listener.Close()
+		}
 		delete(m.conns, path)
 	}
 }
@@ -251,6 +302,14 @@ func (m *OutboundManager) ProxyTo(c *gin.Context, path, rest string) {
 		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "unknown outbound path"})
 		return
 	}
+	if cfg.SchemeNorm() == "tcp" {
+		// HTTP requests to a tcp-scheme outbound are a category error —
+		// the local mount for a tcp outbound is a 127.0.0.1:<local_port>
+		// TCP listener, not an admin-UI subpath.
+		c.AbortWithStatusJSON(http.StatusBadRequest,
+			gin.H{"error": fmt.Sprintf("outbound %q is tcp — connect to 127.0.0.1:%d, not the admin UI", path, cfg.LocalPort)})
+		return
+	}
 	if conn == nil {
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable,
 			gin.H{"error": "outbound not connected — click Connect in the admin UI"})
@@ -305,14 +364,84 @@ func (m *OutboundManager) ProxyTo(c *gin.Context, path, rest string) {
 	_, _ = io.Copy(c.Writer, resp.Body)
 }
 
-// Stop cancels every pinger. Call on process shutdown so goroutines exit
-// cleanly. Configs and the in-memory cookie map are NOT cleared; another
-// process boot will reload configs from disk (cookies are not persisted).
+// Stop cancels every pinger and closes any tcp listeners. Call on
+// process shutdown so goroutines exit cleanly. Configs and the
+// in-memory cookie map are NOT cleared; another process boot will
+// reload configs from disk (cookies are not persisted).
 func (m *OutboundManager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for path, conn := range m.conns {
 		conn.cancel()
+		if conn.listener != nil {
+			_ = conn.listener.Close()
+		}
 		delete(m.conns, path)
 	}
+}
+
+// tcpAcceptLoop owns the listener for one tcp-scheme outbound. Each
+// accepted client connection spawns a goroutine that opens a WSS to
+// cloudbox at /h/<host>/app/<name>/ and byte-splices the two ends.
+// When ctx is cancelled (Disconnect / Stop / Register-removal) the
+// listener Close races us out of Accept.
+func (m *OutboundManager) tcpAcceptLoop(ctx context.Context, path string, cfg conf.OutboundConfig, l net.Listener) {
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				return
+			}
+			slog.Warn("outbound tcp accept", "path", path, "err", err)
+			return
+		}
+		go m.bridgeTCP(ctx, path, cfg, conn)
+	}
+}
+
+// bridgeTCP carries a single local TCP connection over the WSS tunnel
+// to the remote outpost's tcp app. The matrix_elev cookie that gates
+// access is captured at Connect time and replayed here per-conn.
+func (m *OutboundManager) bridgeTCP(ctx context.Context, path string, cfg conf.OutboundConfig, client net.Conn) {
+	defer client.Close()
+
+	// Re-read the cookie at dial time so we always use the latest one
+	// (the pinger refreshes the conn record on disconnect-on-failure).
+	m.mu.RLock()
+	state := m.conns[path]
+	m.mu.RUnlock()
+	if state == nil {
+		return
+	}
+	cookie := state.elevCookie
+
+	wsURL := strings.Replace(m.serverURL, "http", "ws", 1) +
+		"/h/" + url.PathEscape(cfg.Host) +
+		"/app/" + url.PathEscape(cfg.Name) + "/"
+
+	dialCtx, cancelDial := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelDial()
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+m.accessToken)
+	headers.Set("Cookie", (&http.Cookie{Name: "matrix_elev", Value: cookie}).String())
+	ws, _, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
+		HTTPClient: m.httpClient,
+		HTTPHeader: headers,
+	})
+	if err != nil {
+		slog.Warn("outbound tcp ws dial", "path", path, "err", err)
+		return
+	}
+	defer ws.Close(websocket.StatusInternalError, "closing")
+
+	bridgeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	wsConn := websocket.NetConn(bridgeCtx, ws, websocket.MessageBinary)
+	defer wsConn.Close()
+
+	go func() {
+		defer cancel()
+		_, _ = io.Copy(wsConn, client)
+	}()
+	_, _ = io.Copy(client, wsConn)
 }

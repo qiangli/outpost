@@ -1,13 +1,16 @@
 package agent
 
 import (
+	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
@@ -151,6 +154,210 @@ func runOutboundProxy(m *OutboundManager, method, urlPath, path, rest string) *h
 	c.Request = req
 	m.ProxyTo(c, path, rest)
 	return w
+}
+
+// TestOutboundTCPBridge exercises the tcp-scheme outbound path
+// end-to-end: a fake cloudbox accepts WSS at /h/<host>/app/<name>/ and
+// stitches it to a backing TCP echo, mirroring what a real cloudbox →
+// remote outpost → TCP app chain does in production. The local
+// OutboundManager opens a 127.0.0.1 listener after Connect, and a
+// plain net.Dial against that listener round-trips through the WS.
+func TestOutboundTCPBridge(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Backing echo server stands in for the remote outpost's tcp app.
+	echo, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("echo listen: %v", err)
+	}
+	t.Cleanup(func() { _ = echo.Close() })
+	go func() {
+		for {
+			c, aerr := echo.Accept()
+			if aerr != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				_, _ = io.Copy(conn, conn)
+			}(c)
+		}
+	}()
+
+	// Fake cloudbox: /h/<host>/elevate hands out an elev cookie; the
+	// /h/<host>/app/<name>/ endpoint accepts the WS upgrade and bridges
+	// to the echo TCP server. The Bearer + cookie assertions match what
+	// the real cloudbox enforces.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/h/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-access-token" {
+			http.Error(w, "bad bearer", http.StatusUnauthorized)
+			return
+		}
+		parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/h/"), "/", 3)
+		if len(parts) < 2 {
+			http.Error(w, "bad path", http.StatusBadRequest)
+			return
+		}
+		switch parts[1] {
+		case "elevate":
+			http.SetCookie(w, &http.Cookie{Name: "matrix_elev", Value: "elev-token", Path: "/"})
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		case "app":
+			ck, cerr := r.Cookie("matrix_elev")
+			if cerr != nil || ck.Value != "elev-token" {
+				http.Error(w, "missing elev", http.StatusForbidden)
+				return
+			}
+			ws, werr := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+			if werr != nil {
+				return
+			}
+			defer ws.Close(websocket.StatusInternalError, "closing")
+			ctx, cancel := context.WithCancel(r.Context())
+			defer cancel()
+			upstream, derr := net.Dial("tcp", echo.Addr().String())
+			if derr != nil {
+				_ = ws.Close(websocket.StatusBadGateway, "dial")
+				return
+			}
+			defer upstream.Close()
+			conn := websocket.NetConn(ctx, ws, websocket.MessageBinary)
+			defer conn.Close()
+			go func() {
+				defer cancel()
+				_, _ = io.Copy(upstream, conn)
+			}()
+			_, _ = io.Copy(conn, upstream)
+		default:
+			http.Error(w, "unknown sub", http.StatusNotFound)
+		}
+	})
+	cloud := httptest.NewServer(mux)
+	t.Cleanup(cloud.Close)
+
+	// Pick a free port to host the local TCP listener.
+	tmp, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("scratch listen: %v", err)
+	}
+	localPort := tmp.Addr().(*net.TCPAddr).Port
+	_ = tmp.Close()
+
+	m := NewOutboundManager(cloud.URL, "test-access-token", nil)
+	t.Cleanup(m.Stop)
+	m.Register([]conf.OutboundConfig{
+		{Path: "pg", Name: "postgres", Host: "novicortex", User: "noviadmin", Scheme: "tcp", LocalPort: localPort},
+	})
+
+	if err := m.Connect("pg", "pw"); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if !m.List()[0].Connected {
+		t.Fatalf("List should report connected")
+	}
+
+	// `dial 127.0.0.1:<localPort>` and round-trip a few bytes through
+	// the whole chain. Retry once to give the accept goroutine a beat
+	// in case the goroutine scheduler is slow.
+	var client net.Conn
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		client, err = net.Dial("tcp", net.JoinHostPort("127.0.0.1", itoa(localPort)))
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("dial local tcp listener: %v", err)
+	}
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+
+	msg := []byte("postgres-handshake-please")
+	if _, err := client.Write(msg); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got := make([]byte, len(msg))
+	if _, err := io.ReadFull(client, got); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != string(msg) {
+		t.Fatalf("got %q, want %q", got, msg)
+	}
+
+	// After Disconnect the listener must be gone and a fresh dial fails.
+	m.Disconnect("pg")
+	time.Sleep(50 * time.Millisecond) // listener close is observable async
+	if c, derr := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", itoa(localPort)), 200*time.Millisecond); derr == nil {
+		_ = c.Close()
+		t.Fatalf("listener still accepting after Disconnect")
+	}
+}
+
+// TestOutboundTCPRefusesHTTPProxy guards against a category-error
+// regression: calling the loopback HTTP proxy on a tcp-scheme mount
+// would otherwise wedge a browser request through a WS upgrade that
+// never finishes.
+func TestOutboundTCPRefusesHTTPProxy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	m := NewOutboundManager("http://127.0.0.1:1", "tk", nil)
+	m.Register([]conf.OutboundConfig{
+		{Path: "pg", Name: "postgres", Host: "h", User: "u", Scheme: "tcp", LocalPort: 5432},
+	})
+	w := runOutboundProxy(m, http.MethodGet, "/pg/anything", "pg", "/anything")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("got %d, want 400 for HTTP proxy of a tcp mount (%s)", w.Code, w.Body.String())
+	}
+}
+
+// TestOutboundTCPConnectPortBindFailureIsSync confirms that a wedged
+// LocalPort (something else already bound) surfaces synchronously from
+// Connect — the operator gets a clear "address in use" instead of a
+// silent listener-less state.
+func TestOutboundTCPConnectPortBindFailureIsSync(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	_, cloud := newFakeCloud("elev")
+	t.Cleanup(cloud.Close)
+
+	// Hold a port to provoke EADDRINUSE.
+	hog, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("hog: %v", err)
+	}
+	defer hog.Close()
+	hogPort := hog.Addr().(*net.TCPAddr).Port
+
+	m := NewOutboundManager(cloud.URL, "test-access-token", nil)
+	t.Cleanup(m.Stop)
+	m.Register([]conf.OutboundConfig{
+		{Path: "x", Name: "y", Host: "h", User: "u", Scheme: "tcp", LocalPort: hogPort},
+	})
+	if err := m.Connect("x", "pw"); err == nil {
+		t.Fatalf("expected bind failure, got nil")
+	}
+	if m.List()[0].Connected {
+		t.Fatalf("Connect failed but List() reports connected")
+	}
+}
+
+// itoa is a no-allocation alternative to strconv.Itoa for test loops.
+// Keeps the imports tight here without pulling strconv in just for one
+// call site.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [11]byte
+	pos := len(buf)
+	for n > 0 {
+		pos--
+		buf[pos] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[pos:])
 }
 
 func TestOutboundRegisterTearsDownRemovedConns(t *testing.T) {

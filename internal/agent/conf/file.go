@@ -83,18 +83,40 @@ type FileConfig struct {
 
 // OutboundConfig is one local mount that proxies to a remote outpost.
 //
-//   - Path : local mount under the admin UI listener — e.g. "kg" makes the
-//     remote app reachable at http://localhost:17777/kg/.
-//   - Name : the remote outpost's app name (e.g. "ollama"). Matched
-//     against the remote's AppRegistry by the cloudbox host-proxy.
+//   - Path : local mount identifier. For Scheme=="http" this is the
+//     subpath under the admin UI listener — e.g. "kg" makes the remote
+//     app reachable at http://localhost:17777/kg/. For Scheme=="tcp" it
+//     is also the addressing key (used in the API URLs and for state
+//     lookup) but no HTTP subpath is mounted.
+//   - Name : the remote outpost's app name (e.g. "ollama", "postgres").
+//     Matched against the remote's AppRegistry by the cloudbox host-proxy.
 //   - Host : the remote outpost's name as registered with cloudbox.
 //   - User : the OS user on the remote outpost (used at Connect time
 //     when POSTing to /h/<host>/elevate).
+//   - Scheme: "http" (default) or "tcp". For "tcp" the local outpost
+//     opens a 127.0.0.1:LocalPort listener after Connect and bridges
+//     every accepted TCP conn through cloudbox as a WebSocket to the
+//     remote outpost's matching tcp-scheme app. Lets tools that don't
+//     speak HTTP (ssh, psql, mysql, …) reach the remote service "as if
+//     local".
+//   - LocalPort: required for Scheme=="tcp". Ignored otherwise.
 type OutboundConfig struct {
-	Path string `json:"path"`
-	Name string `json:"name"`
-	Host string `json:"host"`
-	User string `json:"user"`
+	Path      string `json:"path"`
+	Name      string `json:"name"`
+	Host      string `json:"host"`
+	User      string `json:"user"`
+	Scheme    string `json:"scheme,omitempty"`
+	LocalPort int    `json:"local_port,omitempty"`
+}
+
+// SchemeNorm returns the effective scheme — empty defaults to "http" so
+// configs written before TCP support landed keep their old behavior.
+func (oc OutboundConfig) SchemeNorm() string {
+	s := strings.ToLower(strings.TrimSpace(oc.Scheme))
+	if s == "" {
+		return "http"
+	}
+	return s
 }
 
 // AppConfig is one custom reverse-proxy target. It is mounted under
@@ -108,6 +130,11 @@ type OutboundConfig struct {
 //   - "npipe": Windows named pipe at Socket (e.g. \\.\pipe\docker_engine).
 //     Only supported on Windows builds; non-Windows builds reject it at
 //     request time. Host/Port are ignored.
+//   - "tcp": raw TCP target at Host:Port. The agent does NOT speak HTTP
+//     to such an app; instead the /app/<name>/ route accepts a
+//     WebSocket upgrade and byte-bridges WS↔TCP. Reached from a remote
+//     outpost via a tcp-scheme outbound (see OutboundConfig). Used for
+//     ssh, postgres, mysql, redis and other non-HTTP services.
 type AppConfig struct {
 	Name    string `json:"name"`
 	Icon    string `json:"icon,omitempty"`
@@ -127,6 +154,12 @@ type AppConfig struct {
 func (ac AppConfig) IsSocket() bool {
 	s := strings.ToLower(strings.TrimSpace(ac.Scheme))
 	return s == "unix" || s == "npipe"
+}
+
+// IsTCP reports whether ac is a raw-TCP app (ssh/postgres/etc.) that
+// the agent exposes via /app/<name>/ as a WebSocket-to-TCP bridge.
+func (ac AppConfig) IsTCP() bool {
+	return strings.EqualFold(strings.TrimSpace(ac.Scheme), "tcp")
 }
 
 // AppTargetFromURL parses a single URL string ("http://localhost:8080",
@@ -166,6 +199,20 @@ func AppTargetFromURL(raw string) (scheme, host string, port int, socket string,
 			port = 80
 		}
 		return scheme, host, port, "", nil
+	case "tcp":
+		host = u.Hostname()
+		if host == "" {
+			return "", "", 0, "", fmt.Errorf("url %q is missing host", raw)
+		}
+		p := u.Port()
+		if p == "" {
+			return "", "", 0, "", fmt.Errorf("url %q is missing port (required for tcp)", raw)
+		}
+		n, cerr := strconv.Atoi(p)
+		if cerr != nil || n < 1 || n > 65535 {
+			return "", "", 0, "", fmt.Errorf("url %q has invalid port", raw)
+		}
+		return scheme, host, n, "", nil
 	case "unix", "npipe":
 		// `unix:///path` → u.Path = "/path"; `unix:/path` → also "/path".
 		// `unix://host/path` is technically valid but we treat the host
@@ -179,7 +226,7 @@ func AppTargetFromURL(raw string) (scheme, host string, port int, socket string,
 		}
 		return scheme, "", 0, sock, nil
 	default:
-		return "", "", 0, "", fmt.Errorf("url %q: scheme must be one of http|https|unix|npipe", raw)
+		return "", "", 0, "", fmt.Errorf("url %q: scheme must be one of http|https|tcp|unix|npipe", raw)
 	}
 }
 
