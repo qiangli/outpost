@@ -51,6 +51,13 @@ type Deps struct {
 func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	rg.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 
+	// Build provenance is captured once at startup — the binary's identity
+	// doesn't change at runtime.
+	build := ReadBuildInfo()
+	rg.GET("/version", func(c *gin.Context) {
+		c.JSON(http.StatusOK, build)
+	})
+
 	apps := deps.Apps
 	if apps == nil {
 		apps = NewAppRegistry()
@@ -63,11 +70,14 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	rg.GET("/apps", func(c *gin.Context) {
 		// New shape: [{name, role}] plus a `builtins` map so cloudbox knows
 		// which of /shell, /desktop, /clipboard this agent actually serves.
-		// Older outposts omit `builtins` entirely; the cloud treats that as
-		// the legacy "all builtins on" default.
+		// `version` is the short commit (e.g. "06d8d89" or "06d8d89-dirty")
+		// so cloudbox's /api/v1/hosts can show "outpost stale?" without
+		// hitting a second endpoint. Older outposts omit `builtins` and
+		// `version`; the cloud treats those as legacy / unknown.
 		c.JSON(http.StatusOK, gin.H{
-			"agent": deps.AgentName,
-			"apps":  apps.Entries(),
+			"agent":   deps.AgentName,
+			"version": build.Short(),
+			"apps":    apps.Entries(),
 			"builtins": gin.H{
 				"shell":     !deps.ShellDisabled,
 				"desktop":   !deps.DesktopDisabled,
