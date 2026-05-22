@@ -10,15 +10,20 @@ import (
 
 const cookieName = "outpost_admin"
 
-// requireSession is the gate the admin API routes hide behind. The gate
-// is open until the host has been paired with the portal (AgentName set);
-// before that, the listener is loopback-only and the OS user sitting at
-// the keyboard who just launched outpost is the only reachable caller.
-// Once paired, every API call must carry a valid session cookie minted
-// by POST /api/login.
+// requireSession is the gate the admin API routes hide behind. Two modes:
+//
+//  1. Loopback bind (default): the gate is open until the host has been
+//     paired with the portal (AgentName set). Reasoning: anyone reaching
+//     127.0.0.1 IS the OS user who just launched outpost, so we let them
+//     bootstrap without a login round-trip.
+//
+//  2. Non-loopback bind (e.g. 0.0.0.0:17777): the bypass is OFF — every
+//     /api/* call requires a session cookie from /api/login, regardless
+//     of whether pairing has happened yet. This is the safe default for
+//     LAN-reachable admin UIs.
 func (s *Server) requireSession() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !s.isConfigured() {
+		if s.loopbackOnly && !s.isConfigured() {
 			c.Next()
 			return
 		}

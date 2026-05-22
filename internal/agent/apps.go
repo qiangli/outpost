@@ -196,31 +196,31 @@ func socketTransport(scheme, socket string) http.RoundTripper {
 // app sees its native paths.
 func (r *AppRegistry) handler() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		name := c.Param("name")
-		r.mu.RLock()
-		rp := r.proxy[name]
-		target := r.apps[name]
-		r.mu.RUnlock()
-		if rp == nil {
-			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "unknown app: " + name})
-			return
-		}
-
-		// rest is the captured wildcard, e.g. "/api/sessions" — leading slash
-		// is included when present, empty for the root.
-		rest := c.Param("p")
-		if rest == "" {
-			rest = "/"
-		}
-
-		// Splice in a Director that rewrites the path while keeping the
-		// per-app ReverseProxy's default behavior (host, scheme, etc.).
-		origDirector := rp.Director
-		c.Request.URL.Path = singleJoin(target.Path, rest)
-		c.Request.URL.RawPath = ""
-		_ = origDirector // already captured target in NewSingleHostReverseProxy
-		rp.ServeHTTP(c.Writer, c.Request)
+		r.ProxyTo(c, c.Param("name"), c.Param("p"))
 	}
+}
+
+// ProxyTo is the gin-param-free entry point used by both the standard
+// /app/:name/*p route and the admin UI's `/<name>/*` local-access route
+// (so users can hit http://localhost:17777/ollama/... directly without
+// going through the cloudbox tunnel). Callers pass the captured wildcard
+// `rest` as the upstream path to forward (leading slash included; an
+// empty value is treated as "/").
+func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
+	r.mu.RLock()
+	rp := r.proxy[name]
+	target := r.apps[name]
+	r.mu.RUnlock()
+	if rp == nil {
+		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "unknown app: " + name})
+		return
+	}
+	if rest == "" {
+		rest = "/"
+	}
+	c.Request.URL.Path = singleJoin(target.Path, rest)
+	c.Request.URL.RawPath = ""
+	rp.ServeHTTP(c.Writer, c.Request)
 }
 
 func singleJoin(a, b string) string {

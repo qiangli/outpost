@@ -1,74 +1,128 @@
 package adminui
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
-// sessionStore is a tiny in-memory cookie→user map. Process restart wipes
-// it; that's fine — there is no admin UI to log into during a restart, and
-// once the new process is up the user can log in again with their OS
-// password.
+// sessionStore mints and validates HMAC-signed admin session cookies.
+//
+// Cookies are stateless: `user|expUnixSecs|sigBase64`. Validation
+// re-HMACs the prefix with the server's secret and compares. This means
+// the session SURVIVES process restarts (the secret is loaded from the
+// FileConfig on every boot), so flipping a built-in toggle — which
+// re-execs the binary — no longer logs the admin user out.
+//
+// Revocation is best-effort: an in-memory set tracks cookies that were
+// explicitly logged out. The set is lost on restart, but the cookie that
+// was revoked is also gone from the user's browser (we sent MaxAge=-1),
+// so this only matters if someone copied the cookie elsewhere — and in
+// that case the bounded 1h TTL caps the exposure.
 type sessionStore struct {
-	mu  sync.Mutex
-	ttl time.Duration
-	tab map[string]sessionEntry
-	now func() time.Time
+	secret []byte
+	ttl    time.Duration
+	now    func() time.Time
+
+	mu      sync.Mutex
+	revoked map[string]time.Time
 }
 
-type sessionEntry struct {
-	user      string
-	expiresAt time.Time
-}
-
-func newSessionStore(ttl time.Duration) *sessionStore {
+// newSessionStore builds a session store with the given TTL and signing
+// key. An empty secret causes a one-shot random key to be generated —
+// useful for tests; production paths should pass a persisted key so
+// sessions outlive process restarts.
+func newSessionStore(ttl time.Duration, secret []byte) *sessionStore {
+	if len(secret) == 0 {
+		var b [32]byte
+		_, _ = rand.Read(b[:])
+		secret = b[:]
+	}
 	return &sessionStore{
-		ttl: ttl,
-		tab: make(map[string]sessionEntry),
-		now: time.Now,
+		secret:  secret,
+		ttl:     ttl,
+		now:     time.Now,
+		revoked: map[string]time.Time{},
 	}
 }
 
-// Mint creates a new session for user and returns its opaque cookie value.
+// Mint returns a signed session cookie. The user string is opaque to the
+// store — it's encoded into the cookie verbatim and surfaced from
+// Validate. Must not contain '|' (the field separator). Practically the
+// only caller is handleLogin, which passes hostauth.CurrentUser() — a
+// plain OS user name.
 func (s *sessionStore) Mint(user string) (string, error) {
-	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
+	if strings.ContainsRune(user, '|') {
+		// Defensive: refuse separator chars so the format stays unambiguous.
+		return "", errSeparatorInUser
 	}
-	cookie := base64.RawURLEncoding.EncodeToString(b[:])
-	s.mu.Lock()
-	s.tab[cookie] = sessionEntry{user: user, expiresAt: s.now().Add(s.ttl)}
-	s.mu.Unlock()
-	return cookie, nil
+	exp := s.now().Add(s.ttl).Unix()
+	payload := user + "|" + strconv.FormatInt(exp, 10)
+	sig := s.sign(payload)
+	return payload + "|" + sig, nil
 }
 
-// Validate returns the user owning the cookie if it is present and not
-// expired. Expired entries are evicted on access.
+// Validate returns the user owning the cookie if signature checks pass
+// and the cookie isn't expired or revoked.
 func (s *sessionStore) Validate(cookie string) (string, bool) {
 	if cookie == "" {
 		return "", false
 	}
+	// Reject revoked-in-this-process cookies before any HMAC work.
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	entry, ok := s.tab[cookie]
-	if !ok {
+	_, gone := s.revoked[cookie]
+	s.mu.Unlock()
+	if gone {
 		return "", false
 	}
-	if s.now().After(entry.expiresAt) {
-		delete(s.tab, cookie)
+	parts := strings.SplitN(cookie, "|", 3)
+	if len(parts) != 3 {
 		return "", false
 	}
-	return entry.user, true
+	user, expStr, sig := parts[0], parts[1], parts[2]
+	want := s.sign(user + "|" + expStr)
+	// Constant-time compare to avoid timing leaks of the signature.
+	if !hmac.Equal([]byte(want), []byte(sig)) {
+		return "", false
+	}
+	expUnix, err := strconv.ParseInt(expStr, 10, 64)
+	if err != nil {
+		return "", false
+	}
+	if s.now().Unix() > expUnix {
+		return "", false
+	}
+	return user, true
 }
 
-// Revoke deletes a session if present.
+// Revoke best-effort invalidates a cookie for this process's lifetime.
+// Stateless cookies can't be truly recalled; the revocation set + the
+// browser-side cookie clear (Set-Cookie MaxAge=-1) together give logout
+// the user-visible behavior they expect.
 func (s *sessionStore) Revoke(cookie string) {
 	if cookie == "" {
 		return
 	}
 	s.mu.Lock()
-	delete(s.tab, cookie)
+	s.revoked[cookie] = s.now()
 	s.mu.Unlock()
 }
+
+func (s *sessionStore) sign(payload string) string {
+	mac := hmac.New(sha256.New, s.secret)
+	_, _ = mac.Write([]byte(payload))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// errSeparatorInUser is the sentinel for the unreachable Mint() guard.
+// Defined as a package var to avoid stringly-typed errors in callers.
+var errSeparatorInUser = sessionMintError("user name may not contain '|'")
+
+type sessionMintError string
+
+func (e sessionMintError) Error() string { return string(e) }

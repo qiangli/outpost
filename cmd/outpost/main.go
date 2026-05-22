@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -54,6 +55,7 @@ func startCmd() *cobra.Command {
 		serverAddrFlag string
 		serverPortFlag int
 		vncAddrFlag    string
+		adminAddrFlag  string
 	)
 	cmd := &cobra.Command{
 		Use:   "start",
@@ -129,6 +131,49 @@ func startCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Built-in local-daemon proxies (podman, ollama). The admin UI
+			// toggle is the source of truth; we silently skip when the
+			// daemon isn't actually reachable so a stale "enabled" flag
+			// doesn't break boot.
+			if fc.PodmanOn() {
+				if bt := agent.DetectPodman(); bt.Available && bt.Socket != "" {
+					if err := apps.RegisterFromConfig(conf.AppConfig{
+						Name: agent.BuiltinPodman, Scheme: "unix", Socket: bt.Socket,
+						Role: "admin", Enabled: true,
+					}); err != nil {
+						slog.Warn("podman builtin: register", "err", err)
+					} else {
+						slog.Info("podman builtin: registered", "socket", bt.Socket)
+					}
+				} else {
+					slog.Warn("podman builtin enabled but daemon not detected — skipping")
+				}
+			}
+			if fc.OllamaOn() {
+				if bt := agent.DetectOllama(); bt.Available && bt.URL != "" {
+					u, perr := url.Parse(bt.URL)
+					if perr == nil {
+						host := u.Hostname()
+						port := 0
+						if p := u.Port(); p != "" {
+							port, _ = strconv.Atoi(p)
+						}
+						if port == 0 {
+							port = 80
+						}
+						if err := apps.RegisterFromConfig(conf.AppConfig{
+							Name: agent.BuiltinOllama, Scheme: u.Scheme, Host: host, Port: port,
+							Role: "admin", Enabled: true,
+						}); err != nil {
+							slog.Warn("ollama builtin: register", "err", err)
+						} else {
+							slog.Info("ollama builtin: registered", "target", bt.URL)
+						}
+					}
+				} else {
+					slog.Warn("ollama builtin enabled but daemon not detected — skipping")
+				}
+			}
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
@@ -144,16 +189,36 @@ func startCmd() *cobra.Command {
 				stop()
 			}
 
-			adminAddr := os.Getenv("OUTPOST_ADMIN_ADDR")
+			adminAddr := adminAddrFlag
+			if adminAddr == "" {
+				adminAddr = os.Getenv("OUTPOST_ADMIN_ADDR")
+			}
 			if adminAddr == "" {
 				adminAddr = "127.0.0.1:17777"
 			}
+			// Load (or generate + persist) the HMAC key for admin-UI
+			// session cookies. Storing it in the FileConfig is what lets
+			// sessions survive a built-in toggle's re-exec without
+			// kicking the operator back to the login screen.
+			sessionKey, err := conf.EnsureAdminSessionKey(cfgPath, fc)
+			if err != nil {
+				return fmt.Errorf("admin session key: %w", err)
+			}
+			// Outbound manager: derives the cloudbox HTTP base URL from
+			// the pairing. ServerAddr/ServerPort/Protocol describe how
+			// the matrix tunnel dials cloudbox; for plain HTTP API calls
+			// we translate "wss" → "https" and "websocket" → "http".
+			outbound := agent.NewOutboundManager(cloudboxHTTPBase(fc), fc.AccessToken, nil)
+			outbound.Register(fc.Outbound)
+
 			adminSrv, err := adminui.New(adminui.Deps{
 				ConfigPath: cfgPath,
 				ListenAddr: adminAddr,
 				Auth:       hostauth.DefaultAuthenticator(),
 				Apps:       apps,
 				Restart:    restartFn,
+				SessionKey: sessionKey,
+				Outbound:   outbound,
 			})
 			if err != nil {
 				return fmt.Errorf("admin ui: %w", err)
@@ -293,7 +358,31 @@ func startCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serverAddrFlag, "server", "", "matrix-tunnel server host (overrides $MATRIX_SERVER_ADDR)")
 	cmd.Flags().IntVar(&serverPortFlag, "server-port", 0, "matrix-tunnel server port (overrides $MATRIX_SERVER_PORT)")
 	cmd.Flags().StringVar(&vncAddrFlag, "vnc-addr", "127.0.0.1:5900", "VNC server to expose for the desktop tab")
+	cmd.Flags().StringVar(&adminAddrFlag, "admin-addr", "", "Admin UI listen address (overrides $OUTPOST_ADMIN_ADDR; default 127.0.0.1:17777). Use 0.0.0.0:17777 to expose to the LAN; login is then always required.")
 	return cmd
+}
+
+// cloudboxHTTPBase derives the HTTP(S) base URL of cloudbox from the
+// matrix-tunnel pairing fields. The same hostname serves both the wss
+// tunnel and the HTTP API — protocols are just paired (wss↔https,
+// websocket↔http, tcp↔http).
+func cloudboxHTTPBase(fc *conf.FileConfig) string {
+	if fc == nil || fc.ServerAddr == "" {
+		return ""
+	}
+	scheme := "https"
+	switch strings.ToLower(fc.Protocol) {
+	case "wss":
+		scheme = "https"
+	case "ws", "websocket", "tcp", "":
+		// For local dev (ws+18080) the API is plain HTTP on the same port.
+		scheme = "http"
+	}
+	port := ""
+	if fc.ServerPort != 0 && !((scheme == "https" && fc.ServerPort == 443) || (scheme == "http" && fc.ServerPort == 80)) {
+		port = fmt.Sprintf(":%d", fc.ServerPort)
+	}
+	return scheme + "://" + fc.ServerAddr + port
 }
 
 // buildAppRegistry seeds the live AppRegistry from whichever app source

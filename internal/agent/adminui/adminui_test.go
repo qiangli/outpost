@@ -37,8 +37,11 @@ func newTestServer(t *testing.T, configPath string, want map[string]string, rest
 				}
 			},
 		},
-		engine:   eng,
-		sessions: newSessionStore(time.Minute),
+		engine:       eng,
+		sessions:     newSessionStore(time.Minute, nil),
+		loginRL:      newLoginLimiter(50, time.Millisecond),
+		loopbackOnly: true,
+		detector:     agent.NewBuiltinDetector(0),
 	}
 	s.registerRoutes()
 	return s
@@ -276,7 +279,7 @@ func TestBuiltinsToggleSchedulesRestart(t *testing.T) {
 		t.Fatalf("status = %d. Body: %s", w.Code, w.Body.String())
 	}
 	// scheduleRestart sleeps ~250ms; wait a bit longer than that.
-	waitFor(t, time.Second, func() bool { return restartCount.Load() == 1 })
+	waitFor(t, 2*time.Second, func() bool { return restartCount.Load() == 1 })
 
 	fc, _ := conf.LoadFile(configPath)
 	if fc.ShellOn() {
@@ -333,7 +336,7 @@ func TestRegisterEndpoint(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
 	}
-	waitFor(t, time.Second, func() bool { return restartCount.Load() == 1 })
+	waitFor(t, 2*time.Second, func() bool { return restartCount.Load() == 1 })
 
 	fc, _ := conf.LoadFile(configPath)
 	if fc.AgentName != "paired" || fc.Token != "tok" || fc.RemotePort != 7100 {
@@ -344,21 +347,21 @@ func TestRegisterEndpoint(t *testing.T) {
 	}
 }
 
-// TestSessionExpiry — an expired cookie should be rejected. Uses a tiny
-// TTL via direct mutation of the session entry's expiresAt.
+// TestSessionExpiry — an expired cookie should be rejected. Sessions
+// are stateless HMAC cookies now, so we expire by minting at an old
+// virtual now() then validating at real now().
 func TestSessionExpiry(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "agent.json")
 	if err := conf.SaveFile(configPath, &conf.FileConfig{AgentName: "x", Token: "t"}); err != nil {
 		t.Fatal(err)
 	}
 	s := newTestServer(t, configPath, nil, nil)
+	// Pin time-of-mint to two hours ago and TTL is 1 minute (test default),
+	// so the cookie is far past expiry by the time Validate runs.
+	realNow := s.sessions.now
+	s.sessions.now = func() time.Time { return realNow().Add(-2 * time.Hour) }
 	cookie, _ := s.sessions.Mint("tester")
-	// Reach in and backdate the entry.
-	s.sessions.mu.Lock()
-	entry := s.sessions.tab[cookie]
-	entry.expiresAt = time.Now().Add(-1 * time.Second)
-	s.sessions.tab[cookie] = entry
-	s.sessions.mu.Unlock()
+	s.sessions.now = realNow
 
 	w := doJSON(s, http.MethodGet, "/api/config", nil, cookie)
 	if w.Code != http.StatusUnauthorized {

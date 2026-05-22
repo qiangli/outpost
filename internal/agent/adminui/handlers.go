@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"github.com/qiangli/outpost/internal/agent/portal"
@@ -28,25 +29,52 @@ func (s *Server) loadConfig() (*conf.FileConfig, error) {
 	return fc, nil
 }
 
+// builtinView is the admin-UI shape for one optional local-daemon proxy
+// (podman/ollama). Enabled reflects the saved config; Available is the
+// live detection result so the UI can grey out the toggle when the
+// daemon isn't running. Target is a human-readable description of where
+// the proxy would point ("unix:///run/podman/...", "http://127.0.0.1:11434").
+type builtinView struct {
+	Enabled   bool   `json:"enabled"`
+	Available bool   `json:"available"`
+	Target    string `json:"target,omitempty"`
+}
+
+func toBuiltinView(enabled bool, bt agent.BuiltinTarget) builtinView {
+	v := builtinView{Enabled: enabled, Available: bt.Available}
+	switch bt.Scheme {
+	case "unix", "npipe":
+		if bt.Socket != "" {
+			v.Target = bt.Scheme + "://" + bt.Socket
+		}
+	case "http", "https":
+		v.Target = bt.URL
+	}
+	return v
+}
+
 // safeView is the redacted FileConfig sent over the API. Token never
 // leaves the agent; presence is reported as has_token instead.
 type safeView struct {
-	AgentName        string            `json:"agent_name"`
-	ServerAddr       string            `json:"server_addr"`
-	ServerPort       int               `json:"server_port"`
-	Protocol         string            `json:"protocol,omitempty"`
-	RemotePort       int               `json:"remote_port"`
-	AuthURL          string            `json:"auth_url,omitempty"`
-	HasToken         bool              `json:"has_token"`
-	Apps             []conf.AppConfig  `json:"apps"`
-	ShellEnabled     bool              `json:"shell_enabled"`
-	DesktopEnabled   bool              `json:"desktop_enabled"`
-	ClipboardEnabled bool              `json:"clipboard_enabled"`
-	SSHEnabled       bool              `json:"ssh_enabled"`
-	Defaults         map[string]string `json:"defaults"`
+	AgentName        string               `json:"agent_name"`
+	ServerAddr       string               `json:"server_addr"`
+	ServerPort       int                  `json:"server_port"`
+	Protocol         string               `json:"protocol,omitempty"`
+	RemotePort       int                  `json:"remote_port"`
+	AuthURL          string               `json:"auth_url,omitempty"`
+	HasToken         bool                 `json:"has_token"`
+	Apps             []conf.AppConfig     `json:"apps"`
+	ShellEnabled     bool                 `json:"shell_enabled"`
+	DesktopEnabled   bool                 `json:"desktop_enabled"`
+	ClipboardEnabled bool                 `json:"clipboard_enabled"`
+	SSHEnabled       bool                 `json:"ssh_enabled"`
+	Podman           builtinView          `json:"podman"`
+	Ollama           builtinView          `json:"ollama"`
+	Outbound         []agent.OutboundView `json:"outbound"`
+	Defaults         map[string]string    `json:"defaults"`
 }
 
-func toSafeView(fc *conf.FileConfig) safeView {
+func (s *Server) toSafeView(fc *conf.FileConfig) safeView {
 	apps := fc.Apps
 	if apps == nil {
 		apps = []conf.AppConfig{}
@@ -70,6 +98,9 @@ func toSafeView(fc *conf.FileConfig) safeView {
 		DesktopEnabled:   fc.DesktopOn(),
 		ClipboardEnabled: fc.ClipboardOn(),
 		SSHEnabled:       fc.SSHOn(),
+		Podman:           toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
+		Ollama:           toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
+		Outbound:         s.outboundList(),
 		Defaults: map[string]string{
 			"server_url": "https://ai.dhnt.io",
 			"name":       defaultName,
@@ -103,6 +134,10 @@ type loginReq struct {
 // submitted username MUST equal the running OS user — same gate as the
 // main /auth handler for consistency.
 func (s *Server) handleLogin(c *gin.Context) {
+	if s.loginRL != nil && !s.loginRL.Allow(c.ClientIP()) {
+		c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too many attempts"})
+		return
+	}
 	var req loginReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -147,7 +182,7 @@ func (s *Server) handleGetConfig(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, toSafeView(fc))
+	c.JSON(http.StatusOK, s.toSafeView(fc))
 }
 
 type registerReq struct {
@@ -220,10 +255,18 @@ type builtinsReq struct {
 	Desktop   *bool `json:"desktop"`
 	Clipboard *bool `json:"clipboard"`
 	SSH       *bool `json:"ssh"`
+	Podman    *bool `json:"podman"`
+	Ollama    *bool `json:"ollama"`
 }
 
-// handleBuiltins toggles the built-in shell/desktop/clipboard routes.
-// Route mounting happens at boot, so saving here triggers a restart.
+// handleBuiltins toggles built-in routes (shell/desktop/clipboard/ssh)
+// and the optional local-daemon proxies (podman/ollama). All of these
+// are wired at boot, so saving triggers a restart.
+//
+// Enabling podman/ollama when the daemon isn't detected is allowed —
+// the user might be about to start the daemon. The boot path simply
+// skips the registration when the probe still fails, and the toggle
+// stays "on but inactive" until the daemon shows up.
 func (s *Server) handleBuiltins(c *gin.Context) {
 	var req builtinsReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -248,6 +291,12 @@ func (s *Server) handleBuiltins(c *gin.Context) {
 	}
 	if req.SSH != nil {
 		fc.SSHEnabled = req.SSH
+	}
+	if req.Podman != nil {
+		fc.PodmanEnabled = *req.Podman
+	}
+	if req.Ollama != nil {
+		fc.OllamaEnabled = *req.Ollama
 	}
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -274,13 +323,31 @@ func (s *Server) handleListApps(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"apps": apps})
 }
 
+// upsertAppReq accepts both the legacy {scheme, host, port, socket}
+// shape and the new single-URL form ("http://localhost:8080",
+// "unix:///run/podman/podman.sock"). When URL is set, it wins — the
+// split fields are derived from it.
+type upsertAppReq struct {
+	conf.AppConfig
+	URL string `json:"url,omitempty"`
+}
+
 // handleUpsertApp validates one AppConfig, persists it, and mutates the
 // live registry. No restart required — AppRegistry is concurrency-safe.
 func (s *Server) handleUpsertApp(c *gin.Context) {
-	var ac conf.AppConfig
-	if err := c.ShouldBindJSON(&ac); err != nil {
+	var req upsertAppReq
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	ac := req.AppConfig
+	if strings.TrimSpace(req.URL) != "" {
+		scheme, host, port, socket, perr := conf.AppTargetFromURL(req.URL)
+		if perr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": perr.Error()})
+			return
+		}
+		ac.Scheme, ac.Host, ac.Port, ac.Socket = scheme, host, port, socket
 	}
 	if err := validateApp(&ac); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -363,6 +430,12 @@ func validateApp(ac *conf.AppConfig) error {
 	if strings.ContainsAny(ac.Name, "/ \t") {
 		return errors.New("name cannot contain slashes or whitespace")
 	}
+	// Reserved by the admin UI's own routes. Allowing an app with one of
+	// these names would shadow the admin API or the local-proxy itself.
+	switch strings.ToLower(ac.Name) {
+	case "api", "static", "healthz", "index.html", "app":
+		return fmt.Errorf("name %q is reserved by the admin UI", ac.Name)
+	}
 	ac.Scheme = strings.ToLower(strings.TrimSpace(ac.Scheme))
 	if ac.Scheme == "" {
 		ac.Scheme = "http"
@@ -396,15 +469,162 @@ func validateApp(ac *conf.AppConfig) error {
 	return nil
 }
 
+// outboundList safely returns the manager's view list (or an empty
+// slice when no manager is wired, so /api/config never has a null
+// field).
+func (s *Server) outboundList() []agent.OutboundView {
+	if s.deps.Outbound == nil {
+		return []agent.OutboundView{}
+	}
+	return s.deps.Outbound.List()
+}
+
+// --- Outbound mounts ---
+
+func (s *Server) handleListOutbound(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"outbound": s.deps.Outbound.List()})
+}
+
+type outboundUpsertReq struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
+	Host string `json:"host"`
+	User string `json:"user"`
+}
+
+func (s *Server) handleAddOutbound(c *gin.Context) {
+	var req outboundUpsertReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateOutbound(&req); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fc, err := s.loadConfig()
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// Local-app and outbound names share the same NoRoute namespace —
+	// refuse to register an outbound that would shadow a local app.
+	for _, ac := range fc.Apps {
+		if strings.EqualFold(ac.Name, req.Path) {
+			c.AbortWithStatusJSON(http.StatusConflict,
+				gin.H{"error": fmt.Sprintf("path %q collides with custom app of the same name", req.Path)})
+			return
+		}
+	}
+	// Upsert by path.
+	replaced := false
+	for i, ob := range fc.Outbound {
+		if ob.Path == req.Path {
+			fc.Outbound[i] = conf.OutboundConfig{Path: req.Path, Name: req.Name, Host: req.Host, User: req.User}
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		fc.Outbound = append(fc.Outbound, conf.OutboundConfig{Path: req.Path, Name: req.Name, Host: req.Host, User: req.User})
+	}
+	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	s.deps.Outbound.Register(fc.Outbound)
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (s *Server) handleDeleteOutbound(c *gin.Context) {
+	path := c.Param("path")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fc, err := s.loadConfig()
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	filtered := fc.Outbound[:0]
+	for _, ob := range fc.Outbound {
+		if ob.Path != path {
+			filtered = append(filtered, ob)
+		}
+	}
+	fc.Outbound = filtered
+	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	s.deps.Outbound.Register(fc.Outbound)
+	c.Status(http.StatusNoContent)
+}
+
+type outboundConnectReq struct {
+	Password string `json:"password" binding:"required"`
+}
+
+func (s *Server) handleConnectOutbound(c *gin.Context) {
+	path := c.Param("path")
+	if !s.deps.Outbound.Has(path) {
+		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "unknown outbound path"})
+		return
+	}
+	var req outboundConnectReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := s.deps.Outbound.Connect(path, req.Password); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (s *Server) handleDisconnectOutbound(c *gin.Context) {
+	path := c.Param("path")
+	s.deps.Outbound.Disconnect(path)
+	c.Status(http.StatusNoContent)
+}
+
+// validateOutbound trims and sanity-checks the incoming fields. Path must
+// be safe as a URL segment (no slashes/whitespace) AND must not collide
+// with the admin UI's reserved paths.
+func validateOutbound(req *outboundUpsertReq) error {
+	req.Path = strings.TrimSpace(req.Path)
+	req.Name = strings.TrimSpace(req.Name)
+	req.Host = strings.TrimSpace(req.Host)
+	req.User = strings.TrimSpace(req.User)
+	if req.Path == "" || req.Name == "" || req.Host == "" || req.User == "" {
+		return errors.New("path, name, host, and user are all required")
+	}
+	if strings.ContainsAny(req.Path, "/ \t") {
+		return errors.New("path cannot contain slashes or whitespace")
+	}
+	switch strings.ToLower(req.Path) {
+	case "api", "static", "healthz", "index.html", "app":
+		return fmt.Errorf("path %q is reserved by the admin UI", req.Path)
+	}
+	return nil
+}
+
 // scheduleRestart asynchronously triggers the parent's restart closure
-// after a short delay so the in-flight HTTP response has time to flush.
-// Without this, the browser would see a torn connection mid-response.
+// after a short delay so the in-flight HTTP response has time to flush
+// AND so multiple back-to-back toggles (the admin UI now auto-saves on
+// every switch flip) collapse into a single restart. Each call resets
+// the timer; only when ~1s passes without a new call does Restart fire.
 func (s *Server) scheduleRestart() {
 	if s.deps.Restart == nil {
 		return
 	}
-	go func() {
-		time.Sleep(250 * time.Millisecond)
-		s.deps.Restart()
-	}()
+	s.restartMu.Lock()
+	defer s.restartMu.Unlock()
+	if s.restartTimer != nil {
+		s.restartTimer.Stop()
+	}
+	s.restartTimer = time.AfterFunc(time.Second, s.deps.Restart)
 }
