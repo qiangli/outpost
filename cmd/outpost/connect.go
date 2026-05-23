@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -172,10 +171,7 @@ func postElevate(ctx context.Context, fc *conf.FileConfig, bearer, host, user, p
 	}
 	body, _ := json.Marshal(map[string]string{"user": user, "password": password})
 
-	// Use a cookiejar so we don't have to parse Set-Cookie by hand.
-	jar, _ := cookiejar.New(nil)
-	client := &http.Client{Timeout: 30 * time.Second, Jar: jar}
-
+	client := &http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, elevateURL, bytes.NewReader(body))
 	if err != nil {
 		return "", err
@@ -202,10 +198,15 @@ func postElevate(ctx context.Context, fc *conf.FileConfig, bearer, host, user, p
 		return "", fmt.Errorf("elevation reply was not JSON (Content-Type=%q at %s) — likely a cloudbox route mismatch", ct, elevateURL)
 	}
 
-	// Grab the matrix_elev cookie value. cookiejar scopes it under
-	// /h/<host>, so we read by host+path rather than by domain alone.
-	u, _ := url.Parse(elevateURL)
-	for _, ck := range jar.Cookies(u) {
+	// Read Set-Cookie directly off the response instead of going through
+	// a cookiejar. Cloudbox scopes the matrix_elev cookie's Path to the
+	// data URL (/h/<host>/ssh) rather than the elevate URL we POSTed to
+	// (/h/<host>/elev/ssh) — they're sibling paths, so net/http/cookiejar
+	// correctly excludes the cookie from jar.Cookies(<elevateURL>), even
+	// though it's right there in the response. Reading resp.Cookies()
+	// directly bypasses the path-scoping check — appropriate because we
+	// know which cookie name we want and which Path it'll be scoped to.
+	for _, ck := range resp.Cookies() {
 		if ck.Name == "matrix_elev" && ck.Value != "" {
 			return ck.Value, nil
 		}
