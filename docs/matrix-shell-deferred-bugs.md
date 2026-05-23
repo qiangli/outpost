@@ -1,151 +1,131 @@
 # Matrix-shell — deferred bugs
 
-This is a scoping memo for three matrix-shell / outpost bugs that were
-surfaced during a long multi-host automation run but **not** addressed
-in the SFTP + builtins + keep-alive hardening pass. Each is parked here
-with reproduction, suspected location, and verification notes so the
-next agent can pick them up cleanly.
+Status after the second hardening pass (May 2026):
+
+- **#11 (`$(which outpost)` returns empty)** — **fixed**. Was launchd
+  PATH narrowing, not an interpreter bug. See `internal/agent/shell/env.go`
+  for the fix (BuildEnv prepends outpost's own exe dir + common user dirs)
+  and `interp/interp_test.go` for the fork-side regression tests proving
+  the interpreter itself was always correct.
+- **#10 (heredoc curly-quote corruption)** — **not reproducible**. The
+  fork interpreter handles Unicode curly quotes (`"`/`"`, U+201C/U+201D)
+  byte-for-byte in heredoc bodies; verified end-to-end through
+  `outpost ssh-proxy` (cloudbox + matrix tunnel + matrix shell). If the
+  bug exists, it's almost certainly in xterm.js / the browser `/shell`
+  PTY terminal frontend, not in outpost. Sibling-fork test cases at
+  `interp/interp_test.go:1543-1554` are kept as permanent guards.
+- **#8 (`launchctl submit`)** — still parked. macOS launchd domain issue,
+  not addressable from the shell layer. Workaround unchanged.
+
+Each is detailed below.
 
 The matrix shell is an in-process `golang.org/x/crypto/ssh` server in
 `internal/agent/ssh.go` that delegates command execution to a fork of
-`mvdan.cc/sh/v3` (the qiangli/sh fork, vendored at `external/sh`). The
-two shell-layer bugs below are in that fork; the launchctl bug is in
-outpost's daemon-domain handling.
+`mvdan.cc/sh/v3` (the qiangli/sh fork, vendored at `external/sh`).
 
 ---
 
-## #10 — Heredoc with nested f-string quotes corrupts silently
+## #10 — Heredoc with nested f-string quotes (NOT REPRODUCIBLE)
 
-### Symptom
+### Status
 
-Bash heredocs that embed Python f-strings with nested `"…"` quotes get
-silently mangled on the way through the matrix shell. Operators
-working around it report having to switch to plain `print("k:", v)`
-style (no f-string nesting), or to use `python3 << 'PY'` (the *quoted*
-heredoc form) with explicit quote-form discipline.
+The other agent diagnosed the fork interpreter: `quotedHdocWord`
+(`syntax/lexer.go:1212`) and `hdocReader` (`interp/runner.go:920`) both
+pass bytes through unchanged. Regression tests at
+`interp/interp_test.go:1543-1554` (commit `e552dd40` upstream) prove
+this for both quoted (`<<'PY'`) and unquoted (`<<PY`) heredocs with
+Unicode curly quotes inside.
 
-### Reproduction skeleton
-
-The submodule (master HEAD) already has test cases drafted for this — a
-sibling agent began adding them. Check `external/sh/interp/interp_test.go`
-around the existing heredoc tests for entries that look like:
-
-```go
-{
-    "cat <<PY\nprint(f\"key: {v}\")\nPY",
-    "print(f\"key: {v}\")\n",   // — expected; actual is mangled
-},
-```
-
-If those aren't present, add a minimal case:
+End-to-end smoke confirmed it through the SSH exec path:
 
 ```bash
-cat <<PY
+$ ssh novidesign 'cat <<PY
+> he said "smart" quotes
+> print(f"key: {v}")
+> data = {"a": 1, "b": 2}
+> PY'
+he said "smart" quotes
 print(f"key: {v}")
-PY
+data = {"a": 1, "b": 2}
 ```
 
-Bash 5.x emits the body verbatim (parameter expansion happens for
-unquoted heredocs, but `$v` isn't present here — the `"..."` should be
-literal). Our parser appears to treat the double quotes as starting a
-nested quoted region.
+Bytes survive cleanly through `dragon ssh-proxy → cloudbox → matrix
+tunnel → novidesign outpost → ssh server exec channel → qiangli/sh
+runner`. Both Unicode curly quotes and ASCII double quotes pass through.
 
-### Suspected location (per the exploration done while planning)
+### Where to look if it resurfaces
 
-- **Parser**: `external/sh/syntax/parser.go:736-770` (`doHeredocs`) +
-  the redirect collection at `:2063` (`p.heredocs = append(...)`).
-- **Lexer**: `external/sh/syntax/lexer.go` heredoc body lexing — search
-  for `hdocBody` / `hdocBodyTabs` quote state.
+- **Browser `/shell` PTY-WebSocket bridge** (`internal/agent/shell.go`)
+  is the remaining suspect. The bridge reads 4096-byte chunks from the
+  PTY master and emits a binary WS frame per `Read()`. If xterm.js's
+  `TextDecoder` is invoked per-frame (not in streaming mode), a
+  multi-byte UTF-8 sequence split across a frame boundary would render
+  as `U+FFFD` replacement chars. Output direction only; input direction
+  (browser → WS → PTY) is byte-stream all the way down so unaffected.
+- The user's original report mentioned "SSH wire layer," but smoke shows
+  the SSH path is byte-clean. They may have been using the browser
+  shell at the time and attributed it loosely; the description was
+  written in a hurry between automation runs.
 
-Bash reference semantics for **unquoted** heredocs (`<<EOF`):
-- Parameter expansion (`$var`, `${var}`) happens
-- Command substitution (`` `cmd` ``, `$(cmd)`) happens
-- Arithmetic expansion (`$((expr))`) happens
-- Backslash escapes: only `\$`, `\\`, `` \` ``, and `\<newline>`
-- Everything else, including bare `"` and `'`, is literal
+### How to verify a fix (if the browser shell ever ends up under
+investigation)
 
-Bash reference semantics for **quoted** heredocs (`<<'EOF'` or `<<\EOF`):
-- No expansion whatsoever; body is verbatim until the closing delimiter
-
-The bug is almost certainly that the lexer's `hdocBody` quote state is
-toggling on bare `"` instead of treating it as a literal byte.
-
-### How to verify a fix
-
-1. Add the repro test in `external/sh/interp/interp_test.go` `runTests`
-   table.
-2. Run `go test ./interp -run '^TestRunnerRun$' -count=1` — must pass.
-3. Run the bash-oracle test: `CGO_ENABLED=0 go test -run TestRunnerRunConfirm
-   -exec 'dockexec bash:5.2' ./interp` — must match real bash output
-   for both quoted and unquoted heredoc variants of the same body.
-4. End-to-end smoke through outpost: `outpost ssh-proxy somehost`,
-   then paste the failing pattern, confirm clean output. Compare with
-   stock ssh into a Linux box for the reference behavior.
+1. Drive the browser shell with a heredoc containing curly quotes
+   AND a longer-than-4 KiB body — increases the likelihood of a
+   chunk-boundary split landing mid-rune.
+2. Inspect WS frames in browser devtools; confirm whether
+   individual frames end mid-rune.
+3. Fix: feed PTY output into a `bufio.Writer` or a small
+   "rune-aligned chunker" that holds back trailing partial-runes
+   until the next byte arrives. Cost is one buffer + a tiny
+   `utf8.RuneStart`-style scan.
 
 ---
 
-## #11 — `$(...)` command substitution drops the result before argv split
+## #11 — `$(which outpost)` empty in argv (FIXED)
 
-### Symptom
+### Root cause
+
+The fork interpreter was always correct — the other agent confirmed
+`$(cmd) → argv` works for arbitrary substitutions
+(`interp/interp_test.go:350-352`). The actual bug was on outpost's side:
+the matrix shell ran with the launchd-spawned daemon's process env,
+which on macOS LaunchDaemons is `/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin`
+— missing `/Users/<user>/bin` where the outpost binary itself usually
+lives. So `which outpost` returned empty, `ls -la $(which outpost)`
+became `ls -la` (cwd listing).
+
+### Fix
+
+`internal/agent/shell/env.go:BuildEnv()` prepends to PATH:
+
+- the directory containing the running outpost binary
+  (`os.Executable()` → `filepath.Dir`)
+- `$HOME/bin` and `$HOME/.local/bin`
+- `/opt/homebrew/{bin,sbin}` and `/usr/local/{bin,sbin}`
+
+Dirs that don't exist on the host are skipped. Entries already on PATH
+aren't duplicated. The new env replaces `interp.Env(nil)` in both
+`shell/runner.go` (browser `/shell` route) and `agent/ssh.go`
+(`/ssh` route's exec channel).
+
+Verified end-to-end on novidesign:
 
 ```bash
-ls -la $(which outpost)
+$ ssh novidesign 'echo "PATH=$PATH" ; which outpost ; ls -la $(which outpost) | head -1'
+PATH=/Users/noviadmin/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin
+/Users/noviadmin/bin/outpost
+-rwxr-xr-x  1 noviadmin  staff  39429202 May 23 03:44 /Users/noviadmin/bin/outpost
 ```
 
-returns the home-directory listing instead of `ls -la /path/to/outpost`.
-The captured stdout (`/path/to/outpost\n`) isn't making it into argv as
-`argv[1]` to the outer `ls -la`; instead `ls -la` runs with no path
-argument and defaults to the cwd / home.
-
-### Reproduction skeleton
-
-```bash
-echo "before: <$(printf abc)>"   # should print "before: <abc>"
-ls -la $(printf '/etc/hosts')    # should list /etc/hosts metadata
-set -- $(printf 'foo bar baz'); echo "got $# args: '$1' '$2' '$3'"
-```
-
-Note: the submodule already has draft test cases for this — check
-`external/sh/interp/interp_test.go` near the existing `$(echo ...)`
-tests for entries like:
-
-```go
-{`printf '<%s>\n' $(printf hello)`, "<hello>\n"},
-{`printf '<%s>\n' $(printf 'a b')`, "<a>\n<b>\n"},
-{`set -- $(printf 'foo bar'); echo $#:$1,$2`, "2:foo,bar\n"},
-```
-
-### Suspected location
-
-- **Command substitution capture**: `external/sh/interp/runner.go:48-74`
-  (`fillExpandConfig`) — sets up `cfg.CmdSubst` callback. The inner
-  `stmts(ctx, cs.Stmts)` runs the subshell with stdout=captureBuf.
-- **Substitution post-processing**: `external/sh/expand/expand.go:619-630`
-  (`cmdSubst`) — trims trailing `\n`. Result returned as a single
-  string.
-- **Field splitting**: `external/sh/expand/expand.go:632-720`
-  (`wordFields`) — supposed to split on IFS *after* substitution.
-
-Hypothesis (to verify): the result of `$(cmd)` is being returned to the
-caller but the field-splitting step that turns "the captured stdout"
-into individual argv tokens isn't running for the OUTER command's argv.
-Possibly conditional on context (inside `$(...)` itself works, but
-substitution *as a positional arg* of another command doesn't).
-
-### How to verify a fix
-
-Same loop as #10:
-1. Test cases in `interp_test.go` `runTests` pass.
-2. Bash-oracle `TestRunnerRunConfirm` confirms parity with bash 5.2.
-3. End-to-end smoke: `outpost ssh-proxy somehost`, run `ls -la
-   $(which outpost)`, get the binary's listing (not home dir).
-
-The fix probably ripples into a few existing tests that depended on
-the broken behavior — that's worth a careful look.
+Unit tests in `internal/agent/shell/env_test.go` cover prepend order,
+dedup, dir-existence filtering, and PATH preservation.
 
 ---
 
 ## #8 — `launchctl submit` silently no-ops in the matrix-shell
+
+Unchanged from the prior pass.
 
 ### Symptom
 
@@ -153,26 +133,26 @@ the broken behavior — that's worth a careful look.
 launchctl submit -l my-label -- /path/to/program arg1 arg2
 ```
 
-returns success (no error printed) but nothing actually launches —
-`launchctl list | grep my-label` shows nothing. The same command run
-from a normal Terminal session works fine.
+returns success but nothing launches — `launchctl list | grep my-label`
+shows nothing. The same command run from a normal Terminal session
+works fine.
 
-### Root cause (hypothesis, not yet verified)
+### Root cause (hypothesis)
 
-The SSH session inherits a launchd *domain context* from the outpost
-process. Outpost typically runs as a LaunchAgent (user domain) or
-LaunchDaemon (system domain). In either case, the inherited domain
-doesn't have the `submit` capability — `launchctl submit` requires
-either the GUI domain (`gui/$UID`) or an explicit bootstrap.
+The SSH session inherits a launchd domain context from the outpost
+process. Outpost typically runs as a LaunchDaemon (system domain) on
+hosts that need it auto-started. That domain doesn't have `submit`
+capability — `launchctl submit` requires either GUI domain
+(`gui/$UID`) or explicit bootstrap.
 
-This isn't a shell bug. The shell faithfully ran what the user typed;
-launchctl silently refused. There's no "Inappropriate ioctl" or
-permission error because launchd considers this a no-op authorization,
-not a failure.
+This is not a shell bug. The shell ran what the user typed; launchd
+silently refused. There's no "Inappropriate ioctl" or permission
+error because launchd considers this a no-op authorization, not a
+failure.
 
 ### Workaround (works today)
 
-Write a LaunchAgent plist and bootstrap into the user GUI domain:
+Write a LaunchAgent plist + bootstrap into the user GUI domain:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -194,39 +174,22 @@ Write a LaunchAgent plist and bootstrap into the user GUI domain:
 </plist>
 ```
 
-Then:
-
 ```bash
 launchctl bootstrap gui/$UID /tmp/my-label.plist
 ```
 
-This survives every SSH session lifecycle because launchd owns it
-under loginwindow's domain, not the SSH login session's.
+Survives every SSH session lifecycle because launchd owns it under
+loginwindow's domain.
 
 ### Possible fixes (none implemented)
 
 1. **`outpost run --label X -- <cmd>` helper** — wrap the plist
-   generation + bootstrap dance behind a single CLI verb, hiding the
-   plist gore. The capability is already there; this is just a
-   user-facing convenience.
-2. **Re-bootstrap outpost into the GUI domain at install time** — so
-   children of the outpost process can use `launchctl submit` directly.
-   Invasive: changes the daemon's plist and may require user
-   intervention on existing installs.
-3. **Detect-and-warn in the shell** — have the matrix-shell intercept
-   `launchctl submit` and print a hint to use the LaunchAgent
-   workaround. Cheap and hostile to PowerUser preferences; probably
-   not worth it.
+   generation + bootstrap dance behind a single CLI verb.
+2. **Re-bootstrap outpost into the GUI domain at install time** —
+   invasive, changes the daemon's plist.
+3. **Detect-and-warn** — matrix-shell intercepts `launchctl submit`
+   and prints a hint. Hostile to power users.
 
-The #1 option is the most natural; it lets agentic flows say
+Option 1 is the most natural; lets agentic flows say
 `outpost run --label kg3-pipeline -- ./kg3 serve` and forget about it.
-No timeline — out of scope for the SFTP/builtins/keep-alive pass.
-
----
-
-## Cross-cutting note
-
-When picking up #10 or #11: the submodule may already have a sibling
-agent's in-progress test scaffolding. Run `git status` inside
-`external/sh/` before adding new test files to avoid conflict, and
-coordinate with the other agent if you see uncommitted changes there.
+No timeline.

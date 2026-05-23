@@ -447,7 +447,7 @@ func runExecCommand(ctx context.Context, ch ssh.Channel, command string) uint32 
 	}
 	runner, err := interp.New(
 		interp.StdIO(ch, ch, ch.Stderr()),
-		interp.Env(nil),
+		interp.Env(outshell.BuildEnv()),
 	)
 	if err != nil {
 		_, _ = io.WriteString(ch.Stderr(), err.Error()+"\n")

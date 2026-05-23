@@ -1,0 +1,96 @@
+// Copyright (c) 2026, the outpost authors
+// See LICENSE for licensing information
+
+package shell
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+
+	"mvdan.cc/sh/v3/expand"
+)
+
+// BuildEnv returns the env that the in-process matrix shell should run in.
+//
+// Starts from the outpost daemon's own process env (os.Environ()) and
+// **prepends** to PATH a small fixed set of "user-shell-style" directories
+// that launchd-spawned daemons consistently lack:
+//
+//   - the directory containing the running outpost binary itself
+//     (without this, `$(which outpost)` returns empty inside the shell —
+//     hits any agentic flow that does `ls -la $(which outpost)` style
+//     introspection)
+//   - $HOME/bin and $HOME/.local/bin (the standard places a user puts
+//     locally-installed binaries)
+//   - /opt/homebrew/{bin,sbin} (macOS Homebrew on Apple Silicon — usually
+//     in launchd's default PATH but only on newer macOS versions)
+//   - /usr/local/bin and /usr/local/sbin (Intel Homebrew, MacPorts;
+//     common deploy target for `make install`)
+//
+// Entries that don't exist or that PATH already contains are skipped, so
+// running this on a host with a fully-correct PATH is a no-op. Dedup is
+// case-sensitive (paths are case-sensitive on the platforms we target).
+//
+// Returns an expand.Environ suitable for passing to interp.Env(...).
+func BuildEnv() expand.Environ {
+	env := os.Environ()
+
+	// Locate (or stub in) the PATH= entry. There's one in 99% of cases;
+	// the 1% where launchd doesn't propagate one is precisely the kind
+	// of environment this helper is built for.
+	pathIdx := -1
+	var paths []string
+	for i, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			pathIdx = i
+			paths = strings.Split(kv[len("PATH="):], string(os.PathListSeparator))
+			break
+		}
+	}
+
+	extras := []string{}
+	if exe, err := os.Executable(); err == nil {
+		extras = append(extras, filepath.Dir(exe))
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		extras = append(extras,
+			filepath.Join(home, "bin"),
+			filepath.Join(home, ".local", "bin"),
+		)
+	}
+	extras = append(extras,
+		"/opt/homebrew/bin",
+		"/opt/homebrew/sbin",
+		"/usr/local/bin",
+		"/usr/local/sbin",
+	)
+
+	seen := make(map[string]bool, len(paths)+len(extras))
+	for _, p := range paths {
+		seen[p] = true
+	}
+	var prepend []string
+	for _, p := range extras {
+		if p == "" || seen[p] {
+			continue
+		}
+		// Don't pollute PATH with dirs that don't exist on this host.
+		if info, err := os.Stat(p); err != nil || !info.IsDir() {
+			continue
+		}
+		seen[p] = true
+		prepend = append(prepend, p)
+	}
+	if len(prepend) > 0 {
+		paths = append(prepend, paths...)
+	}
+
+	newPATH := "PATH=" + strings.Join(paths, string(os.PathListSeparator))
+	if pathIdx >= 0 {
+		env[pathIdx] = newPATH
+	} else {
+		env = append(env, newPATH)
+	}
+	return expand.ListEnviron(env...)
+}

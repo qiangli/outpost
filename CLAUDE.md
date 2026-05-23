@@ -140,7 +140,9 @@ The cloud's `/h/:host/elevate` is what proxies to `/auth`. The agent never mints
 
 ### Shell
 
-`internal/agent/shell.go` glues WebSocket to `internal/agent/shell.Session` (a PTY-wrapped runner from the forked `mvdan.cc/sh/v3`). Three goroutines per connection: PTY→WS, runner, and the foreground WS→PTY loop. The package itself is `internal/agent/shell/` with `runner.go` + `runner_errs.go` and build-tagged `pty_{unix,windows}.go`.
+`internal/agent/shell.go` glues WebSocket to `internal/agent/shell.Session` (a PTY-wrapped runner from the forked `mvdan.cc/sh/v3`). Three goroutines per connection: PTY→WS, runner, and the foreground WS→PTY loop. The package itself is `internal/agent/shell/` with `runner.go` + `runner_errs.go` + `env.go` and build-tagged `pty_{unix,windows}.go`.
+
+`shell.BuildEnv()` (in `env.go`) is what the runner gets via `interp.Env(...)`. It takes the outpost process's env (`os.Environ()`) and **prepends** to PATH: the outpost binary's own dir, `$HOME/bin`, `$HOME/.local/bin`, `/opt/homebrew/{bin,sbin}`, `/usr/local/{bin,sbin}` — dirs that exist and aren't already on PATH. This is load-bearing because launchd-spawned daemons get a very narrow PATH (`/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin` on macOS LaunchDaemons), and the absence of `$HOME/bin` is what caused `which outpost` to return empty inside the matrix shell — turning `ls -la $(which outpost)` into `ls -la` (cwd listing). Same helper is used by `agent/ssh.go`'s `runExecCommand` (the SSH `exec` channel runner).
 
 ### SSH
 

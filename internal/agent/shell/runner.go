@@ -36,7 +36,7 @@ func NewSession() (*Session, error) {
 
 	runner, err := interp.New(
 		interp.StdIO(pts, pts, pts),
-		interp.Env(nil), // inherit current process env
+		interp.Env(BuildEnv()), // outpost process env + user-shell-style PATH extras
 	)
 	if err != nil {
 		_ = ptm.Close()
