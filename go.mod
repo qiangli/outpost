@@ -84,4 +84,4 @@ require (
 	sigs.k8s.io/yaml v1.3.0 // indirect
 )
 
-replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 v3.0.0-20260408142357-88fac5cb7aed
+replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 v3.0.0-20260523083407-d0f5ba173857

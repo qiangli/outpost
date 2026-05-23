@@ -2,7 +2,7 @@ BIN     ?= outpost
 PKG     := ./cmd/outpost
 OUT_DIR := bin
 
-.PHONY: help build install clean tidy
+.PHONY: help build install clean tidy update-sh
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "Targets:\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  %-10s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -22,3 +22,7 @@ tidy: ## go mod tidy + go fmt + go vet
 	go mod tidy
 	go fmt ./...
 	go vet ./...
+
+update-sh: ## Bump external/sh to upstream master HEAD
+	git submodule update --remote external/sh
+	@echo "Now: git add external/sh && git commit"
