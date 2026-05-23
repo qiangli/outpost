@@ -485,7 +485,14 @@ func serveSFTP(ctx context.Context, ch ssh.Channel) {
 		_ = srv.Close()
 	})
 	defer stop()
+	status := uint32(0)
 	if err := srv.Serve(); err != nil && !errors.Is(err, io.EOF) {
 		slog.Info("sftp server exit", "err", err)
+		status = 1
 	}
+	// openssh scp escalates the absence of an exit-status reply on the
+	// SSH channel to "Exit status -1" / non-zero scp exit, which then
+	// cascades to scripts. Send an explicit 0 (or 1) so scp's success
+	// path lines up with the data path.
+	_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(exitStatusMsg{Status: status}))
 }
