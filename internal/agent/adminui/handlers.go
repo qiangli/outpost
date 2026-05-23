@@ -63,11 +63,12 @@ type safeView struct {
 	RemotePort       int                  `json:"remote_port"`
 	AuthURL          string               `json:"auth_url,omitempty"`
 	HasToken         bool                 `json:"has_token"`
-	Apps             []conf.AppConfig     `json:"apps"`
-	ShellEnabled     bool                 `json:"shell_enabled"`
-	DesktopEnabled   bool                 `json:"desktop_enabled"`
-	ClipboardEnabled bool                 `json:"clipboard_enabled"`
-	SSHEnabled       bool                 `json:"ssh_enabled"`
+	Apps                 []conf.AppConfig     `json:"apps"`
+	ShellEnabled         bool                 `json:"shell_enabled"`
+	DesktopEnabled       bool                 `json:"desktop_enabled"`
+	ClipboardEnabled     bool                 `json:"clipboard_enabled"`
+	SSHEnabled           bool                 `json:"ssh_enabled"`
+	SSHAllowLocalForward bool                 `json:"ssh_allow_local_forward"`
 	Podman           builtinView          `json:"podman"`
 	Ollama           builtinView          `json:"ollama"`
 	Outbound         []agent.OutboundView `json:"outbound"`
@@ -94,10 +95,11 @@ func (s *Server) toSafeView(fc *conf.FileConfig) safeView {
 		AuthURL:          fc.AuthURL,
 		HasToken:         fc.Token != "",
 		Apps:             apps,
-		ShellEnabled:     fc.ShellOn(),
-		DesktopEnabled:   fc.DesktopOn(),
-		ClipboardEnabled: fc.ClipboardOn(),
-		SSHEnabled:       fc.SSHOn(),
+		ShellEnabled:         fc.ShellOn(),
+		DesktopEnabled:       fc.DesktopOn(),
+		ClipboardEnabled:     fc.ClipboardOn(),
+		SSHEnabled:           fc.SSHOn(),
+		SSHAllowLocalForward: fc.SSHAllowLocalForwardOn(),
 		Podman:           toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
 		Ollama:           toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
 		Outbound:         s.outboundList(),
@@ -251,12 +253,13 @@ func (s *Server) handleRegister(c *gin.Context) {
 }
 
 type builtinsReq struct {
-	Shell     *bool `json:"shell"`
-	Desktop   *bool `json:"desktop"`
-	Clipboard *bool `json:"clipboard"`
-	SSH       *bool `json:"ssh"`
-	Podman    *bool `json:"podman"`
-	Ollama    *bool `json:"ollama"`
+	Shell                *bool `json:"shell"`
+	Desktop              *bool `json:"desktop"`
+	Clipboard            *bool `json:"clipboard"`
+	SSH                  *bool `json:"ssh"`
+	SSHAllowLocalForward *bool `json:"ssh_allow_local_forward"`
+	Podman               *bool `json:"podman"`
+	Ollama               *bool `json:"ollama"`
 }
 
 // handleBuiltins toggles built-in routes (shell/desktop/clipboard/ssh)
@@ -291,6 +294,9 @@ func (s *Server) handleBuiltins(c *gin.Context) {
 	}
 	if req.SSH != nil {
 		fc.SSHEnabled = req.SSH
+	}
+	if req.SSHAllowLocalForward != nil {
+		fc.SSHAllowLocalForward = req.SSHAllowLocalForward
 	}
 	if req.Podman != nil {
 		fc.PodmanEnabled = *req.Podman

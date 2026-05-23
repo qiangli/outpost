@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
@@ -31,7 +34,7 @@ import (
 //   - The submitted SSH username MUST equal the agent's running OS user
 //     (same constraint as /auth). Anything else is rejected before we
 //     touch PAM, so we never silently weaken the gate.
-func sshHandler(hostKey ssh.Signer, auth hostauth.Authenticator, authURL string) gin.HandlerFunc {
+func sshHandler(hostKey ssh.Signer, auth hostauth.Authenticator, authURL string, allowLocalForward bool) gin.HandlerFunc {
 	currentUser, _ := hostauth.CurrentUser()
 	authURL = strings.TrimSpace(authURL)
 
@@ -111,24 +114,135 @@ func sshHandler(hostKey ssh.Signer, auth hostauth.Authenticator, authURL string)
 		}
 		defer serverConn.Close()
 
-		// Discard out-of-channel global requests (keepalive, tcpip-forward).
-		// We don't support port forwarding; clients still benefit from the
-		// keepalive pings.
+		// Discard out-of-channel global requests (keepalive,
+		// tcpip-forward, no-more-sessions@openssh.com, etc.). The
+		// keepalive pings clients still rely on; `tcpip-forward` (used
+		// by `ssh -R` reverse forwards) we intentionally don't honor
+		// yet — adding direct-tcpip below covers the common `ssh -L`
+		// operator workflow without the lifecycle complexity of
+		// agent-side listeners.
 		go ssh.DiscardRequests(reqs)
 
 		for newCh := range chans {
-			if newCh.ChannelType() != "session" {
-				_ = newCh.Reject(ssh.UnknownChannelType, "only session channels are supported")
-				continue
+			switch newCh.ChannelType() {
+			case "session":
+				ch, chReqs, aerr := newCh.Accept()
+				if aerr != nil {
+					slog.Warn("ssh channel accept", "err", aerr)
+					continue
+				}
+				go handleSSHSession(ctx, ch, chReqs)
+			case "direct-tcpip":
+				if !allowLocalForward {
+					_ = newCh.Reject(ssh.Prohibited,
+						"local port forwarding disabled by agent config")
+					continue
+				}
+				go handleDirectTCPIP(ctx, newCh)
+			default:
+				_ = newCh.Reject(ssh.UnknownChannelType,
+					"only session and direct-tcpip channels are supported")
 			}
-			ch, chReqs, aerr := newCh.Accept()
-			if aerr != nil {
-				slog.Warn("ssh channel accept", "err", aerr)
-				continue
-			}
-			go handleSSHSession(ctx, ch, chReqs)
 		}
 	}
+}
+
+// directTCPIPMsg is the channel-data payload SSH clients send when
+// opening a `direct-tcpip` channel — the primitive behind `ssh -L`
+// local port forwards and `ssh -D` SOCKS (RFC 4254 §7.2).
+type directTCPIPMsg struct {
+	HostToConnect       string
+	PortToConnect       uint32
+	OriginatorIPAddress string
+	OriginatorPort      uint32
+}
+
+// allowDirectTCPIPDest restricts which destinations a paired agent will
+// dial on behalf of an authenticated SSH client.
+//
+// Loopback-only is the safe default and matches the `AppConfig{host:
+// 127.0.0.1}` posture used by the existing TCP-mode app mechanism: it
+// covers the common workflow (operator's `ssh -L 7778:localhost:7777
+// host` against a service the agent itself could already reach via a
+// session-channel `nc localhost 7777`), and it stops the agent from
+// being repurposed as a generic SOCKS/HTTP proxy into the agent
+// machine's LAN. Widening to an allowlisted set of host:port targets
+// is a separate config-surface change tracked alongside `ssh -R`
+// support.
+func allowDirectTCPIPDest(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	switch h {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
+}
+
+// handleDirectTCPIP services one `direct-tcpip` channel-open request:
+// parse the payload, dial the requested loopback target, and
+// bidirectionally bridge bytes between the SSH channel and the local
+// connection. Caller is the channel-dispatch loop in sshHandler —
+// always invoked in its own goroutine so multiple forwards multiplex
+// freely inside the same SSH connection.
+//
+// Trust model: same OS-password gate that already protects session
+// channels in this server. Anyone with shell access here today can
+// `ssh ... 'nc 127.0.0.1 7777'` via a session channel, so accepting
+// the multiplexed direct-tcpip form adds no authority.
+func handleDirectTCPIP(ctx context.Context, newCh ssh.NewChannel) {
+	var msg directTCPIPMsg
+	if err := ssh.Unmarshal(newCh.ExtraData(), &msg); err != nil {
+		slog.Warn("direct-tcpip: bad payload", "err", err)
+		_ = newCh.Reject(ssh.ConnectionFailed, "malformed direct-tcpip payload")
+		return
+	}
+	if !allowDirectTCPIPDest(msg.HostToConnect) {
+		slog.Info("direct-tcpip: refused non-loopback target",
+			"host", msg.HostToConnect, "port", msg.PortToConnect)
+		_ = newCh.Reject(ssh.Prohibited,
+			"only loopback destinations are allowed (host="+msg.HostToConnect+")")
+		return
+	}
+	target := net.JoinHostPort(msg.HostToConnect, strconv.Itoa(int(msg.PortToConnect)))
+
+	d := net.Dialer{}
+	upstream, err := d.DialContext(ctx, "tcp", target)
+	if err != nil {
+		slog.Info("direct-tcpip: dial failed", "target", target, "err", err)
+		_ = newCh.Reject(ssh.ConnectionFailed, "dial "+target+": "+err.Error())
+		return
+	}
+	defer upstream.Close()
+
+	ch, chReqs, aerr := newCh.Accept()
+	if aerr != nil {
+		slog.Warn("direct-tcpip: channel accept", "target", target, "err", aerr)
+		return
+	}
+	defer ch.Close()
+	// `direct-tcpip` channels never carry channel requests — drain
+	// any spurious ones so the crypto/ssh request goroutine doesn't
+	// pile up against an unread channel.
+	go ssh.DiscardRequests(chReqs)
+
+	slog.Info("direct-tcpip: bridging", "target", target,
+		"origin", msg.OriginatorIPAddress+":"+strconv.Itoa(int(msg.OriginatorPort)))
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(upstream, ch)
+		if tc, ok := upstream.(*net.TCPConn); ok {
+			_ = tc.CloseWrite()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(ch, upstream)
+		_ = ch.CloseWrite()
+	}()
+	wg.Wait()
 }
 
 // ptyReqMsg is the wire format of an SSH "pty-req" channel request payload

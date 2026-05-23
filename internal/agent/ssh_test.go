@@ -5,8 +5,11 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"io"
+	"net"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,16 +22,20 @@ import (
 )
 
 // newTestSSHServer spins up an httptest server with the SSH handler
-// mounted at /ssh and returns its ws:// URL.
+// mounted at /ssh and returns its ws:// URL. direct-tcpip forwarding
+// is enabled by default; tests that need to assert the opt-out path
+// use newTestSSHServerOpts directly.
 func newTestSSHServer(t *testing.T, auth hostauth.Authenticator) (wsURL string, hostKey ssh.Signer) {
 	t.Helper()
-	return newTestSSHServerOpts(t, auth, false)
+	return newTestSSHServerOpts(t, auth, false, true)
 }
 
 // newTestSSHServerOpts is the parameterized form. cloudboxStamps inserts
 // an X-Periscope-Role: admin header on every request via gin middleware,
 // simulating cloudbox's SSHProxy vouching for the caller.
-func newTestSSHServerOpts(t *testing.T, auth hostauth.Authenticator, cloudboxStamps bool) (wsURL string, hostKey ssh.Signer) {
+// allowLocalForward is the toggle threaded through to sshHandler that
+// gates `direct-tcpip` channels (stock `ssh -L` / `ssh -D`).
+func newTestSSHServerOpts(t *testing.T, auth hostauth.Authenticator, cloudboxStamps bool, allowLocalForward bool) (wsURL string, hostKey ssh.Signer) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
@@ -48,7 +55,7 @@ func newTestSSHServerOpts(t *testing.T, auth hostauth.Authenticator, cloudboxSta
 		t.Fatalf("signer: %v", err)
 	}
 
-	engine.GET("/ssh", sshHandler(signer, auth, ""))
+	engine.GET("/ssh", sshHandler(signer, auth, "", allowLocalForward))
 
 	srv := httptest.NewServer(engine)
 	t.Cleanup(srv.Close)
@@ -222,7 +229,7 @@ func TestSSHHandlerCloudboxVouchedSkipsPassword(t *testing.T) {
 	// falling through to PasswordCallback. If NoClientAuth weren't
 	// flipping, the test would fail with handshake error.
 	auth := hostauth.StubAuth{Want: map[string]string{}}
-	wsURL, hostKey := newTestSSHServerOpts(t, auth, true)
+	wsURL, hostKey := newTestSSHServerOpts(t, auth, true, true)
 
 	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -284,5 +291,112 @@ func TestSSHHandlerRejectsSubsystem(t *testing.T) {
 
 	if err := session.RequestSubsystem("sftp"); err == nil {
 		t.Fatal("expected subsystem 'sftp' to be rejected")
+	}
+}
+
+// TestSSH_DirectTCPIP_LoopbackHappyPath stands up a tiny HTTP server on
+// 127.0.0.1, then has the SSH client open a direct-tcpip channel at
+// that host:port (the bytes the `ssh -L` client side puts on the wire)
+// and round-trips a GET through it. Proves stock `ssh -L` works.
+func TestSSH_DirectTCPIP_LoopbackHappyPath(t *testing.T) {
+	currentUser, err := hostauth.CurrentUser()
+	if err != nil || currentUser == "" {
+		t.Skip("no current user; skipping")
+	}
+	auth := hostauth.StubAuth{Want: map[string]string{currentUser: "secret"}}
+	wsURL, hostKey := newTestSSHServer(t, auth)
+
+	// Loopback target: a stdlib HTTP server returning "pong".
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ping", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "pong")
+	})
+	upstream := httptest.NewServer(mux)
+	t.Cleanup(upstream.Close)
+	upstreamURL, _ := url.Parse(upstream.URL)
+	host, portStr, _ := net.SplitHostPort(upstreamURL.Host)
+	port, _ := strconv.Atoi(portStr)
+
+	client, err := dialSSHOverWS(t, wsURL, hostKey, currentUser, "secret")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	// crypto/ssh exposes "direct-tcpip" via Dial — exactly the path
+	// `ssh -L` clients use under the hood.
+	conn, err := client.Dial("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	if err != nil {
+		t.Fatalf("direct-tcpip dial: %v", err)
+	}
+	defer conn.Close()
+
+	// One HTTP/1.1 request over the SSH-channel-backed net.Conn.
+	if _, err := io.WriteString(conn,
+		"GET /ping HTTP/1.1\r\nHost: "+upstreamURL.Host+"\r\nConnection: close\r\n\r\n"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	body, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(body), "pong") {
+		t.Errorf("expected body to contain 'pong', got %q", string(body))
+	}
+}
+
+// TestSSH_DirectTCPIP_NonLoopbackRejected proves the loopback allowlist
+// is doing its job — a channel-open at a non-loopback host gets
+// rejected with Prohibited (no dial, no listener probe).
+func TestSSH_DirectTCPIP_NonLoopbackRejected(t *testing.T) {
+	currentUser, err := hostauth.CurrentUser()
+	if err != nil || currentUser == "" {
+		t.Skip("no current user; skipping")
+	}
+	auth := hostauth.StubAuth{Want: map[string]string{currentUser: "secret"}}
+	wsURL, hostKey := newTestSSHServer(t, auth)
+
+	client, err := dialSSHOverWS(t, wsURL, hostKey, currentUser, "secret")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.Dial("tcp", "10.0.0.1:80")
+	if err == nil {
+		t.Fatal("expected non-loopback direct-tcpip to be rejected")
+	}
+	// crypto/ssh wraps the reject reason in the error message.
+	if !strings.Contains(err.Error(), "loopback") &&
+		!strings.Contains(strings.ToLower(err.Error()), "prohibit") {
+		t.Errorf("expected rejection message to mention loopback/prohibit, got %v", err)
+	}
+}
+
+// TestSSH_DirectTCPIP_Disabled proves the agent-config toggle is wired
+// — when the flag is false, even loopback targets are refused. Lets
+// an operator opt out without recompiling.
+func TestSSH_DirectTCPIP_Disabled(t *testing.T) {
+	currentUser, err := hostauth.CurrentUser()
+	if err != nil || currentUser == "" {
+		t.Skip("no current user; skipping")
+	}
+	auth := hostauth.StubAuth{Want: map[string]string{currentUser: "secret"}}
+	// allowLocalForward=false — the only difference from the happy path.
+	wsURL, hostKey := newTestSSHServerOpts(t, auth, false, false)
+
+	client, err := dialSSHOverWS(t, wsURL, hostKey, currentUser, "secret")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.Dial("tcp", "127.0.0.1:1")
+	if err == nil {
+		t.Fatal("expected direct-tcpip to be rejected when forwarding disabled")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "disabled") &&
+		!strings.Contains(strings.ToLower(err.Error()), "prohibit") {
+		t.Errorf("expected rejection to mention disabled/prohibit, got %v", err)
 	}
 }

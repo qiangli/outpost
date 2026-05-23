@@ -58,6 +58,15 @@ type FileConfig struct {
 	ClipboardEnabled *bool `json:"clipboard_enabled,omitempty"`
 	SSHEnabled       *bool `json:"ssh_enabled,omitempty"`
 
+	// SSHAllowLocalForward gates whether the built-in /ssh server accepts
+	// `direct-tcpip` channels — the primitive behind stock `ssh -L` /
+	// `ssh -D`. Default-on (matches pre-toggle behavior was rejection;
+	// flipping the default to "on" is the whole point of adding this
+	// switch). Loopback-only destinations regardless of this flag — see
+	// the agent ssh.go `allowDirectTCPIPDest` allowlist. Disable here
+	// (admin UI / JSON) to refuse the channel entirely.
+	SSHAllowLocalForward *bool `json:"ssh_allow_local_forward,omitempty"`
+
 	// Built-in proxies for local daemons. Default off (plain bool) — these
 	// expose external infrastructure rather than outpost-owned routes, so
 	// they require explicit opt-in via the admin UI. The UI greys these
@@ -313,6 +322,14 @@ func (fc *FileConfig) ClipboardOn() bool {
 // SSHOn reports whether the built-in /ssh route (real SSH server reached
 // over WebSocket through the matrix tunnel) should be mounted.
 func (fc *FileConfig) SSHOn() bool { return fc == nil || fc.SSHEnabled == nil || *fc.SSHEnabled }
+
+// SSHAllowLocalForwardOn reports whether the SSH server should honor
+// `direct-tcpip` channel-open requests (stock `ssh -L` / `ssh -D`).
+// Missing field (old configs) defaults to true — the channel is still
+// gated by a loopback-only destination allowlist regardless.
+func (fc *FileConfig) SSHAllowLocalForwardOn() bool {
+	return fc == nil || fc.SSHAllowLocalForward == nil || *fc.SSHAllowLocalForward
+}
 
 // PodmanOn reports whether the built-in podman proxy is enabled in this
 // config. Unlike the loopback-only builtins above, podman is off by

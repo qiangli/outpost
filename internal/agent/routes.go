@@ -38,6 +38,13 @@ type Deps struct {
 	ClipboardDisabled bool
 	SSHDisabled       bool
 
+	// SSHAllowLocalForward gates whether the SSH server accepts
+	// `direct-tcpip` channels (stock `ssh -L` / `ssh -D`). Zero value
+	// (false) means rejected — callers must opt in. main.go threads
+	// `fc.SSHAllowLocalForwardOn()` here, which defaults to true on
+	// fresh + legacy configs.
+	SSHAllowLocalForward bool
+
 	// SSHHostKey is the persistent host identity for the embedded SSH
 	// server reached at /ssh. Nil means /ssh will not mount even if
 	// SSHDisabled is false — callers pass a key loaded via
@@ -118,7 +125,7 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	// via the local `outpost ssh-proxy` ProxyCommand helper. Auth gate is
 	// the OS password (same hostauth path as /auth).
 	if !deps.SSHDisabled && deps.SSHHostKey != nil {
-		rg.GET("/ssh", sshHandler(deps.SSHHostKey, auth, deps.AuthURL))
+		rg.GET("/ssh", sshHandler(deps.SSHHostKey, auth, deps.AuthURL, deps.SSHAllowLocalForward))
 	}
 
 	// Reverse-proxy every method (GET/POST/WS upgrades included).
