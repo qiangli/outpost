@@ -84,7 +84,28 @@ func runConnect(ctx context.Context, host, userFlag string, fromStdin bool) erro
 		return errors.New("no auth credential: re-pair with `outpost register`")
 	}
 
+	// Resolve the OS username to elevate as. Preference order:
+	//   1. --user explicit (operator override always wins)
+	//   2. The host's reported os_user from cloudbox's /api/v1/ssh/hosts
+	//      — this is the right default cross-machine, because the remote
+	//      outpost's /auth gate compares the submitted username against
+	//      *its own* OS user, not the caller's $USER.
+	//   3. $USER (local) as a back-stop when (2) fails — better than
+	//      hard-failing if cloudbox is briefly unreachable, and harmless
+	//      when the operator's local username does happen to match.
+	//   4. hostauth.CurrentUser() as a last resort on systems where $USER
+	//      isn't set (cron, launchd-spawned shells, etc.).
 	user := strings.TrimSpace(userFlag)
+	if user == "" {
+		if hosts, ferr := fetchSSHHosts(ctx, fc.ServerAddr, fc.ServerPort, fc.Protocol, bearer); ferr == nil {
+			for _, h := range hosts {
+				if strings.EqualFold(h.Host, host) && h.OsUser != "" {
+					user = h.OsUser
+					break
+				}
+			}
+		}
+	}
 	if user == "" {
 		user = strings.TrimSpace(os.Getenv("USER"))
 	}
