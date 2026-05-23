@@ -443,13 +443,29 @@ func registerCmd() *cobra.Command {
 
 Run with no flags for an interactive prompt that walks you through pairing.
 Or pass --code (and optionally --server / --name) to skip the prompts —
-useful for installer scripts and CI.`,
+useful for installer scripts and CI. --server defaults to the official
+portal and --name defaults to this machine's hostname (.local/.lan
+suffix stripped), so a fresh paste from the cloudbox "Generate invite
+code" dialog usually only needs --code.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Scripted mode kicks in the moment --code is set on the CLI:
 			// installer scripts pipe stdin from somewhere unpredictable, so
 			// we can't fall back to "ask the user" without surprising them.
 			scripted := code != ""
 			reader := bufio.NewReader(os.Stdin)
+
+			// In scripted mode, apply the same defaults the interactive
+			// prompt would offer for the optional flags so a one-liner
+			// `outpost register --server <portal> --code <code>` Just
+			// Works without forcing the operator to spell out --name.
+			if scripted {
+				if serverURL == "" {
+					serverURL = defaultPortal
+				}
+				if name == "" {
+					name = defaultHostName()
+				}
+			}
 
 			for {
 				if !scripted {
@@ -458,7 +474,7 @@ useful for installer scripts and CI.`,
 					}
 				}
 				if serverURL == "" || code == "" || name == "" {
-					return errors.New("--server, --code, and --name are all required in scripted mode")
+					return errors.New("scripted mode requires --code; --server and --name fall back to defaults if omitted, but the host name resolver returned empty — pass --name explicitly")
 				}
 
 				if err := doExchange(cmd.Context(), serverURL, code, name, title, authURL, out, clientOnly); err == nil {
@@ -518,6 +534,22 @@ useful for installer scripts and CI.`,
 	return cmd
 }
 
+// defaultHostName returns the system hostname with the macOS/mDNS
+// `.local` and the older `.lan` suffix stripped, so a Mac that reports
+// "dragon.local" pairs as just "dragon" (matching how users typically
+// type the name interactively). Empty result is possible on rare
+// systems where os.Hostname errors — callers are expected to surface
+// that as "host name resolver returned empty, pass --name explicitly".
+func defaultHostName() string {
+	h, _ := os.Hostname()
+	for _, sfx := range []string{".local", ".lan"} {
+		if trimmed, ok := strings.CutSuffix(h, sfx); ok {
+			return trimmed
+		}
+	}
+	return h
+}
+
 // collectInputs prompts the user for the three required fields, using
 // (in order of preference): an existing flag value, a sensible default,
 // or — for the code — nothing (the prompt won't accept an empty value).
@@ -538,9 +570,7 @@ func collectInputs(r *bufio.Reader, serverURL, code, name *string) error {
 	*code = got
 
 	if *name == "" {
-		if h, _ := os.Hostname(); h != "" {
-			*name = h
-		}
+		*name = defaultHostName()
 	}
 	got, err = promptDefault(r, "Host name", *name)
 	if err != nil {
