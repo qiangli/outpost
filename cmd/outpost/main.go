@@ -42,7 +42,7 @@ func main() {
 		Use:   "outpost",
 		Short: "Pair a home host with the portal and tunnel local apps to it",
 	}
-	root.AddCommand(startCmd(), registerCmd(), stopCmd(), sshProxyCmd(), sshConfigCmd(), connectCmd())
+	root.AddCommand(startCmd(), registerCmd(), stopCmd(), sshProxyCmd(), sshConfigCmd(), connectCmd(), jobsCmd(), fgCmd(), bgCmd(), killCmd())
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}

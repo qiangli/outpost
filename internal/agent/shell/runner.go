@@ -56,6 +56,12 @@ func NewSession(opts SessionOptions) (*Session, error) {
 	runner, err := interp.New(
 		interp.StdIO(pts, pts, pts),
 		interp.Env(env), // outpost process env + user-shell-style PATH extras (+ TERM if hinted)
+		interp.WithBgPidCallback(func(pid int) {
+			// Cmd is "(detached)" because the fork's callback signature is
+			// (pid int) only; richer capture would need stmt threading in
+			// publishBgPid. See docs/matrix-shell-outpost-handoff.md.
+			_ = DefaultRegistry().Record(pid, "(detached)")
+		}),
 	)
 	if err != nil {
 		_ = ptm.Close()
