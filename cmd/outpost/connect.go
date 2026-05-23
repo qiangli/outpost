@@ -83,6 +83,19 @@ func runConnect(ctx context.Context, host, userFlag string, fromStdin bool) erro
 		return errors.New("no auth credential: re-pair with `outpost register`")
 	}
 
+	// Prompt for the password BEFORE the cloudbox round-trip. Resolving
+	// the OS username via /api/v1/ssh/hosts (below) can take a beat over
+	// slow links; doing it after readPassword means the operator sees
+	// the prompt instantly, types the password, and then waits — far
+	// less confusing than a silent gap before the prompt appears.
+	password, err := readPassword(host, fromStdin)
+	if err != nil {
+		return fmt.Errorf("read password: %w", err)
+	}
+	if password == "" {
+		return errors.New("empty password")
+	}
+
 	// Resolve the OS username to elevate as. Preference order:
 	//   1. --user explicit (operator override always wins)
 	//   2. The host's reported os_user from cloudbox's /api/v1/ssh/hosts
@@ -113,14 +126,6 @@ func runConnect(ctx context.Context, host, userFlag string, fromStdin bool) erro
 	}
 	if user == "" {
 		return errors.New("could not determine OS username; pass --user")
-	}
-
-	password, err := readPassword(host, fromStdin)
-	if err != nil {
-		return fmt.Errorf("read password: %w", err)
-	}
-	if password == "" {
-		return errors.New("empty password")
 	}
 
 	cookie, err := postElevate(ctx, fc, bearer, host, user, password)
