@@ -12,6 +12,24 @@ investigated and closed.
 
 Listed newest first; all on `main`.
 
+- **`c35ea72` `shell: end session on exit builtin; stop killing it on
+  bad commands`** — the interactive loop in
+  `internal/agent/shell/runner.go` used to do `errors.As(err,
+  &interp.ExitStatus)` to decide when the session was over, which
+  matched *every* non-zero exit code — so `false`, a missing binary, a
+  failing `grep`, etc. all killed the whole shell. Conversely the `exit`
+  builtin with no args returned nil (exit code 0) and the loop ignored
+  it, so typing `exit` was a no-op; users had to Ctrl-D out. Fixed by
+  checking `runner.Exited()` (set only by the `exit` builtin or a fatal
+  trap) for end-of-session, and silently swallowing plain `ExitStatus`
+  errors — the command's own stderr already told the user what went
+  wrong. Three regression tests in `runner_test.go` cover `exit`,
+  `exit N`, and bad-command-survives. **No fork change needed**: the
+  `exit` builtin in `interp/builtin.go` was already correct per its API
+  contract; outpost was reading it wrong.
+- **`d8201d2` `outbound: add outpost outbound CLI and per-mount TTL
+  override`** — covered separately in the outbound docs; mentioned here
+  only for completeness since it landed alongside the shell work.
 - **`4cd8116` `sh: bump fork to b62bf936`** — pulls in the hint-string
   rename below.
 - **`3032abf` `agent: persist detached bg jobs to outpost jobs/fg/bg/kill CLI`**
