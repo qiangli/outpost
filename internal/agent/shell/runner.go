@@ -26,22 +26,46 @@ type Session struct {
 	done   chan struct{}
 }
 
+// SessionOptions configures a new shell Session. All fields are optional —
+// the zero value is "no PTY hints, inherit outpost's env verbatim", which
+// matches the pre-options behavior used by the xterm.js /shell path.
+type SessionOptions struct {
+	// Term is the TERM env var the runner should see (e.g. "xterm-256color"
+	// from an SSH pty-req). Empty = inherit outpost's TERM (usually unset
+	// in a daemon context, which makes vim/htop fall back to dumb mode).
+	Term string
+	// Cols/Rows are the initial PTY window dimensions in characters.
+	// Both 0 = skip the initial resize.
+	Cols uint16
+	Rows uint16
+}
+
 // NewSession allocates a PTY pair and constructs the runner. Caller is
 // responsible for closing the returned Session.
-func NewSession() (*Session, error) {
+func NewSession(opts SessionOptions) (*Session, error) {
 	ptm, pts, err := openPTY()
 	if err != nil {
 		return nil, fmt.Errorf("open pty: %w", err)
 	}
 
+	var env = BuildEnv()
+	if opts.Term != "" {
+		env = BuildEnvWith(map[string]string{"TERM": opts.Term})
+	}
+
 	runner, err := interp.New(
 		interp.StdIO(pts, pts, pts),
-		interp.Env(BuildEnv()), // outpost process env + user-shell-style PATH extras
+		interp.Env(env), // outpost process env + user-shell-style PATH extras (+ TERM if hinted)
 	)
 	if err != nil {
 		_ = ptm.Close()
 		_ = pts.Close()
 		return nil, fmt.Errorf("interp: %w", err)
+	}
+	if opts.Cols > 0 && opts.Rows > 0 {
+		// Apply geometry before the runner's first read so the very first
+		// `tput cols` / ioctl(TIOCGWINSZ) sees the client's window.
+		_ = setPTYSize(ptm, opts.Cols, opts.Rows)
 	}
 	return &Session{ptm: ptm, pts: pts, runner: runner, done: make(chan struct{})}, nil
 }

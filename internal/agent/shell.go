@@ -42,7 +42,7 @@ func shellHandler() gin.HandlerFunc {
 		}
 		defer ws.Close(websocket.StatusInternalError, "closing")
 
-		sess, err := shell.NewSession()
+		sess, err := shell.NewSession(shell.SessionOptions{})
 		if err != nil {
 			slog.Error("shell session", "err", err)
 			_ = ws.Close(websocket.StatusInternalError, "session")

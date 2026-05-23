@@ -85,3 +85,52 @@ func TestBuildEnv_SkipsNonexistentDirs(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildEnvWith_AppendsNewKey(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin")
+	os.Unsetenv("TERM")
+
+	env := BuildEnvWith(map[string]string{"TERM": "xterm-256color"})
+	if got := env.Get("TERM").String(); got != "xterm-256color" {
+		t.Errorf("TERM=%q, want %q", got, "xterm-256color")
+	}
+}
+
+func TestBuildEnvWith_ReplacesExistingKey(t *testing.T) {
+	// Outpost daemon's own TERM (often "dumb" or empty in launchd). The
+	// override from a real SSH client's pty-req must win.
+	t.Setenv("TERM", "dumb")
+	t.Setenv("PATH", "/usr/bin")
+
+	env := BuildEnvWith(map[string]string{"TERM": "xterm-256color"})
+	if got := env.Get("TERM").String(); got != "xterm-256color" {
+		t.Errorf("TERM=%q, want %q (override should win over inherited)", got, "xterm-256color")
+	}
+}
+
+func TestBuildEnvWith_NilEqualsBuildEnv(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin")
+	t.Setenv("TERM", "dumb")
+
+	base := BuildEnv().Get("TERM").String()
+	got := BuildEnvWith(nil).Get("TERM").String()
+	if base != got {
+		t.Errorf("BuildEnvWith(nil) diverged from BuildEnv: %q vs %q", got, base)
+	}
+}
+
+func TestBuildEnvWith_PreservesPathExtras(t *testing.T) {
+	// The PATH-extras logic must still run when overrides are provided.
+	t.Setenv("PATH", "/usr/bin:/bin")
+
+	env := BuildEnvWith(map[string]string{"TERM": "xterm-256color"})
+	got := pathFromEnviron(t, env)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	exeDir := filepath.Dir(exe)
+	if !strings.Contains(got, exeDir) {
+		t.Errorf("BuildEnvWith dropped PATH-extras: %q missing %q", got, exeDir)
+	}
+}

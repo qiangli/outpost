@@ -247,7 +247,11 @@ func handleDirectTCPIP(ctx context.Context, newCh ssh.NewChannel) {
 }
 
 // ptyReqMsg is the wire format of an SSH "pty-req" channel request payload
-// (RFC 4254 §6.2). We only consume Columns/Rows.
+// (RFC 4254 §6.2). We consume Term + Columns/Rows; Modelist (termios
+// opcodes per RFC 4254 §8 — ECHO, ISIG, ICRNL, …) is intentionally
+// ignored because Linux/macOS PTYs come up with sensible defaults and the
+// /shell xterm.js path has shipped without them just fine. WidthPx/HeightPx
+// only matter for graphical-cell-aware terminals, which we don't support.
 type ptyReqMsg struct {
 	Term     string
 	Columns  uint32
@@ -291,9 +295,9 @@ func handleSSHSession(ctx context.Context, ch ssh.Channel, reqs <-chan *ssh.Requ
 	defer ch.Close()
 
 	var (
+		ptyTerm string
 		ptyCols uint16
 		ptyRows uint16
-		hasPty  bool
 		session *outshell.Session
 	)
 	defer func() {
@@ -310,9 +314,9 @@ func handleSSHSession(ctx context.Context, ch ssh.Channel, reqs <-chan *ssh.Requ
 				_ = req.Reply(false, nil)
 				continue
 			}
+			ptyTerm = msg.Term
 			ptyCols = uint16(msg.Columns)
 			ptyRows = uint16(msg.Rows)
-			hasPty = true
 			_ = req.Reply(true, nil)
 
 		case "window-change":
@@ -338,16 +342,17 @@ func handleSSHSession(ctx context.Context, ch ssh.Channel, reqs <-chan *ssh.Requ
 				_ = req.Reply(false, nil)
 				continue
 			}
-			s, err := outshell.NewSession()
+			s, err := outshell.NewSession(outshell.SessionOptions{
+				Term: ptyTerm,
+				Cols: ptyCols,
+				Rows: ptyRows,
+			})
 			if err != nil {
 				slog.Error("ssh shell session", "err", err)
 				_ = req.Reply(false, nil)
 				return
 			}
 			session = s
-			if hasPty {
-				_ = session.Resize(ptyCols, ptyRows)
-			}
 			_ = req.Reply(true, nil)
 			runInteractiveShell(ctx, ch, session)
 			return

@@ -34,6 +34,16 @@ import (
 //
 // Returns an expand.Environ suitable for passing to interp.Env(...).
 func BuildEnv() expand.Environ {
+	return BuildEnvWith(nil)
+}
+
+// BuildEnvWith is BuildEnv with caller-supplied overrides applied on top.
+// Each key in overrides replaces any existing entry of that name in the
+// outpost process env; absent keys are appended. Used by NewSession to
+// stamp TERM (from the SSH client's pty-req) so vim/htop/less know what
+// escape sequences the terminal understands. Pass nil for no overrides
+// (equivalent to BuildEnv).
+func BuildEnvWith(overrides map[string]string) expand.Environ {
 	env := os.Environ()
 
 	// Locate (or stub in) the PATH= entry. There's one in 99% of cases;
@@ -91,6 +101,22 @@ func BuildEnv() expand.Environ {
 		env[pathIdx] = newPATH
 	} else {
 		env = append(env, newPATH)
+	}
+
+	for k, v := range overrides {
+		kv := k + "=" + v
+		prefix := k + "="
+		replaced := false
+		for i, existing := range env {
+			if strings.HasPrefix(existing, prefix) {
+				env[i] = kv
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			env = append(env, kv)
+		}
 	}
 	return expand.ListEnviron(env...)
 }
