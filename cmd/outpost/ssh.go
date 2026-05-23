@@ -155,7 +155,7 @@ func dialSSHWS(ctx context.Context, wsURL, bearer, host string) (*websocket.Conn
 			return nil, eauthRequiredError(host, err)
 		}
 		fmt.Fprintf(os.Stderr, "outpost: %s requires Connect; prompting for OS password…\n", host)
-		if eerr := runConnect(ctx, host, "", false); eerr != nil {
+		if eerr := runConnect(ctx, host, "", false, false); eerr != nil {
 			return nil, fmt.Errorf("connect %s: %w", host, eerr)
 		}
 		cookie, _ = readCookie(host)

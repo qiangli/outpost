@@ -31,8 +31,9 @@ import (
 
 func connectCmd() *cobra.Command {
 	var (
-		stdinFlag bool
-		userFlag  string
+		stdinFlag     bool
+		userFlag      string
+		keepAliveFlag bool
 	)
 	cmd := &cobra.Command{
 		Use:   "connect <host>",
@@ -49,18 +50,25 @@ the elevation expires (1 h idle, 8 h absolute by default).
 
 When stdin is not a TTY (agent context), pass --stdin to read the
 password from stdin so the calling agent can supply it
-programmatically.`,
+programmatically.
+
+Pass --keep-alive to hold the process open and ping cloudbox every
+30 minutes. Each ping slides cloudbox's idle TTL forward (it slides
+on any authed request past the halfway point), so the cookie stays
+valid until the absolute 8 h cap. Useful for long-running agentic
+flows that would otherwise hit EAUTHREQUIRED mid-run.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runConnect(cmd.Context(), args[0], userFlag, stdinFlag)
+			return runConnect(cmd.Context(), args[0], userFlag, stdinFlag, keepAliveFlag)
 		},
 	}
 	cmd.Flags().BoolVar(&stdinFlag, "stdin", false, "Read password from stdin instead of /dev/tty (for non-interactive callers)")
 	cmd.Flags().StringVar(&userFlag, "user", "", "OS username on the remote host (default: the host's reported os_user, then $USER)")
+	cmd.Flags().BoolVar(&keepAliveFlag, "keep-alive", false, "Stay running and ping every 30 min to slide the cookie's idle TTL")
 	return cmd
 }
 
-func runConnect(ctx context.Context, host, userFlag string, fromStdin bool) error {
+func runConnect(ctx context.Context, host, userFlag string, fromStdin, keepAlive bool) error {
 	cfgPath, err := conf.DefaultConfigPath()
 	if err != nil {
 		return fmt.Errorf("locate config: %w", err)
@@ -137,7 +145,94 @@ func runConnect(ctx context.Context, host, userFlag string, fromStdin bool) erro
 		return fmt.Errorf("cache cookie: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "Elevated %s. Cookie cached.\n", host)
-	return nil
+	if !keepAlive {
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "Keep-alive: pinging every 30 min until SIGTERM or absolute expiry.\n")
+	return runKeepAlive(ctx, fc, bearer, host, cookie)
+}
+
+// runKeepAlive holds the process open, hitting /h/<host>/elev/ssh/ping
+// every 30 minutes to slide the cloudbox idle TTL. Cloudbox issues a
+// fresh Set-Cookie header when the cookie crosses its halfway-point
+// (30 min into the 1 h window), so we capture the refreshed value and
+// rewrite the cache file. A 401/403 means the absolute 8 h cap was hit
+// — we exit non-zero so a parent supervisor script can re-elevate with
+// a fresh password.
+func runKeepAlive(ctx context.Context, fc *conf.FileConfig, bearer, host, cookie string) error {
+	pingURL, err := buildPingURL(fc.ServerAddr, fc.ServerPort, fc.Protocol, host)
+	if err != nil {
+		return fmt.Errorf("build ping URL: %w", err)
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	current := cookie
+	t := time.NewTicker(keepAliveInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Fprintf(os.Stderr, "Keep-alive: exiting (%v).\n", ctx.Err())
+			return nil
+		case <-t.C:
+		}
+		next, err := pingElevate(ctx, client, pingURL, bearer, current)
+		if err != nil {
+			return fmt.Errorf("keep-alive ping: %w", err)
+		}
+		if next != "" && next != current {
+			if werr := writeCookie(host, next); werr != nil {
+				return fmt.Errorf("rewrite cookie: %w", werr)
+			}
+			current = next
+		}
+	}
+}
+
+// keepAliveInterval is the ping cadence. Cloudbox slides the cookie past
+// its halfway mark (30 min for a 1 h idle TTL), so pinging at 30 min is
+// the largest safe gap. Smaller would also work; bigger lets the cookie
+// briefly expire between pings.
+var keepAliveInterval = 30 * time.Minute
+
+// pingElevate POSTs to the ping endpoint with the current cookie and
+// returns the refreshed cookie value if cloudbox slid it (Set-Cookie in
+// the response), else "" to indicate "no change". Errors on 4xx — the
+// caller treats those as fatal (absolute expiry or auth drift).
+func pingElevate(ctx context.Context, client *http.Client, pingURL, bearer, cookie string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, pingURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.AddCookie(&http.Cookie{Name: "matrix_elev", Value: cookie})
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return "", fmt.Errorf("ping HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	for _, ck := range resp.Cookies() {
+		if ck.Name == "matrix_elev" && ck.Value != "" {
+			return ck.Value, nil
+		}
+	}
+	// No Set-Cookie: cloudbox decided the cookie wasn't past its
+	// halfway point yet (or middleware didn't slide for some reason).
+	// Keep the existing one.
+	return "", nil
+}
+
+// buildPingURL is the ping-endpoint analogue of buildElevateURL. Same
+// host/scheme reasoning; the URL just gets an extra "/ping" segment.
+func buildPingURL(server string, port int, protocol, host string) (string, error) {
+	base, err := buildElevateURL(server, port, protocol, host)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(base, "/") + "/ping", nil
 }
 
 // readPassword reads the password from /dev/tty (echo off) or stdin if
