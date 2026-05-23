@@ -2,3 +2,4 @@
 /outpost
 *.test
 *.out
+.agents/
