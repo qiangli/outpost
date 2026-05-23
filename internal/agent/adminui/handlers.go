@@ -56,13 +56,13 @@ func toBuiltinView(enabled bool, bt agent.BuiltinTarget) builtinView {
 // safeView is the redacted FileConfig sent over the API. Token never
 // leaves the agent; presence is reported as has_token instead.
 type safeView struct {
-	AgentName        string               `json:"agent_name"`
-	ServerAddr       string               `json:"server_addr"`
-	ServerPort       int                  `json:"server_port"`
-	Protocol         string               `json:"protocol,omitempty"`
-	RemotePort       int                  `json:"remote_port"`
-	AuthURL          string               `json:"auth_url,omitempty"`
-	HasToken         bool                 `json:"has_token"`
+	AgentName            string               `json:"agent_name"`
+	ServerAddr           string               `json:"server_addr"`
+	ServerPort           int                  `json:"server_port"`
+	Protocol             string               `json:"protocol,omitempty"`
+	RemotePort           int                  `json:"remote_port"`
+	AuthURL              string               `json:"auth_url,omitempty"`
+	HasToken             bool                 `json:"has_token"`
 	Apps                 []conf.AppConfig     `json:"apps"`
 	ShellEnabled         bool                 `json:"shell_enabled"`
 	DesktopEnabled       bool                 `json:"desktop_enabled"`
@@ -70,10 +70,10 @@ type safeView struct {
 	SSHEnabled           bool                 `json:"ssh_enabled"`
 	SSHAllowLocalForward bool                 `json:"ssh_allow_local_forward"`
 	SFTPEnabled          bool                 `json:"sftp_enabled"`
-	Podman           builtinView          `json:"podman"`
-	Ollama           builtinView          `json:"ollama"`
-	Outbound         []agent.OutboundView `json:"outbound"`
-	Defaults         map[string]string    `json:"defaults"`
+	Podman               builtinView          `json:"podman"`
+	Ollama               builtinView          `json:"ollama"`
+	Outbound             []agent.OutboundView `json:"outbound"`
+	Defaults             map[string]string    `json:"defaults"`
 }
 
 func (s *Server) toSafeView(fc *conf.FileConfig) safeView {
@@ -88,23 +88,23 @@ func (s *Server) toSafeView(fc *conf.FileConfig) safeView {
 		defaultName = osHost + "-" + osUser
 	}
 	return safeView{
-		AgentName:        fc.AgentName,
-		ServerAddr:       fc.ServerAddr,
-		ServerPort:       fc.ServerPort,
-		Protocol:         fc.Protocol,
-		RemotePort:       fc.RemotePort,
-		AuthURL:          fc.AuthURL,
-		HasToken:         fc.Token != "",
-		Apps:             apps,
+		AgentName:            fc.AgentName,
+		ServerAddr:           fc.ServerAddr,
+		ServerPort:           fc.ServerPort,
+		Protocol:             fc.Protocol,
+		RemotePort:           fc.RemotePort,
+		AuthURL:              fc.AuthURL,
+		HasToken:             fc.Token != "",
+		Apps:                 apps,
 		ShellEnabled:         fc.ShellOn(),
 		DesktopEnabled:       fc.DesktopOn(),
 		ClipboardEnabled:     fc.ClipboardOn(),
 		SSHEnabled:           fc.SSHOn(),
 		SSHAllowLocalForward: fc.SSHAllowLocalForwardOn(),
 		SFTPEnabled:          fc.SFTPOn(),
-		Podman:           toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
-		Ollama:           toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
-		Outbound:         s.outboundList(),
+		Podman:               toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
+		Ollama:               toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
+		Outbound:             s.outboundList(),
 		Defaults: map[string]string{
 			"server_url": "https://ai.dhnt.io",
 			"name":       defaultName,

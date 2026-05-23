@@ -468,4 +468,3 @@ func serveTCPBridge(c *gin.Context, name, addr string) {
 	}()
 	_, _ = io.Copy(wsConn, upstream)
 }
-

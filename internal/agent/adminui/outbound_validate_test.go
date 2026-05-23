@@ -7,12 +7,12 @@ import (
 
 func TestValidateOutbound(t *testing.T) {
 	cases := []struct {
-		name      string
-		in        outboundUpsertReq
-		wantErr   string // substring; "" means no error
-		wantName  string // expected post-normalization value
-		wantSch   string // expected post-normalization value
-		wantPort  int    // expected post-normalization value
+		name     string
+		in       outboundUpsertReq
+		wantErr  string // substring; "" means no error
+		wantName string // expected post-normalization value
+		wantSch  string // expected post-normalization value
+		wantPort int    // expected post-normalization value
 	}{
 		{
 			name:    "http needs name",

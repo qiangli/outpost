@@ -22,15 +22,15 @@ type outboundSuggestionsResp struct {
 }
 
 type outboundSuggestion struct {
-	Host         string `json:"host"`               // outpost agent name
-	OsUser       string `json:"os_user,omitempty"`  // OS user — used as the elevate `user` field
-	Name         string `json:"name"`               // app name (matches the remote outpost's /apps row)
-	Scheme       string `json:"scheme,omitempty"`   // "http" or "tcp" — drives the local-mount shape
-	RequireLogin bool   `json:"require_login"`      // whether the remote app demands elevation
+	Host         string `json:"host"`              // outpost agent name
+	OsUser       string `json:"os_user,omitempty"` // OS user — used as the elevate `user` field
+	Name         string `json:"name"`              // app name (matches the remote outpost's /apps row)
+	Scheme       string `json:"scheme,omitempty"`  // "http" or "tcp" — drives the local-mount shape
+	RequireLogin bool   `json:"require_login"`     // whether the remote app demands elevation
 	IndexPath    string `json:"index_path,omitempty"`
-	Title        string `json:"title,omitempty"`    // host display title
-	Online       bool   `json:"online"`             // last_seen_at within freshness window
-	Shared       bool   `json:"shared,omitempty"`   // true if not owned by the caller
+	Title        string `json:"title,omitempty"`  // host display title
+	Online       bool   `json:"online"`           // last_seen_at within freshness window
+	Shared       bool   `json:"shared,omitempty"` // true if not owned by the caller
 }
 
 // handleOutboundSuggestions calls cloudbox's /api/v1/hosts (the
@@ -98,13 +98,13 @@ func (s *Server) handleOutboundSuggestions(c *gin.Context) {
 // locally so this package stays decoupled from any internal cloudbox
 // types — the field set is intentionally narrow.
 type cbHostEntry struct {
-	Host     string        `json:"host"`
-	OsUser   string        `json:"os_user"`
-	Title    string        `json:"title"`
-	Online   bool          `json:"online"`
-	Shared   bool          `json:"shared"`
-	Apps     []cbAppEntry  `json:"apps"`
-	Builtins *cbBuiltins   `json:"builtins,omitempty"`
+	Host     string       `json:"host"`
+	OsUser   string       `json:"os_user"`
+	Title    string       `json:"title"`
+	Online   bool         `json:"online"`
+	Shared   bool         `json:"shared"`
+	Apps     []cbAppEntry `json:"apps"`
+	Builtins *cbBuiltins  `json:"builtins,omitempty"`
 }
 
 type cbAppEntry struct {

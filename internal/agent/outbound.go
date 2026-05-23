@@ -34,6 +34,7 @@ import (
 // per-builtin elevate endpoint (Bearer access_token + {user, password}):
 //   - http / tcp scheme → POST /h/<host>/app/<name>/elevate
 //   - ssh scheme        → POST /h/<host>/ssh/elevate
+//
 // The cookie's Path narrows to the specific (host, app|builtin), so an
 // elevation cannot be replayed against a sibling app. Starts a 4-minute
 // pinger to slide the idle TTL. Disconnect (or a pinger failure
