@@ -293,6 +293,7 @@ func startCmd() *cobra.Command {
 				ClipboardDisabled:    !fc.ClipboardOn(),
 				SSHDisabled:          !fc.SSHOn(),
 				SSHAllowLocalForward: fc.SSHAllowLocalForwardOn(),
+				SFTPEnabled:          fc.SFTPOn(),
 				SSHHostKey:           sshHostKey,
 			})
 

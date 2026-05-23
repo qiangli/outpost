@@ -13,6 +13,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"mvdan.cc/sh/v3/interp"
 	"mvdan.cc/sh/v3/syntax"
@@ -34,7 +35,7 @@ import (
 //   - The submitted SSH username MUST equal the agent's running OS user
 //     (same constraint as /auth). Anything else is rejected before we
 //     touch PAM, so we never silently weaken the gate.
-func sshHandler(hostKey ssh.Signer, auth hostauth.Authenticator, authURL string, allowLocalForward bool) gin.HandlerFunc {
+func sshHandler(hostKey ssh.Signer, auth hostauth.Authenticator, authURL string, allowLocalForward bool, sftpEnabled bool) gin.HandlerFunc {
 	currentUser, _ := hostauth.CurrentUser()
 	authURL = strings.TrimSpace(authURL)
 
@@ -131,7 +132,7 @@ func sshHandler(hostKey ssh.Signer, auth hostauth.Authenticator, authURL string,
 					slog.Warn("ssh channel accept", "err", aerr)
 					continue
 				}
-				go handleSSHSession(ctx, ch, chReqs)
+				go handleSSHSession(ctx, ch, chReqs, sftpEnabled)
 			case "direct-tcpip":
 				if !allowLocalForward {
 					_ = newCh.Reject(ssh.Prohibited,
@@ -271,6 +272,12 @@ type execMsg struct {
 	Command string
 }
 
+// subsystemReqMsg is the wire format of an SSH "subsystem" channel request
+// payload (RFC 4254 §6.5: a single string naming the subsystem).
+type subsystemReqMsg struct {
+	Name string
+}
+
 // exitStatusMsg is the wire format of an SSH "exit-status" channel request
 // payload (RFC 4254 §6.10).
 type exitStatusMsg struct {
@@ -280,7 +287,7 @@ type exitStatusMsg struct {
 // handleSSHSession handles one "session" channel — its lifecycle is the
 // stream of channel requests (pty-req, window-change, env, shell, exec,
 // subsystem) terminated by the channel close.
-func handleSSHSession(ctx context.Context, ch ssh.Channel, reqs <-chan *ssh.Request) {
+func handleSSHSession(ctx context.Context, ch ssh.Channel, reqs <-chan *ssh.Request, sftpEnabled bool) {
 	defer ch.Close()
 
 	var (
@@ -361,10 +368,24 @@ func handleSSHSession(ctx context.Context, ch ssh.Channel, reqs <-chan *ssh.Requ
 			return
 
 		case "subsystem":
-			// SFTP / netconf are out of scope for v1. Reject so clients
-			// fall back to exec where possible (scp uses exec, not the
-			// subsystem channel, so this does not affect rsync/scp).
-			_ = req.Reply(false, nil)
+			var msg subsystemReqMsg
+			if err := ssh.Unmarshal(req.Payload, &msg); err != nil {
+				_ = req.Reply(false, nil)
+				continue
+			}
+			if msg.Name != "sftp" || !sftpEnabled {
+				// netconf / anything else / sftp-when-disabled. Reject;
+				// well-behaved clients fall back to exec.
+				_ = req.Reply(false, nil)
+				continue
+			}
+			if session != nil {
+				_ = req.Reply(false, nil)
+				continue
+			}
+			_ = req.Reply(true, nil)
+			serveSFTP(ctx, ch)
+			return
 
 		default:
 			if req.WantReply {
@@ -441,4 +462,30 @@ func runExecCommand(ctx context.Context, ch ssh.Channel, command string) uint32 
 		return 1
 	}
 	return 0
+}
+
+// serveSFTP runs an SFTP server over the SSH channel. Filesystem access
+// runs in the outpost process's OS-user context — the /auth password gate
+// has already proved the caller knows that user's password, so the
+// trust model matches the /shell and /ssh interactive paths (any read or
+// write the OS user can do, the SFTP client can do). The pkg/sftp server
+// does its own context handling and exits cleanly when the channel closes.
+func serveSFTP(ctx context.Context, ch ssh.Channel) {
+	defer ch.Close()
+	srv, err := sftp.NewServer(ch)
+	if err != nil {
+		slog.Warn("sftp server init", "err", err)
+		return
+	}
+	// pkg/sftp's Server.Serve blocks until the underlying conn returns
+	// EOF (client closed) or an error. Hook ctx cancellation to close
+	// the channel from underneath it so a server shutdown actually tears
+	// the SFTP session down.
+	stop := context.AfterFunc(ctx, func() {
+		_ = srv.Close()
+	})
+	defer stop()
+	if err := srv.Serve(); err != nil && !errors.Is(err, io.EOF) {
+		slog.Info("sftp server exit", "err", err)
+	}
 }

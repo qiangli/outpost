@@ -67,6 +67,13 @@ type FileConfig struct {
 	// (admin UI / JSON) to refuse the channel entirely.
 	SSHAllowLocalForward *bool `json:"ssh_allow_local_forward,omitempty"`
 
+	// SFTPEnabled gates whether the embedded SSH server accepts the
+	// "sftp" subsystem channel. Default-on: modern openssh `scp` (8.8+)
+	// uses sftp under the hood, so leaving this off breaks scp for new
+	// clients. Disable explicitly if you want to force legacy `scp -O`
+	// (slower, rides the exec channel).
+	SFTPEnabled *bool `json:"sftp_enabled,omitempty"`
+
 	// Built-in proxies for local daemons. Default off (plain bool) — these
 	// expose external infrastructure rather than outpost-owned routes, so
 	// they require explicit opt-in via the admin UI. The UI greys these
@@ -327,6 +334,12 @@ func (fc *FileConfig) SSHOn() bool { return fc == nil || fc.SSHEnabled == nil ||
 // `direct-tcpip` channel-open requests (stock `ssh -L` / `ssh -D`).
 // Missing field (old configs) defaults to true — the channel is still
 // gated by a loopback-only destination allowlist regardless.
+// SFTPOn reports whether the embedded SSH server should accept the "sftp"
+// subsystem. Default-on for the same reason scp-just-works matters.
+func (fc *FileConfig) SFTPOn() bool {
+	return fc == nil || fc.SFTPEnabled == nil || *fc.SFTPEnabled
+}
+
 func (fc *FileConfig) SSHAllowLocalForwardOn() bool {
 	return fc == nil || fc.SSHAllowLocalForward == nil || *fc.SSHAllowLocalForward
 }

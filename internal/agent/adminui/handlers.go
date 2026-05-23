@@ -69,6 +69,7 @@ type safeView struct {
 	ClipboardEnabled     bool                 `json:"clipboard_enabled"`
 	SSHEnabled           bool                 `json:"ssh_enabled"`
 	SSHAllowLocalForward bool                 `json:"ssh_allow_local_forward"`
+	SFTPEnabled          bool                 `json:"sftp_enabled"`
 	Podman           builtinView          `json:"podman"`
 	Ollama           builtinView          `json:"ollama"`
 	Outbound         []agent.OutboundView `json:"outbound"`
@@ -100,6 +101,7 @@ func (s *Server) toSafeView(fc *conf.FileConfig) safeView {
 		ClipboardEnabled:     fc.ClipboardOn(),
 		SSHEnabled:           fc.SSHOn(),
 		SSHAllowLocalForward: fc.SSHAllowLocalForwardOn(),
+		SFTPEnabled:          fc.SFTPOn(),
 		Podman:           toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
 		Ollama:           toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
 		Outbound:         s.outboundList(),
@@ -258,6 +260,7 @@ type builtinsReq struct {
 	Clipboard            *bool `json:"clipboard"`
 	SSH                  *bool `json:"ssh"`
 	SSHAllowLocalForward *bool `json:"ssh_allow_local_forward"`
+	SFTP                 *bool `json:"sftp"`
 	Podman               *bool `json:"podman"`
 	Ollama               *bool `json:"ollama"`
 }
@@ -297,6 +300,9 @@ func (s *Server) handleBuiltins(c *gin.Context) {
 	}
 	if req.SSHAllowLocalForward != nil {
 		fc.SSHAllowLocalForward = req.SSHAllowLocalForward
+	}
+	if req.SFTP != nil {
+		fc.SFTPEnabled = req.SFTP
 	}
 	if req.Podman != nil {
 		fc.PodmanEnabled = *req.Podman

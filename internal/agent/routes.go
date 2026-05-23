@@ -45,6 +45,13 @@ type Deps struct {
 	// fresh + legacy configs.
 	SSHAllowLocalForward bool
 
+	// SFTPEnabled gates whether the SSH server accepts the "sftp"
+	// subsystem request — required for modern openssh `scp` (8.8+) and
+	// for `sftp` itself. Zero value (false) means rejected; callers must
+	// opt in. Disabling forces clients to use legacy `scp -O` (the exec
+	// channel) which is also supported but slower.
+	SFTPEnabled bool
+
 	// SSHHostKey is the persistent host identity for the embedded SSH
 	// server reached at /ssh. Nil means /ssh will not mount even if
 	// SSHDisabled is false — callers pass a key loaded via
@@ -90,6 +97,7 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 				"desktop":   !deps.DesktopDisabled,
 				"clipboard": !deps.ClipboardDisabled,
 				"ssh":       !deps.SSHDisabled && deps.SSHHostKey != nil,
+				"sftp":      !deps.SSHDisabled && deps.SSHHostKey != nil && deps.SFTPEnabled,
 			},
 		})
 	})
@@ -125,7 +133,7 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	// via the local `outpost ssh-proxy` ProxyCommand helper. Auth gate is
 	// the OS password (same hostauth path as /auth).
 	if !deps.SSHDisabled && deps.SSHHostKey != nil {
-		rg.GET("/ssh", sshHandler(deps.SSHHostKey, auth, deps.AuthURL, deps.SSHAllowLocalForward))
+		rg.GET("/ssh", sshHandler(deps.SSHHostKey, auth, deps.AuthURL, deps.SSHAllowLocalForward, deps.SFTPEnabled))
 	}
 
 	// Reverse-proxy every method (GET/POST/WS upgrades included).

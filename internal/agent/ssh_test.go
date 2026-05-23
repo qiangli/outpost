@@ -16,6 +16,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/qiangli/outpost/internal/agent/hostauth"
@@ -23,11 +24,11 @@ import (
 
 // newTestSSHServer spins up an httptest server with the SSH handler
 // mounted at /ssh and returns its ws:// URL. direct-tcpip forwarding
-// is enabled by default; tests that need to assert the opt-out path
-// use newTestSSHServerOpts directly.
+// AND the sftp subsystem are both enabled by default; tests that need
+// to assert the opt-out path use newTestSSHServerOpts directly.
 func newTestSSHServer(t *testing.T, auth hostauth.Authenticator) (wsURL string, hostKey ssh.Signer) {
 	t.Helper()
-	return newTestSSHServerOpts(t, auth, false, true)
+	return newTestSSHServerOpts(t, auth, false, true, true)
 }
 
 // newTestSSHServerOpts is the parameterized form. cloudboxStamps inserts
@@ -35,7 +36,9 @@ func newTestSSHServer(t *testing.T, auth hostauth.Authenticator) (wsURL string, 
 // simulating cloudbox's SSHProxy vouching for the caller.
 // allowLocalForward is the toggle threaded through to sshHandler that
 // gates `direct-tcpip` channels (stock `ssh -L` / `ssh -D`).
-func newTestSSHServerOpts(t *testing.T, auth hostauth.Authenticator, cloudboxStamps bool, allowLocalForward bool) (wsURL string, hostKey ssh.Signer) {
+// sftpEnabled gates whether the SSH server accepts the "sftp" subsystem
+// channel; off means clients fall back to legacy `scp -O` over exec.
+func newTestSSHServerOpts(t *testing.T, auth hostauth.Authenticator, cloudboxStamps bool, allowLocalForward bool, sftpEnabled bool) (wsURL string, hostKey ssh.Signer) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
@@ -55,7 +58,7 @@ func newTestSSHServerOpts(t *testing.T, auth hostauth.Authenticator, cloudboxSta
 		t.Fatalf("signer: %v", err)
 	}
 
-	engine.GET("/ssh", sshHandler(signer, auth, "", allowLocalForward))
+	engine.GET("/ssh", sshHandler(signer, auth, "", allowLocalForward, sftpEnabled))
 
 	srv := httptest.NewServer(engine)
 	t.Cleanup(srv.Close)
@@ -229,7 +232,7 @@ func TestSSHHandlerCloudboxVouchedSkipsPassword(t *testing.T) {
 	// falling through to PasswordCallback. If NoClientAuth weren't
 	// flipping, the test would fail with handshake error.
 	auth := hostauth.StubAuth{Want: map[string]string{}}
-	wsURL, hostKey := newTestSSHServerOpts(t, auth, true, true)
+	wsURL, hostKey := newTestSSHServerOpts(t, auth, true, true, true)
 
 	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -269,7 +272,12 @@ func TestSSHHandlerCloudboxVouchedSkipsPassword(t *testing.T) {
 // TestSSHHandlerRejectsSubsystem — sftp / netconf subsystems are
 // intentionally out of scope for v1. Confirms we don't accept them
 // silently.
-func TestSSHHandlerRejectsSubsystem(t *testing.T) {
+// TestSSHHandlerRejectsUnknownSubsystem verifies that subsystem requests
+// for anything other than "sftp" are rejected. (The pre-SFTP test name
+// here was `TestSSHHandlerRejectsSubsystem` and asserted that "sftp" was
+// rejected — that's now wrong: sftp is accepted by default. Use a name
+// the server has never heard of, like the historical "netconf".)
+func TestSSHHandlerRejectsUnknownSubsystem(t *testing.T) {
 	currentUser, err := hostauth.CurrentUser()
 	if err != nil || currentUser == "" {
 		t.Skip("cannot determine current OS user")
@@ -289,8 +297,89 @@ func TestSSHHandlerRejectsSubsystem(t *testing.T) {
 	}
 	defer session.Close()
 
+	if err := session.RequestSubsystem("netconf"); err == nil {
+		t.Fatal("expected subsystem 'netconf' to be rejected")
+	}
+}
+
+// TestSSHHandlerRejectsSFTPWhenDisabled asserts that the SFTP subsystem
+// is rejected when the per-config toggle is off — operators who want to
+// force `scp -O` (exec channel) can do so by flipping SFTPEnabled.
+func TestSSHHandlerRejectsSFTPWhenDisabled(t *testing.T) {
+	currentUser, err := hostauth.CurrentUser()
+	if err != nil || currentUser == "" {
+		t.Skip("cannot determine current OS user")
+	}
+	auth := hostauth.StubAuth{Want: map[string]string{currentUser: "secret"}}
+	wsURL, hostKey := newTestSSHServerOpts(t, auth, false, true, false /*sftpEnabled*/)
+
+	client, err := dialSSHOverWS(t, wsURL, hostKey, currentUser, "secret")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("new session: %v", err)
+	}
+	defer session.Close()
+
 	if err := session.RequestSubsystem("sftp"); err == nil {
-		t.Fatal("expected subsystem 'sftp' to be rejected")
+		t.Fatal("expected sftp subsystem to be rejected when SFTPEnabled=false")
+	}
+}
+
+// TestSSHHandlerSFTPHappyPath opens the sftp subsystem, lists the temp
+// directory, writes a small file via SFTP, reads it back, and asserts
+// the contents. End-to-end proof that scp (which rides sftp by default
+// on modern openssh) and sftp both work via outpost ssh-proxy.
+func TestSSHHandlerSFTPHappyPath(t *testing.T) {
+	currentUser, err := hostauth.CurrentUser()
+	if err != nil || currentUser == "" {
+		t.Skip("cannot determine current OS user")
+	}
+	auth := hostauth.StubAuth{Want: map[string]string{currentUser: "secret"}}
+	wsURL, hostKey := newTestSSHServer(t, auth)
+
+	client, err := dialSSHOverWS(t, wsURL, hostKey, currentUser, "secret")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	sc, err := sftp.NewClient(client)
+	if err != nil {
+		t.Fatalf("sftp client: %v", err)
+	}
+	defer sc.Close()
+
+	tmp := t.TempDir()
+	path := tmp + "/hello.txt"
+	want := "hello from sftp"
+
+	f, err := sc.Create(path)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := f.Write([]byte(want)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	rf, err := sc.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer rf.Close()
+	got, err := io.ReadAll(rf)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
@@ -383,7 +472,7 @@ func TestSSH_DirectTCPIP_Disabled(t *testing.T) {
 	}
 	auth := hostauth.StubAuth{Want: map[string]string{currentUser: "secret"}}
 	// allowLocalForward=false — the only difference from the happy path.
-	wsURL, hostKey := newTestSSHServerOpts(t, auth, false, false)
+	wsURL, hostKey := newTestSSHServerOpts(t, auth, false, false, true)
 
 	client, err := dialSSHOverWS(t, wsURL, hostKey, currentUser, "secret")
 	if err != nil {
