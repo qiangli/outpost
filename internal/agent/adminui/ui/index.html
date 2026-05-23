@@ -220,6 +220,24 @@ function msg(kind, text) {
   if (kind === 'ok') setTimeout(() => { host.innerHTML = ''; }, 4000);
 }
 
+// TTL_INFINITE matches the server-side sentinel for "no absolute cap".
+// We pick Number.MAX_SAFE_INTEGER (9007199254740991) rather than Go's
+// math.MaxInt64 because the latter cannot round-trip through JavaScript
+// JSON numbers (Number is float64); MAX_SAFE_INTEGER stringifies and
+// parses cleanly across the wire.
+const TTL_INFINITE = Number.MAX_SAFE_INTEGER;
+
+// formatTTL returns a short human-readable form: "default" (0/missing),
+// "infinite" (sentinel), or e.g. "24h" / "30m" / "45s" for finite values.
+function formatTTL(seconds) {
+  if (!seconds) return 'default';
+  if (seconds >= TTL_INFINITE) return 'infinite';
+  if (seconds % 86400 === 0) return (seconds / 86400) + 'd';
+  if (seconds % 3600 === 0) return (seconds / 3600) + 'h';
+  if (seconds % 60 === 0) return (seconds / 60) + 'm';
+  return seconds + 's';
+}
+
 async function api(method, path, body) {
   const opts = { method, headers: {} };
   if (body !== undefined) {
@@ -639,7 +657,7 @@ function renderMain(status, cfg) {
       el('span', {class: 'label'}, lineLabel),
       linkOrText,
     );
-    // Line 2: app@host (user) — status — Connect/Disconnect — Remove.
+    // Line 2: app@host (user) — TTL — status — Connect/Disconnect — Remove.
     //   SSH outbounds target the remote outpost's built-in /ssh (no app
     //   name); show "built-in ssh" instead of an "app@" mention.
     const targetLabel = isSSH
@@ -647,6 +665,7 @@ function renderMain(status, cfg) {
       : `→ ${ob.name}@${ob.host} (${ob.user})`;
     const line2 = el('div', {class: 'line'},
       el('span', {class: 'hint grow'}, targetLabel),
+      el('span', {class: 'hint'}, `ttl: ${formatTTL(ob.ttl_seconds)}`),
       el('span', {class: 'hint'}, ob.connected ? 'connected' : 'disconnected'),
       ob.connected
         ? el('button', {class: 'secondary', onclick: async () => {
@@ -718,6 +737,26 @@ function renderMain(status, cfg) {
     min: '1', max: '65535', placeholder: 'e.g. 5432'});
   const pathLabel = el('label', {style: 'display:none'}, 'Path (local mount)', pathInput);
   const portLabel = el('label', {style: 'display:none'}, 'Port (localhost)', portInput);
+  // Session TTL — per-mount override of cloudbox's absolute-expiry cap on
+  // the matrix_elev cookie. Default leaves the cloud policy alone; Custom
+  // takes a number of seconds (revealed only when picked). The "infinite"
+  // option uses Number.MAX_SAFE_INTEGER as the wire value; see TTL_INFINITE
+  // for why we don't ship math.MaxInt64.
+  const ttlSel = el('select', {name: 'ttl'},
+    el('option', {value: '0'}, 'Default (cloud policy)'),
+    el('option', {value: '3600'}, '1 hour'),
+    el('option', {value: '28800'}, '8 hours'),
+    el('option', {value: '86400'}, '24 hours'),
+    el('option', {value: '604800'}, '1 week'),
+    el('option', {value: String(TTL_INFINITE)}, 'Infinite (no cap)'),
+    el('option', {value: 'custom'}, 'Custom (seconds)…'),
+  );
+  const ttlCustom = el('input', {name: 'ttl_custom', type: 'number',
+    min: '1', placeholder: 'seconds', style: 'display:none; margin-top:0.3rem'});
+  ttlSel.addEventListener('change', () => {
+    ttlCustom.style.display = ttlSel.value === 'custom' ? '' : 'none';
+  });
+  const ttlLabel = el('label', {}, 'Session TTL', ttlSel, ttlCustom);
   // Status hint that shows the auto-filled host/user for the currently
   // picked remote, so the operator can confirm what they're connecting
   // to without us re-displaying it as raw input fields.
@@ -741,6 +780,7 @@ function renderMain(status, cfg) {
     remoteHint,
     pathLabel,
     portLabel,
+    ttlLabel,
     el('button', {type: 'submit', style: 'align-self: start; margin-top: 0.3rem;'}, 'Add outbound'));
 
   // Kick off the fetch after the form is in the DOM so the user sees
@@ -818,6 +858,19 @@ function renderMain(status, cfg) {
         return;
       }
     }
+    // Resolve the TTL selector → ttl_seconds. 0 (Default) is omitted from
+    // the body so the server falls back to cloudbox's policy default.
+    let ttl = 0;
+    if (ttlSel.value === 'custom') {
+      ttl = parseInt(ttlCustom.value, 10);
+      if (!Number.isFinite(ttl) || ttl < 1) {
+        msg('err', 'Custom TTL must be a positive number of seconds.');
+        return;
+      }
+    } else {
+      ttl = parseInt(ttlSel.value, 10) || 0;
+    }
+    if (ttl > 0) body.ttl_seconds = ttl;
     try {
       await api('POST', '/api/outbound', body);
       msg('ok', 'Outbound added.');

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -550,5 +551,62 @@ func TestOutboundSSHBridge(t *testing.T) {
 	if c, derr := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", itoa(localPort)), 200*time.Millisecond); derr == nil {
 		_ = c.Close()
 		t.Fatalf("listener still accepting after Disconnect")
+	}
+}
+
+// TestOutboundConnectForwardsTTL verifies that OutboundConfig.TTLSeconds
+// is forwarded in the elevate POST body when nonzero, omitted when 0.
+// Cloudbox needs this so the operator can request long-running sessions
+// per-mount; an older cloudbox that ignores the field still works.
+func TestOutboundConnectForwardsTTL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cases := []struct {
+		name       string
+		ttl        int64
+		wantInBody bool
+		wantValue  int64
+	}{
+		{"default-omits-field", 0, false, 0},
+		{"finite-value-forwarded", 86400, true, 86400},
+		{"max-safe-int-forwarded", 1<<53 - 1, true, 1<<53 - 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got map[string]any
+			mux := http.NewServeMux()
+			mux.HandleFunc("/h/h1/elev/app/a1", func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				if err := json.Unmarshal(b, &got); err != nil {
+					t.Fatalf("decode body: %v", err)
+				}
+				http.SetCookie(w, &http.Cookie{Name: "matrix_elev", Value: "ck", Path: "/h/h1/app/a1"})
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{}`))
+			})
+			srv := httptest.NewServer(mux)
+			t.Cleanup(srv.Close)
+
+			m := NewOutboundManager(srv.URL, "tok", nil)
+			m.Register([]conf.OutboundConfig{
+				{Path: "p", Name: "a1", Host: "h1", User: "u", TTLSeconds: tc.ttl},
+			})
+			if err := m.Connect("p", "pw"); err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			m.Disconnect("p")
+
+			_, present := got["ttl_seconds"]
+			if present != tc.wantInBody {
+				t.Fatalf("ttl_seconds present=%v, want %v (body=%v)", present, tc.wantInBody, got)
+			}
+			if tc.wantInBody {
+				v, _ := got["ttl_seconds"].(float64)
+				if int64(v) != tc.wantValue {
+					t.Fatalf("ttl_seconds = %v, want %d", v, tc.wantValue)
+				}
+			}
+		})
 	}
 }

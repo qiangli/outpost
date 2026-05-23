@@ -135,13 +135,20 @@ type FileConfig struct {
 //     /outpost connect uses), so the matrix_elev cookie scope is the
 //     whole host rather than a single app.
 //   - LocalPort: required for Scheme=="tcp" or "ssh". Ignored otherwise.
+//   - TTLSeconds: per-mount override for cloudbox's absolute-expiry cap on
+//     the matrix_elev cookie. 0 (unset) uses the cloudbox default;
+//     math.MaxInt64 means "no absolute cap, only idle expiry" — useful
+//     for long-running agentic sessions. Cloudbox must honor the
+//     ttl_seconds field in the elevate POST body for this to take effect;
+//     older cloudbox versions ignore it and apply their default.
 type OutboundConfig struct {
-	Path      string `json:"path"`
-	Name      string `json:"name"`
-	Host      string `json:"host"`
-	User      string `json:"user"`
-	Scheme    string `json:"scheme,omitempty"`
-	LocalPort int    `json:"local_port,omitempty"`
+	Path       string `json:"path"`
+	Name       string `json:"name"`
+	Host       string `json:"host"`
+	User       string `json:"user"`
+	Scheme     string `json:"scheme,omitempty"`
+	LocalPort  int    `json:"local_port,omitempty"`
+	TTLSeconds int64  `json:"ttl_seconds,omitempty"`
 }
 
 // SchemeNorm returns the effective scheme — empty defaults to "http" so

@@ -529,12 +529,13 @@ func (s *Server) handleListOutbound(c *gin.Context) {
 }
 
 type outboundUpsertReq struct {
-	Path      string `json:"path"`
-	Name      string `json:"name"`
-	Host      string `json:"host"`
-	User      string `json:"user"`
-	Scheme    string `json:"scheme,omitempty"`
-	LocalPort int    `json:"local_port,omitempty"`
+	Path       string `json:"path"`
+	Name       string `json:"name"`
+	Host       string `json:"host"`
+	User       string `json:"user"`
+	Scheme     string `json:"scheme,omitempty"`
+	LocalPort  int    `json:"local_port,omitempty"`
+	TTLSeconds int64  `json:"ttl_seconds,omitempty"`
 }
 
 func (s *Server) handleAddOutbound(c *gin.Context) {
@@ -565,12 +566,13 @@ func (s *Server) handleAddOutbound(c *gin.Context) {
 		}
 	}
 	newCfg := conf.OutboundConfig{
-		Path:      req.Path,
-		Name:      req.Name,
-		Host:      req.Host,
-		User:      req.User,
-		Scheme:    req.Scheme,
-		LocalPort: req.LocalPort,
+		Path:       req.Path,
+		Name:       req.Name,
+		Host:       req.Host,
+		User:       req.User,
+		Scheme:     req.Scheme,
+		LocalPort:  req.LocalPort,
+		TTLSeconds: req.TTLSeconds,
 	}
 	// A listener-binding outbound (tcp or ssh) MUST NOT collide on
 	// local_port with any other listener-binding outbound — both would
@@ -672,6 +674,9 @@ func validateOutbound(req *outboundUpsertReq) error {
 	req.User = strings.TrimSpace(req.User)
 	if req.Path == "" || req.Host == "" || req.User == "" {
 		return errors.New("path, host, and user are all required")
+	}
+	if req.TTLSeconds < 0 {
+		return fmt.Errorf("ttl_seconds %d cannot be negative (use math.MaxInt64 for infinite)", req.TTLSeconds)
 	}
 	if strings.ContainsAny(req.Path, "/ \t") {
 		return errors.New("path cannot contain slashes or whitespace")

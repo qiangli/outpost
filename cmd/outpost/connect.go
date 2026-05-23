@@ -96,7 +96,7 @@ func runConnect(ctx context.Context, host, userFlag string, fromStdin, keepAlive
 	// slow links; doing it after readPassword means the operator sees
 	// the prompt instantly, types the password, and then waits — far
 	// less confusing than a silent gap before the prompt appears.
-	password, err := readPassword(host, fromStdin)
+	password, err := readPassword(fmt.Sprintf("OS password for %s", host), fromStdin)
 	if err != nil {
 		return fmt.Errorf("read password: %w", err)
 	}
@@ -235,9 +235,11 @@ func buildPingURL(server string, port int, protocol, host string) (string, error
 	return strings.TrimRight(base, "/") + "/ping", nil
 }
 
-// readPassword reads the password from /dev/tty (echo off) or stdin if
-// fromStdin is true. Falls back to stdin when /dev/tty is unavailable.
-func readPassword(host string, fromStdin bool) (string, error) {
+// readPassword reads a password from /dev/tty (echo off) or from stdin
+// when fromStdin is true. The prompt string is shown to the TTY only.
+// Falls back to a clear error when no TTY is available (agent context)
+// so the caller knows to pass --stdin instead of hanging on a Read.
+func readPassword(prompt string, fromStdin bool) (string, error) {
 	if fromStdin {
 		buf, err := io.ReadAll(io.LimitReader(os.Stdin, 4096))
 		if err != nil {
@@ -247,12 +249,10 @@ func readPassword(host string, fromStdin bool) (string, error) {
 	}
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
-		// No TTY (agent context). Caller should pass --stdin in that
-		// case; surface a useful error instead of hanging on a Read.
 		return "", fmt.Errorf("no /dev/tty available; pass --stdin to read from stdin (%w)", err)
 	}
 	defer tty.Close()
-	fmt.Fprintf(tty, "OS password for %s: ", host)
+	fmt.Fprintf(tty, "%s: ", prompt)
 	raw, err := term.ReadPassword(int(tty.Fd()))
 	fmt.Fprintln(tty)
 	if err != nil {

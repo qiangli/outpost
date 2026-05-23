@@ -69,6 +69,7 @@ type OutboundView struct {
 	User        string `json:"user"`
 	Scheme      string `json:"scheme"`
 	LocalPort   int    `json:"local_port,omitempty"`
+	TTLSeconds  int64  `json:"ttl_seconds,omitempty"`
 	Connected   bool   `json:"connected"`
 	ConnectedAt string `json:"connected_at,omitempty"`
 }
@@ -126,12 +127,13 @@ func (m *OutboundManager) List() []OutboundView {
 	out := make([]OutboundView, 0, len(m.configs))
 	for _, cfg := range m.configs {
 		v := OutboundView{
-			Path:      cfg.Path,
-			Name:      cfg.Name,
-			Host:      cfg.Host,
-			User:      cfg.User,
-			Scheme:    cfg.SchemeNorm(),
-			LocalPort: cfg.LocalPort,
+			Path:       cfg.Path,
+			Name:       cfg.Name,
+			Host:       cfg.Host,
+			User:       cfg.User,
+			Scheme:     cfg.SchemeNorm(),
+			LocalPort:  cfg.LocalPort,
+			TTLSeconds: cfg.TTLSeconds,
 		}
 		if conn, ok := m.conns[cfg.Path]; ok {
 			v.Connected = true
@@ -168,7 +170,15 @@ func (m *OutboundManager) Connect(path, password string) error {
 		return fmt.Errorf("outbound: outpost has no access_token — pair with cloudbox first")
 	}
 
-	body, _ := json.Marshal(map[string]string{"user": cfg.User, "password": password})
+	// ttl_seconds is sent only when the operator overrode the default.
+	// Cloudbox treats a missing field as "apply the per-host default
+	// policy"; math.MaxInt64 means "no absolute cap, only idle expiry".
+	// Older cloudbox versions ignore the field harmlessly.
+	payload := map[string]any{"user": cfg.User, "password": password}
+	if cfg.TTLSeconds != 0 {
+		payload["ttl_seconds"] = cfg.TTLSeconds
+	}
+	body, _ := json.Marshal(payload)
 	ctx, cancelReq := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelReq()
 	// Elevate URL depends on what we're targeting:
