@@ -110,12 +110,19 @@ func (s *Session) Run(ctx context.Context) error {
 			cmdCtx, cancel := context.WithCancel(ctx)
 			err := s.runner.Run(cmdCtx, stmt)
 			cancel()
-			if err != nil {
-				if isExit(err) {
-					return false
-				}
-				// Print runtime errors to the user, like a real shell.
+			if err != nil && !isExitStatus(err) {
+				// A real fatal error from a handler (not just a non-zero
+				// command exit code). Surface it like a real shell would.
+				// Plain `exit status N` from failing commands is intentionally
+				// swallowed — the command's own stderr already told the user
+				// what went wrong, and printing "exit status 127" on top is
+				// just noise.
 				_, _ = io.WriteString(s.pts, err.Error()+"\r\n")
+			}
+			if s.runner.Exited() {
+				// The `exit` builtin (or a fatal trap) asked us to end the
+				// session. Treat it like Ctrl-D.
+				return false
 			}
 		}
 		// Continue while the parent ctx is alive.
@@ -189,17 +196,21 @@ func ps2() string {
 	return "> "
 }
 
-// isExit recognizes interp's `exit N` builtin so we don't print "exit" as
-// an error.
-func isExit(err error) bool {
+// isExitStatus reports whether err is just a non-zero command exit code
+// (interp.ExitStatus) rather than a fatal handler error. Used to decide
+// whether to forward the error text to the user — bare exit codes are
+// noise, real errors are not.
+//
+// Critically, this does NOT decide whether to end the session. That's
+// the `runner.Exited()` check in Run — set only by the `exit` builtin
+// or a fatal trap, never by `false` or a missing binary. Older code
+// here conflated the two and ended the session on any non-zero status.
+func isExitStatus(err error) bool {
 	if err == nil {
 		return false
 	}
 	var ec interp.ExitStatus
-	if errorsAs(err, &ec) {
-		return true
-	}
-	return strings.Contains(err.Error(), "exit status")
+	return errorsAs(err, &ec)
 }
 
 // errorsAs is a tiny stand-in to avoid importing errors twice — we want a
