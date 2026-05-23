@@ -23,22 +23,24 @@ import (
 )
 
 // newTestSSHServer spins up an httptest server with the SSH handler
-// mounted at /ssh and returns its ws:// URL. direct-tcpip forwarding
-// AND the sftp subsystem are both enabled by default; tests that need
-// to assert the opt-out path use newTestSSHServerOpts directly.
+// mounted at /ssh and returns its ws:// URL. direct-tcpip forwarding,
+// tcpip-forward (ssh -R), AND the sftp subsystem are all enabled by
+// default; tests that need to assert the opt-out path use
+// newTestSSHServerOpts directly.
 func newTestSSHServer(t *testing.T, auth hostauth.Authenticator) (wsURL string, hostKey ssh.Signer) {
 	t.Helper()
-	return newTestSSHServerOpts(t, auth, false, true, true)
+	return newTestSSHServerOpts(t, auth, false, true, true, true)
 }
 
 // newTestSSHServerOpts is the parameterized form. cloudboxStamps inserts
 // an X-Periscope-Role: admin header on every request via gin middleware,
 // simulating cloudbox's SSHProxy vouching for the caller.
-// allowLocalForward is the toggle threaded through to sshHandler that
-// gates `direct-tcpip` channels (stock `ssh -L` / `ssh -D`).
-// sftpEnabled gates whether the SSH server accepts the "sftp" subsystem
-// channel; off means clients fall back to legacy `scp -O` over exec.
-func newTestSSHServerOpts(t *testing.T, auth hostauth.Authenticator, cloudboxStamps bool, allowLocalForward bool, sftpEnabled bool) (wsURL string, hostKey ssh.Signer) {
+// allowLocalForward gates `direct-tcpip` channels (stock `ssh -L` /
+// `ssh -D`). allowRemoteForward gates `tcpip-forward` global requests
+// (stock `ssh -R`). sftpEnabled gates whether the SSH server accepts
+// the "sftp" subsystem channel; off means clients fall back to legacy
+// `scp -O` over exec.
+func newTestSSHServerOpts(t *testing.T, auth hostauth.Authenticator, cloudboxStamps bool, allowLocalForward bool, allowRemoteForward bool, sftpEnabled bool) (wsURL string, hostKey ssh.Signer) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
@@ -58,7 +60,7 @@ func newTestSSHServerOpts(t *testing.T, auth hostauth.Authenticator, cloudboxSta
 		t.Fatalf("signer: %v", err)
 	}
 
-	engine.GET("/ssh", sshHandler(signer, auth, "", allowLocalForward, sftpEnabled))
+	engine.GET("/ssh", sshHandler(signer, auth, "", allowLocalForward, allowRemoteForward, sftpEnabled))
 
 	srv := httptest.NewServer(engine)
 	t.Cleanup(srv.Close)
@@ -232,7 +234,7 @@ func TestSSHHandlerCloudboxVouchedSkipsPassword(t *testing.T) {
 	// falling through to PasswordCallback. If NoClientAuth weren't
 	// flipping, the test would fail with handshake error.
 	auth := hostauth.StubAuth{Want: map[string]string{}}
-	wsURL, hostKey := newTestSSHServerOpts(t, auth, true, true, true)
+	wsURL, hostKey := newTestSSHServerOpts(t, auth, true, true, true, true)
 
 	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -311,7 +313,7 @@ func TestSSHHandlerRejectsSFTPWhenDisabled(t *testing.T) {
 		t.Skip("cannot determine current OS user")
 	}
 	auth := hostauth.StubAuth{Want: map[string]string{currentUser: "secret"}}
-	wsURL, hostKey := newTestSSHServerOpts(t, auth, false, true, false /*sftpEnabled*/)
+	wsURL, hostKey := newTestSSHServerOpts(t, auth, false, true, true, false /*sftpEnabled*/)
 
 	client, err := dialSSHOverWS(t, wsURL, hostKey, currentUser, "secret")
 	if err != nil {
@@ -462,6 +464,135 @@ func TestSSH_DirectTCPIP_NonLoopbackRejected(t *testing.T) {
 	}
 }
 
+// TestAllowTCPIPForwardBind exercises the bind-address allowlist used by
+// `tcpip-forward` (ssh -R). Loopback only; empty string ("") matches
+// openssh's default-to-127.0.0.1 behavior.
+func TestAllowTCPIPForwardBind(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"", true},
+		{"localhost", true},
+		{"LOCALHOST", true},
+		{"127.0.0.1", true},
+		{"::1", true},
+		{"  127.0.0.1  ", true},
+		{"0.0.0.0", false},
+		{"192.168.1.10", false},
+		{"example.com", false},
+	}
+	for _, tc := range cases {
+		if got := allowTCPIPForwardBind(tc.in); got != tc.want {
+			t.Errorf("allowTCPIPForwardBind(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestSSH_RemoteForward_HappyPath spins up a `tcpip-forward` listener via
+// the SSH client's Listen(), dials the bound port from the test process,
+// and round-trips bytes through the resulting `forwarded-tcpip` channel.
+// This is the integration test for ssh -R end-to-end.
+func TestSSH_RemoteForward_HappyPath(t *testing.T) {
+	currentUser, err := hostauth.CurrentUser()
+	if err != nil || currentUser == "" {
+		t.Skip("no current user; skipping")
+	}
+	auth := hostauth.StubAuth{Want: map[string]string{currentUser: "secret"}}
+	wsURL, hostKey := newTestSSHServer(t, auth)
+
+	client, err := dialSSHOverWS(t, wsURL, hostKey, currentUser, "secret")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	// Ask the agent to bind a loopback listener and push accepts back.
+	ln, err := client.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("client.Listen: %v", err)
+	}
+	defer ln.Close()
+
+	// Echo accepted connections back so a write→read round-trip is visible.
+	go func() {
+		conn, aerr := ln.Accept()
+		if aerr != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = io.Copy(conn, conn)
+	}()
+
+	// Dial the bound port from the test process (it's loopback on this host).
+	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	d := net.Dialer{}
+	c, err := d.DialContext(dialCtx, "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial bound port: %v", err)
+	}
+	defer c.Close()
+
+	payload := []byte("hello-forwarded-tcpip\n")
+	if _, err := c.Write(payload); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(c, got); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Errorf("echo mismatch: got %q, want %q", got, payload)
+	}
+}
+
+// TestSSH_RemoteForward_Disabled — when the toggle is off, the
+// tcpip-forward request must be rejected at the global-request layer
+// (client.Listen returns an error).
+func TestSSH_RemoteForward_Disabled(t *testing.T) {
+	currentUser, err := hostauth.CurrentUser()
+	if err != nil || currentUser == "" {
+		t.Skip("no current user; skipping")
+	}
+	auth := hostauth.StubAuth{Want: map[string]string{currentUser: "secret"}}
+	// allowRemoteForward=false (4th bool); rest match the happy path.
+	wsURL, hostKey := newTestSSHServerOpts(t, auth, false, true, false, true)
+
+	client, err := dialSSHOverWS(t, wsURL, hostKey, currentUser, "secret")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Listen("tcp", "127.0.0.1:0"); err == nil {
+		t.Fatal("expected tcpip-forward to be rejected when remote-forward disabled")
+	}
+}
+
+// TestSSH_RemoteForward_NonLoopbackRefused proves the bind-address
+// allowlist defends against 0.0.0.0 / public-interface binds even when
+// the toggle is on.
+func TestSSH_RemoteForward_NonLoopbackRefused(t *testing.T) {
+	currentUser, err := hostauth.CurrentUser()
+	if err != nil || currentUser == "" {
+		t.Skip("no current user; skipping")
+	}
+	auth := hostauth.StubAuth{Want: map[string]string{currentUser: "secret"}}
+	wsURL, hostKey := newTestSSHServer(t, auth)
+
+	client, err := dialSSHOverWS(t, wsURL, hostKey, currentUser, "secret")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Listen("tcp", "0.0.0.0:0"); err == nil {
+		t.Fatal("expected tcpip-forward to be rejected for 0.0.0.0 bind")
+	}
+}
+
 // TestSSH_DirectTCPIP_Disabled proves the agent-config toggle is wired
 // — when the flag is false, even loopback targets are refused. Lets
 // an operator opt out without recompiling.
@@ -472,7 +603,7 @@ func TestSSH_DirectTCPIP_Disabled(t *testing.T) {
 	}
 	auth := hostauth.StubAuth{Want: map[string]string{currentUser: "secret"}}
 	// allowLocalForward=false — the only difference from the happy path.
-	wsURL, hostKey := newTestSSHServerOpts(t, auth, false, false, true)
+	wsURL, hostKey := newTestSSHServerOpts(t, auth, false, false, true, true)
 
 	client, err := dialSSHOverWS(t, wsURL, hostKey, currentUser, "secret")
 	if err != nil {

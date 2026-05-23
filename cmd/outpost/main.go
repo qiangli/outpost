@@ -283,18 +283,19 @@ func startCmd() *cobra.Command {
 
 			engine := gin.Default()
 			agent.RegisterRoutes(engine.Group("/"), agent.Deps{
-				AgentName:            cfg.AgentName,
-				Apps:                 apps,
-				Admins:               admins,
-				AuthURL:              cfg.AuthURL,
-				VNCAddr:              vncAddrFlag,
-				ShellDisabled:        !fc.ShellOn(),
-				DesktopDisabled:      !fc.DesktopOn(),
-				ClipboardDisabled:    !fc.ClipboardOn(),
-				SSHDisabled:          !fc.SSHOn(),
-				SSHAllowLocalForward: fc.SSHAllowLocalForwardOn(),
-				SFTPEnabled:          fc.SFTPOn(),
-				SSHHostKey:           sshHostKey,
+				AgentName:             cfg.AgentName,
+				Apps:                  apps,
+				Admins:                admins,
+				AuthURL:               cfg.AuthURL,
+				VNCAddr:               vncAddrFlag,
+				ShellDisabled:         !fc.ShellOn(),
+				DesktopDisabled:       !fc.DesktopOn(),
+				ClipboardDisabled:     !fc.ClipboardOn(),
+				SSHDisabled:           !fc.SSHOn(),
+				SSHAllowLocalForward:  fc.SSHAllowLocalForwardOn(),
+				SSHAllowRemoteForward: fc.SSHAllowRemoteForwardOn(),
+				SFTPEnabled:           fc.SFTPOn(),
+				SSHHostKey:            sshHostKey,
 			})
 
 			// Bind the local listener first so we know its port before

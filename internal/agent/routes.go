@@ -45,6 +45,11 @@ type Deps struct {
 	// fresh + legacy configs.
 	SSHAllowLocalForward bool
 
+	// SSHAllowRemoteForward gates whether the SSH server honors
+	// `tcpip-forward` global requests (stock `ssh -R`). Same opt-in /
+	// loopback-bind story as SSHAllowLocalForward.
+	SSHAllowRemoteForward bool
+
 	// SFTPEnabled gates whether the SSH server accepts the "sftp"
 	// subsystem request — required for modern openssh `scp` (8.8+) and
 	// for `sftp` itself. Zero value (false) means rejected; callers must
@@ -133,7 +138,7 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	// via the local `outpost ssh-proxy` ProxyCommand helper. Auth gate is
 	// the OS password (same hostauth path as /auth).
 	if !deps.SSHDisabled && deps.SSHHostKey != nil {
-		rg.GET("/ssh", sshHandler(deps.SSHHostKey, auth, deps.AuthURL, deps.SSHAllowLocalForward, deps.SFTPEnabled))
+		rg.GET("/ssh", sshHandler(deps.SSHHostKey, auth, deps.AuthURL, deps.SSHAllowLocalForward, deps.SSHAllowRemoteForward, deps.SFTPEnabled))
 	}
 
 	// Reverse-proxy every method (GET/POST/WS upgrades included).

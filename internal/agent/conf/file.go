@@ -67,6 +67,14 @@ type FileConfig struct {
 	// (admin UI / JSON) to refuse the channel entirely.
 	SSHAllowLocalForward *bool `json:"ssh_allow_local_forward,omitempty"`
 
+	// SSHAllowRemoteForward gates whether the built-in /ssh server honors
+	// `tcpip-forward` global requests — the primitive behind stock
+	// `ssh -R`. Default-on. Bind address is loopback-only regardless of
+	// this flag (see ssh.go `allowTCPIPForwardBind`); the operator who
+	// can pass the OS-password gate already has equivalent reach via a
+	// session-channel `nc` invocation, so adding this adds no authority.
+	SSHAllowRemoteForward *bool `json:"ssh_allow_remote_forward,omitempty"`
+
 	// SFTPEnabled gates whether the embedded SSH server accepts the
 	// "sftp" subsystem channel. Default-on: modern openssh `scp` (8.8+)
 	// uses sftp under the hood, so leaving this off breaks scp for new
@@ -110,22 +118,22 @@ type FileConfig struct {
 //   - User : the OS user on the remote outpost (used at Connect time
 //     when POSTing to /h/<host>/elevate).
 //   - Scheme:
-//     - "http" (default): local mount is the admin-UI subpath
-//       http://localhost:17777/<Path>/... proxied through cloudbox to
-//       the remote outpost's /app/<Name>/ http app.
-//     - "tcp": local outpost opens a 127.0.0.1:LocalPort listener
-//       after Connect and bridges every accepted TCP conn through
-//       cloudbox as a WebSocket to the remote outpost's tcp-scheme
-//       app named <Name>. Lets unmodified clients reach non-HTTP
-//       services (ssh, psql, mysql) the remote outpost has registered
-//       as TCP apps.
-//     - "ssh": same listener+WS-bridge shape as "tcp", but the bridge
-//       targets the remote outpost's built-in /ssh endpoint (the
-//       in-process Go SSH server) directly — no app registration on
-//       the remote required. Name is ignored. Elevate flow uses
-//       host-level /h/<Host>/elevate (the same one outpost ssh-proxy
-//       /outpost connect uses), so the matrix_elev cookie scope is the
-//       whole host rather than a single app.
+//   - "http" (default): local mount is the admin-UI subpath
+//     http://localhost:17777/<Path>/... proxied through cloudbox to
+//     the remote outpost's /app/<Name>/ http app.
+//   - "tcp": local outpost opens a 127.0.0.1:LocalPort listener
+//     after Connect and bridges every accepted TCP conn through
+//     cloudbox as a WebSocket to the remote outpost's tcp-scheme
+//     app named <Name>. Lets unmodified clients reach non-HTTP
+//     services (ssh, psql, mysql) the remote outpost has registered
+//     as TCP apps.
+//   - "ssh": same listener+WS-bridge shape as "tcp", but the bridge
+//     targets the remote outpost's built-in /ssh endpoint (the
+//     in-process Go SSH server) directly — no app registration on
+//     the remote required. Name is ignored. Elevate flow uses
+//     host-level /h/<Host>/elevate (the same one outpost ssh-proxy
+//     /outpost connect uses), so the matrix_elev cookie scope is the
+//     whole host rather than a single app.
 //   - LocalPort: required for Scheme=="tcp" or "ssh". Ignored otherwise.
 type OutboundConfig struct {
 	Path      string `json:"path"`
@@ -342,6 +350,14 @@ func (fc *FileConfig) SFTPOn() bool {
 
 func (fc *FileConfig) SSHAllowLocalForwardOn() bool {
 	return fc == nil || fc.SSHAllowLocalForward == nil || *fc.SSHAllowLocalForward
+}
+
+// SSHAllowRemoteForwardOn reports whether the SSH server should honor
+// `tcpip-forward` global requests (stock `ssh -R`). Missing field (old
+// configs) defaults to true — the bind address is still locked to
+// loopback by the agent regardless.
+func (fc *FileConfig) SSHAllowRemoteForwardOn() bool {
+	return fc == nil || fc.SSHAllowRemoteForward == nil || *fc.SSHAllowRemoteForward
 }
 
 // PodmanOn reports whether the built-in podman proxy is enabled in this
