@@ -10,6 +10,7 @@ require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/msteinert/pam/v2 v2.1.0
+	github.com/pkg/sftp v1.13.10
 	github.com/samber/lo v1.47.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/crypto v0.49.0
@@ -55,7 +56,6 @@ require (
 	github.com/pion/transport/v4 v4.0.1 // indirect
 	github.com/pires/go-proxyproto v0.7.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/pkg/sftp v1.13.10 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/songgao/water v0.0.0-20200317203138-2b4b6d7c09d8 // indirect
@@ -86,4 +86,4 @@ require (
 	sigs.k8s.io/yaml v1.3.0 // indirect
 )
 
-replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 v3.0.0-20260523094235-bcd0609b5442
+replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 v3.0.0-20260523102459-cdf169b806f7
