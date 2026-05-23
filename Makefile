@@ -1,6 +1,7 @@
-BIN     ?= outpost
-PKG     := ./cmd/outpost
-OUT_DIR := bin
+BIN         ?= outpost
+PKG         := ./cmd/outpost
+OUT_DIR     := bin
+INSTALL_DIR ?= $(HOME)/bin
 
 .PHONY: help build install clean tidy update-sh
 
@@ -11,8 +12,10 @@ build: ## Build the outpost binary into ./bin
 	@mkdir -p $(OUT_DIR)
 	go build -o $(OUT_DIR)/$(BIN) $(PKG)
 
-install: ## Install outpost into $GOBIN / $GOPATH/bin
-	go install $(PKG)
+install: build ## Install outpost into $(INSTALL_DIR) (default: ~/bin)
+	@mkdir -p $(INSTALL_DIR)
+	install -m 0755 $(OUT_DIR)/$(BIN) $(INSTALL_DIR)/$(BIN)
+	@echo "installed $(INSTALL_DIR)/$(BIN)"
 
 clean: ## Remove build artifacts
 	rm -rf $(OUT_DIR)
