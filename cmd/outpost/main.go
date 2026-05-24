@@ -33,6 +33,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
 	"github.com/qiangli/outpost/internal/agent/portal"
+	"github.com/qiangli/outpost/internal/agent/vkpodman"
 )
 
 // defaultPortal is the public ai.dhnt.io address used when the user
@@ -427,6 +428,18 @@ func startCmd() *cobra.Command {
 					}
 				}
 			}
+			// Cluster mode: join the cloudbox virtual-podman cluster as a
+			// virtual node. Independent of the PodmanEnabled reverse-proxy
+			// app — cluster mode dials the local podman socket directly
+			// for libpod calls and doesn't need the /app/podman/* route to
+			// be mounted. Boot errors are logged but never fatal: a
+			// half-configured cluster section shouldn't prevent the rest
+			// of outpost from running.
+			if fc.ClusterOn() {
+				if err := startClusterRunner(gctx, g, fc); err != nil {
+					slog.Warn("cluster mode: disabled", "err", err)
+				}
+			}
 			g.Go(func() error {
 				<-gctx.Done()
 				slog.Info("matrix-agent: shutting down")
@@ -452,6 +465,46 @@ func startCmd() *cobra.Command {
 	cmd.Flags().StringVar(&vncAddrFlag, "vnc-addr", "127.0.0.1:5900", "VNC server to expose for the desktop tab")
 	cmd.Flags().StringVar(&adminAddrFlag, "admin-addr", "", "Admin UI listen address (overrides $OUTPOST_ADMIN_ADDR; default 127.0.0.1:17777). Use 0.0.0.0:17777 to expose to the LAN; login is then always required.")
 	return cmd
+}
+
+// startClusterRunner validates fc.Cluster, detects the local podman
+// socket, and launches vkpodman.Run on g. Setup errors return; the
+// long-running loop's errors flow through the errgroup the same way
+// the tunnel's do.
+//
+// We never make a cluster-mode boot failure fatal to the agent: a
+// half-configured Cluster section shouldn't stop the matrix tunnel or
+// admin UI from coming up. The caller logs the returned error and
+// moves on.
+func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig) error {
+	cc := fc.Cluster
+	if cc == nil {
+		return errors.New("missing Cluster section")
+	}
+	nodeName := fc.ClusterNodeName()
+	if nodeName == "" {
+		return errors.New("ClusterNodeName empty (agent_name unset?)")
+	}
+	bt := agent.DetectPodman()
+	if !bt.Available || bt.Socket == "" {
+		return fmt.Errorf("podman socket not detected (tried %s)", bt.Socket)
+	}
+	kubeCfg, err := vkpodman.ConfigFromCluster(cc.APIURL, cc.Token, cc.CA)
+	if err != nil {
+		return err
+	}
+	g.Go(func() error {
+		slog.Info("cluster mode: joining", "node", nodeName, "apiserver", cc.APIURL, "podman_socket", bt.Socket)
+		if err := vkpodman.Run(ctx, vkpodman.RunOptions{
+			NodeName:     nodeName,
+			PodmanSocket: bt.Socket,
+			Kube:         kubeCfg,
+		}); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("cluster mode: runner exited", "err", err)
+		}
+		return nil
+	})
+	return nil
 }
 
 // cloudboxHTTPBase derives the HTTP(S) base URL of cloudbox from the

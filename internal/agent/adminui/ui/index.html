@@ -428,6 +428,15 @@ function renderMain(status, cfg) {
     // pool by enabling Ollama alone; explicit-off here keeps the local proxy private.
     {key: 'ollama_pool', label: 'Share Ollama with LLM pool',
      enabled: !!cfg.ollama_pool_enabled, gatedBy: cfg.ollama || {}},
+    // Cluster row is gated by having credentials pasted (has_token).
+    // We re-use the same daemon-shape "gatedBy" by synthesizing one:
+    // 'enabled' on the gate means credentials are present, so the
+    // toggle becomes live. Hint text below tells the operator to paste
+    // a kubeconfig first.
+    {key: 'cluster', label: 'Cluster (virtual-kubelet → podman)',
+     enabled: !!(cfg.cluster && cfg.cluster.enabled),
+     gatedBy: {enabled: !!(cfg.cluster && cfg.cluster.has_token)},
+     gateHint: '(paste a kubeconfig below first)'},
   ];
   for (const item of builtinRows) {
     const isDaemon = !!item.daemon;
@@ -464,7 +473,9 @@ function renderMain(status, cfg) {
       }
     }
     if (isGated && !gateOK) {
-      row.append(el('span', {class: 'hint'}, '(enable Ollama first)'));
+      // gateHint is row-specific; falls back to the Ollama-pool hint for
+      // back-compat with rows that don't set one.
+      row.append(el('span', {class: 'hint'}, item.gateHint || '(enable Ollama first)'));
     }
     builtList.append(row);
   }
@@ -472,6 +483,82 @@ function renderMain(status, cfg) {
   built.append(el('p', {style: 'font-size:0.8rem;opacity:0.7;margin-top:0.8rem'},
     'Changes save automatically. Toggling a built-in restarts the outpost. Podman/Ollama require the matching daemon to be running on this host.'));
   panelInbound.append(built);
+
+  // Cluster credentials section. Lives in the same "Inbound" panel as
+  // the built-ins because joining the cluster turns this outpost into
+  // a virtual K8s node — conceptually adjacent to "expose podman" /
+  // "expose shell". Token + CA are never sent to the browser; we show
+  // presence flags only.
+  const cluster = el('fieldset', {});
+  cluster.append(el('legend', {}, 'Cluster credentials'));
+  const cv = cfg.cluster || {};
+  const summary = el('div', {class: 'item-row'});
+  if (cv.has_token) {
+    summary.append(el('span', {class: 'grow'},
+      el('span', {}, 'Joined as '),
+      el('code', {}, cv.node_name || '(unset)'),
+      el('span', {}, ' → '),
+      el('code', {}, cv.api_url || ''),
+      el('span', {class: 'hint', style: 'margin-left:0.5rem'},
+        cv.has_ca ? '(custom CA)' : '(system roots)')));
+    const leave = el('button', {type: 'button'}, 'Leave cluster');
+    leave.addEventListener('click', async () => {
+      if (!confirm('Clear cluster credentials and stop joining on next boot?')) return;
+      leave.disabled = true;
+      try {
+        await api('DELETE', '/api/cluster/kubeconfig');
+        msg('ok', 'Cluster credentials cleared — restarting…');
+        if (status.configured && cv.enabled) pollUntilUp();
+      } catch (e) {
+        leave.disabled = false;
+        msg('err', e.message || 'Clear failed');
+      }
+    });
+    summary.append(leave);
+  } else {
+    summary.append(el('span', {class: 'grow hint'},
+      'No kubeconfig set. Paste one below to join a cluster.'));
+  }
+  cluster.append(summary);
+
+  const ta = el('textarea', {
+    rows: '6',
+    placeholder: '# Paste kubeconfig (YAML), e.g. contents of /etc/rancher/k3s/k3s.yaml',
+    style: 'width:100%;font-family:monospace;font-size:0.85rem',
+  });
+  const nodeOverride = el('input', {
+    type: 'text',
+    placeholder: 'Node name (default: agent name)',
+    style: 'width:50%;margin-right:0.5rem',
+  });
+  const save = el('button', {type: 'button'}, 'Save kubeconfig');
+  const saveAndJoin = el('button', {type: 'button'}, 'Save & join');
+  async function postKubeconfig(enable) {
+    const body = {kubeconfig: ta.value};
+    if (nodeOverride.value.trim()) body.node_name = nodeOverride.value.trim();
+    if (enable) body.enable = true;
+    save.disabled = true; saveAndJoin.disabled = true;
+    try {
+      const resp = await api('POST', '/api/cluster/kubeconfig', body);
+      msg('ok', enable ? 'Kubeconfig saved — joining cluster…' : 'Kubeconfig saved.');
+      if (resp.restarting) pollUntilUp();
+    } catch (e) {
+      msg('err', e.message || 'Save failed');
+    } finally {
+      save.disabled = false; saveAndJoin.disabled = false;
+    }
+  }
+  save.addEventListener('click', () => postKubeconfig(false));
+  saveAndJoin.addEventListener('click', () => postKubeconfig(true));
+  cluster.append(ta);
+  const btnRow = el('div', {style: 'margin-top:0.5rem;display:flex;align-items:center'});
+  btnRow.append(nodeOverride, save, el('span', {style: 'margin:0 0.4rem'}), saveAndJoin);
+  cluster.append(btnRow);
+  cluster.append(el('p', {style: 'font-size:0.8rem;opacity:0.7;margin-top:0.8rem'},
+    'The kubeconfig is parsed once; only api_url + token + CA are persisted. ' +
+    'Token + CA never leave this machine — the SPA shows presence flags only. ' +
+    'Save & join also flips the cluster toggle and restarts the outpost.'));
+  panelInbound.append(cluster);
 
   // Custom apps section — one row per app, target as a clickable link
   // (new tab), status as an auto-saving toggle switch.

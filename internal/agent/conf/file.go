@@ -138,6 +138,43 @@ type FileConfig struct {
 	// https://<cloudbox>/h/<host>/app/<name>/<rest>. See
 	// internal/agent/outbound.go.
 	Outbound []OutboundConfig `json:"outbound,omitempty"`
+
+	// Cluster, when present and Enabled, opts this outpost into the
+	// cloudbox virtual-podman cluster: vkpodman joins a cloud-side k3s
+	// API server as a virtual node and runs scheduled Pods as local
+	// podman containers. See internal/agent/vkpodman. Off by default.
+	Cluster *ClusterConfig `json:"cluster,omitempty"`
+}
+
+// ClusterConfig persists the kubeconfig fields cloudbox issues at
+// "join cluster" time. APIURL/Token/CA together build a client-go
+// rest.Config; NodeName defaults to AgentName.
+//
+// We store the three credential fields directly (rather than parsing a
+// kubeconfig file on every boot) so the join flow can accept a pasted
+// kubeconfig once, persist what matters, and be done. Token rotation
+// becomes a one-line file save instead of a file-format dance.
+type ClusterConfig struct {
+	// Enabled is the master switch. When false, the rest is ignored and
+	// the vkpodman loop never starts.
+	Enabled bool `json:"enabled,omitempty"`
+	// APIURL is the cluster's apiserver — typically the cloudbox-proxied
+	// URL like https://ai.dhnt.io/api/cluster/agent for production, or
+	// https://127.0.0.1:6443 against a local k3s for dev/PoC.
+	APIURL string `json:"api_url,omitempty"`
+	// Token is the bearer credential. For production this is a
+	// per-host ServiceAccount token cloudbox issued; for dev/PoC it
+	// can come straight out of /etc/rancher/k3s/k3s.yaml.
+	Token string `json:"token,omitempty"`
+	// CA is the apiserver's TLS CA bundle (PEM). Required when APIURL
+	// is https://. Empty means "trust the system roots" — fine when
+	// cloudbox fronts the apiserver behind a real cert.
+	CA []byte `json:"ca,omitempty"`
+	// NodeName is the name we register with. Defaults to AgentName when
+	// empty (so `kubectl get nodes` shows the same hostname the portal
+	// uses) but can be overridden if multiple outposts on the same host
+	// want distinct cluster identities.
+	NodeName string `json:"node_name,omitempty"`
 }
 
 // OutboundConfig is one local mount that proxies to a remote outpost.
@@ -417,6 +454,24 @@ func (fc *FileConfig) PodmanOn() bool { return fc != nil && fc.PodmanEnabled }
 
 // OllamaOn reports whether the built-in Ollama proxy is enabled.
 func (fc *FileConfig) OllamaOn() bool { return fc != nil && fc.OllamaEnabled }
+
+// ClusterOn reports whether this outpost should join the cloudbox
+// virtual-podman cluster on boot. Missing field or Enabled=false ⇒ false.
+func (fc *FileConfig) ClusterOn() bool {
+	return fc != nil && fc.Cluster != nil && fc.Cluster.Enabled
+}
+
+// ClusterNodeName returns the node identity to register with — the
+// explicit override when set, otherwise AgentName.
+func (fc *FileConfig) ClusterNodeName() string {
+	if fc == nil || fc.Cluster == nil {
+		return ""
+	}
+	if n := strings.TrimSpace(fc.Cluster.NodeName); n != "" {
+		return n
+	}
+	return fc.AgentName
+}
 
 // OllamaPoolOn reports whether this outpost should join cloudbox's LLM
 // pool. Returns false when Ollama itself is off (the pool is a strict

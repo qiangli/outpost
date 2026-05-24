@@ -226,6 +226,13 @@ func (s *Server) registerRoutes() {
 	api.DELETE("/apps/:name", s.handleDeleteApp)
 	api.POST("/restart", s.handleRestart)
 
+	// Cluster (virtual-podman) — paste a kubeconfig to persist
+	// APIURL/Token/CA; the cluster toggle in /api/config/builtins flips
+	// the master switch. DELETE wipes both the credentials and the
+	// toggle (i.e. "leave the cluster").
+	api.POST("/cluster/kubeconfig", s.handleSetClusterKubeconfig)
+	api.DELETE("/cluster/kubeconfig", s.handleClearClusterKubeconfig)
+
 	// Outbound — local mounts that proxy through cloudbox to remote
 	// outposts' apps. Only registered when an OutboundManager was
 	// supplied via Deps.

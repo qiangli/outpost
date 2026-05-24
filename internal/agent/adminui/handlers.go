@@ -14,6 +14,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"github.com/qiangli/outpost/internal/agent/portal"
+	"github.com/qiangli/outpost/internal/agent/vkpodman"
 )
 
 // loadConfig reads the FileConfig (or returns an empty one on first run).
@@ -73,8 +74,34 @@ type safeView struct {
 	Podman               builtinView          `json:"podman"`
 	Ollama               builtinView          `json:"ollama"`
 	OllamaPoolEnabled    bool                 `json:"ollama_pool_enabled"`
+	Cluster              clusterView          `json:"cluster"`
 	Outbound             []agent.OutboundView `json:"outbound"`
 	Defaults             map[string]string    `json:"defaults"`
+}
+
+// clusterView is the redacted shape sent to the SPA for cluster status.
+// Token + CA bytes never leave the agent; presence is reported via
+// has_token / has_ca so the UI can render "joined / not joined" without
+// the credential.
+type clusterView struct {
+	Enabled  bool   `json:"enabled"`
+	APIURL   string `json:"api_url,omitempty"`
+	NodeName string `json:"node_name,omitempty"`
+	HasToken bool   `json:"has_token"`
+	HasCA    bool   `json:"has_ca"`
+}
+
+func toClusterView(fc *conf.FileConfig) clusterView {
+	if fc == nil || fc.Cluster == nil {
+		return clusterView{}
+	}
+	return clusterView{
+		Enabled:  fc.Cluster.Enabled,
+		APIURL:   fc.Cluster.APIURL,
+		NodeName: fc.ClusterNodeName(),
+		HasToken: fc.Cluster.Token != "",
+		HasCA:    len(fc.Cluster.CA) > 0,
+	}
 }
 
 func (s *Server) toSafeView(fc *conf.FileConfig) safeView {
@@ -106,6 +133,7 @@ func (s *Server) toSafeView(fc *conf.FileConfig) safeView {
 		Podman:               toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
 		Ollama:               toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
 		OllamaPoolEnabled:    fc.OllamaPoolOn(),
+		Cluster:              toClusterView(fc),
 		Outbound:             s.outboundList(),
 		Defaults: map[string]string{
 			"server_url": "https://ai.dhnt.io",
@@ -266,6 +294,7 @@ type builtinsReq struct {
 	Podman               *bool `json:"podman"`
 	Ollama               *bool `json:"ollama"`
 	OllamaPool           *bool `json:"ollama_pool"`
+	Cluster              *bool `json:"cluster"`
 }
 
 // handleBuiltins toggles built-in routes (shell/desktop/clipboard/ssh)
@@ -315,6 +344,12 @@ func (s *Server) handleBuiltins(c *gin.Context) {
 	}
 	if req.OllamaPool != nil {
 		fc.OllamaPoolEnabled = req.OllamaPool
+	}
+	if req.Cluster != nil {
+		if fc.Cluster == nil {
+			fc.Cluster = &conf.ClusterConfig{}
+		}
+		fc.Cluster.Enabled = *req.Cluster
 	}
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -718,6 +753,90 @@ func validateOutbound(req *outboundUpsertReq) error {
 		return fmt.Errorf("scheme %q must be one of http|tcp|ssh", req.Scheme)
 	}
 	return nil
+}
+
+// clusterKubeconfigReq is the body of POST /api/cluster/kubeconfig.
+// Kubeconfig is the full YAML the user pasted from k3s.yaml (dev/PoC)
+// or that cloudbox issued via its kubeconfig endpoint (production).
+// NodeName is an optional override; empty defaults to AgentName at boot.
+// Enable, when true, also flips Cluster.Enabled so the operator can
+// paste + activate in one action.
+type clusterKubeconfigReq struct {
+	Kubeconfig string `json:"kubeconfig" binding:"required"`
+	NodeName   string `json:"node_name,omitempty"`
+	Enable     bool   `json:"enable,omitempty"`
+}
+
+// handleSetClusterKubeconfig parses a pasted kubeconfig, extracts the
+// apiserver URL + bearer token + CA, and persists them into
+// fc.Cluster. The kubeconfig itself is NOT stored — only the three
+// fields the runner actually uses, so token rotation later is a
+// targeted update rather than a YAML round-trip.
+//
+// Triggers a restart when fc.Cluster.Enabled ends up true (joining the
+// cluster on the next boot) — same pattern as the built-in toggles.
+func (s *Server) handleSetClusterKubeconfig(c *gin.Context) {
+	var req clusterKubeconfigReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	parsed, err := vkpodman.ParseKubeconfig([]byte(req.Kubeconfig))
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fc, err := s.loadConfig()
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if fc.Cluster == nil {
+		fc.Cluster = &conf.ClusterConfig{}
+	}
+	fc.Cluster.APIURL = parsed.APIURL
+	fc.Cluster.Token = parsed.Token
+	fc.Cluster.CA = parsed.CA
+	if req.NodeName != "" {
+		fc.Cluster.NodeName = strings.TrimSpace(req.NodeName)
+	}
+	if req.Enable {
+		fc.Cluster.Enabled = true
+	}
+	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "cluster": toClusterView(fc), "restarting": fc.Cluster.Enabled && fc.AgentName != ""})
+	if fc.Cluster.Enabled && fc.AgentName != "" {
+		s.scheduleRestart()
+	}
+}
+
+// handleClearClusterKubeconfig removes the cluster credentials and the
+// Enabled flag so a future boot doesn't try to dial a stale apiserver.
+// The toggle alone (handleBuiltins with cluster=false) just stops the
+// runner from starting; this is the "I'm leaving the cluster" path.
+func (s *Server) handleClearClusterKubeconfig(c *gin.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fc, err := s.loadConfig()
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	wasEnabled := fc.ClusterOn()
+	fc.Cluster = nil
+	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "restarting": wasEnabled})
+	if wasEnabled {
+		s.scheduleRestart()
+	}
 }
 
 // scheduleRestart asynchronously triggers the parent's restart closure
