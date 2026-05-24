@@ -12,6 +12,39 @@ investigated and closed.
 
 Listed newest first; all on `main`.
 
+- **`343a4f4` `cli: add outpost run --label X -- cmd to replace launchctl
+  submit`** — T2.f workaround. `launchctl submit` is silently no-op'd
+  inside the matrix-shell because the SSH session inherits a launchd
+  system-domain context that doesn't have `submit` capability.
+  `outpost run` generates a LaunchAgent plist, bootstraps it into
+  `gui/<uid>`, persists it under `~/Library/LaunchAgents` so it
+  auto-loads at next login. CLI: `outpost run --label X -- cmd`,
+  `outpost run --list`, `outpost run --remove X`. Labels scoped under
+  `outpost.run.<label>`. macOS-only — errors out cleanly elsewhere.
+  Render gotcha: `html/template` escapes the leading `<?xml`, which
+  launchd rejects with `Bootstrap failed: 5: Input/output error` —
+  use `text/template` + `encoding/xml` escaping for user strings.
+  Smoke-tested submit → ps → list → remove on dragon + novidesign.
+- **`aa54346` `ssh: add direct-streamlocal (podman ssh://) + peer-tunneled
+  ProxyJump dial`** — two SSH server capabilities riding the existing
+  /ssh WebSocket:
+    - **direct-streamlocal@openssh.com**: podman's `ssh://<host>`
+      transport opens this channel to forward to a remote unix socket.
+      Allowlist built from `DetectPodman` + canonical docker sockets +
+      operator-supplied `FileConfig.SSHForwardSockets`. See
+      `docs/remote-podman.md`.
+    - **peer-tunneled ProxyJump dial**: extends T3.k. The allowlist
+      policy fix landed last round but the dial still fell through to
+      LAN DNS. Now `handleDirectTCPIP` routes peer SSH dials
+      (`ssh -J novicortex novidesign`) through cloudbox's
+      `/h/<peer>/ssh` WSS endpoint with this outpost's own
+      `access_token`. Loopback dials keep the zero-overhead path.
+      **Status:** outpost-side ready, cloudbox-blocked — cloudbox
+      today 403s on sibling-outpost tokens (sees "missing matrix_elev
+      cookie"). Outpost surfaces a clear `peer-dial novidesign: 403`
+      now instead of a confusing DNS error.
+  Refactored `sshHandler` to take an `sshHandlerDeps` struct while
+  here — the positional arg list was at nine knobs.
 - **`ssh: fix ssh -R back-channel, add exec-PTY, ssh -A, peer
   ProxyJump`** — four open items from the prior handoff become
   workable in one commit. See `docs/matrix-shell-deferred-bugs.md`
@@ -108,36 +141,39 @@ that the original handoff already named:
 
 ## Still open (outpost side)
 
-### ProxyJump dial via cloudbox tunnel
+### Cloudbox-side acceptance of sibling-outpost tokens (gates T3.k end-to-end)
 
-**What's missing:** the allowlist policy now accepts paired-peer
-hostnames (T3.k done), so `ssh -J novicortex novidesign` no longer
-gets `administratively prohibited`. The dial itself still uses LAN
-DNS though, so it succeeds only when peers are mutually reachable
-(LAN / Tailscale / hairpin NAT). Off-LAN peers fail with `dial tcp:
-lookup novidesign: no such host` from the second-hop outpost.
+**Status:** outpost side is done (commit `aa54346` —
+`handleDirectTCPIP` routes peer SSH dials through cloudbox's
+`/h/<peer>/ssh` WSS endpoint with this outpost's own `access_token`
+as bearer). Today cloudbox returns 403 for that token shape because
+the route expects an operator-elevated `matrix_elev` cookie, not a
+sibling-outpost JWT.
 
-**Roughly:** when the `direct-tcpip` target is a paired peer, dial it
-through cloudbox (mirror what `outpost ssh-proxy` does) instead of
-plain `net.Dial`. Bigger change than the allowlist tweak — needs a
-shared bearer-token path so the second-hop outpost can talk to
-cloudbox on behalf of the operator, and a way to avoid recursive
-back-tunneling. Defer until off-LAN ProxyJump is actually requested.
+**What's needed (cloudbox):** when the bearer's `sub` matches the
+account that owns the destination host, allow the request through as
+a pure transport (no elevation, no cookie) — the destination
+outpost's own SSH PasswordCallback still runs, so peer-membership
+alone never grants shell access. Roughly mirror the existing
+`X-Periscope-Role` skip path that elevated cookies trigger.
+
+**Workaround:** mutually-reachable peers (LAN, Tailscale, hairpin
+NAT) work via the existing allowlist policy + LAN DNS fallback.
 
 ### `screen -dmS` (T2.e)
 
-**Still parked.** `ssh -tt host 'screen -dmS x sleep 30; screen -ls'`
-returns "No screen session found" even with the new PTY-exec path —
-screen's own double-fork+setsid detach doesn't survive the runner's
-process group teardown. Independent of our PTY allocation (which is
-now fine — `tty` returns `/dev/ttys000`). Needs investigation into
-how screen's daemonized child loses its TTY; not blocking common use.
+**Still parked, with findings.** macOS's bundled `screen 4.00.03`
+(from 2006) silently exits when invoked from the matrix-shell exec
+environment — `screen -dmS x sleep 30` returns 0, no socket appears
+under `$TMPDIR/.screen/`, no daemon process exists, no stderr emitted.
+Same binary works fine in a regular login shell on the same host.
+Tried (none helped): `nohup`, `setsid`, redirected stdio, custom
+`SCREENDIR`, explicit `TERM`. Not a process-group / ctx-cancel issue
+(the daemon never starts; nothing to kill). Without `dtruss` access
+(requires SIP-off), narrowing further from outside is hard.
 
-### `launchctl submit` (T2.f)
-
-**Still parked.** Launchd domain issue — see
-`matrix-shell-deferred-bugs.md` #8. The proposed fix is a CLI helper
-`outpost run --label X -- cmd` rather than a shell-side fix.
+**Workaround:** `brew install screen` (modern build) or
+`brew install tmux`. Both are expected to work.
 
 ### ControlMaster / ControlPersist (cloudbox-blocked)
 
@@ -186,16 +222,20 @@ Small, non-blocking. Listed so it doesn't get lost.
   Both fields are in `FileConfig` and threaded through to the handler,
   but the admin UI doesn't render checkboxes yet. JSON-only knobs for
   now; mirror the `SSHAllowLocalForward` UI when convenient.
-- **`screen -dmS` survival (T2.e).** screen's daemonized child dies
-  along with the runner's process group on exec exit; investigate
-  whether a `Setpgid` in the default exec handler (fork-side) or a
-  `nohup`-style wrapper helps.
+- **Admin UI toggle for `SSHForwardSockets`.** JSON-only knob today;
+  paired with the streamlocal allowlist that's now in `FileConfig`.
+- **`outpost run` polish.** Currently `--list` only shows label +
+  plist path. Adding a STATE column from `launchctl print
+  gui/<uid>/<label>` parse would give the operator running/exited at a
+  glance. Also `--stream LABEL` (tail StandardOutPath/StandardErrorPath)
+  is the natural follow-up if operators actually use this verb.
 
 ## Suggested sequencing for what's left
 
-1. **Cloudbox-tunneled ProxyJump dial** — completes T3.k for off-LAN
-   peers. Coordinated change with cloudbox.
-2. **`screen -dmS` (T2.e)** — investigate process-group escape; small
-   if fork helps.
-3. **ControlMaster** — gated on cloudbox.
+1. **Cloudbox: accept sibling-outpost tokens on `/h/<peer>/ssh`** —
+   completes T3.k end-to-end; outpost side already shipped.
+2. **ControlMaster** — also cloudbox-blocked; same shape of
+   coordination as item 1.
+3. **`screen -dmS` (T2.e)** — needs `dtruss` access (SIP-off) to
+   diagnose further; workaround is `brew install screen` or tmux.
 4. *(Indefinitely deferred)* numbered-fd refactor → real coproc.
