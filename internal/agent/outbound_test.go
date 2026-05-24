@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,18 @@ import (
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 )
+
+// withTempCacheDir redirects UserCacheDir to a t.TempDir for tests
+// that touch the outbound cookie cache. Resets the env var on
+// cleanup so sibling tests aren't polluted. On macOS UserCacheDir
+// reads HOME; on Linux it honors XDG_CACHE_HOME — we set both.
+func withTempCacheDir(t *testing.T) string {
+	t.Helper()
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CACHE_HOME", tmp)
+	return tmp
+}
 
 // fakeCloud is a tiny stand-in for cloudbox's /h/<host>/* endpoints used
 // by OutboundManager. It records the last Authorization header it saw
@@ -608,5 +621,249 @@ func TestOutboundConnectForwardsTTL(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestOutbound_CookiePersistRoundTrip is the lowest-level lock-in for
+// the persistence helpers: a write followed by a read returns the same
+// cookie, and remove zeroes it out. Catches path-sanitization bugs
+// that would otherwise corrupt the cache silently.
+func TestOutbound_CookiePersistRoundTrip(t *testing.T) {
+	withTempCacheDir(t)
+
+	for _, path := range []string{"plain", "with-dash", "with.dot", "weird/slash/in/path"} {
+		t.Run(path, func(t *testing.T) {
+			if err := writeCookieFile(path, "the-cookie-"+path); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			got, err := readCookieFile(path)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if got != "the-cookie-"+path {
+				t.Errorf("read=%q, want %q", got, "the-cookie-"+path)
+			}
+			// Verify file mode is 0600 (bearer-equivalent credential).
+			full, _ := cookieCachePath(path)
+			st, err := os.Stat(full)
+			if err != nil {
+				t.Fatalf("stat: %v", err)
+			}
+			if st.Mode().Perm() != 0o600 {
+				t.Errorf("mode=%o, want 0600", st.Mode().Perm())
+			}
+			if err := removeCookieFile(path); err != nil {
+				t.Fatalf("remove: %v", err)
+			}
+			got, err = readCookieFile(path)
+			if err != nil {
+				t.Fatalf("read after remove: %v", err)
+			}
+			if got != "" {
+				t.Errorf("after remove read=%q, want empty", got)
+			}
+		})
+	}
+}
+
+// TestOutbound_CookieReadMissingIsEmpty proves the "no cached cookie"
+// case is non-error — AutoReconnect relies on this to silently skip
+// mounts that were never Connected.
+func TestOutbound_CookieReadMissingIsEmpty(t *testing.T) {
+	withTempCacheDir(t)
+	got, err := readCookieFile("never-existed")
+	if err != nil {
+		t.Fatalf("err on missing file: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got=%q, want empty", got)
+	}
+}
+
+// TestOutbound_RemoveMissingIsNoop confirms Disconnect against a
+// mount that never Connected doesn't error out.
+func TestOutbound_RemoveMissingIsNoop(t *testing.T) {
+	withTempCacheDir(t)
+	if err := removeCookieFile("nope"); err != nil {
+		t.Fatalf("remove missing: %v", err)
+	}
+}
+
+// TestOutbound_ConnectPersistsCookie locks in the Connect side of the
+// new behavior: a successful elevate writes the cookie file. After
+// Connect, the on-disk cookie matches the in-memory one.
+func TestOutbound_ConnectPersistsCookie(t *testing.T) {
+	withTempCacheDir(t)
+	_, srv := newFakeCloud("tok")
+	t.Cleanup(srv.Close)
+
+	m := NewOutboundManager(srv.URL, "test-access-token", nil)
+	m.Register([]conf.OutboundConfig{
+		{Path: "ollama-test", Name: "ollama", Host: "h1", User: "u"},
+	})
+	if err := m.Connect("ollama-test", "pw"); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	got, err := readCookieFile("ollama-test")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got == "" {
+		t.Fatalf("expected persisted cookie, got empty")
+	}
+	// In-memory cookie must match disk.
+	m.mu.RLock()
+	memCookie := m.conns["ollama-test"].elevCookie
+	m.mu.RUnlock()
+	if got != memCookie {
+		t.Errorf("disk=%q != memory=%q", got, memCookie)
+	}
+	m.Stop()
+}
+
+// TestOutbound_DisconnectRemovesCookie: Disconnect wipes the file so
+// AutoReconnect on the next boot doesn't try to use an explicitly-
+// revoked cookie.
+func TestOutbound_DisconnectRemovesCookie(t *testing.T) {
+	withTempCacheDir(t)
+	_, srv := newFakeCloud("tok")
+	t.Cleanup(srv.Close)
+
+	m := NewOutboundManager(srv.URL, "test-access-token", nil)
+	m.Register([]conf.OutboundConfig{
+		{Path: "p", Name: "ollama", Host: "h1", User: "u"},
+	})
+	if err := m.Connect("p", "pw"); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if got, _ := readCookieFile("p"); got == "" {
+		t.Fatalf("setup: expected cookie present after Connect")
+	}
+	m.Disconnect("p")
+	if got, _ := readCookieFile("p"); got != "" {
+		t.Errorf("after Disconnect, cookie=%q, want empty", got)
+	}
+}
+
+// TestOutbound_RegisterRemovesStaleCookies: when an operator removes
+// a mount from agent.json and Register fires, the corresponding
+// cookie file is wiped so a future AutoReconnect doesn't try to use
+// it for a now-unknown path.
+func TestOutbound_RegisterRemovesStaleCookies(t *testing.T) {
+	withTempCacheDir(t)
+	_, srv := newFakeCloud("tok")
+	t.Cleanup(srv.Close)
+
+	m := NewOutboundManager(srv.URL, "test-access-token", nil)
+	m.Register([]conf.OutboundConfig{
+		{Path: "p1", Name: "ollama", Host: "h1", User: "u"},
+		{Path: "p2", Name: "ollama", Host: "h2", User: "u"},
+	})
+	if err := m.Connect("p1", "pw"); err != nil {
+		t.Fatalf("connect p1: %v", err)
+	}
+	if err := m.Connect("p2", "pw"); err != nil {
+		t.Fatalf("connect p2: %v", err)
+	}
+	// Now operator removes p1 from cfg.
+	m.Register([]conf.OutboundConfig{
+		{Path: "p2", Name: "ollama", Host: "h2", User: "u"},
+	})
+	if got, _ := readCookieFile("p1"); got != "" {
+		t.Errorf("p1 cookie should be wiped after removal, got %q", got)
+	}
+	if got, _ := readCookieFile("p2"); got == "" {
+		t.Errorf("p2 cookie should still be present (cfg unchanged)")
+	}
+	m.Stop()
+}
+
+// TestOutbound_AutoReconnect_RehydratesPersistedCookies is the
+// integration test for the boot-time recovery path. Simulates an
+// outpost restart: build a manager, Connect a mount (cookie persists),
+// then build a fresh manager pointing at the same cache dir, call
+// AutoReconnect, and verify the pinger is live.
+func TestOutbound_AutoReconnect_RehydratesPersistedCookies(t *testing.T) {
+	withTempCacheDir(t)
+
+	fc, srv := newFakeCloud("tok")
+	t.Cleanup(srv.Close)
+
+	// Lifetime 1: Connect mints + persists the cookie.
+	m1 := NewOutboundManager(srv.URL, "test-access-token", nil)
+	m1.Register([]conf.OutboundConfig{
+		{Path: "ollama1", Name: "ollama", Host: "h1", User: "u"},
+	})
+	if err := m1.Connect("ollama1", "pw"); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	persisted, _ := readCookieFile("ollama1")
+	if persisted == "" {
+		t.Fatalf("setup: expected persisted cookie")
+	}
+	m1.Stop() // pinger goroutine exits
+
+	// Lifetime 2: fresh manager, same cache. AutoReconnect should
+	// pick up the cookie without prompting for a password.
+	m2 := NewOutboundManager(srv.URL, "test-access-token", nil)
+	m2.Register([]conf.OutboundConfig{
+		{Path: "ollama1", Name: "ollama", Host: "h1", User: "u"},
+	})
+	m2.AutoReconnect()
+	m2.mu.RLock()
+	conn := m2.conns["ollama1"]
+	m2.mu.RUnlock()
+	if conn == nil {
+		t.Fatalf("after AutoReconnect, mount should be in conns")
+	}
+	if conn.elevCookie != persisted {
+		t.Errorf("hydrated cookie=%q, want %q", conn.elevCookie, persisted)
+	}
+	// Sanity: cloudbox stub didn't observe an /elev/ POST for this
+	// rehydration — AutoReconnect must NOT re-elevate (which would
+	// fail anyway without a password).
+	_ = fc // (fakeCloud doesn't track elev count today; intent doc)
+	m2.Stop()
+}
+
+// TestOutbound_AutoReconnect_SkipsMountsWithoutCookie: a mount that
+// the operator added to agent.json but never Connected stays in
+// cfg-only state after AutoReconnect — no spurious pingers, no errors.
+func TestOutbound_AutoReconnect_SkipsMountsWithoutCookie(t *testing.T) {
+	withTempCacheDir(t)
+	_, srv := newFakeCloud("tok")
+	t.Cleanup(srv.Close)
+
+	m := NewOutboundManager(srv.URL, "test-access-token", nil)
+	m.Register([]conf.OutboundConfig{
+		{Path: "never-connected", Name: "ollama", Host: "h1", User: "u"},
+	})
+	m.AutoReconnect()
+	m.mu.RLock()
+	_, present := m.conns["never-connected"]
+	m.mu.RUnlock()
+	if present {
+		t.Errorf("AutoReconnect must not invent a conn for a mount that has no persisted cookie")
+	}
+	m.Stop()
+}
+
+// TestOutbound_AutoReconnect_UnpairedOutpostIsNoop: an outpost
+// without an access_token shouldn't try to AutoReconnect — there's
+// nothing to ping against. Guard mirrors Connect's early-return.
+func TestOutbound_AutoReconnect_UnpairedOutpostIsNoop(t *testing.T) {
+	withTempCacheDir(t)
+	// Pre-seed a cookie file the manager would otherwise hydrate.
+	if err := writeCookieFile("p", "leftover-cookie"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	m := NewOutboundManager("https://example.com", "", nil) // no access_token
+	m.Register([]conf.OutboundConfig{{Path: "p", Name: "x", Host: "h", User: "u"}})
+	m.AutoReconnect()
+	m.mu.RLock()
+	_, present := m.conns["p"]
+	m.mu.RUnlock()
+	if present {
+		t.Errorf("unpaired outpost must not hydrate any conns")
 	}
 }

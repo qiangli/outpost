@@ -211,6 +211,13 @@ func startCmd() *cobra.Command {
 			// we translate "wss" → "https" and "websocket" → "http".
 			outbound := agent.NewOutboundManager(cloudboxHTTPBase(fc), fc.AccessToken, nil)
 			outbound.Register(fc.Outbound)
+			// Rehydrate persisted matrix_elev cookies from a previous
+			// outpost lifetime so the mounts come back online without
+			// the operator re-entering the OS password. Mounts that
+			// never persisted a cookie (never Connected, or
+			// Disconnected later) stay in cfg-only state. Safe to call
+			// even when fc.Outbound is empty.
+			outbound.AutoReconnect()
 
 			adminSrv, err := adminui.New(adminui.Deps{
 				ConfigPath: cfgPath,

@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -74,6 +76,117 @@ type OutboundView struct {
 	ConnectedAt string `json:"connected_at,omitempty"`
 }
 
+// outboundCookieSubdir is the relative path inside UserCacheDir where
+// per-mount matrix_elev cookies are persisted. Sibling of the SSH
+// session cookie cache (cmd/outpost/connect.go writes to
+// <UserCacheDir>/outpost/sessions/) so an operator inspecting cache
+// state sees both in one parent dir.
+const outboundCookieSubdir = "outpost/outbounds"
+
+// cookieCacheDir returns the absolute path of the outbound cookie
+// cache directory, creating it (mode 0700) when missing. Errors only
+// when UserCacheDir is unresolvable, which would be an OS-level
+// configuration issue.
+func cookieCacheDir() (string, error) {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("user cache dir: %w", err)
+	}
+	dir := filepath.Join(base, outboundCookieSubdir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	return dir, nil
+}
+
+// cookieCachePath returns the on-disk cache path for mount `path`'s
+// matrix_elev cookie. `path` is operator-supplied (anything cloudbox
+// accepts as a mount key); we sanitize to a known charset so a hostile
+// name can't escape the cache dir via traversal. Mirrors the
+// sanitization in cmd/outpost/connect.go:sessionCookiePath for
+// consistency.
+func cookieCachePath(path string) (string, error) {
+	dir, err := cookieCacheDir()
+	if err != nil {
+		return "", err
+	}
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r
+		case r >= '0' && r <= '9':
+			return r
+		case r == '-' || r == '_' || r == '.':
+			return r
+		default:
+			return '_'
+		}
+	}, path)
+	return filepath.Join(dir, safe+".cookie"), nil
+}
+
+// writeCookieFile persists a cookie atomically (temp file + rename) so
+// a crash mid-write doesn't leave a torn file the next AutoReconnect
+// would refuse. Mode 0600: the cookie is bearer-equivalent for the
+// (host, app|builtin) scope; readable by anyone with the same uid is
+// the right trust boundary.
+func writeCookieFile(path, cookie string) error {
+	full, err := cookieCachePath(path)
+	if err != nil {
+		return err
+	}
+	tmp := full + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(cookie); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, full)
+}
+
+// readCookieFile returns the persisted cookie, or "" with no error
+// when the file doesn't exist (the common "never connected" case).
+// Empty-string return without error lets the caller distinguish
+// "no cached cookie" from a real I/O failure.
+func readCookieFile(path string) (string, error) {
+	full, err := cookieCachePath(path)
+	if err != nil {
+		return "", err
+	}
+	b, err := os.ReadFile(full)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
+// removeCookieFile is the cleanup counterpart of writeCookieFile.
+// A missing file is not an error — Disconnect can fire against a
+// mount that never persisted a cookie.
+func removeCookieFile(path string) error {
+	full, err := cookieCachePath(path)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // NewOutboundManager builds a manager with the given cloudbox base URL
 // and bearer access_token. serverURL is trimmed of any trailing slash.
 // Pass an explicit *http.Client to override the timeout policy in tests;
@@ -102,11 +215,15 @@ func NewOutboundManager(serverURL, accessToken string, client *http.Client) *Out
 // must be closed before we'd be willing to bind a new one).
 func (m *OutboundManager) Register(cfgs []conf.OutboundConfig) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	next := make(map[string]conf.OutboundConfig, len(cfgs))
 	for _, c := range cfgs {
 		next[c.Path] = c
 	}
+	// invalidated collects paths whose elevation became stale either
+	// because the cfg row changed or because the mount was removed.
+	// Cookies for these get wiped after we drop the lock so disk I/O
+	// doesn't block other manager callers.
+	var invalidated []string
 	for path, conn := range m.conns {
 		newCfg, kept := next[path]
 		if !kept || newCfg != m.configs[path] {
@@ -115,9 +232,36 @@ func (m *OutboundManager) Register(cfgs []conf.OutboundConfig) {
 				_ = conn.listener.Close()
 			}
 			delete(m.conns, path)
+			invalidated = append(invalidated, path)
+		}
+	}
+	// Also wipe cookies for paths that were removed entirely (no live
+	// conn to tear down — they may have been in cfg-only state, e.g.
+	// after a previous AutoReconnect, before the operator removed the
+	// mount via admin UI).
+	for path := range m.configs {
+		if _, kept := next[path]; !kept {
+			// Avoid double-counting paths already in `invalidated`
+			// (a removed mount that also had a live conn).
+			seen := false
+			for _, ip := range invalidated {
+				if ip == path {
+					seen = true
+					break
+				}
+			}
+			if !seen {
+				invalidated = append(invalidated, path)
+			}
 		}
 	}
 	m.configs = next
+	m.mu.Unlock()
+	for _, p := range invalidated {
+		if rerr := removeCookieFile(p); rerr != nil {
+			slog.Warn("outbound: remove stale cookie", "path", p, "err", rerr)
+		}
+	}
 }
 
 // List returns one OutboundView per registered config, sorted by path.
@@ -254,6 +398,16 @@ func (m *OutboundManager) Connect(path, password string) error {
 	}
 	m.conns[path] = conn
 	m.mu.Unlock()
+	// Persist the cookie so a subsequent outpost restart can rehydrate
+	// the mount via AutoReconnect without prompting the operator for
+	// the OS password again. Best-effort: a write failure is logged
+	// but doesn't fail Connect — the live in-memory cookie still
+	// works for the current process lifetime, the worst case is the
+	// operator has to re-Connect after a restart (the pre-existing
+	// behavior, so we're never worse off).
+	if werr := writeCookieFile(path, elev); werr != nil {
+		slog.Warn("outbound: persist cookie failed", "path", path, "err", werr)
+	}
 	go m.pinger(pingCtx, path, cfg)
 	if listener != nil {
 		go m.tcpAcceptLoop(pingCtx, path, cfg, listener)
@@ -261,18 +415,127 @@ func (m *OutboundManager) Connect(path, password string) error {
 	return nil
 }
 
-// Disconnect drops the in-memory cookie for path, stops the pinger, and
-// — for tcp mounts — closes the loopback listener. No server-side
-// revocation: cloudbox's matrix_elev is a stateless JWT.
+// AutoReconnect rehydrates persisted matrix_elev cookies for every
+// registered mount and spawns the pinger + (for tcp/ssh-scheme
+// mounts) the loopback listener. Equivalent to calling Connect for
+// each mount, but without the password / cloudbox round-trip — the
+// cookie was minted in a previous outpost lifetime and is good
+// until cloudbox's pinger 4xx tears it down.
+//
+// Call once at startup, AFTER Register. Subsequent Register calls
+// don't re-trigger AutoReconnect: those are operator-initiated
+// config edits where the right semantic is "respect the new state
+// exactly" (and Register already wipes stale cookies for changed
+// rows).
+//
+// Listener bind failures (port already in use, permission denied)
+// are logged per-mount and the affected mount is left in cfg-only
+// state; the operator can resolve the conflict and Connect
+// manually. Successful mounts are not blocked by a failure on a
+// sibling — each mount is independent.
+func (m *OutboundManager) AutoReconnect() {
+	if m.serverURL == "" || m.accessToken == "" {
+		// Unpaired outpost: nothing to ping against. Same posture
+		// as Connect, which already guards on these.
+		return
+	}
+	m.mu.RLock()
+	cfgs := make([]conf.OutboundConfig, 0, len(m.configs))
+	for _, cfg := range m.configs {
+		cfgs = append(cfgs, cfg)
+	}
+	m.mu.RUnlock()
+
+	for _, cfg := range cfgs {
+		cookie, err := readCookieFile(cfg.Path)
+		if err != nil {
+			slog.Warn("outbound: read persisted cookie", "path", cfg.Path, "err", err)
+			continue
+		}
+		if cookie == "" {
+			// No cached cookie for this mount — operator never
+			// Connected it, or Disconnect wiped it. Skip silently;
+			// this is the unpaired-mount default state.
+			continue
+		}
+		if err := m.hydrateMount(cfg, cookie); err != nil {
+			// Already in conns from a prior call, or a listener
+			// bind conflict, or some other one-mount error. Log,
+			// move on, don't wipe the cookie (a transient port
+			// conflict shouldn't force the operator to re-elevate).
+			slog.Warn("outbound: rehydrate failed", "path", cfg.Path, "err", err)
+		}
+	}
+}
+
+// hydrateMount installs an outboundConn into m.conns for cfg using a
+// known-valid cookie and spawns the pinger + listener. Returns an
+// error if the mount is already connected (Connect would do this
+// instead) or if the listener bind fails. Shared by AutoReconnect
+// and any future "reconnect-on-cookie-refresh" path.
+//
+// Caller must NOT hold m.mu — this method takes the write lock.
+func (m *OutboundManager) hydrateMount(cfg conf.OutboundConfig, cookie string) error {
+	if strings.TrimSpace(cookie) == "" {
+		return fmt.Errorf("hydrateMount %q: empty cookie", cfg.Path)
+	}
+	var listener net.Listener
+	if cfg.BindsListener() {
+		if cfg.LocalPort < 1 || cfg.LocalPort > 65535 {
+			return fmt.Errorf("local_port %d is out of range", cfg.LocalPort)
+		}
+		l, lerr := net.Listen("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", cfg.LocalPort)))
+		if lerr != nil {
+			return fmt.Errorf("bind 127.0.0.1:%d: %w", cfg.LocalPort, lerr)
+		}
+		listener = l
+	}
+
+	m.mu.Lock()
+	if _, already := m.conns[cfg.Path]; already {
+		m.mu.Unlock()
+		if listener != nil {
+			_ = listener.Close()
+		}
+		return fmt.Errorf("already connected")
+	}
+	pingCtx, cancelPing := context.WithCancel(context.Background())
+	m.conns[cfg.Path] = &outboundConn{
+		elevCookie:  cookie,
+		connectedAt: time.Now(),
+		cancel:      cancelPing,
+		listener:    listener,
+	}
+	m.mu.Unlock()
+	go m.pinger(pingCtx, cfg.Path, cfg)
+	if listener != nil {
+		go m.tcpAcceptLoop(pingCtx, cfg.Path, cfg, listener)
+	}
+	slog.Info("outbound: rehydrated from persisted cookie", "path", cfg.Path, "scheme", cfg.SchemeNorm())
+	return nil
+}
+
+// Disconnect drops the in-memory cookie for path, stops the pinger,
+// removes the persisted cookie file, and — for tcp mounts — closes
+// the loopback listener. No server-side revocation: cloudbox's
+// matrix_elev is a stateless JWT.
 func (m *OutboundManager) Disconnect(path string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if conn, ok := m.conns[path]; ok {
 		conn.cancel()
 		if conn.listener != nil {
 			_ = conn.listener.Close()
 		}
 		delete(m.conns, path)
+	}
+	m.mu.Unlock()
+	// Remove the persisted cookie file outside the lock so a slow
+	// filesystem doesn't block other Connect/Disconnect callers.
+	// Best-effort: a stale file just means a stale cookie that the
+	// next AutoReconnect would harmlessly try (and the pinger would
+	// 4xx, triggering the same self-clean).
+	if rerr := removeCookieFile(path); rerr != nil {
+		slog.Warn("outbound: remove persisted cookie failed", "path", path, "err", rerr)
 	}
 }
 
