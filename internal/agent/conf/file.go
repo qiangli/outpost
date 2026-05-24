@@ -93,6 +93,18 @@ type FileConfig struct {
 	// (slower, rides the exec channel).
 	SFTPEnabled *bool `json:"sftp_enabled,omitempty"`
 
+	// SSHForwardSockets extends the default unix-socket allowlist that
+	// gates `direct-streamlocal@openssh.com` channel-opens — the primitive
+	// behind `podman --connection=<host>` (and any other SSH client that
+	// asks to forward to a remote unix socket, including `ssh -L
+	// localport:/remote.sock`). Defaults to the podman/docker sockets
+	// outpost can discover automatically (see DetectPodman + the canonical
+	// docker socket paths in ssh.go). Add absolute paths here to allow
+	// additional sockets; entries are exact-matched after filepath.Clean
+	// (no globbing). When SSHAllowLocalForward is off, this list is
+	// ignored — the master switch wins.
+	SSHForwardSockets []string `json:"ssh_forward_sockets,omitempty"`
+
 	// Built-in proxies for local daemons. Default off (plain bool) — these
 	// expose external infrastructure rather than outpost-owned routes, so
 	// they require explicit opt-in via the admin UI. The UI greys these

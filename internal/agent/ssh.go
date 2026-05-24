@@ -7,9 +7,15 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
@@ -22,6 +28,46 @@ import (
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
 	outshell "github.com/qiangli/outpost/internal/agent/shell"
 )
+
+// sshHandlerDeps bundles the per-handler configuration sshHandler needs.
+// Using a struct instead of a positional argument list keeps the call
+// site (routes.go) readable now that we have nine knobs — host key, auth
+// hook, agent-config booleans, plus the streamlocal allowlist.
+type sshHandlerDeps struct {
+	HostKey            ssh.Signer
+	Auth               hostauth.Authenticator
+	AuthURL            string
+	AllowLocalForward  bool
+	AllowRemoteForward bool
+	AllowAgentForward  bool
+	SFTPEnabled        bool
+	Peers              *peerhosts.Registry
+	// ForwardSockets is the operator-supplied extension to the built-in
+	// unix-socket allowlist for direct-streamlocal@openssh.com. The
+	// effective allowlist is built from podman/docker defaults (see
+	// defaultStreamlocalAllowlist) plus these paths.
+	ForwardSockets []string
+
+	// CloudboxBase is the cloudbox HTTP(S) base URL (e.g.
+	// "https://ai.dhnt.io"). When set together with AccessToken, the
+	// direct-tcpip handler will tunnel `ssh -J peerA peerB` second-hop
+	// dials through cloudbox's /h/<peerB>/ssh WSS endpoint instead of
+	// trying a plain net.Dial that would fail on LAN DNS. Empty here
+	// means "no cloudbox-tunneled peer dial" — the fallback to net.Dial
+	// stays as it was for loopback targets.
+	CloudboxBase string
+
+	// CloudboxProtocol mirrors fc.Protocol so the WSS-vs-WS choice for
+	// peer dials matches whatever the matrix tunnel uses. Empty value
+	// is treated as "ws" (plain — matches cloudboxHTTPBase's defaulting).
+	CloudboxProtocol string
+
+	// AccessToken is the per-outpost JWT used as the bearer when this
+	// outpost dials cloudbox on behalf of an SSH ProxyJump operator.
+	// Must come from the same account that owns the peer registry —
+	// that way cloudbox knows the dial is intra-account.
+	AccessToken string
+}
 
 // sshHandler is the agent's GET /ssh WebSocket endpoint. Cloudbox proxies
 // raw bytes through the matrix tunnel; this handler wraps the WS as a
@@ -36,9 +82,14 @@ import (
 //   - The submitted SSH username MUST equal the agent's running OS user
 //     (same constraint as /auth). Anything else is rejected before we
 //     touch PAM, so we never silently weaken the gate.
-func sshHandler(hostKey ssh.Signer, auth hostauth.Authenticator, authURL string, allowLocalForward bool, allowRemoteForward bool, allowAgentForward bool, sftpEnabled bool, peers *peerhosts.Registry) gin.HandlerFunc {
+func sshHandler(deps sshHandlerDeps) gin.HandlerFunc {
 	currentUser, _ := hostauth.CurrentUser()
-	authURL = strings.TrimSpace(authURL)
+	authURL := strings.TrimSpace(deps.AuthURL)
+	// Build the effective unix-socket allowlist once at handler init —
+	// the defaults are stable for the life of the process and the
+	// operator extension only changes on restart (admin-UI edits to
+	// FileConfig.SSHForwardSockets trigger a self-restart).
+	streamlocalAllow := buildStreamlocalAllowlist(deps.ForwardSockets)
 
 	return func(c *gin.Context) {
 		// Cloudbox stamps X-Periscope-Role on the WSS upgrade after its
@@ -101,13 +152,13 @@ func sshHandler(hostKey ssh.Signer, auth hostauth.Authenticator, authURL string,
 				if !strings.EqualFold(user, currentUser) {
 					return nil, fmt.Errorf("invalid credentials")
 				}
-				if err := auth.Authenticate(currentUser, string(password)); err != nil {
+				if err := deps.Auth.Authenticate(currentUser, string(password)); err != nil {
 					return nil, fmt.Errorf("invalid credentials")
 				}
 				return nil, nil
 			},
 		}
-		serverConfig.AddHostKey(hostKey)
+		serverConfig.AddHostKey(deps.HostKey)
 
 		serverConn, chans, reqs, err := ssh.NewServerConn(netConn, serverConfig)
 		if err != nil {
@@ -126,7 +177,7 @@ func sshHandler(hostKey ssh.Signer, auth hostauth.Authenticator, authURL string,
 			for req := range reqs {
 				switch req.Type {
 				case "tcpip-forward":
-					handleTCPIPForward(ctx, serverConn, fwds, allowRemoteForward, req)
+					handleTCPIPForward(ctx, serverConn, fwds, deps.AllowRemoteForward, req)
 				case "cancel-tcpip-forward":
 					handleCancelTCPIPForward(fwds, req)
 				default:
@@ -145,17 +196,33 @@ func sshHandler(hostKey ssh.Signer, auth hostauth.Authenticator, authURL string,
 					slog.Warn("ssh channel accept", "err", aerr)
 					continue
 				}
-				go handleSSHSession(ctx, serverConn, ch, chReqs, sftpEnabled, allowAgentForward)
+				go handleSSHSession(ctx, serverConn, ch, chReqs, deps.SFTPEnabled, deps.AllowAgentForward)
 			case "direct-tcpip":
-				if !allowLocalForward {
+				if !deps.AllowLocalForward {
 					_ = newCh.Reject(ssh.Prohibited,
 						"local port forwarding disabled by agent config")
 					continue
 				}
-				go handleDirectTCPIP(ctx, newCh, peers)
+				go handleDirectTCPIP(ctx, newCh, deps.Peers, peerDial{
+					cloudboxBase:     deps.CloudboxBase,
+					cloudboxProtocol: deps.CloudboxProtocol,
+					accessToken:      deps.AccessToken,
+				})
+			case "direct-streamlocal@openssh.com":
+				// Podman's `ssh://` transport opens this channel type to
+				// forward an SSH channel onto a remote unix socket — i.e.
+				// `podman --connection=<host>` against a paired outpost.
+				// Same gate as direct-tcpip (`ssh -L`): both are
+				// client-driven local forwards.
+				if !deps.AllowLocalForward {
+					_ = newCh.Reject(ssh.Prohibited,
+						"local port forwarding disabled by agent config")
+					continue
+				}
+				go handleDirectStreamlocal(ctx, newCh, streamlocalAllow)
 			default:
 				_ = newCh.Reject(ssh.UnknownChannelType,
-					"only session and direct-tcpip channels are supported")
+					"only session, direct-tcpip, and direct-streamlocal@openssh.com channels are supported")
 			}
 		}
 	}
@@ -217,7 +284,25 @@ func allowDirectTCPIPDest(ctx context.Context, host string, peers *peerhosts.Reg
 // channels in this server. Anyone with shell access here today can
 // `ssh ... 'nc 127.0.0.1 7777'` via a session channel, so accepting
 // the multiplexed direct-tcpip form adds no authority.
-func handleDirectTCPIP(ctx context.Context, newCh ssh.NewChannel, peers *peerhosts.Registry) {
+// peerDial is the bundle of cloudbox-dialing state handleDirectTCPIP
+// needs in order to tunnel a paired-peer SSH dial through cloudbox's
+// /h/<peer>/ssh WSS endpoint. Empty fields disable the peer-tunneled
+// path; the handler falls back to net.Dial for loopback targets the
+// same way it always did.
+type peerDial struct {
+	cloudboxBase     string
+	cloudboxProtocol string
+	accessToken      string
+}
+
+// enabled reports whether the peer-tunneled dial path is configured.
+// Both the cloudbox URL and the access_token must be set — neither
+// alone is enough to reach cloudbox successfully.
+func (pd peerDial) enabled() bool {
+	return strings.TrimSpace(pd.cloudboxBase) != "" && strings.TrimSpace(pd.accessToken) != ""
+}
+
+func handleDirectTCPIP(ctx context.Context, newCh ssh.NewChannel, peers *peerhosts.Registry, pd peerDial) {
 	var msg directTCPIPMsg
 	if err := ssh.Unmarshal(newCh.ExtraData(), &msg); err != nil {
 		slog.Warn("direct-tcpip: bad payload", "err", err)
@@ -231,6 +316,24 @@ func handleDirectTCPIP(ctx context.Context, newCh ssh.NewChannel, peers *peerhos
 			"destination not in allowlist (loopback or paired-outpost only; host="+msg.HostToConnect+")")
 		return
 	}
+
+	// Peer-tunneled path: when the target is a paired outpost (not
+	// loopback) and looks like an SSH dial (port 22, the default), send
+	// the bytes through cloudbox's /h/<peer>/ssh WSS endpoint instead
+	// of attempting net.Dial. The dial would otherwise fall through to
+	// LAN DNS, which usually doesn't resolve peer outpost names from
+	// inside another peer machine. Cloudbox already has account-level
+	// routing for /h/<peer>/ssh — see peerhosts and ssh-config — so
+	// reusing it here turns `ssh -J novicortex novidesign` into the
+	// same wss round-trip `outpost ssh-proxy novidesign` already does
+	// from the operator's local host. Loopback targets keep the
+	// pre-existing net.Dial path so `ssh -L 7777:localhost:5432` etc.
+	// stay zero-overhead.
+	if pd.enabled() && msg.PortToConnect == 22 && !isLoopbackDest(msg.HostToConnect) {
+		bridgePeerDialThroughCloudbox(ctx, newCh, pd, msg)
+		return
+	}
+
 	target := net.JoinHostPort(msg.HostToConnect, strconv.Itoa(int(msg.PortToConnect)))
 
 	d := net.Dialer{}
@@ -263,6 +366,261 @@ func handleDirectTCPIP(ctx context.Context, newCh ssh.NewChannel, peers *peerhos
 		_, _ = io.Copy(upstream, ch)
 		if tc, ok := upstream.(*net.TCPConn); ok {
 			_ = tc.CloseWrite()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(ch, upstream)
+		_ = ch.CloseWrite()
+	}()
+	wg.Wait()
+}
+
+// isLoopbackDest is the canonical-form match for the always-allowed
+// loopback target set. Mirrors allowDirectTCPIPDest's switch — kept
+// separate so peer-dial path doesn't accidentally tunnel a `127.0.0.1`
+// target through cloudbox.
+func isLoopbackDest(host string) bool {
+	switch strings.ToLower(strings.TrimSpace(host)) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
+}
+
+// bridgePeerDialThroughCloudbox is the `ssh -J peerA peerB` second-hop
+// implementation. Opens a WebSocket to cloudbox's /h/<peerB>/ssh
+// endpoint with this outpost's own AccessToken as the bearer, then
+// byte-bridges the WSS NetConn to the SSH channel exactly like the
+// loopback dial path. End-to-end the operator's SSH client (running on
+// peerA's upstream) does its SSH handshake on bytes that flow:
+//
+//	client → peerA outpost → peerA cloudbox WSS → peerB outpost SSH server
+//
+// The inner SSH handshake still runs against peerB's OS-password gate
+// (or peerB-scoped matrix_elev cookie if the operator pre-elevated).
+// peerA contributes no auth beyond its own access_token, which
+// cloudbox accepts because the registry says peerB is in the same
+// account.
+func bridgePeerDialThroughCloudbox(ctx context.Context, newCh ssh.NewChannel, pd peerDial, msg directTCPIPMsg) {
+	wsURL, err := buildPeerSSHWSURL(pd.cloudboxBase, pd.cloudboxProtocol, msg.HostToConnect)
+	if err != nil {
+		slog.Warn("direct-tcpip: build peer WSS URL", "peer", msg.HostToConnect, "err", err)
+		_ = newCh.Reject(ssh.ConnectionFailed, "peer-dial: "+err.Error())
+		return
+	}
+
+	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	wsConn, resp, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + pd.accessToken}},
+	})
+	if err != nil {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		slog.Info("direct-tcpip: peer WSS dial failed",
+			"peer", msg.HostToConnect, "status", status, "err", err)
+		_ = newCh.Reject(ssh.ConnectionFailed,
+			"peer-dial "+msg.HostToConnect+": "+err.Error())
+		return
+	}
+	wsConn.SetReadLimit(-1)
+	// websocket.NetConn binds the WS to a context. We let it ride the
+	// handler ctx so a server shutdown cancels in-flight peer dials.
+	upstream := websocket.NetConn(ctx, wsConn, websocket.MessageBinary)
+	defer upstream.Close()
+
+	ch, chReqs, aerr := newCh.Accept()
+	if aerr != nil {
+		slog.Warn("direct-tcpip: peer channel accept", "peer", msg.HostToConnect, "err", aerr)
+		_ = wsConn.Close(websocket.StatusInternalError, "accept failed")
+		return
+	}
+	defer ch.Close()
+	go ssh.DiscardRequests(chReqs)
+
+	slog.Info("direct-tcpip: peer-tunneled bridge open",
+		"peer", msg.HostToConnect,
+		"origin", msg.OriginatorIPAddress+":"+strconv.Itoa(int(msg.OriginatorPort)))
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(upstream, ch)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(ch, upstream)
+		_ = ch.CloseWrite()
+	}()
+	wg.Wait()
+}
+
+// buildPeerSSHWSURL constructs the wss:// URL for cloudbox's
+// /h/<peer>/ssh endpoint. Mirrors cmd/outpost/ssh.go:buildSSHWSURL
+// shape-for-shape — duplicated rather than imported because that
+// helper lives in the main package and the agent shouldn't pull
+// cmd/outpost.
+func buildPeerSSHWSURL(cloudboxBase, protocol, peer string) (string, error) {
+	s := strings.TrimSpace(cloudboxBase)
+	if s == "" {
+		return "", fmt.Errorf("cloudbox base url is empty")
+	}
+	if !strings.Contains(s, "://") {
+		s = "http://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", err
+	}
+	scheme := "ws"
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "wss":
+		scheme = "wss"
+	default:
+		if strings.EqualFold(u.Scheme, "https") || strings.EqualFold(u.Scheme, "wss") {
+			scheme = "wss"
+		}
+	}
+	u.Scheme = scheme
+	u.Path = strings.TrimRight(u.Path, "/") + "/h/" + url.PathEscape(peer) + "/ssh"
+	return u.String(), nil
+}
+
+// directStreamlocalMsg is the channel-data payload SSH clients send when
+// opening a `direct-streamlocal@openssh.com` channel — the OpenSSH
+// extension behind unix-socket forwarding (used by `ssh -L
+// localport:/remote.sock` and by podman's `ssh://` URL transport).
+// Wire format per OpenSSH PROTOCOL §2.4: string socket_path, then two
+// reserved fields for forward compatibility.
+//
+// The fields must be exported because ssh.Unmarshal reflects on them
+// from this package — crypto/ssh's own internal mirror uses unexported
+// fields only because it's the same package.
+type directStreamlocalMsg struct {
+	SocketPath string
+	Reserved0  string
+	Reserved1  uint32
+}
+
+// defaultStreamlocalAllowlist returns the always-allowed socket paths
+// the SSH server will forward `direct-streamlocal@openssh.com` channels
+// onto without operator action. The list is rebuilt fresh on each
+// handler init (cheap) so a podman-machine restart that moves the
+// socket gets picked up on the next outpost restart.
+//
+// Included by default:
+//   - Every path probed by DetectPodman (rootless + system + macOS
+//     machine paths) — the same set the admin UI's Podman toggle uses.
+//   - Canonical docker sockets (`/var/run/docker.sock`,
+//     `$HOME/.docker/run/docker.sock`).
+//
+// Anything else needs explicit opt-in via FileConfig.SSHForwardSockets.
+// Future-proofing note: docker rides the SSH `exec` channel via
+// `docker system dial-stdio` and doesn't actually need streamlocal
+// today; the docker entries are pre-allowed so we don't have to chase
+// a config edit if a future docker version switches transports.
+func defaultStreamlocalAllowlist() []string {
+	paths := podmanCandidates()
+	paths = append(paths, "/var/run/docker.sock")
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		paths = append(paths, filepath.Join(home, ".docker/run/docker.sock"))
+	}
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		out = append(out, filepath.Clean(p))
+	}
+	return out
+}
+
+// buildStreamlocalAllowlist merges the static defaults with the
+// operator-supplied extension and canonicalizes every entry with
+// filepath.Clean, so path-traversal forms (`/a/../b`) and the canonical
+// form match the same allowlist entry.
+func buildStreamlocalAllowlist(extra []string) []string {
+	allow := defaultStreamlocalAllowlist()
+	for _, p := range extra {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		allow = append(allow, filepath.Clean(p))
+	}
+	return allow
+}
+
+// allowStreamlocalDest reports whether path is in the allowlist. Match
+// is exact-string after filepath.Clean (no globbing, no symlink
+// resolution). Empty path always rejects — net.Dial("unix", "") returns
+// a confusing error and we'd rather fail explicit here.
+func allowStreamlocalDest(path string, allowlist []string) bool {
+	if path == "" {
+		return false
+	}
+	return slices.Contains(allowlist, filepath.Clean(path))
+}
+
+// handleDirectStreamlocal services one `direct-streamlocal@openssh.com`
+// channel-open request: parse the payload, allowlist-check the socket
+// path, dial it, and bidirectionally bridge bytes between the SSH
+// channel and the unix socket. Mirror image of handleDirectTCPIP — same
+// io.Copy + WaitGroup shape, just net.Dial("unix", ...) and
+// *net.UnixConn for the CloseWrite cast.
+//
+// Trust model: same OS-password gate that protects session channels.
+// The path allowlist further bounds reach (no arbitrary socket
+// forwarding even if the OS user could otherwise reach it) so an SSH
+// client can't pivot the agent into a generic socket-forwarder.
+func handleDirectStreamlocal(ctx context.Context, newCh ssh.NewChannel, allowlist []string) {
+	var msg directStreamlocalMsg
+	if err := ssh.Unmarshal(newCh.ExtraData(), &msg); err != nil {
+		slog.Warn("direct-streamlocal: bad payload", "err", err)
+		_ = newCh.Reject(ssh.ConnectionFailed, "malformed direct-streamlocal payload")
+		return
+	}
+	socketPath := filepath.Clean(strings.TrimSpace(msg.SocketPath))
+	if !allowStreamlocalDest(socketPath, allowlist) {
+		slog.Info("direct-streamlocal: refused socket not in allowlist", "socket", msg.SocketPath)
+		_ = newCh.Reject(ssh.Prohibited,
+			"socket not in allowlist (podman/docker defaults + SSHForwardSockets; got "+msg.SocketPath+")")
+		return
+	}
+
+	d := net.Dialer{}
+	upstream, err := d.DialContext(ctx, "unix", socketPath)
+	if err != nil {
+		slog.Info("direct-streamlocal: dial failed", "socket", socketPath, "err", err)
+		_ = newCh.Reject(ssh.ConnectionFailed, "dial "+socketPath+": "+err.Error())
+		return
+	}
+	defer upstream.Close()
+
+	ch, chReqs, aerr := newCh.Accept()
+	if aerr != nil {
+		slog.Warn("direct-streamlocal: channel accept", "socket", socketPath, "err", aerr)
+		return
+	}
+	defer ch.Close()
+	// Streamlocal channels carry no channel requests — drain any
+	// spurious ones to keep the crypto/ssh request goroutine clean.
+	go ssh.DiscardRequests(chReqs)
+
+	slog.Info("direct-streamlocal: bridging", "socket", socketPath)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(upstream, ch)
+		if uc, ok := upstream.(*net.UnixConn); ok {
+			_ = uc.CloseWrite()
 		}
 	}()
 	go func() {

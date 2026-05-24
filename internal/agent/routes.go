@@ -78,6 +78,24 @@ type Deps struct {
 	// main.go from fc.AccessToken + cloudbox endpoint, so unpaired
 	// outposts pass nil and keep the tight default.
 	PeerHosts *peerhosts.Registry
+
+	// SSHForwardSockets extends the unix-socket allowlist for
+	// `direct-streamlocal@openssh.com` channel-opens — the primitive
+	// behind `podman --connection=<host>`. The built-in defaults
+	// (podman + canonical docker sockets) always apply on top of this
+	// list; entries here are exact-matched after filepath.Clean.
+	SSHForwardSockets []string
+
+	// CloudboxBase + CloudboxProtocol + AccessToken jointly enable the
+	// peer-tunneled direct-tcpip path (`ssh -J peerA peerB`). When set
+	// and the dial target is a paired peer (not loopback) on port 22,
+	// the SSH server routes the bytes through cloudbox's
+	// /h/<peerB>/ssh WSS endpoint instead of attempting a LAN net.Dial
+	// that would usually fail on DNS. Empty fields keep the dial path
+	// loopback-only-plus-LAN-DNS.
+	CloudboxBase     string
+	CloudboxProtocol string
+	AccessToken      string
 }
 
 // RegisterRoutes attaches all matrix-agent routes onto rg. Always mounted
@@ -154,7 +172,20 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	// via the local `outpost ssh-proxy` ProxyCommand helper. Auth gate is
 	// the OS password (same hostauth path as /auth).
 	if !deps.SSHDisabled && deps.SSHHostKey != nil {
-		rg.GET("/ssh", sshHandler(deps.SSHHostKey, auth, deps.AuthURL, deps.SSHAllowLocalForward, deps.SSHAllowRemoteForward, deps.SSHAllowAgentForward, deps.SFTPEnabled, deps.PeerHosts))
+		rg.GET("/ssh", sshHandler(sshHandlerDeps{
+			HostKey:            deps.SSHHostKey,
+			Auth:               auth,
+			AuthURL:            deps.AuthURL,
+			AllowLocalForward:  deps.SSHAllowLocalForward,
+			AllowRemoteForward: deps.SSHAllowRemoteForward,
+			AllowAgentForward:  deps.SSHAllowAgentForward,
+			SFTPEnabled:        deps.SFTPEnabled,
+			Peers:              deps.PeerHosts,
+			ForwardSockets:     deps.SSHForwardSockets,
+			CloudboxBase:       deps.CloudboxBase,
+			CloudboxProtocol:   deps.CloudboxProtocol,
+			AccessToken:        deps.AccessToken,
+		}))
 	}
 
 	// Reverse-proxy every method (GET/POST/WS upgrades included).

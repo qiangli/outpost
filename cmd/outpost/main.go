@@ -43,7 +43,7 @@ func main() {
 		Use:   "outpost",
 		Short: "Pair a home host with the portal and tunnel local apps to it",
 	}
-	root.AddCommand(startCmd(), registerCmd(), stopCmd(), sshProxyCmd(), sshConfigCmd(), connectCmd(), outboundCmd(), jobsCmd(), fgCmd(), bgCmd(), killCmd())
+	root.AddCommand(startCmd(), registerCmd(), stopCmd(), sshProxyCmd(), sshConfigCmd(), connectCmd(), outboundCmd(), jobsCmd(), fgCmd(), bgCmd(), killCmd(), runCmd())
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -314,6 +314,10 @@ func startCmd() *cobra.Command {
 				SFTPEnabled:           fc.SFTPOn(),
 				SSHHostKey:            sshHostKey,
 				PeerHosts:             peers,
+				SSHForwardSockets:     fc.SSHForwardSockets,
+				CloudboxBase:          cloudboxHTTPBase(fc),
+				CloudboxProtocol:      cfg.Protocol,
+				AccessToken:           fc.AccessToken,
 			})
 
 			// Bind the local listener first so we know its port before

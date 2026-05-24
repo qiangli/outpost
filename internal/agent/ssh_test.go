@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -60,7 +62,14 @@ func newTestSSHServerOpts(t *testing.T, auth hostauth.Authenticator, cloudboxSta
 		t.Fatalf("signer: %v", err)
 	}
 
-	engine.GET("/ssh", sshHandler(signer, auth, "", allowLocalForward, allowRemoteForward, true /* allowAgentForward */, sftpEnabled, nil))
+	engine.GET("/ssh", sshHandler(sshHandlerDeps{
+		HostKey:            signer,
+		Auth:               auth,
+		AllowLocalForward:  allowLocalForward,
+		AllowRemoteForward: allowRemoteForward,
+		AllowAgentForward:  true,
+		SFTPEnabled:        sftpEnabled,
+	}))
 
 	srv := httptest.NewServer(engine)
 	t.Cleanup(srv.Close)
@@ -661,5 +670,271 @@ func TestSSH_DirectTCPIP_Disabled(t *testing.T) {
 	if !strings.Contains(strings.ToLower(err.Error()), "disabled") &&
 		!strings.Contains(strings.ToLower(err.Error()), "prohibit") {
 		t.Errorf("expected rejection to mention disabled/prohibit, got %v", err)
+	}
+}
+
+// newTestSSHServerStreamlocal is a thin wrapper that mounts the SSH
+// handler with a caller-supplied unix-socket allowlist — the rest of
+// the test suite doesn't care about this dimension, so we keep it off
+// the main helper's positional-arg list.
+// TestPeerDial_BuildURL covers the WSS URL shape so a copy-paste in
+// buildPeerSSHWSURL can't break the ProxyJump path silently.
+func TestPeerDial_BuildURL(t *testing.T) {
+	cases := []struct {
+		name, base, proto, peer, want string
+	}{
+		{"https-base", "https://ai.dhnt.io", "wss", "novidesign", "wss://ai.dhnt.io/h/novidesign/ssh"},
+		{"http-base", "http://localhost:18080", "ws", "peerA", "ws://localhost:18080/h/peerA/ssh"},
+		{"infer-wss-from-base", "https://example", "", "peerB", "wss://example/h/peerB/ssh"},
+		{"trim-trailing-slash", "https://ai.dhnt.io/", "wss", "x", "wss://ai.dhnt.io/h/x/ssh"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := buildPeerSSHWSURL(tc.base, tc.proto, tc.peer)
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPeerDial_DisabledFallsThrough confirms that when peerDial is
+// not configured (no AccessToken or no CloudboxBase), handleDirectTCPIP
+// takes the plain net.Dial path even for peer-host targets. This is
+// the unpaired-outpost posture and the existing-deployment posture
+// before the change rolls out.
+func TestPeerDial_DisabledFallsThrough(t *testing.T) {
+	var pd peerDial
+	if pd.enabled() {
+		t.Fatalf("zero-value peerDial should be disabled")
+	}
+	pd = peerDial{cloudboxBase: "https://example", accessToken: ""}
+	if pd.enabled() {
+		t.Fatalf("missing accessToken should disable peer dial")
+	}
+	pd = peerDial{cloudboxBase: "", accessToken: "tk"}
+	if pd.enabled() {
+		t.Fatalf("missing cloudboxBase should disable peer dial")
+	}
+	pd = peerDial{cloudboxBase: " ", accessToken: " "}
+	if pd.enabled() {
+		t.Fatalf("whitespace-only fields should disable peer dial")
+	}
+	pd = peerDial{cloudboxBase: "https://example", accessToken: "tk"}
+	if !pd.enabled() {
+		t.Fatalf("both fields set should enable peer dial")
+	}
+}
+
+// TestPeerDial_IsLoopbackDest guards the membership check that keeps
+// the cloudbox-tunneled path from kicking in for loopback dials.
+func TestPeerDial_IsLoopbackDest(t *testing.T) {
+	for _, host := range []string{"localhost", "LocalHost", "127.0.0.1", "::1", " localhost "} {
+		if !isLoopbackDest(host) {
+			t.Errorf("isLoopbackDest(%q) = false; want true", host)
+		}
+	}
+	for _, host := range []string{"novidesign", "10.0.0.5", "[::2]", ""} {
+		if isLoopbackDest(host) {
+			t.Errorf("isLoopbackDest(%q) = true; want false", host)
+		}
+	}
+}
+
+func newTestSSHServerStreamlocal(t *testing.T, auth hostauth.Authenticator, allowLocalForward bool, forwardSockets []string) (wsURL string, hostKey ssh.Signer) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	signer, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+
+	engine.GET("/ssh", sshHandler(sshHandlerDeps{
+		HostKey:           signer,
+		Auth:              auth,
+		AllowLocalForward: allowLocalForward,
+		AllowAgentForward: true,
+		SFTPEnabled:       true,
+		ForwardSockets:    forwardSockets,
+	}))
+
+	srv := httptest.NewServer(engine)
+	t.Cleanup(srv.Close)
+
+	u, _ := url.Parse(srv.URL)
+	u.Scheme = "ws"
+	u.Path = "/ssh"
+	return u.String(), signer
+}
+
+// openStreamlocal opens a direct-streamlocal@openssh.com channel against
+// the SSH client and returns the channel (caller closes). crypto/ssh
+// has no high-level helper for this — we Marshal the payload ourselves,
+// which doubles as a wire-format sanity check.
+func openStreamlocal(client *ssh.Client, socketPath string) (ssh.Channel, error) {
+	payload := ssh.Marshal(&directStreamlocalMsg{SocketPath: socketPath})
+	ch, reqs, err := client.OpenChannel("direct-streamlocal@openssh.com", payload)
+	if err != nil {
+		return nil, err
+	}
+	go ssh.DiscardRequests(reqs)
+	return ch, nil
+}
+
+// TestSSH_DirectStreamlocal_HappyPath stands up a local unix-socket
+// echo server, allowlists its path via ForwardSockets, and round-trips
+// bytes through a direct-streamlocal channel. This is the exact channel
+// type podman's `ssh://` URL transport opens.
+func TestSSH_DirectStreamlocal_HappyPath(t *testing.T) {
+	currentUser, err := hostauth.CurrentUser()
+	if err != nil || currentUser == "" {
+		t.Skip("no current user; skipping")
+	}
+	auth := hostauth.StubAuth{Want: map[string]string{currentUser: "secret"}}
+
+	// Unix-socket echo server. macOS sun_path is 104 bytes, so
+	// t.TempDir() (deep nested per-test dir) is too long; use a short
+	// /tmp path and clean up by hand.
+	sockDir, err := os.MkdirTemp("", "sl")
+	if err != nil {
+		t.Fatalf("mkdir temp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sockPath := filepath.Join(sockDir, "e.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = io.Copy(c, c)
+			}(c)
+		}
+	}()
+
+	wsURL, hostKey := newTestSSHServerStreamlocal(t, auth, true, []string{sockPath})
+
+	client, err := dialSSHOverWS(t, wsURL, hostKey, currentUser, "secret")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	ch, err := openStreamlocal(client, sockPath)
+	if err != nil {
+		t.Fatalf("open streamlocal channel: %v", err)
+	}
+	defer ch.Close()
+
+	want := []byte("hello-podman")
+	if _, err := ch.Write(want); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got := make([]byte, len(want))
+	if _, err := io.ReadFull(ch, got); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("echo mismatch: got %q, want %q", got, want)
+	}
+}
+
+// TestSSH_DirectStreamlocal_PathNotAllowed proves the allowlist is
+// load-bearing — a socket the operator didn't authorize must be
+// rejected even if it happens to exist and be readable.
+func TestSSH_DirectStreamlocal_PathNotAllowed(t *testing.T) {
+	currentUser, err := hostauth.CurrentUser()
+	if err != nil || currentUser == "" {
+		t.Skip("no current user; skipping")
+	}
+	auth := hostauth.StubAuth{Want: map[string]string{currentUser: "secret"}}
+
+	// No ForwardSockets — only the built-in podman/docker defaults are
+	// in the allowlist, and we're going to ask for a path that's
+	// definitely not on it.
+	wsURL, hostKey := newTestSSHServerStreamlocal(t, auth, true, nil)
+
+	client, err := dialSSHOverWS(t, wsURL, hostKey, currentUser, "secret")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	_, err = openStreamlocal(client, filepath.Join(t.TempDir(), "not-allowed.sock"))
+	if err == nil {
+		t.Fatal("expected rejection for non-allowlisted socket")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "allowlist") &&
+		!strings.Contains(strings.ToLower(err.Error()), "prohibit") {
+		t.Errorf("expected rejection message to mention allowlist/prohibit, got %v", err)
+	}
+}
+
+// TestSSH_DirectStreamlocal_Disabled proves the SSHAllowLocalForward
+// master switch gates streamlocal too — turning off local forwarding
+// (which the user already used to mean `ssh -L`) refuses
+// direct-streamlocal channels regardless of the allowlist.
+func TestSSH_DirectStreamlocal_Disabled(t *testing.T) {
+	currentUser, err := hostauth.CurrentUser()
+	if err != nil || currentUser == "" {
+		t.Skip("no current user; skipping")
+	}
+	auth := hostauth.StubAuth{Want: map[string]string{currentUser: "secret"}}
+
+	sockPath := filepath.Join(t.TempDir(), "echo.sock")
+	wsURL, hostKey := newTestSSHServerStreamlocal(t, auth, false, []string{sockPath})
+
+	client, err := dialSSHOverWS(t, wsURL, hostKey, currentUser, "secret")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	_, err = openStreamlocal(client, sockPath)
+	if err == nil {
+		t.Fatal("expected streamlocal to be rejected when local-forward disabled")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "disabled") &&
+		!strings.Contains(strings.ToLower(err.Error()), "prohibit") {
+		t.Errorf("expected rejection message to mention disabled/prohibit, got %v", err)
+	}
+}
+
+// TestAllowStreamlocalDest covers the matcher in isolation: empty
+// rejects, traversal forms canonicalize and match the same allowlist
+// entry, near-misses don't match.
+func TestAllowStreamlocalDest(t *testing.T) {
+	allow := []string{"/run/podman/podman.sock", "/var/run/docker.sock"}
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"", false},
+		{"/run/podman/podman.sock", true},
+		{"/run/podman/../podman/podman.sock", true}, // canonicalizes
+		{"/var/run/docker.sock", true},
+		{"/var/run/docker.sock.bak", false},
+		{"/etc/passwd", false},
+	}
+	for _, tc := range cases {
+		if got := allowStreamlocalDest(tc.path, allow); got != tc.want {
+			t.Errorf("allowStreamlocalDest(%q) = %v, want %v", tc.path, got, tc.want)
+		}
 	}
 }
