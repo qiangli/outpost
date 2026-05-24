@@ -12,6 +12,42 @@ investigated and closed.
 
 Listed newest first; all on `main`.
 
+- **`ssh: fix ssh -R back-channel, add exec-PTY, ssh -A, peer
+  ProxyJump`** — four open items from the prior handoff become
+  workable in one commit. See `docs/matrix-shell-deferred-bugs.md`
+  for the per-item write-ups; the highlights:
+    - **`ssh -R` (T1.a)**: `forwarded-tcpip` was carrying the
+      canonicalized `"127.0.0.1"` as the back-channel destination
+      address. OpenSSH's client looks up its remote-forward table by
+      `strcmp` on the address it originally sent (typically `""`),
+      so every back-channel was rejected with
+      `unknown listen_port`. Echo the original `BindAddr`/`BindPort`.
+    - **exec-with-PTY (T1.c)**: `ssh -tt host cmd` was returning
+      "not a tty" because the exec branch ignored a preceding
+      `pty-req`. New `outshell.Session.RunOnce` runs one command on
+      the PTY-backed runner; the SSH exec branch routes through it
+      when pty-req came first. Close-order matters here — close
+      slave → drain master → close master, or the kernel buffer's
+      tail bytes get dropped (cost me a deploy cycle before I caught
+      it). Also dropped the spurious `clientGone` detection that
+      tripped on openssh's immediate stdin-EOF.
+    - **`ssh -A` (T1.b)**: new `internal/agent/sshagent.go` accepts
+      `auth-agent-req@openssh.com`, sets up a per-session Unix
+      socket in a 0700 tempdir, byte-bridges each accepted
+      connection back via `auth-agent@openssh.com`. `SSH_AUTH_SOCK`
+      is stamped into the runner env through the new
+      `SessionOptions.Env` map. Gated by `SSHAllowAgentForward`
+      (default on, mirrors the local/remote-forward toggles).
+    - **ProxyJump allowlist (T3.k)**: new `peerhosts` package
+      caches `/api/v1/ssh/hosts` (5-min TTL, serves stale on
+      failure). The `direct-tcpip` allowlist now accepts any
+      hostname that is itself a paired outpost, on top of loopback.
+      The trust delegation is bounded — the destination's own
+      OS-password gate still runs. Note: this is the
+      policy-layer fix. The dial still uses LAN DNS, so it works
+      end-to-end only when peers are mutually reachable (LAN /
+      Tailscale / hairpin NAT). Cloudbox-tunneled peer dial is a
+      separate feature.
 - **`c35ea72` `shell: end session on exit builtin; stop killing it on
   bad commands`** — the interactive loop in
   `internal/agent/shell/runner.go` used to do `errors.As(err,
@@ -72,38 +108,36 @@ that the original handoff already named:
 
 ## Still open (outpost side)
 
-### `ssh -A` — agent forwarding
+### ProxyJump dial via cloudbox tunnel
 
-**What's missing:** the SSH server doesn't accept
-`auth-agent-req@openssh.com` channels. Every `git pull` / `git push` on
-a paired host has to re-auth (typically by re-typing a passphrase)
-instead of riding the operator's local ssh-agent.
+**What's missing:** the allowlist policy now accepts paired-peer
+hostnames (T3.k done), so `ssh -J novicortex novidesign` no longer
+gets `administratively prohibited`. The dial itself still uses LAN
+DNS though, so it succeeds only when peers are mutually reachable
+(LAN / Tailscale / hairpin NAT). Off-LAN peers fail with `dial tcp:
+lookup novidesign: no such host` from the second-hop outpost.
 
-**Roughly:** accept the channel request, dial the host's
-`$SSH_AUTH_SOCK`, byte-bridge the two sides. The auth-agent protocol is
-opaque to the forwarder — same shape as the existing `direct-tcpip`
-handler.
+**Roughly:** when the `direct-tcpip` target is a paired peer, dial it
+through cloudbox (mirror what `outpost ssh-proxy` does) instead of
+plain `net.Dial`. Bigger change than the allowlist tweak — needs a
+shared bearer-token path so the second-hop outpost can talk to
+cloudbox on behalf of the operator, and a way to avoid recursive
+back-tunneling. Defer until off-LAN ProxyJump is actually requested.
 
-### ProxyJump allowlist (Tier 3)
+### `screen -dmS` (T2.e)
 
-**Where:** `internal/agent/ssh.go`'s `direct-tcpip` handler
-(`allowDirectTCPIPDest`).
+**Still parked.** `ssh -tt host 'screen -dmS x sleep 30; screen -ls'`
+returns "No screen session found" even with the new PTY-exec path —
+screen's own double-fork+setsid detach doesn't survive the runner's
+process group teardown. Independent of our PTY allocation (which is
+now fine — `tty` returns `/dev/ttys000`). Needs investigation into
+how screen's daemonized child loses its TTY; not blocking common use.
 
-**What's wrong:** the destination allowlist is `{localhost, 127.0.0.1, ::1}`.
-`ssh -J novicortex noviadmin@novidesign` fails because the second hop's
-destination (`novidesign`) isn't loopback.
+### `launchctl submit` (T2.f)
 
-**Fix policy options:**
-
-1. Widen to any hostname the agent can resolve (matches OpenSSH default;
-   broadest trust).
-2. Add a registry-based allowlist — "any host that's also a paired
-   outpost" — via a cloudbox lookup. Tighter, but needs cloudbox
-   coordination on the registry-query API.
-3. Operator-side workaround stays: two-hop manually. Not actually a fix.
-
-Pick a policy, implement the check. Pure outpost-side change once the
-policy is decided.
+**Still parked.** Launchd domain issue — see
+`matrix-shell-deferred-bugs.md` #8. The proposed fix is a CLI helper
+`outpost run --label X -- cmd` rather than a shell-side fix.
 
 ### ControlMaster / ControlPersist (cloudbox-blocked)
 
@@ -148,14 +182,20 @@ Small, non-blocking. Listed so it doesn't get lost.
   with sensible defaults so vim/htop work without these, but a
   finicky-termcap program might want them. One-line note in the struct
   doc explains the skip.
-- **Admin UI toggle for `SSHAllowRemoteForward`.** The field is in
-  `FileConfig` and threaded through to the handler, but the admin UI
-  doesn't render a checkbox yet. JSON-only knob for now; mirror the
-  `SSHAllowLocalForward` UI when convenient.
+- **Admin UI toggle for `SSHAllowRemoteForward` / `SSHAllowAgentForward`.**
+  Both fields are in `FileConfig` and threaded through to the handler,
+  but the admin UI doesn't render checkboxes yet. JSON-only knobs for
+  now; mirror the `SSHAllowLocalForward` UI when convenient.
+- **`screen -dmS` survival (T2.e).** screen's daemonized child dies
+  along with the runner's process group on exec exit; investigate
+  whether a `Setpgid` in the default exec handler (fork-side) or a
+  `nohup`-style wrapper helps.
 
 ## Suggested sequencing for what's left
 
-1. **`ssh -A` agent forwarding** — small change, big git-workflow win.
-2. **ProxyJump allowlist** — tiny once the policy is decided.
+1. **Cloudbox-tunneled ProxyJump dial** — completes T3.k for off-LAN
+   peers. Coordinated change with cloudbox.
+2. **`screen -dmS` (T2.e)** — investigate process-group escape; small
+   if fork helps.
 3. **ControlMaster** — gated on cloudbox.
 4. *(Indefinitely deferred)* numbered-fd refactor → real coproc.
