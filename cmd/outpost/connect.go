@@ -34,6 +34,7 @@ func connectCmd() *cobra.Command {
 		stdinFlag     bool
 		userFlag      string
 		keepAliveFlag bool
+		ttlFlag       string
 	)
 	cmd := &cobra.Command{
 		Use:   "connect <host>",
@@ -56,19 +57,30 @@ Pass --keep-alive to hold the process open and ping cloudbox every
 30 minutes. Each ping slides cloudbox's idle TTL forward (it slides
 on any authed request past the halfway point), so the cookie stays
 valid until the absolute 8 h cap. Useful for long-running agentic
-flows that would otherwise hit EAUTHREQUIRED mid-run.`,
+flows that would otherwise hit EAUTHREQUIRED mid-run.
+
+Pass --ttl to override cloudbox's absolute-expiry cap (default 8 h):
+    default | <duration like 24h, 1h30m> | infinite
+"infinite" is the JS-safe MaxInt sentinel (~285 years). The idle TTL
+(1 h) still applies — combine with --keep-alive for a long-lived
+session.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runConnect(cmd.Context(), args[0], userFlag, stdinFlag, keepAliveFlag)
+			ttl, err := parseTTL(ttlFlag)
+			if err != nil {
+				return err
+			}
+			return runConnect(cmd.Context(), args[0], userFlag, stdinFlag, keepAliveFlag, ttl)
 		},
 	}
 	cmd.Flags().BoolVar(&stdinFlag, "stdin", false, "Read password from stdin instead of /dev/tty (for non-interactive callers)")
 	cmd.Flags().StringVar(&userFlag, "user", "", "OS username on the remote host (default: the host's reported os_user, then $USER)")
 	cmd.Flags().BoolVar(&keepAliveFlag, "keep-alive", false, "Stay running and ping every 30 min to slide the cookie's idle TTL")
+	cmd.Flags().StringVar(&ttlFlag, "ttl", "", "Absolute-expiry override: default | <duration> | infinite")
 	return cmd
 }
 
-func runConnect(ctx context.Context, host, userFlag string, fromStdin, keepAlive bool) error {
+func runConnect(ctx context.Context, host, userFlag string, fromStdin, keepAlive bool, ttlSeconds int64) error {
 	cfgPath, err := conf.DefaultConfigPath()
 	if err != nil {
 		return fmt.Errorf("locate config: %w", err)
@@ -136,7 +148,7 @@ func runConnect(ctx context.Context, host, userFlag string, fromStdin, keepAlive
 		return errors.New("could not determine OS username; pass --user")
 	}
 
-	cookie, err := postElevate(ctx, fc, bearer, host, user, password)
+	cookie, err := postElevate(ctx, fc, bearer, host, user, password, ttlSeconds)
 	if err != nil {
 		return err
 	}
@@ -263,13 +275,19 @@ func readPassword(prompt string, fromStdin bool) (string, error) {
 
 // postElevate hits cloudbox's /h/:host/elevate with the bearer + body
 // cloudbox's Elevate handler expects. Captures the matrix_elev cookie
-// from the Set-Cookie response header.
-func postElevate(ctx context.Context, fc *conf.FileConfig, bearer, host, user, password string) (string, error) {
+// from the Set-Cookie response header. ttlSeconds, when > 0, is sent
+// as the absolute-cap override (`ttl_seconds`); 0 omits the field so
+// cloudbox applies its default cap.
+func postElevate(ctx context.Context, fc *conf.FileConfig, bearer, host, user, password string, ttlSeconds int64) (string, error) {
 	elevateURL, err := buildElevateURL(fc.ServerAddr, fc.ServerPort, fc.Protocol, host)
 	if err != nil {
 		return "", err
 	}
-	body, _ := json.Marshal(map[string]string{"user": user, "password": password})
+	payload := map[string]any{"user": user, "password": password}
+	if ttlSeconds > 0 {
+		payload["ttl_seconds"] = ttlSeconds
+	}
+	body, _ := json.Marshal(payload)
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, elevateURL, bytes.NewReader(body))

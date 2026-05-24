@@ -155,7 +155,11 @@ func dialSSHWS(ctx context.Context, wsURL, bearer, host string) (*websocket.Conn
 			return nil, eauthRequiredError(host, err)
 		}
 		fmt.Fprintf(os.Stderr, "outpost: %s requires Connect; prompting for OS password…\n", host)
-		if eerr := runConnect(ctx, host, "", false, false); eerr != nil {
+		// Interactive recovery from EAUTHREQUIRED uses cloudbox's
+		// default TTL — the operator just wants the session back, not
+		// a long-lived override. Pass --ttl on the outer
+		// `outpost connect` if they want something different.
+		if eerr := runConnect(ctx, host, "", false, false, 0); eerr != nil {
 			return nil, fmt.Errorf("connect %s: %w", host, eerr)
 		}
 		cookie, _ = readCookie(host)

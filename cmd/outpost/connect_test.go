@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -159,6 +160,89 @@ func TestKeepAliveExitsOn401(t *testing.T) {
 	if !strings.Contains(err.Error(), "401") {
 		t.Errorf("expected error to mention 401, got %v", err)
 	}
+}
+
+// TestPostElevate_TTLInPayload verifies the --ttl plumbing all the
+// way from the CLI flag down to the elevate POST body. Three cases:
+//
+//	default → no ttl_seconds field at all (server gets cloudbox default)
+//	24h     → ttl_seconds=86400
+//	infinite → ttl_seconds=ttlInfiniteSeconds
+//
+// Body presence/absence is the contract: cloudbox's Elevate handler
+// reads an absent field as "use my default", which is how older
+// cloudboxes (no MaxLifetimeSeconds awareness) keep working.
+func TestPostElevate_TTLInPayload(t *testing.T) {
+	cases := []struct {
+		name      string
+		ttlInput  string
+		wantField bool
+		wantValue int64
+	}{
+		{"default-flag-empty", "", false, 0},
+		{"default-keyword", "default", false, 0},
+		{"24h", "24h", true, 24 * 3600},
+		{"infinite", "infinite", true, ttlInfiniteSeconds},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPayload map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := decodeJSON(r, &gotPayload); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				http.SetCookie(w, &http.Cookie{Name: "matrix_elev", Value: "ok"})
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			t.Cleanup(srv.Close)
+
+			u, _ := url.Parse(srv.URL)
+			port := 0
+			if p := u.Port(); p != "" {
+				if n, err := parsePort(p); err == nil {
+					port = n
+				}
+			}
+			fc := &conf.FileConfig{
+				ServerAddr: "http://" + u.Hostname(),
+				ServerPort: port,
+				Protocol:   "tcp",
+			}
+
+			ttl, err := parseTTL(tc.ttlInput)
+			if err != nil {
+				t.Fatalf("parseTTL(%q): %v", tc.ttlInput, err)
+			}
+			cookie, err := postElevate(context.Background(), fc, "bearer", "host1", "noviadmin", "pw", ttl)
+			if err != nil {
+				t.Fatalf("postElevate: %v", err)
+			}
+			if cookie != "ok" {
+				t.Errorf("cookie=%q, want ok", cookie)
+			}
+			if tc.wantField {
+				v, ok := gotPayload["ttl_seconds"]
+				if !ok {
+					t.Fatalf("ttl_seconds missing from payload: %v", gotPayload)
+				}
+				// JSON numbers come back as float64.
+				got := int64(v.(float64))
+				if got != tc.wantValue {
+					t.Errorf("ttl_seconds=%d, want %d", got, tc.wantValue)
+				}
+			} else if _, ok := gotPayload["ttl_seconds"]; ok {
+				t.Errorf("ttl_seconds present in payload but should be omitted: %v", gotPayload)
+			}
+		})
+	}
+}
+
+func decodeJSON(r *http.Request, out any) error {
+	defer r.Body.Close()
+	return json.NewDecoder(r.Body).Decode(out)
 }
 
 func parsePort(s string) (int, error) {
