@@ -45,7 +45,7 @@ func startFakeLibpod(t *testing.T, handler http.HandlerFunc) (sockPath string) {
 
 func TestClient_Ping(t *testing.T) {
 	sock := startFakeLibpod(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/libpod/_ping" {
+		if r.URL.Path != "/v5.0.0/libpod/_ping" {
 			http.Error(w, "wrong path", http.StatusNotFound)
 			return
 		}
@@ -91,7 +91,7 @@ func TestNewClient_EmptySocket(t *testing.T) {
 func TestClient_CreateContainer(t *testing.T) {
 	var gotBody SpecGenerator
 	sock := startFakeLibpod(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/libpod/containers/create" || r.Method != http.MethodPost {
+		if r.URL.Path != "/v5.0.0/libpod/containers/create" || r.Method != http.MethodPost {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			http.Error(w, "wrong", http.StatusBadRequest)
 			return
@@ -138,12 +138,12 @@ func TestClient_StartContainer(t *testing.T) {
 	sock := startFakeLibpod(t, func(w http.ResponseWriter, r *http.Request) {
 		hits[r.URL.Path]++
 		switch r.URL.Path {
-		case "/libpod/containers/abc/start":
+		case "/v5.0.0/libpod/containers/abc/start":
 			w.WriteHeader(http.StatusNoContent)
-		case "/libpod/containers/already/start":
+		case "/v5.0.0/libpod/containers/already/start":
 			// Already running — libpod returns 304.
 			w.WriteHeader(http.StatusNotModified)
-		case "/libpod/containers/bad/start":
+		case "/v5.0.0/libpod/containers/bad/start":
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = io.WriteString(w, `{"message":"broken"}`)
 		}
@@ -159,8 +159,8 @@ func TestClient_StartContainer(t *testing.T) {
 	if err == nil {
 		t.Error("expected error from 500")
 	}
-	if hits["/libpod/containers/abc/start"] != 1 {
-		t.Errorf("abc hit count: %d", hits["/libpod/containers/abc/start"])
+	if hits["/v5.0.0/libpod/containers/abc/start"] != 1 {
+		t.Errorf("abc hit count: %d", hits["/v5.0.0/libpod/containers/abc/start"])
 	}
 }
 
@@ -209,7 +209,7 @@ func TestClient_RemoveContainer_NotFound(t *testing.T) {
 
 func TestClient_InspectContainer(t *testing.T) {
 	sock := startFakeLibpod(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/libpod/containers/abc/json" {
+		if r.URL.Path != "/v5.0.0/libpod/containers/abc/json" {
 			http.Error(w, "wrong", http.StatusNotFound)
 			return
 		}

@@ -161,6 +161,13 @@ func buildEnv(envs []corev1.EnvVar) (map[string]string, error) {
 // otherwise. (For the anonymous case the bind source is left empty and
 // libpod auto-creates an anonymous named volume; the lifetime is tied
 // to the container via Remove=false + per-pod cleanup at DeletePod time.)
+//
+// kube-api-access-* projected volumes (the SA token + CA bundle k8s
+// auto-injects on every pod since 1.21) are SILENTLY SKIPPED rather
+// than rejected — workload pods on outposts don't need in-cluster API
+// access, and rejecting these would refuse every kubectl-run pod. If
+// a future workload genuinely needs the projected SA token we'll
+// implement the volume properly; for now they're discarded.
 func buildMounts(pod *corev1.Pod, vms []corev1.VolumeMount) ([]Mount, error) {
 	volByName := make(map[string]corev1.Volume, len(pod.Spec.Volumes))
 	for _, v := range pod.Spec.Volumes {
@@ -168,6 +175,9 @@ func buildMounts(pod *corev1.Pod, vms []corev1.VolumeMount) ([]Mount, error) {
 	}
 	out := make([]Mount, 0, len(vms))
 	for _, vm := range vms {
+		if strings.HasPrefix(vm.Name, "kube-api-access-") {
+			continue
+		}
 		v, ok := volByName[vm.Name]
 		if !ok {
 			return nil, fmt.Errorf("vkpodman: volumeMount %q references unknown volume", vm.Name)

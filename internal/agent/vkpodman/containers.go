@@ -90,7 +90,7 @@ type CreateResponse struct {
 // new container's ID. The container is created in the "created" state
 // and must be started separately.
 func (c *Client) CreateContainer(ctx context.Context, spec *SpecGenerator) (*CreateResponse, error) {
-	resp, err := c.do(ctx, http.MethodPost, "/libpod/containers/create", nil, spec)
+	resp, err := c.do(ctx, http.MethodPost, apiPrefix+"/libpod/containers/create", nil, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +109,7 @@ func (c *Client) CreateContainer(ctx context.Context, spec *SpecGenerator) (*Cre
 // starting an already-running container returns 304 (not modified) which
 // we treat as success.
 func (c *Client) StartContainer(ctx context.Context, id string) error {
-	resp, err := c.do(ctx, http.MethodPost, "/libpod/containers/"+url.PathEscape(id)+"/start", nil, nil)
+	resp, err := c.do(ctx, http.MethodPost, apiPrefix+"/libpod/containers/"+url.PathEscape(id)+"/start", nil, nil)
 	if err != nil {
 		return err
 	}
@@ -130,7 +130,7 @@ func (c *Client) StopContainer(ctx context.Context, id string, timeout time.Dura
 	if timeout >= 0 {
 		q.Set("timeout", strconv.Itoa(int(timeout/time.Second)))
 	}
-	resp, err := c.do(ctx, http.MethodPost, "/libpod/containers/"+url.PathEscape(id)+"/stop", q, nil)
+	resp, err := c.do(ctx, http.MethodPost, apiPrefix+"/libpod/containers/"+url.PathEscape(id)+"/stop", q, nil)
 	if err != nil {
 		return err
 	}
@@ -154,7 +154,7 @@ func (c *Client) RemoveContainer(ctx context.Context, id string, force, volumes 
 	if volumes {
 		q.Set("v", "true")
 	}
-	resp, err := c.do(ctx, http.MethodDelete, "/libpod/containers/"+url.PathEscape(id), q, nil)
+	resp, err := c.do(ctx, http.MethodDelete, apiPrefix+"/libpod/containers/"+url.PathEscape(id), q, nil)
 	if err != nil {
 		return err
 	}
@@ -211,7 +211,7 @@ type InspectConfig struct {
 // wrapped *APIError with Status=404 when the container does not exist,
 // so callers can use IsNotFound to distinguish "gone" from "broken".
 func (c *Client) InspectContainer(ctx context.Context, id string) (*InspectContainer, error) {
-	resp, err := c.do(ctx, http.MethodGet, "/libpod/containers/"+url.PathEscape(id)+"/json", nil, nil)
+	resp, err := c.do(ctx, http.MethodGet, apiPrefix+"/libpod/containers/"+url.PathEscape(id)+"/json", nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +260,7 @@ func (c *Client) ListContainers(ctx context.Context, all bool, labelFilter map[s
 		}
 		q.Set("filters", string(raw))
 	}
-	resp, err := c.do(ctx, http.MethodGet, "/libpod/containers/json", q, nil)
+	resp, err := c.do(ctx, http.MethodGet, apiPrefix+"/libpod/containers/json", q, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -281,7 +281,7 @@ func (c *Client) ListContainers(ctx context.Context, all bool, labelFilter map[s
 // ref ("docker.io/library/alpine:3.20").
 func (c *Client) PullImage(ctx context.Context, reference string) error {
 	q := url.Values{"reference": []string{reference}}
-	resp, err := c.do(ctx, http.MethodPost, "/libpod/images/pull", q, nil)
+	resp, err := c.do(ctx, http.MethodPost, apiPrefix+"/libpod/images/pull", q, nil)
 	if err != nil {
 		return err
 	}

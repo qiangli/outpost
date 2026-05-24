@@ -40,7 +40,11 @@ func (f *fakeLibpod) handler(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		path := r.URL.Path
+		// Strip the versioned prefix the client now sends
+		// (/v5.0.0/libpod/...) so the rest of the switch can match
+		// on the canonical /libpod/... shape. Real podman accepts
+		// both forms; the fake mirrors that.
+		path := strings.TrimPrefix(r.URL.Path, "/v5.0.0")
 		switch {
 		case path == "/libpod/_ping":
 			_, _ = io.WriteString(w, "OK\n")

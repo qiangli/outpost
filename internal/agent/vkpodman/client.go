@@ -14,10 +14,19 @@ import (
 	"time"
 )
 
+// apiPrefix is the versioned path libpod expects. Earlier we used the
+// unversioned `/libpod/*` form, but the real podman socket alias only
+// kicks in under the official `podman system service` entry point;
+// wrapper sockets (e.g. ycode's curated libpod surface, which serves
+// requests through podman-system-service-equivalent code but doesn't
+// implement the unversioned alias) reject `/libpod/...` with 404 and
+// require the explicit version. Pinning here keeps us compatible with
+// both shapes and decouples us from server-side version negotiation.
+const apiPrefix = "/v5.0.0"
+
 // Client is a thin HTTP client for the local libpod REST API. It speaks
-// the unversioned `/libpod/*` path tree (the server aliases that to the
-// current version), so a single client works against any podman 4.x /
-// 5.x daemon.
+// the versioned `/v5.0.0/libpod/*` path tree — compatible with any
+// podman 5.x daemon (the major version is stable across minors).
 type Client struct {
 	// http is the underlying transport. Its DialContext is wired to the
 	// configured unix socket; Host in the URL is a synthetic placeholder
@@ -49,7 +58,7 @@ func NewClient(socket string) (*Client, error) {
 // as the node heartbeat. We hit /libpod/_ping rather than /info because
 // _ping returns "OK\n" and is the cheapest endpoint libpod exposes.
 func (c *Client) Ping(ctx context.Context) error {
-	resp, err := c.do(ctx, http.MethodGet, "/libpod/_ping", nil, nil)
+	resp, err := c.do(ctx, http.MethodGet, apiPrefix + "/libpod/_ping", nil, nil)
 	if err != nil {
 		return err
 	}
