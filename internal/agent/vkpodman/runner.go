@@ -40,6 +40,13 @@ type RunOptions struct {
 	// ExtraNodeLabels are merged into the registered Node's Labels map.
 	// Useful for nodeSelector targeting (e.g. {"outpost.dhnt.io/gpu":"true"}).
 	ExtraNodeLabels map[string]string
+
+	// Access, when non-nil, is the namespace-allow gate vkpodman's
+	// CreatePod will consult before scheduling each pod. Pass nil to
+	// disable the check (dev/single-tenant escape hatch). Production
+	// agents build this from the outpost owner's email +
+	// (eventually) the share-receivers list cloudbox advertises.
+	Access *Access
 }
 
 // Run blocks until ctx is canceled (or any sub-controller errors out),
@@ -69,6 +76,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if err != nil {
 		return fmt.Errorf("provider: %w", err)
 	}
+	prov.SetAccess(opts.Access)
 	if err := prov.Reconcile(ctx); err != nil {
 		return fmt.Errorf("reconcile: %w", err)
 	}

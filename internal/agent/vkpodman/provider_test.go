@@ -402,6 +402,57 @@ func TestProvider_Reconcile_RebuildsCacheFromLabels(t *testing.T) {
 	}
 }
 
+func TestProvider_CreatePod_RejectsUnauthorizedNamespace(t *testing.T) {
+	p, fake := newProviderWithFake(t)
+	p.SetAccess(NewAccess("user-allowed-only"))
+
+	pod := newTestPod("hello", "uid-denied")
+	pod.Namespace = "user-someone-else"
+
+	err := p.CreatePod(context.Background(), pod)
+	if err == nil {
+		t.Fatal("expected CreatePod to reject unauthorized namespace")
+	}
+	if !strings.Contains(err.Error(), "not permitted to schedule") {
+		t.Errorf("error should explain the rejection: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.containers) != 0 {
+		t.Errorf("no container should have been created on rejection: %+v", fake.containers)
+	}
+}
+
+func TestProvider_CreatePod_AcceptsAllowedNamespace(t *testing.T) {
+	p, fake := newProviderWithFake(t)
+	p.SetAccess(NewAccess("user-mine"))
+
+	pod := newTestPod("hello", "uid-allowed")
+	pod.Namespace = "user-mine"
+
+	if err := p.CreatePod(context.Background(), pod); err != nil {
+		t.Fatalf("CreatePod should accept allowed namespace; got %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.containers) != 1 {
+		t.Errorf("expected 1 container; got %+v", fake.containers)
+	}
+}
+
+func TestProvider_CreatePod_NilAccessAcceptsAnything(t *testing.T) {
+	// Sanity check the dev/single-tenant escape hatch: a Provider
+	// without SetAccess accepts every namespace.
+	p, _ := newProviderWithFake(t)
+	pod := newTestPod("hello", "uid-nilaccess")
+	pod.Namespace = "literally-any-namespace"
+	if err := p.CreatePod(context.Background(), pod); err != nil {
+		t.Fatalf("nil-Access Provider should accept any namespace; got %v", err)
+	}
+}
+
 func TestProvider_UpdatePod_RefreshesCache(t *testing.T) {
 	p, _ := newProviderWithFake(t)
 	pod := newTestPod("hello", "uid-update")

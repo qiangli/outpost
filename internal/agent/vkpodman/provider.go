@@ -26,6 +26,7 @@ import (
 // unique).
 type Provider struct {
 	client *Client
+	access *Access // nil = no namespace check (single-tenant dev)
 
 	mu   sync.RWMutex
 	pods map[string]*corev1.Pod // namespace/name → cached Pod
@@ -52,6 +53,12 @@ func NewProvider(podmanSocket string) (*Provider, error) {
 // NodeProvider can share the same socket connection.
 func (p *Provider) Client() *Client { return p.client }
 
+// SetAccess installs the namespace-access gate. Pass nil to disable
+// the check (dev/single-tenant mode). Called once at boot from
+// startClusterRunner with an Access built from the outpost owner's
+// email + any sharee emails fetched from cloudbox.
+func (p *Provider) SetAccess(a *Access) { p.access = a }
+
 func podKey(namespace, name string) string { return namespace + "/" + name }
 
 // CreatePod creates and starts the container for pod. Idempotent: if a
@@ -59,7 +66,19 @@ func podKey(namespace, name string) string { return namespace + "/" + name }
 // it instead of erroring on name conflict. That makes the reconcile
 // path — "we saw this pod before our last restart, libpod still has the
 // container" — collapse to a no-op rather than a 409 cascade.
+//
+// First gate: the namespace access check. p.access (when non-nil) holds
+// the set of namespaces permitted to schedule here — derived from the
+// outpost's owner + sharees. Pods from outside that set are rejected
+// with a clear error so the apiserver event surface shows what
+// happened. nil p.access means "no check"; used in dev/single-tenant
+// modes where the operator hasn't wired Access yet.
 func (p *Provider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
+	if !p.access.Allowed(pod.Namespace) {
+		slog.Warn("vkpodman: rejecting CreatePod for unauthorized namespace",
+			"pod", podKey(pod.Namespace, pod.Name), "allowed", p.access.Snapshot())
+		return fmt.Errorf("vkpodman: namespace %q is not permitted to schedule on this outpost", pod.Namespace)
+	}
 	spec, err := BuildSpec(pod)
 	if err != nil {
 		return err

@@ -531,12 +531,32 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 		return err
 	}
 
+	// Namespace-access gate. Derive the outpost owner's email from
+	// the access_token's email claim (set by cloudbox at register
+	// time), compute the owner's per-user namespace via the same
+	// formula cloudbox uses, and pass it to the Provider. nil
+	// Access = no check; we'd hit that only if access_token isn't a
+	// JWT (e.g. very old paired outposts, before the JWT format) —
+	// log loudly and let the runner proceed in permissive mode so
+	// the cluster path still works for legacy installs.
+	var access *vkpodman.Access
+	if fc.AccessToken != "" {
+		if owner, err := vkpodman.OwnerEmailFromAccessToken(fc.AccessToken); err == nil {
+			ns := vkpodman.NamespaceForEmail(owner)
+			access = vkpodman.NewAccess(ns)
+			slog.Info("cluster mode: namespace access gate", "owner", owner, "namespace", ns)
+		} else {
+			slog.Warn("cluster mode: could not derive owner from access_token; namespace check disabled (legacy token?)", "err", err)
+		}
+	}
+
 	g.Go(func() error {
 		slog.Info("cluster mode: joining", "node", nodeName, "apiserver", cc.APIURL, "podman_socket", bt.Socket)
 		if err := vkpodman.Run(ctx, vkpodman.RunOptions{
 			NodeName:     nodeName,
 			PodmanSocket: bt.Socket,
 			Kube:         kubeCfg,
+			Access:       access,
 		}); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("cluster mode: runner exited", "err", err)
 		}
