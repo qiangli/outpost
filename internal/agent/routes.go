@@ -86,6 +86,12 @@ type Deps struct {
 	// list; entries here are exact-matched after filepath.Clean.
 	SSHForwardSockets []string
 
+	// SelfName is the agent's own AgentName, forwarded to the SSH
+	// handler so peer-tunneled dials can stamp X-Outpost-Peer-Origin
+	// for cloudbox's audit log. Empty string is harmless — cloudbox
+	// just records "unknown" as the origin.
+	SelfName string
+
 	// CloudboxBase + CloudboxProtocol + AccessToken jointly enable the
 	// peer-tunneled direct-tcpip path (`ssh -J peerA peerB`). When set
 	// and the dial target is a paired peer (not loopback) on port 22,
@@ -185,6 +191,7 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 			CloudboxBase:       deps.CloudboxBase,
 			CloudboxProtocol:   deps.CloudboxProtocol,
 			AccessToken:        deps.AccessToken,
+			SelfName:           deps.SelfName,
 		}))
 	}
 

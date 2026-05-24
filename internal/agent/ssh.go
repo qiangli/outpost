@@ -48,6 +48,11 @@ type sshHandlerDeps struct {
 	// defaultStreamlocalAllowlist) plus these paths.
 	ForwardSockets []string
 
+	// SelfName is this outpost's AgentName, sent in the
+	// X-Outpost-Peer-Origin header on peer-tunneled dials so
+	// cloudbox's audit log can record the originating sibling.
+	SelfName string
+
 	// CloudboxBase is the cloudbox HTTP(S) base URL (e.g.
 	// "https://ai.dhnt.io"). When set together with AccessToken, the
 	// direct-tcpip handler will tunnel `ssh -J peerA peerB` second-hop
@@ -207,6 +212,7 @@ func sshHandler(deps sshHandlerDeps) gin.HandlerFunc {
 					cloudboxBase:     deps.CloudboxBase,
 					cloudboxProtocol: deps.CloudboxProtocol,
 					accessToken:      deps.AccessToken,
+					selfName:         deps.SelfName,
 				})
 			case "direct-streamlocal@openssh.com":
 				// Podman's `ssh://` transport opens this channel type to
@@ -293,6 +299,11 @@ type peerDial struct {
 	cloudboxBase     string
 	cloudboxProtocol string
 	accessToken      string
+	// selfName is this outpost's own AgentName — sent as
+	// X-Outpost-Peer-Origin so cloudbox's audit log can record
+	// "(from=<sibling>, to=<dest>)" for every peer-tunneled dial.
+	// Empty value is fine; cloudbox just won't have an origin name.
+	selfName string
 }
 
 // enabled reports whether the peer-tunneled dial path is configured.
@@ -412,8 +423,21 @@ func bridgePeerDialThroughCloudbox(ctx context.Context, newCh ssh.NewChannel, pd
 
 	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	// X-Outpost-Peer-Dial: 1 tells cloudbox "this WSS is a sibling-outpost
+	// ProxyJump second-hop, not an operator dial — go ahead and proxy
+	// without a matrix_elev cookie, because the destination outpost's own
+	// PasswordCallback will still run". Cloudbox uses this header to
+	// distinguish the peer-transport path from an ordinary cookieless
+	// operator dial (which still EAUTHREQUIREDs). Outpost stamps the
+	// header unconditionally on peer dials; cloudbox is free to ignore
+	// it during a rollout — the failure mode is the prior 403, not a
+	// silent misroute.
 	wsConn, resp, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + pd.accessToken}},
+		HTTPHeader: http.Header{
+			"Authorization":        []string{"Bearer " + pd.accessToken},
+			"X-Outpost-Peer-Dial":  []string{"1"},
+			"X-Outpost-Peer-Origin": []string{pd.selfName},
+		},
 	})
 	if err != nil {
 		status := 0

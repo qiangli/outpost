@@ -318,6 +318,7 @@ func startCmd() *cobra.Command {
 				CloudboxBase:          cloudboxHTTPBase(fc),
 				CloudboxProtocol:      cfg.Protocol,
 				AccessToken:           fc.AccessToken,
+				SelfName:              cfg.AgentName,
 			})
 
 			// Bind the local listener first so we know its port before
