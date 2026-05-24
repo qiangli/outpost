@@ -31,10 +31,11 @@ import (
 
 func connectCmd() *cobra.Command {
 	var (
-		stdinFlag     bool
-		userFlag      string
-		keepAliveFlag bool
-		ttlFlag       string
+		stdinFlag      bool
+		userFlag       string
+		keepAliveFlag  bool
+		ttlFlag        string
+		cookieOnlyFlag bool
 	)
 	cmd := &cobra.Command{
 		Use:   "connect <host>",
@@ -63,12 +64,25 @@ Pass --ttl to override cloudbox's absolute-expiry cap (default 8 h):
     default | <duration like 24h, 1h30m> | infinite
 "infinite" is the JS-safe MaxInt sentinel (~285 years). The idle TTL
 (1 h) still applies — combine with --keep-alive for a long-lived
-session.`,
+session.
+
+Pass --cookie-only to skip the password prompt entirely and go
+straight to the keep-alive loop using an existing cached cookie.
+Implies --keep-alive. Errors out if no cached cookie exists for
+<host>. This is the supported pattern for daemonized supervision
+(launchd / systemd): seed the cookie once with the interactive
+"outpost connect --ttl infinite <host>", then daemonize
+"outpost connect --cookie-only <host>" via "outpost run". The
+daemon never needs the password — launchd-respawn-after-crash
+just resumes pinging.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ttl, err := parseTTL(ttlFlag)
 			if err != nil {
 				return err
+			}
+			if cookieOnlyFlag {
+				return runCookieOnlyKeepAlive(cmd.Context(), args[0])
 			}
 			return runConnect(cmd.Context(), args[0], userFlag, stdinFlag, keepAliveFlag, ttl)
 		},
@@ -77,7 +91,50 @@ session.`,
 	cmd.Flags().StringVar(&userFlag, "user", "", "OS username on the remote host (default: the host's reported os_user, then $USER)")
 	cmd.Flags().BoolVar(&keepAliveFlag, "keep-alive", false, "Stay running and ping every 30 min to slide the cookie's idle TTL")
 	cmd.Flags().StringVar(&ttlFlag, "ttl", "", "Absolute-expiry override: default | <duration> | infinite")
+	cmd.Flags().BoolVar(&cookieOnlyFlag, "cookie-only", false, "Skip the password prompt; ride an existing cached cookie into --keep-alive (daemon-friendly)")
 	return cmd
+}
+
+// runCookieOnlyKeepAlive is the daemon-friendly entry point. Loads the
+// previously-cached cookie + bearer, refuses if either is missing,
+// and runs the keep-alive loop directly. Mirrors runConnect's prelude
+// (config + bearer resolution) but skips every interactive surface
+// (password prompt, user resolution, postElevate). A 401/403 from
+// the ping loop exits non-zero so a supervisor wrapper can surface
+// "re-elevate needed" to the operator out of band — that path
+// already exists, the supervisor just sees the process exit and
+// stops respawning (or respawns and re-fails, depending on policy).
+func runCookieOnlyKeepAlive(ctx context.Context, host string) error {
+	cfgPath, err := conf.DefaultConfigPath()
+	if err != nil {
+		return fmt.Errorf("locate config: %w", err)
+	}
+	fc, err := conf.LoadFile(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if fc == nil || fc.ServerAddr == "" {
+		return errors.New("local outpost is not paired with cloudbox yet — run `outpost register` first")
+	}
+	bearer := strings.TrimSpace(os.Getenv("OUTPOST_SESSION_JWT"))
+	if bearer == "" {
+		bearer = fc.AccessToken
+	}
+	if bearer == "" {
+		bearer = fc.Token
+	}
+	if bearer == "" {
+		return errors.New("no auth credential cached; re-pair with `outpost register`")
+	}
+	cookie, err := readCookie(host)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read cached cookie for %q: %w", host, err)
+	}
+	if cookie == "" {
+		return fmt.Errorf("no cached cookie for %q; run `outpost connect --ttl infinite %s` first to seed one", host, host)
+	}
+	fmt.Fprintf(os.Stderr, "Keep-alive (cookie-only): pinging every 30 min until SIGTERM or absolute expiry.\n")
+	return runKeepAlive(ctx, fc, bearer, host, cookie)
 }
 
 func runConnect(ctx context.Context, host, userFlag string, fromStdin, keepAlive bool, ttlSeconds int64) error {

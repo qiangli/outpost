@@ -162,6 +162,47 @@ func TestKeepAliveExitsOn401(t *testing.T) {
 	}
 }
 
+// TestCookieOnlyKeepAlive_NoCookieErrors is the guard for the
+// daemonize-friendly path: if there's no cached cookie for the host,
+// --cookie-only must refuse explicitly (rather than hanging or
+// silently starting a useless loop). The error message must guide
+// the operator to seed via interactive connect.
+func TestCookieOnlyKeepAlive_NoCookieErrors(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", tmp)
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+
+	// Seed a minimal config at whatever path conf.DefaultConfigPath
+	// resolves to under the redirected HOME (macOS:
+	// Library/Application Support/matrix; Linux: .config/matrix).
+	cfgPath, err := conf.DefaultConfigPath()
+	if err != nil {
+		t.Fatalf("default config path: %v", err)
+	}
+	if err := os.MkdirAll(strings.TrimSuffix(cfgPath, "/agent.json"), 0o700); err != nil {
+		t.Fatalf("mkdir cfg: %v", err)
+	}
+	if err := os.WriteFile(cfgPath,
+		[]byte(`{"agent_name":"x","server_addr":"ai.dhnt.io","server_port":443,"protocol":"wss","access_token":"tok"}`),
+		0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	rerr := runCookieOnlyKeepAlive(ctx, "unseeded-host")
+	if rerr == nil {
+		t.Fatal("expected error when no cached cookie exists")
+	}
+	if !strings.Contains(rerr.Error(), "no cached cookie") {
+		t.Errorf("error should mention 'no cached cookie', got: %v", rerr)
+	}
+	if !strings.Contains(rerr.Error(), "outpost connect") {
+		t.Errorf("error should mention the seeding command, got: %v", rerr)
+	}
+}
+
 // TestRetryBackoff_DoublesUntilCap locks in the wait sequence so a
 // silent regression to a tighter or looser backoff is caught — the
 // values here are what the supervisor depends on.
