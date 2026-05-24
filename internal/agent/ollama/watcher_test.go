@@ -341,6 +341,114 @@ func TestWatcher_Status_RecordsErrorOnFailure(t *testing.T) {
 	}
 }
 
+func TestWatcher_FetchModels_EnrichesFromShow(t *testing.T) {
+	tagsBody := `{"models":[{"name":"llama3.2:1b","digest":"d1","details":{"family":"llama","parameter_size":"1B","quantization_level":"Q4"}}]}`
+	// Track how many times /api/show was called per (model name) so we
+	// can assert per-digest caching.
+	var showCalls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tags", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, tagsBody)
+	})
+	mux.HandleFunc("/api/show", func(w http.ResponseWriter, _ *http.Request) {
+		showCalls.Add(1)
+		_, _ = io.WriteString(w, `{
+		  "capabilities": ["completion","tools"],
+		  "model_info": {
+		    "general.architecture": "llama",
+		    "llama.context_length": 8192
+		  }
+		}`)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	cloudSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(cloudSrv.Close)
+
+	w, err := New(Config{
+		AgentName:         "test",
+		OllamaURL:         srv.URL,
+		CloudboxURL:       cloudSrv.URL,
+		AccessToken:       "tk",
+		PollInterval:      1 * time.Hour,
+		HeartbeatInterval: 1 * time.Hour,
+		HTTPClient:        srv.Client(),
+		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// First fetchModels: should call /api/show once for the new digest.
+	models, err := w.fetchModels(context.Background())
+	if err != nil {
+		t.Fatalf("fetchModels: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("len=%d, want 1", len(models))
+	}
+	if got := models[0].Capabilities; len(got) != 2 || got[0] != "completion" || got[1] != "tools" {
+		t.Errorf("capabilities=%v", got)
+	}
+	if models[0].ContextLength != 8192 {
+		t.Errorf("ContextLength=%d, want 8192", models[0].ContextLength)
+	}
+	if n := showCalls.Load(); n != 1 {
+		t.Errorf("show calls after first fetch=%d, want 1", n)
+	}
+
+	// Second fetchModels: same digest → cache hit → no new /api/show calls.
+	_, _ = w.fetchModels(context.Background())
+	_, _ = w.fetchModels(context.Background())
+	if n := showCalls.Load(); n != 1 {
+		t.Errorf("show calls after 3 fetches (same digest)=%d, want 1 (cache hit)", n)
+	}
+}
+
+func TestWatcher_FetchModels_ShowFailureIsCachedAsZero(t *testing.T) {
+	tagsBody := `{"models":[{"name":"broken:1b","digest":"dbad","details":{"family":"x"}}]}`
+	var showCalls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tags", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, tagsBody)
+	})
+	mux.HandleFunc("/api/show", func(w http.ResponseWriter, _ *http.Request) {
+		showCalls.Add(1)
+		http.Error(w, "broken", http.StatusInternalServerError)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	cloud := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(cloud.Close)
+
+	w, err := New(Config{
+		AgentName: "t", OllamaURL: srv.URL, CloudboxURL: cloud.URL,
+		AccessToken: "k", PollInterval: time.Hour, HeartbeatInterval: time.Hour,
+		HTTPClient: srv.Client(),
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	models, err := w.fetchModels(context.Background())
+	if err != nil {
+		t.Fatalf("fetchModels: %v", err)
+	}
+	if len(models[0].Capabilities) != 0 || models[0].ContextLength != 0 {
+		t.Errorf("expected zero details on show failure, got caps=%v ctx=%d", models[0].Capabilities, models[0].ContextLength)
+	}
+	// Second call must NOT re-probe — failure is cached.
+	_, _ = w.fetchModels(context.Background())
+	if n := showCalls.Load(); n != 1 {
+		t.Errorf("show calls after retry=%d, want 1 (failure cached)", n)
+	}
+}
+
 func TestWatcher_PushIncludesCapacity(t *testing.T) {
 	tags := &stubTags{bodies: []string{`{"models":[]}`}}
 	reg := &capturingRegistry{}

@@ -110,6 +110,21 @@ type Watcher struct {
 
 	mu    sync.Mutex
 	state WatcherStatus
+
+	// detailsCache memoizes /api/show responses by digest. A model's
+	// digest changes when its bytes change, so a cache miss is the
+	// right trigger to re-probe. New models pulled at runtime get
+	// probed exactly once. Bounded loosely by the number of distinct
+	// models ever loaded on this host (tiny in practice).
+	detailsMu    sync.Mutex
+	detailsCache map[string]modelDetails
+}
+
+// modelDetails is the per-digest enriched info populated from /api/show.
+// Stored separately from ModelInfo so the cache can be keyed cleanly.
+type modelDetails struct {
+	Capabilities  []string
+	ContextLength int64
 }
 
 // Status returns the current diagnostic snapshot. Safe for concurrent
@@ -167,7 +182,7 @@ func New(cfg Config) (*Watcher, error) {
 	}
 	cfg.CloudboxURL = strings.TrimRight(cfg.CloudboxURL, "/")
 	cfg.OllamaURL = strings.TrimRight(cfg.OllamaURL, "/")
-	return &Watcher{cfg: cfg}, nil
+	return &Watcher{cfg: cfg, detailsCache: map[string]modelDetails{}}, nil
 }
 
 // Run blocks until ctx is cancelled. Returns nil on graceful shutdown,
@@ -279,11 +294,12 @@ func (w *Watcher) tick(ctx context.Context, lastSnapshot *[]ModelInfo, lastPushA
 	return nil
 }
 
-// fetchModels GETs the local Ollama daemon's /api/tags and returns the
-// normalized ModelInfo list (sorted by name so equality comparisons are
-// stable). Returns an empty list (no error) when the daemon answers with
-// 404 / 5xx — that's still a heartbeat-worthy data point ("daemon was
-// reachable, here is its current state").
+// fetchModels GETs the local Ollama daemon's /api/tags, then enriches
+// each entry with per-digest /api/show metadata (capabilities,
+// context_length) from a cache. Cache misses do one extra request per
+// new digest — a model pull is the only thing that adds a row to the
+// inventory, and that's not a hot path. Sorted by name so equality
+// comparisons are stable.
 func (w *Watcher) fetchModels(ctx context.Context) ([]ModelInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -306,8 +322,66 @@ func (w *Watcher) fetchModels(ctx context.Context) ([]ModelInfo, error) {
 		return nil, fmt.Errorf("decode tags: %w", err)
 	}
 	models := tr.toModels()
+	for i := range models {
+		d := w.detailsFor(ctx, models[i])
+		models[i].Capabilities = d.Capabilities
+		models[i].ContextLength = d.ContextLength
+	}
 	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
 	return models, nil
+}
+
+// detailsFor returns the cached or freshly-fetched details for one
+// model. On any error (probe failure, malformed response) returns the
+// zero modelDetails — the model still publishes, just without
+// capabilities/context_length. A failed probe is cached as zero so a
+// broken model doesn't get re-probed every tick.
+func (w *Watcher) detailsFor(ctx context.Context, m ModelInfo) modelDetails {
+	key := m.Digest
+	if key == "" {
+		key = m.Name
+	}
+	w.detailsMu.Lock()
+	if d, ok := w.detailsCache[key]; ok {
+		w.detailsMu.Unlock()
+		return d
+	}
+	w.detailsMu.Unlock()
+	d := w.fetchDetails(ctx, m.Name)
+	w.detailsMu.Lock()
+	w.detailsCache[key] = d
+	w.detailsMu.Unlock()
+	return d
+}
+
+// fetchDetails POSTs to /api/show for one model. Best-effort: any
+// non-200 or decode error → zero details, no error propagation.
+func (w *Watcher) fetchDetails(ctx context.Context, name string) modelDetails {
+	pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	body := fmt.Sprintf(`{"name":%q}`, name)
+	req, err := http.NewRequestWithContext(pctx, http.MethodPost,
+		w.cfg.OllamaURL+"/api/show", strings.NewReader(body))
+	if err != nil {
+		return modelDetails{}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := w.cfg.HTTPClient.Do(req)
+	if err != nil {
+		return modelDetails{}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return modelDetails{}
+	}
+	var sr showResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&sr); err != nil {
+		return modelDetails{}
+	}
+	return modelDetails{
+		Capabilities:  sr.Capabilities,
+		ContextLength: sr.contextLength(),
+	}
 }
 
 // push POSTs the RegistryPushPayload to cloudbox. Returns

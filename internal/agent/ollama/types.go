@@ -8,7 +8,11 @@
 // them stable; additive changes only.
 package ollama
 
-import "time"
+import (
+	"strconv"
+	"strings"
+	"time"
+)
 
 // ModelInfo describes one model the local Ollama daemon currently has
 // downloaded. Sourced from the daemon's GET /api/tags response; the
@@ -16,6 +20,14 @@ import "time"
 // decisions, plus enough provenance (digest, modified_at) that the
 // scheduler can distinguish two backends advertising "the same model"
 // with different quantizations.
+//
+// Capabilities and ContextLength are enriched from GET /api/show per
+// digest (the watcher caches per-digest to avoid re-probing unchanged
+// models). Capabilities is the verbatim list Ollama 0.5+ emits —
+// strings like "completion", "tools", "vision", "embedding".
+// ContextLength is the max sequence length the model accepts;
+// surfaced because client libraries often need it to right-size
+// prompts.
 type ModelInfo struct {
 	Name          string    `json:"name"`
 	Digest        string    `json:"digest,omitempty"`
@@ -24,6 +36,8 @@ type ModelInfo struct {
 	Family        string    `json:"family,omitempty"`
 	ParameterSize string    `json:"parameter_size,omitempty"`
 	Quantization  string    `json:"quantization,omitempty"`
+	Capabilities  []string  `json:"capabilities,omitempty"`
+	ContextLength int64     `json:"context_length,omitempty"`
 }
 
 // CapacityReport is the live load+limit snapshot returned by
@@ -71,6 +85,49 @@ type tagsResponse struct {
 			QuantizationLevel string `json:"quantization_level"`
 		} `json:"details"`
 	} `json:"models"`
+}
+
+// showResponse is the subset of GET /api/show we care about. Ollama
+// returns much more (modelfile, parameters, template, …) — we ignore
+// it to keep memory + cache size predictable.
+type showResponse struct {
+	Capabilities []string       `json:"capabilities"`
+	ModelInfo    map[string]any `json:"model_info"`
+}
+
+// contextLength digs the architecture-specific context_length out of
+// the model_info map. Ollama keys it by architecture
+// (`llama.context_length`, `qwen2.context_length`, etc.), so we scan
+// for the first key ending in `.context_length` rather than hardcode
+// every architecture. Falls back to a top-level `context_length` if
+// present.
+func (sr showResponse) contextLength() int64 {
+	if v, ok := sr.ModelInfo["context_length"]; ok {
+		return toInt64(v)
+	}
+	for k, v := range sr.ModelInfo {
+		if strings.HasSuffix(k, ".context_length") {
+			return toInt64(v)
+		}
+	}
+	return 0
+}
+
+// toInt64 coerces JSON numeric values (which decode to float64 by
+// default) and string forms to int64. Returns 0 on any other shape.
+func toInt64(v any) int64 {
+	switch x := v.(type) {
+	case float64:
+		return int64(x)
+	case int:
+		return int64(x)
+	case int64:
+		return x
+	case string:
+		n, _ := strconv.ParseInt(strings.TrimSpace(x), 10, 64)
+		return n
+	}
+	return 0
 }
 
 func (tr tagsResponse) toModels() []ModelInfo {
