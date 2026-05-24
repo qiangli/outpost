@@ -162,6 +162,186 @@ func TestKeepAliveExitsOn401(t *testing.T) {
 	}
 }
 
+// TestRetryBackoff_DoublesUntilCap locks in the wait sequence so a
+// silent regression to a tighter or looser backoff is caught — the
+// values here are what the supervisor depends on.
+func TestRetryBackoff_DoublesUntilCap(t *testing.T) {
+	cases := []struct {
+		n    int
+		want time.Duration
+	}{
+		{1, 30 * time.Second},
+		{2, 60 * time.Second},
+		{3, 120 * time.Second},
+		{4, 240 * time.Second},
+		{5, 5 * time.Minute},   // capped (would be 480s)
+		{10, 5 * time.Minute},  // still capped
+		{100, 5 * time.Minute}, // overflow-safe
+		{0, 30 * time.Second},  // clamps n<1 to 1
+	}
+	for _, tc := range cases {
+		got := retryBackoff(tc.n)
+		if got != tc.want {
+			t.Errorf("retryBackoff(%d) = %v, want %v", tc.n, got, tc.want)
+		}
+	}
+}
+
+// TestKeepAlive_RetriesTransientThenSucceeds drives the retry path:
+// the first 3 pings return 503 (transient), the 4th returns 200.
+// runKeepAlive should not exit; it should retry and reset the
+// failure counter on success.
+func TestKeepAlive_RetriesTransientThenSucceeds(t *testing.T) {
+	saved := keepAliveInterval
+	keepAliveInterval = 10 * time.Millisecond
+	t.Cleanup(func() { keepAliveInterval = saved })
+	// Override backoff to fast values for the test — production
+	// backoff (30s) would make the test glacial.
+	savedCap := keepAliveBackoffCap
+	keepAliveBackoffCap = 5 * time.Millisecond
+	t.Cleanup(func() { keepAliveBackoffCap = savedCap })
+
+	tmp := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	host := "flakyhost"
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		if n <= 3 {
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	u, _ := url.Parse(srv.URL)
+	port, _ := parsePort(u.Port())
+	fc := &conf.FileConfig{
+		ServerAddr: "http://" + u.Hostname(),
+		ServerPort: port,
+		Protocol:   "tcp",
+	}
+	_ = writeCookie(host, "ck")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runKeepAlive(ctx, fc, "tk", host, "ck") }()
+
+	// Wait until we see at least 4 successful pings worth of activity
+	// (3 503s + at least one 200), then cancel and verify clean exit.
+	deadline := time.After(2 * time.Second)
+	for {
+		if hits.Load() >= 4 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("only %d hits within 2s", hits.Load())
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runKeepAlive returned error after recovery: %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("runKeepAlive did not exit within 1s of ctx cancel")
+	}
+}
+
+// TestKeepAlive_GivesUpAfterMaxConsecutive verifies the bounded
+// retry budget — after N consecutive transient errors the loop
+// returns a non-nil error so the supervisor can act.
+func TestKeepAlive_GivesUpAfterMaxConsecutive(t *testing.T) {
+	saved := keepAliveInterval
+	keepAliveInterval = 5 * time.Millisecond
+	t.Cleanup(func() { keepAliveInterval = saved })
+	savedCap := keepAliveBackoffCap
+	keepAliveBackoffCap = 1 * time.Millisecond
+	t.Cleanup(func() { keepAliveBackoffCap = savedCap })
+	savedMax := keepAliveMaxConsecutiveFailures
+	keepAliveMaxConsecutiveFailures = 3
+	t.Cleanup(func() { keepAliveMaxConsecutiveFailures = savedMax })
+
+	tmp := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	host := "deadhost"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "always down", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+
+	u, _ := url.Parse(srv.URL)
+	port, _ := parsePort(u.Port())
+	fc := &conf.FileConfig{
+		ServerAddr: "http://" + u.Hostname(),
+		ServerPort: port,
+		Protocol:   "tcp",
+	}
+	_ = writeCookie(host, "ck")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := runKeepAlive(ctx, fc, "tk", host, "ck")
+	if err == nil {
+		t.Fatal("expected non-nil error after max consecutive failures")
+	}
+	if !strings.Contains(err.Error(), "gave up") {
+		t.Errorf("error should mention 'gave up', got: %v", err)
+	}
+}
+
+// TestKeepAlive_FatalExitsImmediately: a 403 must NOT retry — the
+// cookie is dead and the supervisor needs to know so the operator
+// can re-elevate.
+func TestKeepAlive_FatalExitsImmediately(t *testing.T) {
+	saved := keepAliveInterval
+	keepAliveInterval = 5 * time.Millisecond
+	t.Cleanup(func() { keepAliveInterval = saved })
+
+	tmp := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	host := "revokedhost"
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Error(w, "elevation revoked", http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+
+	u, _ := url.Parse(srv.URL)
+	port, _ := parsePort(u.Port())
+	fc := &conf.FileConfig{
+		ServerAddr: "http://" + u.Hostname(),
+		ServerPort: port,
+		Protocol:   "tcp",
+	}
+	_ = writeCookie(host, "ck")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	err := runKeepAlive(ctx, fc, "tk", host, "ck")
+	if err == nil {
+		t.Fatal("expected error on 403")
+	}
+	if !strings.Contains(err.Error(), "fatal") {
+		t.Errorf("error should be marked 'fatal', got: %v", err)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("403 must NOT be retried; got %d hits, want 1", hits.Load())
+	}
+}
+
 // TestPostElevate_TTLInPayload verifies the --ttl plumbing all the
 // way from the CLI flag down to the elevate POST body. Three cases:
 //

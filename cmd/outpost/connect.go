@@ -168,9 +168,24 @@ func runConnect(ctx context.Context, host, userFlag string, fromStdin, keepAlive
 // every 30 minutes to slide the cloudbox idle TTL. Cloudbox issues a
 // fresh Set-Cookie header when the cookie crosses its halfway-point
 // (30 min into the 1 h window), so we capture the refreshed value and
-// rewrite the cache file. A 401/403 means the absolute 8 h cap was hit
-// — we exit non-zero so a parent supervisor script can re-elevate with
-// a fresh password.
+// rewrite the cache file.
+//
+// Error handling distinguishes:
+//   - Fatal (HTTP 401/403, or an explicit fatalPingError): the cookie
+//     is dead (absolute expiry, revocation, JWT secret rotation). We
+//     return non-zero so the supervisor knows to surface re-elevation
+//     to the operator.
+//   - Transient (network errors, 5xx, 408, 429, build/marshal failures
+//     that could resolve themselves): retry with exponential backoff,
+//     starting at 30 s and capping at 5 min between attempts. After
+//     `keepAliveMaxConsecutiveFailures` (10) consecutive failures we
+//     give up — at 5 min each that's ~50 min of total backoff, which
+//     is well past any realistic cloudbox outage that wouldn't already
+//     trigger a human response.
+//
+// On any successful ping the failure counter resets to zero, so a
+// brief outage in the middle of a long session doesn't burn through
+// the budget.
 func runKeepAlive(ctx context.Context, fc *conf.FileConfig, bearer, host, cookie string) error {
 	pingURL, err := buildPingURL(fc.ServerAddr, fc.ServerPort, fc.Protocol, host)
 	if err != nil {
@@ -180,6 +195,7 @@ func runKeepAlive(ctx context.Context, fc *conf.FileConfig, bearer, host, cookie
 	current := cookie
 	t := time.NewTicker(keepAliveInterval)
 	defer t.Stop()
+	consecutiveFailures := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -189,8 +205,34 @@ func runKeepAlive(ctx context.Context, fc *conf.FileConfig, bearer, host, cookie
 		}
 		next, err := pingElevate(ctx, client, pingURL, bearer, current)
 		if err != nil {
-			return fmt.Errorf("keep-alive ping: %w", err)
+			var fp fatalPingError
+			if errors.As(err, &fp) {
+				return fmt.Errorf("keep-alive ping (fatal): %w", err)
+			}
+			// Transient: retry-with-backoff inside this tick window
+			// rather than waiting a full 30 min. Each attempt waits
+			// retryBackoff(consecutiveFailures); after the run we
+			// either succeeded (continue main loop) or exhausted
+			// the budget (return).
+			consecutiveFailures++
+			if consecutiveFailures > keepAliveMaxConsecutiveFailures {
+				return fmt.Errorf("keep-alive: gave up after %d consecutive transient errors (last: %w)",
+					consecutiveFailures, err)
+			}
+			backoff := retryBackoff(consecutiveFailures)
+			fmt.Fprintf(os.Stderr, "Keep-alive: transient ping error #%d, retrying in %s: %v\n",
+				consecutiveFailures, backoff, err)
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(backoff):
+			}
+			// Don't reset failure counter yet; the next loop iteration
+			// will attempt the ping again. If it succeeds, we reset
+			// below. If it fails again, we count up.
+			continue
 		}
+		consecutiveFailures = 0
 		if next != "" && next != current {
 			if werr := writeCookie(host, next); werr != nil {
 				return fmt.Errorf("rewrite cookie: %w", werr)
@@ -206,10 +248,52 @@ func runKeepAlive(ctx context.Context, fc *conf.FileConfig, bearer, host, cookie
 // briefly expire between pings.
 var keepAliveInterval = 30 * time.Minute
 
+// keepAliveMaxConsecutiveFailures bounds the retry budget for transient
+// ping errors. At max-backoff (5 min) this is ~50 min of total wait,
+// which is well past any realistic cloudbox blip that doesn't already
+// warrant operator intervention.
+var keepAliveMaxConsecutiveFailures = 10
+
+// retryBackoff returns the wait duration before retry attempt n
+// (1-indexed). 30s, 60s, 120s, 240s, 300s (cap), 300s, ... — a
+// doubling sequence saturated at keepAliveBackoffCap. Returning a
+// nonzero value for n=1 is important: the first failure shouldn't
+// retry immediately — that'd hammer a flaky network or a cloudbox
+// that's already overloaded.
+func retryBackoff(n int) time.Duration {
+	if n < 1 {
+		n = 1
+	}
+	base := 30 * time.Second
+	d := base << (n - 1) // 30s, 60s, 120s, 240s, 480s...
+	if d > keepAliveBackoffCap || d <= 0 /* overflow */ {
+		d = keepAliveBackoffCap
+	}
+	return d
+}
+
+var keepAliveBackoffCap = 5 * time.Minute
+
+// fatalPingError marks ping errors the keep-alive loop should NOT
+// retry — auth has broken (401/403), the cookie is dead, the only
+// recovery is operator re-elevation. Wrapping the HTTP status in a
+// dedicated type lets runKeepAlive use errors.As to distinguish it
+// from a 5xx / network blip that's worth retrying.
+type fatalPingError struct {
+	status int
+	body   string
+}
+
+func (e fatalPingError) Error() string {
+	return fmt.Sprintf("ping HTTP %d (cookie no longer valid): %s", e.status, e.body)
+}
+
 // pingElevate POSTs to the ping endpoint with the current cookie and
-// returns the refreshed cookie value if cloudbox slid it (Set-Cookie in
-// the response), else "" to indicate "no change". Errors on 4xx — the
-// caller treats those as fatal (absolute expiry or auth drift).
+// returns the refreshed cookie value if cloudbox slid it (Set-Cookie
+// in the response), else "" to indicate "no change". Distinguishes
+// transient errors (returned as ordinary errors) from fatal auth
+// failures (returned as fatalPingError) — see runKeepAlive for how
+// the two are handled.
 func pingElevate(ctx context.Context, client *http.Client, pingURL, bearer, cookie string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, pingURL, nil)
 	if err != nil {
@@ -219,12 +303,22 @@ func pingElevate(ctx context.Context, client *http.Client, pingURL, bearer, cook
 	req.AddCookie(&http.Cookie{Name: "matrix_elev", Value: cookie})
 	resp, err := client.Do(req)
 	if err != nil {
+		// Transport-level error: DNS, dial refused, TLS, connection
+		// reset, timeout — anything that's network-shaped. Retryable.
 		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return "", fmt.Errorf("ping HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		bodyStr := strings.TrimSpace(string(body))
+		// 401/403 means the cookie is dead. 410 (host removed) is
+		// also fatal. Everything else (408 request timeout, 429 too
+		// many requests, 5xx server errors) is retryable.
+		switch resp.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusGone:
+			return "", fatalPingError{status: resp.StatusCode, body: bodyStr}
+		}
+		return "", fmt.Errorf("ping HTTP %d: %s", resp.StatusCode, bodyStr)
 	}
 	for _, ck := range resp.Cookies() {
 		if ck.Name == "matrix_elev" && ck.Value != "" {
