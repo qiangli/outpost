@@ -155,9 +155,13 @@ func startCmd() *cobra.Command {
 			// proxy registers below. Threaded into the watcher startup
 			// later in this function so the same Counter feeds both the
 			// /_pool/capacity probe and the push registry payload.
-			var ollamaSvc *ollama.Service
+			var (
+				ollamaSvc *ollama.Service
+				ollamaURL string
+			)
 			if fc.OllamaOn() {
 				if bt := agent.DetectOllama(); bt.Available && bt.URL != "" {
+					ollamaURL = bt.URL
 					u, perr := url.Parse(bt.URL)
 					if perr == nil {
 						host := u.Hostname()
@@ -400,10 +404,13 @@ func startCmd() *cobra.Command {
 				if cbBase == "" {
 					slog.Warn("ollama pool: cloudbox URL is empty — watcher disabled")
 				} else {
+					if ollamaURL == "" {
+						ollamaURL = "http://127.0.0.1:11434"
+					}
 					w, werr := ollama.New(ollama.Config{
 						AgentName:   cfg.AgentName,
 						Version:     agent.ReadBuildInfo().Short(),
-						OllamaURL:   "http://127.0.0.1:11434",
+						OllamaURL:   ollamaURL,
 						CloudboxURL: cbBase,
 						AccessToken: fc.AccessToken,
 						Capacity:    ollamaSvc.Counter(),

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -78,18 +79,38 @@ func podmanCandidates() []string {
 	return paths
 }
 
-// DetectOllama probes the default Ollama HTTP endpoint. Ollama doesn't
+// DetectOllama probes the local Ollama HTTP endpoint. Ollama doesn't
 // publish a health endpoint, so we just check that something HTTP-shaped
 // is listening — the daemon answers any path with at least an HTTP
 // status line.
+//
+// Honors $OLLAMA_HOST when set (Ollama's own env-var contract — users
+// who run the daemon on a non-default port set this and expect every
+// tool in the ecosystem to follow). Accepts both bare "host:port" and
+// full "http(s)://host:port" forms. Falls back to the default loopback
+// URL when unset.
 func DetectOllama() BuiltinTarget {
 	bt := BuiltinTarget{
 		Name:   BuiltinOllama,
 		Scheme: "http",
-		URL:    "http://127.0.0.1:11434",
+		URL:    ollamaBaseURL(),
 	}
 	bt.Available = probeHTTP(bt.URL, 300*time.Millisecond)
 	return bt
+}
+
+// ollamaBaseURL resolves the Ollama daemon's HTTP base URL from the
+// environment. Exported via DetectOllama; tests can poke $OLLAMA_HOST
+// directly. Defaults to http://127.0.0.1:11434 — Ollama's own default.
+func ollamaBaseURL() string {
+	h := strings.TrimSpace(os.Getenv("OLLAMA_HOST"))
+	if h == "" {
+		return "http://127.0.0.1:11434"
+	}
+	if strings.Contains(h, "://") {
+		return strings.TrimRight(h, "/")
+	}
+	return "http://" + h
 }
 
 func probeSocket(path string, timeout time.Duration) bool {
