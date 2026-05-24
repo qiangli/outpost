@@ -18,10 +18,34 @@ import (
 	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
-// withTempCacheDir redirects UserCacheDir to a t.TempDir for tests
-// that touch the outbound cookie cache. Resets the env var on
-// cleanup so sibling tests aren't polluted. On macOS UserCacheDir
-// reads HOME; on Linux it honors XDG_CACHE_HOME — we set both.
+// TestMain redirects HOME/XDG_CACHE_HOME to a process-wide
+// throwaway directory for the entire `internal/agent` test binary.
+// Required because OutboundManager.Connect now persists matrix_elev
+// cookies to <UserCacheDir>/outpost/outbounds/ -- without this
+// redirect, every test that exercises Connect would pollute the
+// developer's real ~/Library/Caches/outpost/outbounds/, sometimes
+// stomping on cookies a live outpost is relying on.
+//
+// The dir is removed after the suite runs. Per-test t.TempDir is
+// still preferred for tests that want isolation between subcases;
+// withTempCacheDir below gives them that.
+func TestMain(m *testing.M) {
+	tmp, err := os.MkdirTemp("", "outpost-agent-tests-")
+	if err != nil {
+		// Can't proceed without a sandbox; fail loudly.
+		panic("outbound test setup: mkdir temp: " + err.Error())
+	}
+	_ = os.Setenv("HOME", tmp)
+	_ = os.Setenv("XDG_CACHE_HOME", tmp)
+	code := m.Run()
+	_ = os.RemoveAll(tmp)
+	os.Exit(code)
+}
+
+// withTempCacheDir gives a single test its own isolated cache dir
+// on top of the suite-wide TestMain sandbox. Use it when a test
+// asserts on specific file presence/absence and shouldn't see
+// siblings' cookies.
 func withTempCacheDir(t *testing.T) string {
 	t.Helper()
 	tmp := t.TempDir()
