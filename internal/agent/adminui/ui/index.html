@@ -484,13 +484,16 @@ function renderMain(status, cfg) {
     'Changes save automatically. Toggling a built-in restarts the outpost. Podman/Ollama require the matching daemon to be running on this host.'));
   panelInbound.append(built);
 
-  // Cluster credentials section. Lives in the same "Inbound" panel as
-  // the built-ins because joining the cluster turns this outpost into
-  // a virtual K8s node — conceptually adjacent to "expose podman" /
-  // "expose shell". Token + CA are never sent to the browser; we show
-  // presence flags only.
+  // Cluster status section. The toggle above is the only consent
+  // gate; once flipped on, the outpost auto-fetches a kubeconfig
+  // from cloudbox on next boot using its existing access_token. This
+  // section just reports the current state. The paste-a-kubeconfig
+  // escape hatch lives below under "Advanced" — useful only for
+  // pointing outpost at a non-cloudbox cluster (e.g. local k3s for
+  // dev/PoC) or recovering from a cloudbox outage. Token + CA are
+  // never sent to the browser; we show presence flags only.
   const cluster = el('fieldset', {});
-  cluster.append(el('legend', {}, 'Cluster credentials'));
+  cluster.append(el('legend', {}, 'Cluster status'));
   const cv = cfg.cluster || {};
   const summary = el('div', {class: 'item-row'});
   if (cv.has_token) {
@@ -515,16 +518,27 @@ function renderMain(status, cfg) {
       }
     });
     summary.append(leave);
+  } else if (cv.enabled) {
+    summary.append(el('span', {class: 'grow hint'},
+      'Enabled — outpost will fetch a kubeconfig from cloudbox on next start.'));
   } else {
     summary.append(el('span', {class: 'grow hint'},
-      'No kubeconfig set. Paste one below to join a cluster.'));
+      'Disabled. Flip the Cluster toggle above to join.'));
   }
   cluster.append(summary);
 
+  // Advanced: paste-a-kubeconfig escape hatch. Hidden behind a
+  // <details> so the common case (cloudbox-managed) doesn't see
+  // textarea + buttons it never needs. Open only when the operator
+  // is pointing outpost at a non-cloudbox cluster or recovering
+  // from cloudbox-side credential trouble.
+  const adv = el('details', {style: 'margin-top:0.8rem'});
+  adv.append(el('summary', {style: 'cursor:pointer;font-size:0.9rem;opacity:0.85'},
+    'Advanced: paste a kubeconfig (non-cloudbox clusters)'));
   const ta = el('textarea', {
     rows: '6',
-    placeholder: '# Paste kubeconfig (YAML), e.g. contents of /etc/rancher/k3s/k3s.yaml',
-    style: 'width:100%;font-family:monospace;font-size:0.85rem',
+    placeholder: '# Paste kubeconfig YAML, e.g. contents of /etc/rancher/k3s/k3s.yaml',
+    style: 'width:100%;font-family:monospace;font-size:0.85rem;margin-top:0.5rem',
   });
   const nodeOverride = el('input', {
     type: 'text',
@@ -550,14 +564,15 @@ function renderMain(status, cfg) {
   }
   save.addEventListener('click', () => postKubeconfig(false));
   saveAndJoin.addEventListener('click', () => postKubeconfig(true));
-  cluster.append(ta);
+  adv.append(ta);
   const btnRow = el('div', {style: 'margin-top:0.5rem;display:flex;align-items:center'});
   btnRow.append(nodeOverride, save, el('span', {style: 'margin:0 0.4rem'}), saveAndJoin);
-  cluster.append(btnRow);
-  cluster.append(el('p', {style: 'font-size:0.8rem;opacity:0.7;margin-top:0.8rem'},
-    'The kubeconfig is parsed once; only api_url + token + CA are persisted. ' +
-    'Token + CA never leave this machine — the SPA shows presence flags only. ' +
-    'Save & join also flips the cluster toggle and restarts the outpost.'));
+  adv.append(btnRow);
+  adv.append(el('p', {style: 'font-size:0.8rem;opacity:0.7;margin-top:0.5rem'},
+    'For the cloudbox-managed flow you do not need to paste anything — flip the ' +
+    'Cluster toggle above and outpost fetches its kubeconfig automatically using ' +
+    'the saved access_token. Token + CA never leave this machine.'));
+  cluster.append(adv);
   panelInbound.append(cluster);
 
   // Custom apps section — one row per app, target as a clickable link

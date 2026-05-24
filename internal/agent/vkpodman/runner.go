@@ -167,19 +167,26 @@ func Run(ctx context.Context, opts RunOptions) error {
 	return nil
 }
 
-// ConfigFromCluster builds a kube REST config from a persisted
-// ClusterConfig-shaped triple. Callers in the outpost main path use it;
-// the cmd/outpost-vk PoC uses clientcmd.BuildConfigFromFlags directly.
-func ConfigFromCluster(apiURL, token string, caPEM []byte) (*rest.Config, error) {
+// ConfigFromCluster builds a kube REST config that reads the bearer
+// token from tokenFile rather than baking it into the config. This is
+// the load-bearing detail that makes token rotation work without
+// rebuilding the entire client-go stack: the transport re-reads
+// tokenFile on its own schedule, so a Refresher writing a fresh token
+// to the same file picks up without the controllers noticing.
+//
+// The cmd/outpost-vk PoC uses clientcmd.BuildConfigFromFlags directly
+// because its kubeconfig already inlines a static token (no
+// rotation); only the main agent path goes through this builder.
+func ConfigFromCluster(apiURL, tokenFile string, caPEM []byte) (*rest.Config, error) {
 	if apiURL == "" {
 		return nil, errors.New("vkpodman: empty cluster APIURL")
 	}
-	if token == "" {
-		return nil, errors.New("vkpodman: empty cluster Token")
+	if tokenFile == "" {
+		return nil, errors.New("vkpodman: empty cluster tokenFile path")
 	}
 	cfg := &rest.Config{
-		Host:        apiURL,
-		BearerToken: token,
+		Host:            apiURL,
+		BearerTokenFile: tokenFile,
 	}
 	if len(caPEM) > 0 {
 		cfg.TLSClientConfig.CAData = append([]byte(nil), caPEM...)

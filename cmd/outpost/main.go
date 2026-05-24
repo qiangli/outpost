@@ -45,7 +45,7 @@ func main() {
 		Use:   "outpost",
 		Short: "Pair a home host with the portal and tunnel local apps to it",
 	}
-	root.AddCommand(startCmd(), registerCmd(), stopCmd(), sshProxyCmd(), sshConfigCmd(), connectCmd(), outboundCmd(), jobsCmd(), fgCmd(), bgCmd(), killCmd(), runCmd())
+	root.AddCommand(startCmd(), registerCmd(), stopCmd(), sshProxyCmd(), sshConfigCmd(), connectCmd(), outboundCmd(), jobsCmd(), fgCmd(), bgCmd(), killCmd(), runCmd(), clusterCmd())
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -436,7 +436,7 @@ func startCmd() *cobra.Command {
 			// half-configured cluster section shouldn't prevent the rest
 			// of outpost from running.
 			if fc.ClusterOn() {
-				if err := startClusterRunner(gctx, g, fc); err != nil {
+				if err := startClusterRunner(gctx, g, fc, cfgPath); err != nil {
 					slog.Warn("cluster mode: disabled", "err", err)
 				}
 			}
@@ -476,11 +476,7 @@ func startCmd() *cobra.Command {
 // half-configured Cluster section shouldn't stop the matrix tunnel or
 // admin UI from coming up. The caller logs the returned error and
 // moves on.
-func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig) error {
-	cc := fc.Cluster
-	if cc == nil {
-		return errors.New("missing Cluster section")
-	}
+func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string) error {
 	nodeName := fc.ClusterNodeName()
 	if nodeName == "" {
 		return errors.New("ClusterNodeName empty (agent_name unset?)")
@@ -489,10 +485,52 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 	if !bt.Available || bt.Socket == "" {
 		return fmt.Errorf("podman socket not detected (tried %s)", bt.Socket)
 	}
-	kubeCfg, err := vkpodman.ConfigFromCluster(cc.APIURL, cc.Token, cc.CA)
+
+	// Bootstrap: if we have an outpost access_token and either no
+	// persisted credentials yet or an already-expired ones, ask
+	// cloudbox to mint a fresh kubeconfig and persist it. This is the
+	// "operator flipped the toggle, never pasted anything" path.
+	//
+	// A fetch failure here is non-fatal when we already have cached
+	// credentials (even expired ones — the refresher will retry on
+	// the loop), and fatal otherwise (there's nothing to dial the
+	// apiserver with).
+	cloudboxBase := cloudboxHTTPBase(fc)
+	if shouldFetchKubeconfig(fc) && fc.AccessToken != "" && cloudboxBase != "" {
+		slog.Info("cluster mode: fetching kubeconfig from cloudbox", "node", nodeName, "cloudbox", cloudboxBase)
+		fetched, err := vkpodman.FetchKubeconfig(ctx, cloudboxBase, fc.AccessToken, nodeName)
+		if err != nil {
+			if fc.Cluster == nil || fc.Cluster.Token == "" {
+				return fmt.Errorf("cluster mode: fetch kubeconfig: %w", err)
+			}
+			slog.Warn("cluster mode: fetch failed; falling back to cached credentials",
+				"err", err, "node", nodeName)
+		} else {
+			persistClusterCredential(fc, cfgPath, fetched)
+		}
+	}
+
+	cc := fc.Cluster
+	if cc == nil || cc.APIURL == "" || cc.Token == "" {
+		return errors.New("cluster mode: no usable credentials (no access_token to fetch with, and no pasted kubeconfig either)")
+	}
+
+	// Write the live bearer token to a file so client-go's transport
+	// re-reads it across rotations. Path stays under the agent's
+	// cache dir (mode 0600 — same locality as the pidfile + logs).
+	tokenFile, err := vkpodman.DefaultTokenFilePath()
+	if err != nil {
+		return fmt.Errorf("cluster mode: token-file path: %w", err)
+	}
+	if err := vkpodman.WriteTokenFile(tokenFile, cc.Token); err != nil {
+		return fmt.Errorf("cluster mode: write token-file: %w", err)
+	}
+
+	kubeCfg, err := vkpodman.ConfigFromCluster(cc.APIURL, tokenFile, cc.CA)
 	if err != nil {
 		return err
 	}
+
 	g.Go(func() error {
 		slog.Info("cluster mode: joining", "node", nodeName, "apiserver", cc.APIURL, "podman_socket", bt.Socket)
 		if err := vkpodman.Run(ctx, vkpodman.RunOptions{
@@ -504,7 +542,67 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 		}
 		return nil
 	})
+
+	// Token rotation. Only spin the refresher when we have a working
+	// fetch path (access_token + cloudbox URL); when the operator
+	// pasted a kubeconfig for a non-cloudbox cluster, leave the token
+	// alone — they're responsible for replacing it before expiry.
+	if fc.AccessToken != "" && cloudboxBase != "" {
+		refresher := vkpodman.NewRefresher(vkpodman.RefreshDeps{
+			CloudboxBase:  cloudboxBase,
+			AccessToken:   fc.AccessToken,
+			NodeName:      nodeName,
+			TokenFilePath: tokenFile,
+			OnRotation: func(p *vkpodman.ParsedKubeconfig) {
+				persistClusterCredential(fc, cfgPath, p)
+			},
+		})
+		g.Go(func() error {
+			return refresher.Run(ctx, cc.Token)
+		})
+	}
+
 	return nil
+}
+
+// shouldFetchKubeconfig reports whether the boot path should ask
+// cloudbox for fresh credentials before joining. True when there's no
+// token at all (first-ever join) or when the persisted token has
+// already expired (an outpost that was off long enough to miss its
+// refresh window). Otherwise we trust the cached creds and let the
+// refresher catch up on its own schedule.
+func shouldFetchKubeconfig(fc *conf.FileConfig) bool {
+	if fc.Cluster == nil || fc.Cluster.Token == "" {
+		return true
+	}
+	exp := vkpodman.TokenExpiry(fc.Cluster.Token)
+	if exp.IsZero() {
+		// Non-JWT token (e.g. pasted from a non-cloudbox cluster).
+		// Don't auto-fetch — that path is operator-managed.
+		return false
+	}
+	return time.Now().After(exp)
+}
+
+// persistClusterCredential writes a freshly-fetched (or rotated)
+// kubeconfig triple back into fc.Cluster + saves the FileConfig so a
+// future outpost restart starts from the rotated state without
+// re-fetching. Best-effort: a save failure logs but doesn't undo the
+// in-memory rotation (the next refresh tick will try again).
+func persistClusterCredential(fc *conf.FileConfig, cfgPath string, p *vkpodman.ParsedKubeconfig) {
+	if fc.Cluster == nil {
+		fc.Cluster = &conf.ClusterConfig{Enabled: true}
+	}
+	fc.Cluster.APIURL = p.APIURL
+	fc.Cluster.Token = p.Token
+	fc.Cluster.CA = p.CA
+	if cfgPath == "" {
+		return
+	}
+	if err := conf.SaveFile(cfgPath, fc); err != nil {
+		slog.Warn("cluster mode: rotated credentials but file save failed",
+			"err", err, "path", cfgPath)
+	}
 }
 
 // cloudboxHTTPBase derives the HTTP(S) base URL of cloudbox from the
