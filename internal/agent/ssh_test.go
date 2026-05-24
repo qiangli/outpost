@@ -60,7 +60,7 @@ func newTestSSHServerOpts(t *testing.T, auth hostauth.Authenticator, cloudboxSta
 		t.Fatalf("signer: %v", err)
 	}
 
-	engine.GET("/ssh", sshHandler(signer, auth, "", allowLocalForward, allowRemoteForward, sftpEnabled))
+	engine.GET("/ssh", sshHandler(signer, auth, "", allowLocalForward, allowRemoteForward, true /* allowAgentForward */, sftpEnabled, nil))
 
 	srv := httptest.NewServer(engine)
 	t.Cleanup(srv.Close)
@@ -217,6 +217,49 @@ func TestSSHHandlerExec(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "hi") {
 		t.Errorf("exec stdout = %q, want it to contain 'hi'", out)
+	}
+}
+
+// TestSSHHandlerExecPTY runs `tty` via the SSH exec channel after a
+// pty-req — the `ssh -tt host cmd` shape. Asserts the command saw a
+// real /dev/ttysNN AND that we received the output (regression: an
+// early version closed the master before draining the kernel buffer
+// and lost the bytes).
+func TestSSHHandlerExecPTY(t *testing.T) {
+	currentUser, err := hostauth.CurrentUser()
+	if err != nil || currentUser == "" {
+		t.Skip("cannot determine current OS user")
+	}
+	auth := hostauth.StubAuth{Want: map[string]string{currentUser: "secret"}}
+	wsURL, hostKey := newTestSSHServer(t, auth)
+
+	client, err := dialSSHOverWS(t, wsURL, hostKey, currentUser, "secret")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("new session: %v", err)
+	}
+	defer session.Close()
+
+	// Request a PTY first, then exec the command — exactly what
+	// `ssh -tt host cmd` does on the wire.
+	if err := session.RequestPty("xterm-256color", 24, 80, ssh.TerminalModes{}); err != nil {
+		t.Fatalf("pty-req: %v", err)
+	}
+	out, err := session.Output("tty; echo MARKER=$?")
+	if err != nil {
+		t.Fatalf("exec: %v\noutput: %q", err, out)
+	}
+	s := string(out)
+	if !strings.Contains(s, "/dev/") {
+		t.Errorf("tty output should name a /dev/tty path, got: %q", s)
+	}
+	if !strings.Contains(s, "MARKER=0") {
+		t.Errorf("output should include MARKER=0 (proves drain works), got: %q", s)
 	}
 }
 

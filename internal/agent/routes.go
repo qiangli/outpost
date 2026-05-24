@@ -10,6 +10,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/qiangli/outpost/internal/agent/hostauth"
+	"github.com/qiangli/outpost/internal/agent/peerhosts"
 )
 
 // Deps is what `matrix-agent` (or a future host application) supplies to
@@ -50,6 +51,13 @@ type Deps struct {
 	// loopback-bind story as SSHAllowLocalForward.
 	SSHAllowRemoteForward bool
 
+	// SSHAllowAgentForward gates whether the SSH server accepts
+	// `auth-agent-req@openssh.com` channel-requests (stock `ssh -A`).
+	// Default off here; main.go threads `fc.SSHAllowAgentForwardOn()`
+	// which is default-on. Per-session Unix socket lives in a 0700
+	// tempdir, set as SSH_AUTH_SOCK in the runner env.
+	SSHAllowAgentForward bool
+
 	// SFTPEnabled gates whether the SSH server accepts the "sftp"
 	// subsystem request — required for modern openssh `scp` (8.8+) and
 	// for `sftp` itself. Zero value (false) means rejected; callers must
@@ -62,6 +70,14 @@ type Deps struct {
 	// SSHDisabled is false — callers pass a key loaded via
 	// LoadOrCreateHostKey() at boot.
 	SSHHostKey ssh.Signer
+
+	// PeerHosts widens the SSH `direct-tcpip` destination allowlist to
+	// any hostname registered as a paired outpost in this cloudbox
+	// account, on top of the always-allowed loopback set. Nil → only
+	// loopback destinations (the pre-existing posture). Constructed in
+	// main.go from fc.AccessToken + cloudbox endpoint, so unpaired
+	// outposts pass nil and keep the tight default.
+	PeerHosts *peerhosts.Registry
 }
 
 // RegisterRoutes attaches all matrix-agent routes onto rg. Always mounted
@@ -138,7 +154,7 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	// via the local `outpost ssh-proxy` ProxyCommand helper. Auth gate is
 	// the OS password (same hostauth path as /auth).
 	if !deps.SSHDisabled && deps.SSHHostKey != nil {
-		rg.GET("/ssh", sshHandler(deps.SSHHostKey, auth, deps.AuthURL, deps.SSHAllowLocalForward, deps.SSHAllowRemoteForward, deps.SFTPEnabled))
+		rg.GET("/ssh", sshHandler(deps.SSHHostKey, auth, deps.AuthURL, deps.SSHAllowLocalForward, deps.SSHAllowRemoteForward, deps.SSHAllowAgentForward, deps.SFTPEnabled, deps.PeerHosts))
 	}
 
 	// Reverse-proxy every method (GET/POST/WS upgrades included).

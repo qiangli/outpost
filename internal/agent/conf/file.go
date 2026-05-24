@@ -75,6 +75,17 @@ type FileConfig struct {
 	// session-channel `nc` invocation, so adding this adds no authority.
 	SSHAllowRemoteForward *bool `json:"ssh_allow_remote_forward,omitempty"`
 
+	// SSHAllowAgentForward gates whether the built-in /ssh server accepts
+	// `auth-agent-req@openssh.com` channel requests — the primitive
+	// behind `ssh -A`. Default-on. When enabled, the server creates a
+	// per-session Unix socket and sets SSH_AUTH_SOCK in the runner env;
+	// agent traffic is byte-bridged back to the client via
+	// `auth-agent@openssh.com` channels. Trust model: the SSH-auth-agent
+	// protocol is opaque to the bridge, so the agent can only sign with
+	// keys the client's local ssh-agent already trusts to sign. Disable
+	// here to refuse the channel-request entirely.
+	SSHAllowAgentForward *bool `json:"ssh_allow_agent_forward,omitempty"`
+
 	// SFTPEnabled gates whether the embedded SSH server accepts the
 	// "sftp" subsystem channel. Default-on: modern openssh `scp` (8.8+)
 	// uses sftp under the hood, so leaving this off breaks scp for new
@@ -365,6 +376,14 @@ func (fc *FileConfig) SSHAllowLocalForwardOn() bool {
 // loopback by the agent regardless.
 func (fc *FileConfig) SSHAllowRemoteForwardOn() bool {
 	return fc == nil || fc.SSHAllowRemoteForward == nil || *fc.SSHAllowRemoteForward
+}
+
+// SSHAllowAgentForwardOn reports whether the SSH server should accept
+// `auth-agent-req@openssh.com` channel-request (stock `ssh -A`).
+// Missing field (old configs) defaults to true — the per-session
+// socket is created in a private tempdir with 0600 perms.
+func (fc *FileConfig) SSHAllowAgentForwardOn() bool {
+	return fc == nil || fc.SSHAllowAgentForward == nil || *fc.SSHAllowAgentForward
 }
 
 // PodmanOn reports whether the built-in podman proxy is enabled in this

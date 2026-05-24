@@ -38,6 +38,11 @@ type SessionOptions struct {
 	// Both 0 = skip the initial resize.
 	Cols uint16
 	Rows uint16
+	// Env is an optional set of env-var overrides applied on top of
+	// the daemon's env. The SSH server uses this to stamp
+	// SSH_AUTH_SOCK from per-session agent forwarding (`ssh -A`).
+	// Empty/nil = no overrides.
+	Env map[string]string
 }
 
 // NewSession allocates a PTY pair and constructs the runner. Caller is
@@ -48,10 +53,21 @@ func NewSession(opts SessionOptions) (*Session, error) {
 		return nil, fmt.Errorf("open pty: %w", err)
 	}
 
-	var env = BuildEnv()
-	if opts.Term != "" {
-		env = BuildEnvWith(map[string]string{"TERM": opts.Term})
+	// Merge Term + caller-supplied env overrides (e.g. SSH_AUTH_SOCK
+	// from `ssh -A`) into a single overrides map, then build the env
+	// once. Nil/empty input is fine — BuildEnvWith treats it as no
+	// overrides.
+	var overrides map[string]string
+	if opts.Term != "" || len(opts.Env) > 0 {
+		overrides = make(map[string]string, len(opts.Env)+1)
+		for k, v := range opts.Env {
+			overrides[k] = v
+		}
+		if opts.Term != "" {
+			overrides["TERM"] = opts.Term
+		}
 	}
+	env := BuildEnvWith(overrides)
 
 	runner, err := interp.New(
 		interp.StdIO(pts, pts, pts),
@@ -78,6 +94,35 @@ func NewSession(opts SessionOptions) (*Session, error) {
 
 // Master returns the master fd. The caller pipes WebSocket bytes ↔ this.
 func (s *Session) Master() *os.File { return s.ptm }
+
+// RunOnce parses `command` and runs it once through the PTY-backed
+// runner, then returns. Used by the SSH `exec` path when the client
+// asked for a TTY first (`ssh -tt host cmd`) — the command sees a real
+// /dev/ttysNN so `tty`, `screen -dmS`, etc. behave like they do under
+// real openssh. Caller pipes the channel ↔ s.Master() and tears down
+// the session when RunOnce returns.
+//
+// Returns a POSIX-style exit status (0 = ok, non-zero from the
+// command or from a parse error → 127 / 1).
+func (s *Session) RunOnce(ctx context.Context, command string) uint32 {
+	defer close(s.done)
+
+	parser := syntax.NewParser()
+	file, err := parser.Parse(strings.NewReader(command), "")
+	if err != nil {
+		_, _ = io.WriteString(s.pts, err.Error()+"\r\n")
+		return 127
+	}
+	if err := s.runner.Run(ctx, file); err != nil {
+		var ec interp.ExitStatus
+		if errorsAs(err, &ec) {
+			return uint32(ec)
+		}
+		_, _ = io.WriteString(s.pts, err.Error()+"\r\n")
+		return 1
+	}
+	return 0
+}
 
 // Resize updates the PTY's window size — equivalent to a SIGWINCH inside
 // the runner. cols/rows in characters.
@@ -147,6 +192,15 @@ func (s *Session) Close() error {
 	}
 	return firstErr
 }
+
+// CloseSlave closes the slave (runner-side) PTY fd only, leaving the
+// master open so a reader can drain any kernel-buffered output. Used
+// by the SSH exec-with-pty path: after the runner finishes we close
+// the slave to signal EOF, wait for the PTY→channel goroutine to
+// drain, then Close() the rest. Closing the master prematurely would
+// drop bytes still in the kernel buffer — which is exactly the bug
+// this method was added to fix.
+func (s *Session) CloseSlave() error { return s.pts.Close() }
 
 // Done returns a channel closed after Run returns.
 func (s *Session) Done() <-chan struct{} { return s.done }

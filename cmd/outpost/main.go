@@ -30,6 +30,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/adminui"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
+	"github.com/qiangli/outpost/internal/agent/peerhosts"
 	"github.com/qiangli/outpost/internal/agent/portal"
 )
 
@@ -281,6 +282,21 @@ func startCmd() *cobra.Command {
 				sshHostKey = k
 			}
 
+			// Peer-host registry caches /api/v1/ssh/hosts so the SSH
+			// direct-tcpip allowlist (used for `ssh -J` ProxyJump
+			// between paired outposts) doesn't have to round-trip
+			// cloudbox per channel. Nil when unpaired — the SSH server
+			// then keeps the loopback-only posture.
+			var peers *peerhosts.Registry
+			if fc.AccessToken != "" {
+				peers = peerhosts.New(peerhosts.Config{
+					ServerAddr: cfg.ServerAddr,
+					ServerPort: cfg.ServerPort,
+					Protocol:   cfg.Protocol,
+					Token:      fc.AccessToken,
+				})
+			}
+
 			engine := gin.Default()
 			agent.RegisterRoutes(engine.Group("/"), agent.Deps{
 				AgentName:             cfg.AgentName,
@@ -294,8 +310,10 @@ func startCmd() *cobra.Command {
 				SSHDisabled:           !fc.SSHOn(),
 				SSHAllowLocalForward:  fc.SSHAllowLocalForwardOn(),
 				SSHAllowRemoteForward: fc.SSHAllowRemoteForwardOn(),
+				SSHAllowAgentForward:  fc.SSHAllowAgentForwardOn(),
 				SFTPEnabled:           fc.SFTPOn(),
 				SSHHostKey:            sshHostKey,
+				PeerHosts:             peers,
 			})
 
 			// Bind the local listener first so we know its port before

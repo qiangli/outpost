@@ -28,6 +28,67 @@ func TestSession_ExitWithCodeEndsSession(t *testing.T) {
 	testSessionTerminatesAfter(t, "exit 42\n")
 }
 
+// TestSession_RunOncePTYTty proves that RunOnce attaches the command
+// to a real PTY — the regression for "ssh -tt host tty" returning
+// "not a tty" when the SSH exec path skipped PTY allocation.
+func TestSession_RunOncePTYTty(t *testing.T) {
+	s, err := NewSession(SessionOptions{Term: "dumb", Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer s.Close()
+
+	out := newPtyDrain(s.Master())
+	defer out.stop()
+	defer s.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	statusCh := make(chan uint32, 1)
+	go func() { statusCh <- s.RunOnce(ctx, "tty") }()
+
+	select {
+	case status := <-statusCh:
+		if status != 0 {
+			t.Fatalf("tty exited %d, want 0\noutput:\n%s", status, out.snapshot())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("tty did not finish; output so far:\n%s", out.snapshot())
+	}
+	snap := out.snapshot()
+	if !strings.Contains(snap, "/dev/") {
+		t.Fatalf("tty output should name a /dev/tty path, got:\n%s", snap)
+	}
+}
+
+// TestSession_RunOnceExitCode confirms the runner returns the command's
+// exit status correctly (not always 0).
+func TestSession_RunOnceExitCode(t *testing.T) {
+	s, err := NewSession(SessionOptions{Term: "dumb", Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer s.Close()
+	out := newPtyDrain(s.Master())
+	defer out.stop()
+	defer s.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	statusCh := make(chan uint32, 1)
+	go func() { statusCh <- s.RunOnce(ctx, "exit 42") }()
+	select {
+	case status := <-statusCh:
+		if status != 42 {
+			t.Fatalf("status=%d, want 42", status)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("RunOnce hung; output:\n%s", out.snapshot())
+	}
+}
+
 // TestSession_InvalidCommandKeepsSessionAlive is the regression test for
 // the "shell blowup" bug: typing a non-existent command used to terminate
 // the entire session because the loop treated ExitStatus(127) as an exit
