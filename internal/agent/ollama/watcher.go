@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -87,10 +88,60 @@ type Config struct {
 	Logger *slog.Logger
 }
 
+// WatcherStatus is the diagnostic snapshot the admin UI + `outpost pool
+// status` CLI render. PushCount is total successful pushes since boot
+// (resets on restart); LastError is empty on success and carries the
+// last failure reason while the watcher is in backoff. Running is true
+// from Run() entry until Run() returns.
+type WatcherStatus struct {
+	Running     bool      `json:"running"`
+	LastPushAt  time.Time `json:"last_push_at,omitzero"`
+	LastModels  int       `json:"last_models"`
+	PushCount   int64     `json:"push_count"`
+	LastError   string    `json:"last_error,omitempty"`
+	CloudboxURL string    `json:"cloudbox_url,omitempty"`
+	OllamaURL   string    `json:"ollama_url,omitempty"`
+}
+
 // Watcher polls the local Ollama daemon's model inventory and publishes
 // changes to cloudbox.
 type Watcher struct {
 	cfg Config
+
+	mu    sync.Mutex
+	state WatcherStatus
+}
+
+// Status returns the current diagnostic snapshot. Safe for concurrent
+// use; the admin UI poll calls this on every /api/config refresh.
+func (w *Watcher) Status() WatcherStatus {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	s := w.state
+	s.CloudboxURL = w.cfg.CloudboxURL
+	s.OllamaURL = w.cfg.OllamaURL
+	return s
+}
+
+func (w *Watcher) recordPush(modelCount int) {
+	w.mu.Lock()
+	w.state.LastPushAt = time.Now().UTC()
+	w.state.LastModels = modelCount
+	w.state.LastError = ""
+	w.state.PushCount++
+	w.mu.Unlock()
+}
+
+func (w *Watcher) recordError(err error) {
+	w.mu.Lock()
+	w.state.LastError = err.Error()
+	w.mu.Unlock()
+}
+
+func (w *Watcher) setRunning(v bool) {
+	w.mu.Lock()
+	w.state.Running = v
+	w.mu.Unlock()
 }
 
 // New constructs a Watcher with cfg. Validates the required URLs and
@@ -129,6 +180,8 @@ func (w *Watcher) Run(ctx context.Context) error {
 		<-ctx.Done()
 		return nil
 	}
+	w.setRunning(true)
+	defer w.setRunning(false)
 	w.cfg.Logger.Info("ollama watcher: starting",
 		"poll", w.cfg.PollInterval, "heartbeat", w.cfg.HeartbeatInterval,
 		"ollama", w.cfg.OllamaURL, "cloudbox", w.cfg.CloudboxURL)
@@ -150,9 +203,11 @@ func (w *Watcher) Run(ctx context.Context) error {
 	// pool and expects to see their models in the cloud "soon."
 	if err := w.tick(ctx, &lastSnapshot, &lastPushAt); err != nil {
 		if errors.Is(err, ErrAuthRevoked) {
+			w.recordError(err)
 			return err
 		}
 		backoff = w.bumpBackoff(backoff)
+		w.recordError(err)
 		w.cfg.Logger.Warn("ollama watcher: initial push failed", "err", err, "backoff", backoff)
 	}
 
@@ -175,9 +230,11 @@ func (w *Watcher) Run(ctx context.Context) error {
 		case err == nil:
 			backoff = 0
 		case errors.Is(err, ErrAuthRevoked):
+			w.recordError(err)
 			return err
 		default:
 			backoff = w.bumpBackoff(backoff)
+			w.recordError(err)
 			w.cfg.Logger.Warn("ollama watcher: tick failed", "err", err, "backoff", backoff)
 		}
 	}
@@ -213,6 +270,7 @@ func (w *Watcher) tick(ctx context.Context, lastSnapshot *[]ModelInfo, lastPushA
 	}
 	*lastSnapshot = models
 	*lastPushAt = time.Now()
+	w.recordPush(len(models))
 	if changed {
 		w.cfg.Logger.Info("ollama watcher: pushed model change", "models", len(models))
 	} else {

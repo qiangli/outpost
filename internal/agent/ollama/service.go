@@ -10,8 +10,20 @@ import (
 // /_pool/capacity intercept handler (for cloudbox-side scheduling
 // queries). One Service per Ollama mount; the Counter is shared with
 // the Watcher so all three signals come from the same source.
+//
+// SetWatcher attaches the Watcher after construction (the watcher is
+// built later in main.go because it needs cloudbox URL + access token
+// resolved). Status() then combines watcher state + counter snapshot
+// into one PoolStatus the admin UI + CLI consume.
 type Service struct {
 	counter *Counter
+	watcher *Watcher
+}
+
+// PoolStatus is the unified status read by the admin UI and the CLI.
+type PoolStatus struct {
+	Capacity CapacityReport `json:"capacity"`
+	Watcher  WatcherStatus  `json:"watcher"`
 }
 
 // NewService binds a Service to counter. counter must be non-nil.
@@ -22,6 +34,21 @@ func NewService(counter *Counter) *Service {
 // Counter returns the embedded counter so the Watcher can read live
 // capacity from the same source the proxy middleware writes to.
 func (s *Service) Counter() *Counter { return s.counter }
+
+// SetWatcher records the watcher reference so Status() can include
+// push state. Passing nil is allowed (e.g. when pool is off and the
+// watcher was never built); Status() in that case returns just the
+// capacity slice with an empty WatcherStatus.
+func (s *Service) SetWatcher(w *Watcher) { s.watcher = w }
+
+// Status returns the combined diagnostic snapshot.
+func (s *Service) Status() PoolStatus {
+	out := PoolStatus{Capacity: s.counter.Snapshot()}
+	if s.watcher != nil {
+		out.Watcher = s.watcher.Status()
+	}
+	return out
+}
 
 // WrapProxy is the middleware factory passed to
 // AppRegistry.SetProxyWrap. Every request proxied to the local Ollama

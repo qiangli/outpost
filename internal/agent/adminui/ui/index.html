@@ -482,6 +482,43 @@ function renderMain(status, cfg) {
   built.append(builtList);
   built.append(el('p', {style: 'font-size:0.8rem;opacity:0.7;margin-top:0.8rem'},
     'Changes save automatically. Toggling a built-in restarts the outpost. Podman/Ollama require the matching daemon to be running on this host.'));
+
+  // LLM pool diagnostic — render only when pool is enabled. Shows
+  // the watcher's last-push state + the live in-flight counter so the
+  // operator can confirm cloudbox is hearing from this outpost without
+  // sqlite-spelunking.
+  const pool = cfg.llm_pool || {};
+  if (pool.enabled) {
+    const poolBox = el('div', {style: 'margin-top:0.8rem;padding:0.6rem 0.75rem;border:1px solid #8884;border-radius:6px;background:#2563eb11;font-size:0.85rem;'});
+    poolBox.append(el('div', {style: 'font-weight:600;margin-bottom:0.35rem'}, 'LLM pool status'));
+    const grid = el('div', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.2rem 0.75rem'});
+    const kv = (k, v) => {
+      grid.append(el('span', {style: 'opacity:0.7'}, k));
+      grid.append(el('span', {style: 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace'}, v));
+    };
+    const ago = ts => {
+      if (!ts || ts.startsWith('0001')) return '— (never)';
+      const t = new Date(ts);
+      const s = Math.max(0, Math.round((Date.now() - t.getTime()) / 1000));
+      if (s < 60) return s + 's ago';
+      if (s < 3600) return Math.round(s/60) + 'm ago';
+      return Math.round(s/3600) + 'h ago';
+    };
+    kv('Watcher', pool.running ? 'running' : 'stopped');
+    kv('Last push', ago(pool.last_push_at) + (pool.last_models != null ? ` (${pool.last_models} models)` : ''));
+    kv('Pushes', String(pool.push_count || 0));
+    if (pool.max_parallel) {
+      kv('In flight', `${pool.in_flight || 0} / ${pool.max_parallel}`);
+    }
+    if (pool.last_error) {
+      kv('Last error', pool.last_error);
+    }
+    if (pool.cloudbox_url) kv('Cloudbox', pool.cloudbox_url);
+    if (pool.ollama_url)   kv('Ollama',   pool.ollama_url);
+    poolBox.append(grid);
+    built.append(poolBox);
+  }
+
   panelInbound.append(built);
 
   // Cluster status section. The toggle above is the only consent

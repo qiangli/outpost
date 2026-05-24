@@ -45,7 +45,7 @@ func main() {
 		Use:   "outpost",
 		Short: "Pair a home host with the portal and tunnel local apps to it",
 	}
-	root.AddCommand(startCmd(), registerCmd(), stopCmd(), sshProxyCmd(), sshConfigCmd(), connectCmd(), outboundCmd(), jobsCmd(), fgCmd(), bgCmd(), killCmd(), runCmd(), clusterCmd())
+	root.AddCommand(startCmd(), registerCmd(), stopCmd(), sshProxyCmd(), sshConfigCmd(), connectCmd(), outboundCmd(), jobsCmd(), fgCmd(), bgCmd(), killCmd(), runCmd(), clusterCmd(), poolCmd())
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -244,14 +244,38 @@ func startCmd() *cobra.Command {
 			// even when fc.Outbound is empty.
 			outbound.AutoReconnect()
 
+			// LLM-pool status closure: nil-safe wrapper around the
+			// ollama service so the admin UI's /api/config refresh
+			// can render a live pool diagnostic. When Ollama isn't
+			// enabled (ollamaSvc nil) the closure returns the
+			// zero view, which the SPA renders as "(disabled)".
+			llmPoolStatus := func() adminui.LLMPoolStatusView {
+				if ollamaSvc == nil {
+					return adminui.LLMPoolStatusView{}
+				}
+				st := ollamaSvc.Status()
+				return adminui.LLMPoolStatusView{
+					Running:     st.Watcher.Running,
+					LastPushAt:  st.Watcher.LastPushAt,
+					LastModels:  st.Watcher.LastModels,
+					PushCount:   st.Watcher.PushCount,
+					LastError:   st.Watcher.LastError,
+					MaxParallel: st.Capacity.MaxParallel,
+					InFlight:    st.Capacity.InFlight,
+					CloudboxURL: st.Watcher.CloudboxURL,
+					OllamaURL:   st.Watcher.OllamaURL,
+				}
+			}
+
 			adminSrv, err := adminui.New(adminui.Deps{
-				ConfigPath: cfgPath,
-				ListenAddr: adminAddr,
-				Auth:       hostauth.DefaultAuthenticator(),
-				Apps:       apps,
-				Restart:    restartFn,
-				SessionKey: sessionKey,
-				Outbound:   outbound,
+				ConfigPath:    cfgPath,
+				ListenAddr:    adminAddr,
+				Auth:          hostauth.DefaultAuthenticator(),
+				Apps:          apps,
+				Restart:       restartFn,
+				SessionKey:    sessionKey,
+				Outbound:      outbound,
+				LLMPoolStatus: llmPoolStatus,
 			})
 			if err != nil {
 				return fmt.Errorf("admin ui: %w", err)
@@ -419,6 +443,10 @@ func startCmd() *cobra.Command {
 					if werr != nil {
 						slog.Warn("ollama pool: watcher init failed", "err", werr)
 					} else {
+						// Hand the watcher to the service so Status()
+						// reports last-push state + capacity through
+						// one accessor.
+						ollamaSvc.SetWatcher(w)
 						g.Go(func() error {
 							if err := w.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
 								slog.Warn("ollama pool: watcher exited", "err", err)

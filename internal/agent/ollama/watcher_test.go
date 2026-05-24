@@ -285,6 +285,62 @@ func TestWatcher_BackoffOnFailure(t *testing.T) {
 	}
 }
 
+func TestWatcher_Status_TracksPushAndError(t *testing.T) {
+	tags := &stubTags{bodies: []string{`{"models":[{"name":"a"}]}`}}
+	reg := &capturingRegistry{}
+	w, _, _ := newTestWatcher(t, tags, reg)
+
+	// Pre-Run: Status should be zero-valued (not running).
+	pre := w.Status()
+	if pre.Running || pre.PushCount != 0 || !pre.LastPushAt.IsZero() {
+		t.Fatalf("pre-Run status not zero: %+v", pre)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_ = w.Run(ctx)
+
+	post := w.Status()
+	if post.Running {
+		t.Errorf("post-Run Running=true (should clear when Run exits)")
+	}
+	if post.PushCount < 1 {
+		t.Errorf("PushCount=%d, want >=1", post.PushCount)
+	}
+	if post.LastModels != 1 {
+		t.Errorf("LastModels=%d, want 1", post.LastModels)
+	}
+	if post.LastPushAt.IsZero() {
+		t.Errorf("LastPushAt should be set after a successful push")
+	}
+	if post.LastError != "" {
+		t.Errorf("LastError=%q, want empty after successful push", post.LastError)
+	}
+	if post.CloudboxURL == "" || post.OllamaURL == "" {
+		t.Errorf("Status URLs missing: cloudbox=%q ollama=%q", post.CloudboxURL, post.OllamaURL)
+	}
+}
+
+func TestWatcher_Status_RecordsErrorOnFailure(t *testing.T) {
+	tags := &stubTags{bodies: []string{`{"models":[]}`}}
+	reg := &capturingRegistry{}
+	reg.status.Store(int32(http.StatusInternalServerError))
+	w, _, _ := newTestWatcher(t, tags, reg)
+	w.cfg.PollInterval = 5 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_ = w.Run(ctx)
+
+	post := w.Status()
+	if post.LastError == "" {
+		t.Errorf("LastError should be set after a 5xx push")
+	}
+	if post.PushCount != 0 {
+		t.Errorf("PushCount=%d, want 0 (push never succeeded)", post.PushCount)
+	}
+}
+
 func TestWatcher_PushIncludesCapacity(t *testing.T) {
 	tags := &stubTags{bodies: []string{`{"models":[]}`}}
 	reg := &capturingRegistry{}

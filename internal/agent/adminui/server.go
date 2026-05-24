@@ -69,6 +69,30 @@ type Deps struct {
 	// local-proxy NoRoute handler skips the outbound lookup. main.go
 	// constructs it once per boot and threads it in.
 	Outbound *agent.OutboundManager
+
+	// LLMPoolStatus, when set, is called on each /api/config refresh
+	// to populate the live pool diagnostic block (watcher push state
+	// + in-flight counter). Nil when the pool service wasn't built
+	// (Ollama off, or Ollama daemon undetected). Closure rather than
+	// a concrete type so adminui doesn't import the ollama package.
+	LLMPoolStatus func() LLMPoolStatusView
+}
+
+// LLMPoolStatusView is the wire shape rendered into safeView. Kept
+// here (not in the ollama package) so adminui doesn't depend on the
+// ollama package's internal type names — main.go does the conversion
+// when supplying the closure.
+type LLMPoolStatusView struct {
+	Enabled     bool      `json:"enabled"`
+	Running     bool      `json:"running"`
+	LastPushAt  time.Time `json:"last_push_at,omitzero"`
+	LastModels  int       `json:"last_models"`
+	PushCount   int64     `json:"push_count"`
+	LastError   string    `json:"last_error,omitempty"`
+	MaxParallel int       `json:"max_parallel"`
+	InFlight    int       `json:"in_flight"`
+	CloudboxURL string    `json:"cloudbox_url,omitempty"`
+	OllamaURL   string    `json:"ollama_url,omitempty"`
 }
 
 // Server is the admin HTTP server. Construct with New, then call Serve.

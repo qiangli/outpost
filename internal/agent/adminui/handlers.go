@@ -30,6 +30,20 @@ func (s *Server) loadConfig() (*conf.FileConfig, error) {
 	return fc, nil
 }
 
+// llmPoolStatusView returns the live pool diagnostic for the admin UI.
+// When the pool isn't wired (LLMPoolStatus closure nil) or pool
+// participation is off in the config, returns just {Enabled:false} —
+// the SPA renders that as "(disabled)" rather than hiding the block,
+// so the operator can see why nothing is publishing.
+func (s *Server) llmPoolStatusView(fc *conf.FileConfig) LLMPoolStatusView {
+	if s.deps.LLMPoolStatus == nil {
+		return LLMPoolStatusView{Enabled: fc.OllamaPoolOn()}
+	}
+	v := s.deps.LLMPoolStatus()
+	v.Enabled = fc.OllamaPoolOn()
+	return v
+}
+
 // builtinView is the admin-UI shape for one optional local-daemon proxy
 // (podman/ollama). Enabled reflects the saved config; Available is the
 // live detection result so the UI can grey out the toggle when the
@@ -74,6 +88,7 @@ type safeView struct {
 	Podman               builtinView          `json:"podman"`
 	Ollama               builtinView          `json:"ollama"`
 	OllamaPoolEnabled    bool                 `json:"ollama_pool_enabled"`
+	LLMPool              LLMPoolStatusView    `json:"llm_pool"`
 	Cluster              clusterView          `json:"cluster"`
 	Outbound             []agent.OutboundView `json:"outbound"`
 	Defaults             map[string]string    `json:"defaults"`
@@ -133,6 +148,7 @@ func (s *Server) toSafeView(fc *conf.FileConfig) safeView {
 		Podman:               toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
 		Ollama:               toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
 		OllamaPoolEnabled:    fc.OllamaPoolOn(),
+		LLMPool:              s.llmPoolStatusView(fc),
 		Cluster:              toClusterView(fc),
 		Outbound:             s.outboundList(),
 		Defaults: map[string]string{
