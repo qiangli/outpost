@@ -72,6 +72,7 @@ type safeView struct {
 	SFTPEnabled          bool                 `json:"sftp_enabled"`
 	Podman               builtinView          `json:"podman"`
 	Ollama               builtinView          `json:"ollama"`
+	OllamaPoolEnabled    bool                 `json:"ollama_pool_enabled"`
 	Outbound             []agent.OutboundView `json:"outbound"`
 	Defaults             map[string]string    `json:"defaults"`
 }
@@ -104,6 +105,7 @@ func (s *Server) toSafeView(fc *conf.FileConfig) safeView {
 		SFTPEnabled:          fc.SFTPOn(),
 		Podman:               toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
 		Ollama:               toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
+		OllamaPoolEnabled:    fc.OllamaPoolOn(),
 		Outbound:             s.outboundList(),
 		Defaults: map[string]string{
 			"server_url": "https://ai.dhnt.io",
@@ -263,6 +265,7 @@ type builtinsReq struct {
 	SFTP                 *bool `json:"sftp"`
 	Podman               *bool `json:"podman"`
 	Ollama               *bool `json:"ollama"`
+	OllamaPool           *bool `json:"ollama_pool"`
 }
 
 // handleBuiltins toggles built-in routes (shell/desktop/clipboard/ssh)
@@ -309,6 +312,9 @@ func (s *Server) handleBuiltins(c *gin.Context) {
 	}
 	if req.Ollama != nil {
 		fc.OllamaEnabled = *req.Ollama
+	}
+	if req.OllamaPool != nil {
+		fc.OllamaPoolEnabled = req.OllamaPool
 	}
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

@@ -30,6 +30,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/adminui"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
+	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
 	"github.com/qiangli/outpost/internal/agent/portal"
 )
@@ -150,6 +151,11 @@ func startCmd() *cobra.Command {
 					slog.Warn("podman builtin enabled but daemon not detected — skipping")
 				}
 			}
+			// Ollama pool service, populated when the built-in ollama
+			// proxy registers below. Threaded into the watcher startup
+			// later in this function so the same Counter feeds both the
+			// /_pool/capacity probe and the push registry payload.
+			var ollamaSvc *ollama.Service
 			if fc.OllamaOn() {
 				if bt := agent.DetectOllama(); bt.Available && bt.URL != "" {
 					u, perr := url.Parse(bt.URL)
@@ -169,6 +175,20 @@ func startCmd() *cobra.Command {
 							slog.Warn("ollama builtin: register", "err", err)
 						} else {
 							slog.Info("ollama builtin: registered", "target", bt.URL)
+							// Decorate the registered ollama mount so the
+							// pool router on cloudbox can find it (capabilities)
+							// AND wire the per-request counter + capacity probe
+							// (intercept + proxy wrap). Both pieces stay no-ops
+							// when fc.OllamaPoolOn() is false — the watcher
+							// is what actually publishes; the counter just
+							// observes locally. The marginal cost of always
+							// instrumenting is one atomic per generation
+							// request, which is invisible next to the
+							// upstream Ollama latency.
+							apps.SetCapabilities(agent.BuiltinOllama, &agent.AppCapabilities{Type: "llm"})
+							ollamaSvc = ollama.NewService(ollama.NewCounter())
+							apps.SetProxyWrap(agent.BuiltinOllama, ollamaSvc.WrapProxy)
+							apps.AddIntercept(agent.BuiltinOllama, "/_pool/capacity", ollamaSvc.CapacityHandler())
 						}
 					}
 				} else {
@@ -368,6 +388,38 @@ func startCmd() *cobra.Command {
 				slog.Info("matrix-agent: dialing matrix tunnel", "server", cfg.ServerAddr, "port", cfg.ServerPort, "remotePort", cfg.RemotePort)
 				return tunnel.Run(gctx)
 			})
+			// Ollama pool watcher — only spins up when the user opted
+			// into the shared pool AND the local Ollama proxy actually
+			// registered (ollamaSvc != nil). The watcher itself tolerates
+			// an empty access_token (just blocks on ctx) so unpaired
+			// hosts in a half-configured state don't crash; the gate
+			// here is mostly to avoid the "watcher started but did
+			// nothing" log noise.
+			if fc.OllamaPoolOn() && ollamaSvc != nil {
+				cbBase := cloudboxHTTPBase(fc)
+				if cbBase == "" {
+					slog.Warn("ollama pool: cloudbox URL is empty — watcher disabled")
+				} else {
+					w, werr := ollama.New(ollama.Config{
+						AgentName:   cfg.AgentName,
+						Version:     agent.ReadBuildInfo().Short(),
+						OllamaURL:   "http://127.0.0.1:11434",
+						CloudboxURL: cbBase,
+						AccessToken: fc.AccessToken,
+						Capacity:    ollamaSvc.Counter(),
+					})
+					if werr != nil {
+						slog.Warn("ollama pool: watcher init failed", "err", werr)
+					} else {
+						g.Go(func() error {
+							if err := w.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+								slog.Warn("ollama pool: watcher exited", "err", err)
+							}
+							return nil
+						})
+					}
+				}
+			}
 			g.Go(func() error {
 				<-gctx.Done()
 				slog.Info("matrix-agent: shutting down")

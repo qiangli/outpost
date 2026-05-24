@@ -33,11 +33,29 @@ import (
 //     when constructing this app's tile URL. Empty = "/". Enables the
 //     "virtual app" pattern (two AppConfig rows on the same upstream
 //     opening at different paths) without any proxy-side rewriting.
+//   - Capabilities: optional typed-app advertisement. Currently used
+//     for the built-in ollama proxy to surface {type:"llm"} so cloudbox
+//     can fold it into the model pool without a separate probe. Nil
+//     for everything else; omitted from JSON when nil (old cloudbox
+//     ignores the field).
 type AppEntry struct {
-	Name         string `json:"name"`
-	Scheme       string `json:"scheme,omitempty"`
-	RequireLogin bool   `json:"require_login"`
-	IndexPath    string `json:"index_path,omitempty"`
+	Name         string           `json:"name"`
+	Scheme       string           `json:"scheme,omitempty"`
+	RequireLogin bool             `json:"require_login"`
+	IndexPath    string           `json:"index_path,omitempty"`
+	Capabilities *AppCapabilities `json:"capabilities,omitempty"`
+}
+
+// AppCapabilities is a free-form typed-app descriptor. Type is the
+// only required field — it tells cloudbox "treat this app as a thing
+// of class X." Currently the only recognized value is "llm" (for the
+// built-in ollama proxy); cloudbox feature-detects unknown types so
+// adding more later is backwards-compatible.
+//
+// Pointer-shaped so a missing Capabilities serializes as null/omit
+// rather than as an empty object.
+type AppCapabilities struct {
+	Type string `json:"type"`
 }
 
 // AppRegistry maps app names (e.g. "ycode") to the local URL they live at
@@ -59,11 +77,32 @@ type AppRegistry struct {
 	requireLogin map[string]bool
 	lanOnly      map[string][]string
 	indexPath    map[string]string
+	capabilities map[string]*AppCapabilities
+	// intercepts is a per-app list of path-prefix → handler bindings.
+	// When a /app/<name>/<rest> request matches one of an app's
+	// intercept prefixes, the intercept fires instead of forwarding to
+	// the reverse proxy. Used to attach metadata endpoints (e.g.
+	// /_pool/capacity) on the same mount the rest of the app proxy
+	// uses, so they ride the existing RequireLogin gate.
+	intercepts map[string][]appIntercept
+	// proxyWrap is an optional per-app middleware applied to the
+	// reverse proxy's ServeHTTP. Used for in-flight request counting.
+	// Nil entries pass through unchanged.
+	proxyWrap map[string]func(http.Handler) http.Handler
 	// tcp holds the raw host:port destination for tcp-scheme apps. Its
 	// key set is disjoint from `proxy` — TCP apps don't speak HTTP, so
 	// they get a dedicated WS↔TCP bridge handler rather than the
 	// ReverseProxy path.
 	tcp map[string]string
+}
+
+// appIntercept binds a path-prefix to a handler that pre-empts the
+// reverse proxy for requests under one app. Prefix matching is
+// segment-anchored so "/_pool" hits "/_pool" and "/_pool/foo" but not
+// "/_poolish".
+type appIntercept struct {
+	prefix  string
+	handler http.Handler
 }
 
 func NewAppRegistry() *AppRegistry {
@@ -73,8 +112,45 @@ func NewAppRegistry() *AppRegistry {
 		requireLogin: map[string]bool{},
 		lanOnly:      map[string][]string{},
 		indexPath:    map[string]string{},
+		capabilities: map[string]*AppCapabilities{},
+		intercepts:   map[string][]appIntercept{},
+		proxyWrap:    map[string]func(http.Handler) http.Handler{},
 		tcp:          map[string]string{},
 	}
+}
+
+// AddIntercept binds prefix → h under app `name`. Subsequent requests
+// to /app/<name>/<rest> whose rest matches prefix (segment-anchored)
+// are handled by h instead of forwarded to the reverse proxy. Multiple
+// intercepts may be registered on the same app; matching is in
+// registration order, longest prefix wins for equal-tied entries.
+//
+// No-op when name is unknown — the caller might decorate before the
+// app's main proxy is registered; the metadata sticks until somebody
+// queries Entries() (which doesn't care about intercepts) or the user
+// calls Unregister (which wipes everything).
+func (r *AppRegistry) AddIntercept(name, prefix string, h http.Handler) {
+	if prefix == "" || h == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.intercepts[name] = append(r.intercepts[name], appIntercept{prefix: prefix, handler: h})
+}
+
+// SetProxyWrap attaches a middleware applied to the reverse-proxy
+// handler when /app/<name>/<rest> proxies a non-intercept request.
+// Passing nil clears any existing wrapper. Useful for instrumentation
+// that needs to wrap the proxy itself (e.g. in-flight counters) rather
+// than serve a sub-path.
+func (r *AppRegistry) SetProxyWrap(name string, wrap func(http.Handler) http.Handler) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if wrap == nil {
+		delete(r.proxyWrap, name)
+		return
+	}
+	r.proxyWrap[name] = wrap
 }
 
 // AppMeta carries the access-control + display fields the registry
@@ -84,6 +160,10 @@ type AppMeta struct {
 	RequireLogin bool
 	LANOnlyPaths []string
 	IndexPath    string
+	// Capabilities is the optional typed-app advertisement (e.g.
+	// {Type:"llm"} for the built-in ollama proxy). Nil for vanilla
+	// HTTP apps.
+	Capabilities *AppCapabilities
 }
 
 // Register adds (or replaces) an app entry with the default
@@ -170,6 +250,7 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 	r.requireLogin[name] = meta.RequireLogin
 	r.lanOnly[name] = append([]string(nil), meta.LANOnlyPaths...)
 	r.indexPath[name] = meta.IndexPath
+	r.capabilities[name] = meta.Capabilities
 	// Mode swap: an HTTP register wins over any prior tcp entry with the
 	// same name. (Re-registers in the other direction do the inverse in
 	// registerTCP.)
@@ -213,6 +294,7 @@ func (r *AppRegistry) Entries() []AppEntry {
 			Scheme:       scheme,
 			RequireLogin: r.requireLogin[name],
 			IndexPath:    r.indexPath[name],
+			Capabilities: r.capabilities[name],
 		})
 	}
 	for name := range r.tcp {
@@ -221,6 +303,7 @@ func (r *AppRegistry) Entries() []AppEntry {
 			Scheme:       "tcp",
 			RequireLogin: r.requireLogin[name],
 			IndexPath:    r.indexPath[name],
+			Capabilities: r.capabilities[name],
 		})
 	}
 	return out
@@ -250,6 +333,9 @@ func (r *AppRegistry) Unregister(name string) {
 	delete(r.requireLogin, name)
 	delete(r.lanOnly, name)
 	delete(r.indexPath, name)
+	delete(r.capabilities, name)
+	delete(r.intercepts, name)
+	delete(r.proxyWrap, name)
 	delete(r.tcp, name)
 	r.mu.Unlock()
 }
@@ -321,8 +407,27 @@ func (r *AppRegistry) registerTCP(name, addr string, meta AppMeta) error {
 	r.requireLogin[name] = meta.RequireLogin
 	r.lanOnly[name] = append([]string(nil), meta.LANOnlyPaths...)
 	r.indexPath[name] = meta.IndexPath
+	r.capabilities[name] = meta.Capabilities
 	r.mu.Unlock()
 	return nil
+}
+
+// SetCapabilities attaches (or clears, when caps is nil) a typed-app
+// descriptor to an already-registered app. The capabilities-via-AppMeta
+// path is for callers that construct the meta themselves; this helper
+// is for the boot path in main.go, where built-ins register via
+// RegisterFromConfig (which doesn't carry capability info) and then
+// the caller decorates by name. No-op when name is unknown — we don't
+// want a typo at boot to crash the agent.
+func (r *AppRegistry) SetCapabilities(name string, caps *AppCapabilities) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, http := r.apps[name]; !http {
+		if _, tcp := r.tcp[name]; !tcp {
+			return
+		}
+	}
+	r.capabilities[name] = caps
 }
 
 // socketTransport returns an http.Transport whose DialContext routes every
@@ -367,6 +472,8 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	tcpAddr := r.tcp[name]
 	requireLogin := r.requireLogin[name]
 	lanOnly := r.lanOnly[name]
+	intercepts := r.intercepts[name]
+	wrap := r.proxyWrap[name]
 	r.mu.RUnlock()
 	// Two-rule cloud-side gate. Both rules apply only when the inbound
 	// request carries X-Forwarded-Prefix (i.e. came via cloudbox).
@@ -393,6 +500,13 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 			}
 		}
 	}
+	// Per-app intercept (e.g. /_pool/capacity on the ollama mount).
+	// Runs after the cloud-side gate so intercepts inherit the same
+	// auth posture as the proxy itself.
+	if h := matchIntercept(intercepts, rest); h != nil {
+		h.ServeHTTP(c.Writer, c.Request)
+		return
+	}
 	if tcpAddr != "" {
 		serveTCPBridge(c, name, tcpAddr)
 		return
@@ -410,7 +524,23 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	// target.Path twice for apps with a non-empty upstream base path.
 	c.Request.URL.Path = rest
 	c.Request.URL.RawPath = ""
-	rp.ServeHTTP(c.Writer, c.Request)
+	var h http.Handler = rp
+	if wrap != nil {
+		h = wrap(rp)
+	}
+	h.ServeHTTP(c.Writer, c.Request)
+}
+
+// matchIntercept returns the first intercept whose prefix is a
+// segment-anchored prefix of rest. Iterates in registration order so
+// callers can rely on first-registered-wins.
+func matchIntercept(ints []appIntercept, rest string) http.Handler {
+	for _, it := range ints {
+		if matchSegmentPrefix(rest, it.prefix) {
+			return it.handler
+		}
+	}
+	return nil
 }
 
 // matchSegmentPrefix reports whether path begins with prefix at a

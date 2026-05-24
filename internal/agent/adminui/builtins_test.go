@@ -77,6 +77,65 @@ func TestBuiltinsTogglePodmanOllama(t *testing.T) {
 	}
 }
 
+// TestBuiltinsToggleOllamaPool — pool participation is a separate
+// toggle from Ollama itself. Default-on when Ollama is on, but a user
+// can explicitly opt out to keep their local Ollama private.
+func TestBuiltinsToggleOllamaPool(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "agent.json")
+	// Pair + enable Ollama so the pool toggle is operative.
+	on := true
+	if err := conf.SaveFile(configPath, &conf.FileConfig{
+		AgentName:     "h",
+		OllamaEnabled: true,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	user, err := hostauth.CurrentUser()
+	if err != nil || user == "" {
+		t.Skip("cannot determine OS user")
+	}
+	s := newTestServer(t, configPath, map[string]string{user: "secret"}, nil)
+	w := doJSON(s, http.MethodPost, "/api/login", map[string]string{"user": user, "password": "secret"}, "")
+	cookie := extractCookie(w, cookieName)
+	if cookie == "" {
+		t.Fatal("missing session cookie after login")
+	}
+
+	// /api/config reflects pool default-on when Ollama is on.
+	w = doJSON(s, http.MethodGet, "/api/config", nil, cookie)
+	var view struct {
+		OllamaPoolEnabled bool `json:"ollama_pool_enabled"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &view)
+	if !view.OllamaPoolEnabled {
+		t.Fatal("pool default should be on when Ollama is on")
+	}
+
+	// Operator opts out.
+	w = doJSON(s, http.MethodPost, "/api/config/builtins",
+		map[string]any{"ollama_pool": false}, cookie)
+	if w.Code != http.StatusOK {
+		t.Fatalf("toggle pool off: %d %s", w.Code, w.Body.String())
+	}
+	fc, _ := conf.LoadFile(configPath)
+	if fc.OllamaPoolOn() {
+		t.Fatal("pool should be off after explicit opt-out")
+	}
+
+	// Opting back in by passing true through.
+	w = doJSON(s, http.MethodPost, "/api/config/builtins",
+		map[string]any{"ollama_pool": true}, cookie)
+	if w.Code != http.StatusOK {
+		t.Fatalf("toggle pool on: %d %s", w.Code, w.Body.String())
+	}
+	fc, _ = conf.LoadFile(configPath)
+	if !fc.OllamaPoolOn() {
+		t.Fatal("pool should be on after explicit opt-in")
+	}
+	_ = on
+}
+
 // TestUpsertAppAcceptsURL — POST /api/apps with a single "url" field
 // splits cleanly into scheme/host/port (or scheme/socket) on the server.
 func TestUpsertAppAcceptsURL(t *testing.T) {

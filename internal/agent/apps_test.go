@@ -91,6 +91,190 @@ func TestRegisterWithMeta_Defaults(t *testing.T) {
 	}
 }
 
+// TestSetCapabilities_PropagatesToEntries: SetCapabilities decorates a
+// registered app, and the descriptor flows through to Entries() so the
+// /apps publish includes it for cloudbox's pool router.
+func TestSetCapabilities_PropagatesToEntries(t *testing.T) {
+	reg := NewAppRegistry()
+	if err := reg.Register("ollama", "http://127.0.0.1:11434"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	// Pre-decoration: capabilities absent.
+	for _, e := range reg.Entries() {
+		if e.Name == "ollama" && e.Capabilities != nil {
+			t.Errorf("pre-decoration Capabilities=%v, want nil", e.Capabilities)
+		}
+	}
+	reg.SetCapabilities("ollama", &AppCapabilities{Type: "llm"})
+	found := false
+	for _, e := range reg.Entries() {
+		if e.Name == "ollama" {
+			found = true
+			if e.Capabilities == nil || e.Capabilities.Type != "llm" {
+				t.Errorf("Capabilities=%v, want {Type:llm}", e.Capabilities)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("ollama entry missing from Entries()")
+	}
+}
+
+// TestSetCapabilities_UnknownNameIsNoOp: typo at boot must not crash —
+// SetCapabilities silently ignores names it doesn't know.
+func TestSetCapabilities_UnknownNameIsNoOp(t *testing.T) {
+	reg := NewAppRegistry()
+	reg.SetCapabilities("does-not-exist", &AppCapabilities{Type: "llm"})
+	for _, e := range reg.Entries() {
+		if e.Name == "does-not-exist" {
+			t.Errorf("unknown name created an entry: %+v", e)
+		}
+	}
+}
+
+// TestUnregister_ClearsCapabilities: removing an app must also drop the
+// capabilities map entry so a later re-register doesn't inherit stale
+// metadata.
+func TestUnregister_ClearsCapabilities(t *testing.T) {
+	reg := NewAppRegistry()
+	if err := reg.Register("ollama", "http://127.0.0.1:11434"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	reg.SetCapabilities("ollama", &AppCapabilities{Type: "llm"})
+	reg.Unregister("ollama")
+	if err := reg.Register("ollama", "http://127.0.0.1:11434"); err != nil {
+		t.Fatalf("Re-register: %v", err)
+	}
+	for _, e := range reg.Entries() {
+		if e.Name == "ollama" && e.Capabilities != nil {
+			t.Errorf("after Unregister+Register, Capabilities=%v, want nil", e.Capabilities)
+		}
+	}
+}
+
+// TestIntercept_ServesInsteadOfProxy: AddIntercept binds a path-prefix
+// handler that fires for matching requests instead of forwarding to the
+// reverse proxy. Used by the ollama pool wiring to mount
+// /_pool/capacity on the same /app/ollama/* tree.
+func TestIntercept_ServesInsteadOfProxy(t *testing.T) {
+	reg := NewAppRegistry()
+	if err := reg.Register("ollama", "http://127.0.0.1:65535"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	reg.AddIntercept("ollama", "/_pool", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "from-intercept")
+	}))
+
+	front := httptest.NewServer(newTestRouter(reg))
+	t.Cleanup(front.Close)
+
+	resp, err := http.Get(front.URL + "/app/ollama/_pool/capacity")
+	if err != nil {
+		t.Fatalf("intercept request: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if got := string(body); got != "from-intercept" {
+		t.Errorf("intercept body=%q, want from-intercept", got)
+	}
+}
+
+// TestSetProxyWrap_AppliesMiddleware: SetProxyWrap wraps the underlying
+// reverse proxy so callers can instrument every proxied request. The
+// wrapper sees the request before the reverse proxy does.
+func TestSetProxyWrap_AppliesMiddleware(t *testing.T) {
+	// Stand up a tiny upstream so the reverse proxy has somewhere to go.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "upstream-"+r.Header.Get("X-Wrapped"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	reg := NewAppRegistry()
+	if err := reg.Register("ollama", upstream.URL); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	reg.SetProxyWrap("ollama", func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Header.Set("X-Wrapped", "yes")
+			next.ServeHTTP(w, r)
+		})
+	})
+
+	front := httptest.NewServer(newTestRouter(reg))
+	t.Cleanup(front.Close)
+
+	resp, err := http.Get(front.URL + "/app/ollama/ping")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if got := string(body); got != "upstream-yes" {
+		t.Errorf("body=%q, want upstream-yes (proxy wrap should have stamped the header)", got)
+	}
+}
+
+// TestProxy_PreservesPeriscopeUser: cloudbox stamps X-Periscope-User on
+// authenticated forwards. The reverse proxy must pass it through to the
+// upstream so the upstream (and any future audit hook) can attribute
+// the request. ReverseProxy strips some forwarded headers by default;
+// the X-Periscope-* family is not one of them and should ride along.
+func TestProxy_PreservesPeriscopeUser(t *testing.T) {
+	gotUser := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case gotUser <- r.Header.Get("X-Periscope-User"):
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	reg := NewAppRegistry()
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "ollama", Scheme: "http",
+		Host:    strings.TrimPrefix(strings.SplitN(upstream.URL, ":", 3)[1], "//"),
+		Port:    parsePort(t, upstream.URL),
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	front := httptest.NewServer(newTestRouter(reg))
+	t.Cleanup(front.Close)
+
+	req, _ := http.NewRequest("POST", front.URL+"/app/ollama/api/chat", nil)
+	req.Header.Set("X-Forwarded-Prefix", "/h/novicortex/app/ollama")
+	req.Header.Set("X-Periscope-User", "qiang@example.com")
+	req.Header.Set("X-Periscope-Role", "user")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	select {
+	case u := <-gotUser:
+		if u != "qiang@example.com" {
+			t.Errorf("upstream saw X-Periscope-User=%q, want qiang@example.com", u)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("upstream never received the request")
+	}
+}
+
+func parsePort(t *testing.T, urlStr string) int {
+	t.Helper()
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		t.Fatalf("parse url %q: %v", urlStr, err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("parse port from %q: %v", urlStr, err)
+	}
+	return port
+}
+
 // TestRegisterFromConfig_RequireLoginPropagates: AppConfig.RequireLogin
 // flows into the registry's Entries() output so /apps publishes the
 // owner's declarations to the cloud.

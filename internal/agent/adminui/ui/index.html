@@ -423,13 +423,25 @@ function renderMain(status, cfg) {
     {key: 'sftp', label: 'SFTP subsystem (scp/sftp)', enabled: cfg.sftp_enabled},
     {key: 'podman', label: 'Podman', daemon: cfg.podman || {}},
     {key: 'ollama', label: 'Ollama', daemon: cfg.ollama || {}},
+    // Pool participation rides on Ollama — disabled (dimmed) when Ollama itself is off.
+    // Default is on whenever Ollama is on, so new operators contribute to the shared
+    // pool by enabling Ollama alone; explicit-off here keeps the local proxy private.
+    {key: 'ollama_pool', label: 'Share Ollama with LLM pool',
+     enabled: !!cfg.ollama_pool_enabled, gatedBy: cfg.ollama || {}},
   ];
   for (const item of builtinRows) {
     const isDaemon = !!item.daemon;
+    // gatedBy: the row mirrors another built-in's enablement (e.g. the
+    // Ollama-pool toggle only makes sense when Ollama itself is on).
+    // Treated as a daemon-like disabled state so the visual cue is
+    // consistent.
+    const isGated = !!item.gatedBy;
+    const gateOK = !isGated || !!item.gatedBy.enabled;
     const enabled = isDaemon ? !!item.daemon.enabled : !!item.enabled;
     const available = isDaemon ? !!item.daemon.available : true;
-    const row = el('div', {class: 'item-row' + (isDaemon && !available ? ' dim' : '')});
-    const sw = switchEl({checked: enabled, disabled: isDaemon && !available});
+    const disabled = (isDaemon && !available) || (isGated && !gateOK);
+    const row = el('div', {class: 'item-row' + (disabled ? ' dim' : '')});
+    const sw = switchEl({checked: enabled && gateOK, disabled: disabled});
     sw.input.addEventListener('change', async () => {
       const newVal = sw.input.checked;
       sw.input.disabled = true;
@@ -450,6 +462,9 @@ function renderMain(status, cfg) {
       } else if (item.daemon.target) {
         row.append(el('span', {class: 'hint'}, item.daemon.target));
       }
+    }
+    if (isGated && !gateOK) {
+      row.append(el('span', {class: 'hint'}, '(enable Ollama first)'));
     }
     builtList.append(row);
   }

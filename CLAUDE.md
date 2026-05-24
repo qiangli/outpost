@@ -202,6 +202,21 @@ Constraints / behavior:
 
 Optional local-daemon proxies: `podman` and `ollama`. `DetectPodman()` probes the usual rootless/root socket paths; `DetectOllama()` probes `http://127.0.0.1:11434`. The returned `BuiltinTarget{Available bool, Socket/URL string}` lets the admin UI grey out toggles for daemons that aren't installed (still showing "tried <path>"). When enabled they register into the same `AppRegistry` as user-defined apps at boot, so flipping `PodmanEnabled` / `OllamaEnabled` from the admin UI triggers a self-restart.
 
+### Ollama LLM pool (`internal/agent/ollama/`)
+
+Beyond the per-host `/app/ollama/...` proxy described above, an outpost can join a **multi-host virtual LLM pool** that cloudbox fronts as a single OpenAI-compatible endpoint (`/v1/chat/completions`, `/v1/models`, etc.). The pool routes by model presence: a request for `llama3.2:1b` lands on whichever participating outpost actually has that model loaded. The outpost-side contribution is three small surfaces — registry push, capacity hint, and capabilities advertisement — all wired only when `fc.OllamaPoolOn()` (default-on whenever `OllamaEnabled` is on; explicit-off keeps the local Ollama private).
+
+- **Registry push (`internal/agent/ollama/watcher.go`)** — every 30 s the watcher GETs the local daemon's `/api/tags`, diffs against the last published snapshot, and (on change OR every 5 min as a heartbeat) POSTs to `<cloudbox>/api/v1/llm/registry` with `Authorization: Bearer <access_token>`. Payload is `RegistryPushPayload{agent_name, version, heartbeat_at, models:[], capacity:{}}` defined in `types.go`. A 401 from cloudbox returns `ErrAuthRevoked` (pairing was pulled cloud-side); 5xx / network errors back off exponentially (5 s → 5 min cap) and retry. No access_token == no-op (the watcher logs once and blocks on ctx). Started under the same errgroup as the tunnel in `cmd/outpost/main.go`.
+- **Capacity probe (`/app/ollama/_pool/capacity`)** — a per-app intercept mounted on the same `/app/ollama/*` tree the daemon proxy uses, so cloudbox reaches it through the existing per-(host, app) `matrix_elev` cookie authority. Returns `CapacityReport{max_parallel, in_flight}` as JSON. `max_parallel` is read once at boot from `$OLLAMA_NUM_PARALLEL` (default 4); `in_flight` is a live atomic counter incremented by `Counter.Wrap` for the duration of any request whose path matches a generation endpoint (`/api/chat`, `/api/generate`, `/api/embed*`, `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`). Non-generation paths (`/api/tags`, `/api/show`, `/api/ps`) pass through without bumping the counter. Same counter is shared with the watcher so push payload + capacity endpoint report identical numbers.
+- **Capabilities advertisement** — when the ollama built-in registers, `apps.SetCapabilities("ollama", &AppCapabilities{Type:"llm"})` decorates the `/apps` entry so cloudbox's pool router can discover ollama-bearing outposts without a separate probe. `AppEntry.Capabilities` is `omitempty` — old cloudbox ignores the field.
+
+**AppRegistry extension surface** (used by the ollama wiring, generic enough for future built-ins):
+- `AddIntercept(name, prefix, http.Handler)` — binds a path-prefix handler that pre-empts the reverse proxy for matching requests under one app. Segment-anchored prefix match (so `/_pool` hits `/_pool/capacity` but not `/_poolish`). Used to mount metadata endpoints on the same auth-gated tree as the app itself.
+- `SetProxyWrap(name, func(http.Handler) http.Handler)` — wraps the reverse proxy with middleware. Used for the in-flight counter. Passing nil clears.
+- `SetCapabilities(name, *AppCapabilities)` — decorates an existing entry with a typed-app descriptor. No-op when name is unknown (so a typo at boot doesn't crash).
+
+`OllamaPoolEnabled *bool` in `FileConfig` is the operator toggle (admin UI surfaces it under the Ollama row, dimmed when Ollama itself is off). Pool participation requires Ollama enabled + AccessToken present (paired). Push protocol contract lives in `internal/agent/ollama/types.go` — cloudbox decodes the same types from the request body.
+
 ## Conventions worth knowing
 
 - "matrix-agent" and "outpost" refer to the same thing — older log messages say `matrix-agent:`. The portal-side namespace is "matrix"; the binary was renamed to "outpost" later.

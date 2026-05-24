@@ -116,3 +116,29 @@ func TestSaveFileAtomic(t *testing.T) {
 		t.Errorf("saved JSON = %s", raw)
 	}
 }
+
+// TestOllamaPoolOn — pool participation is gated by OllamaOn, but
+// once that's true the default with no explicit toggle is "on" so the
+// user opts into pooling implicitly by enabling Ollama.
+func TestOllamaPoolOn(t *testing.T) {
+	off := false
+	on := true
+	for _, tt := range []struct {
+		name string
+		fc   *FileConfig
+		want bool
+	}{
+		{"nil-fc", nil, false},
+		{"ollama-off", &FileConfig{OllamaEnabled: false}, false},
+		{"ollama-on-pool-unset", &FileConfig{OllamaEnabled: true}, true},
+		{"ollama-on-pool-explicit-on", &FileConfig{OllamaEnabled: true, OllamaPoolEnabled: &on}, true},
+		{"ollama-on-pool-explicit-off", &FileConfig{OllamaEnabled: true, OllamaPoolEnabled: &off}, false},
+		{"ollama-off-pool-on-ignored", &FileConfig{OllamaEnabled: false, OllamaPoolEnabled: &on}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.fc.OllamaPoolOn(); got != tt.want {
+				t.Errorf("OllamaPoolOn()=%v, want %v", got, tt.want)
+			}
+		})
+	}
+}

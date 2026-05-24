@@ -434,8 +434,8 @@ func bridgePeerDialThroughCloudbox(ctx context.Context, newCh ssh.NewChannel, pd
 	// silent misroute.
 	wsConn, resp, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
 		HTTPHeader: http.Header{
-			"Authorization":        []string{"Bearer " + pd.accessToken},
-			"X-Outpost-Peer-Dial":  []string{"1"},
+			"Authorization":         []string{"Bearer " + pd.accessToken},
+			"X-Outpost-Peer-Dial":   []string{"1"},
 			"X-Outpost-Peer-Origin": []string{pd.selfName},
 		},
 	})

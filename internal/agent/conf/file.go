@@ -112,6 +112,18 @@ type FileConfig struct {
 	PodmanEnabled bool `json:"podman_enabled,omitempty"`
 	OllamaEnabled bool `json:"ollama_enabled,omitempty"`
 
+	// OllamaPoolEnabled gates whether this outpost participates in
+	// cloudbox's virtual LLM pool — the watcher pushes the local
+	// /api/tags inventory to cloudbox and the /app/ollama/_pool/capacity
+	// endpoint is mounted. Distinct from OllamaEnabled: the user can
+	// expose their local Ollama as a per-host app (a private endpoint
+	// only they reach) without contributing it to the shared multi-host
+	// pool friends and other paired hosts can route to. Pointer-bool
+	// with OllamaPoolOn() helper so existing configs (written before
+	// pooling shipped) default to on whenever OllamaEnabled is on —
+	// the most useful behavior for the typical operator.
+	OllamaPoolEnabled *bool `json:"ollama_pool_enabled,omitempty"`
+
 	// AdminSessionKey is the HMAC secret used to sign admin-UI session
 	// cookies. Persisting it across restarts is what keeps the admin user
 	// logged in when a built-in toggle re-execs the binary. Base64-encoded
@@ -405,6 +417,22 @@ func (fc *FileConfig) PodmanOn() bool { return fc != nil && fc.PodmanEnabled }
 
 // OllamaOn reports whether the built-in Ollama proxy is enabled.
 func (fc *FileConfig) OllamaOn() bool { return fc != nil && fc.OllamaEnabled }
+
+// OllamaPoolOn reports whether this outpost should join cloudbox's LLM
+// pool. Returns false when Ollama itself is off (the pool is a strict
+// extension of the per-host proxy). When OllamaPoolEnabled is nil, the
+// default is to follow OllamaOn — pooling is the useful behavior, and
+// configs written before pooling shipped should opt in automatically.
+// Explicit false (operator turned it off) is honored.
+func (fc *FileConfig) OllamaPoolOn() bool {
+	if !fc.OllamaOn() {
+		return false
+	}
+	if fc.OllamaPoolEnabled == nil {
+		return true
+	}
+	return *fc.OllamaPoolEnabled
+}
 
 // DefaultConfigPath is ~/.config/matrix/agent.json (XDG_CONFIG_HOME honored).
 func DefaultConfigPath() (string, error) {
