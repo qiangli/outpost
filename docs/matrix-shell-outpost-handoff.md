@@ -1,9 +1,12 @@
 # Matrix-shell — outpost-side handoff (May 2026)
 
-Status: after the May 2026 fork sweep and the outpost-side follow-up
-landed in this round, the matrix shell is at ~99% bash-equivalence for
-typical developer workflows. The remaining open items are well-scoped
-and independent — none block typical use.
+Status: after the May 2026 fork sweep, the outpost-side follow-ups,
+and the cloudbox peer-transport bypass landing end-of-round, the
+matrix shell is at ~99% bash-equivalence for typical developer
+workflows. `ssh`/`scp`/`sftp`/`ssh -L`/`ssh -R`/`ssh -A`/`ssh -J`/
+`podman --connection` all work between paired outposts. The
+remaining open items are well-scoped and independent — none block
+typical use.
 
 Companion to `matrix-shell-deferred-bugs.md`, which covers what was
 investigated and closed.
@@ -12,6 +15,31 @@ investigated and closed.
 
 Listed newest first; all on `main`.
 
+- **`97c5d40` `connect: add --ttl flag so outpost connect can request
+  infinite cap`** — mirrors `outpost outbound add --ttl` for the SSH
+  elevation path. Accepts `default | <duration> | infinite` via the
+  shared `parseTTL` helper; when set, stamps `ttl_seconds` into the
+  elevate POST body and cloudbox embeds it as the `mlt` claim on the
+  elevation JWT. The idle TTL (1 h) still applies — pair with
+  `--keep-alive` for an indefinitely-living session
+  (`outpost connect --ttl infinite --keep-alive <host>`). Verified
+  against ai.dhnt.io: `--ttl infinite` produces
+  `mlt=9007199254740991` (2^53-1, the JS-safe sentinel); default
+  omits `mlt` so older cloudboxes keep applying their 8 h cap.
+- **`405c906` `ssh: stamp X-Outpost-Peer-Dial header on cloudbox-
+  tunneled peer dials`** + cloudbox companion commit `33b619d`
+  (`ssh: account-scoped peer-transport bypass for /h/:host/ssh`) —
+  **T3.k now closed end-to-end.** Outpost stamps
+  `X-Outpost-Peer-Dial: 1` + `X-Outpost-Peer-Origin: <self>` on its
+  cloudbox-tunneled ProxyJump dial; cloudbox's new
+  `MaybePeerTransport` middleware admits the dial when the bearer's
+  email matches the destination's owner (per-bearer-sub rate limit:
+  30/min, burst 10; every admit is audited). Crucially, the bypass
+  does NOT stamp `X-Periscope-Role` — the destination outpost's own
+  `PasswordCallback` still runs, so the operator gets a password
+  prompt for the destination's OS user (matching vanilla openssh
+  ProxyJump semantics). Verified live:
+  `ssh -J novicortex noviadmin@novidesign` works both directions.
 - **`343a4f4` `cli: add outpost run --label X -- cmd to replace launchctl
   submit`** — T2.f workaround. `launchctl submit` is silently no-op'd
   inside the matrix-shell because the SSH session inherits a launchd
@@ -39,10 +67,9 @@ Listed newest first; all on `main`.
       (`ssh -J novicortex novidesign`) through cloudbox's
       `/h/<peer>/ssh` WSS endpoint with this outpost's own
       `access_token`. Loopback dials keep the zero-overhead path.
-      **Status:** outpost-side ready, cloudbox-blocked — cloudbox
-      today 403s on sibling-outpost tokens (sees "missing matrix_elev
-      cookie"). Outpost surfaces a clear `peer-dial novidesign: 403`
-      now instead of a confusing DNS error.
+      Cloudbox originally 403'd on sibling-outpost tokens — see
+      commits `405c906` + cloudbox `33b619d` above for the bypass
+      that turns this into a working ProxyJump end-to-end.
   Refactored `sshHandler` to take an `sshHandlerDeps` struct while
   here — the positional arg list was at nine knobs.
 - **`ssh: fix ssh -R back-channel, add exec-PTY, ssh -A, peer
@@ -141,25 +168,6 @@ that the original handoff already named:
 
 ## Still open (outpost side)
 
-### Cloudbox-side acceptance of sibling-outpost tokens (gates T3.k end-to-end)
-
-**Status:** outpost side is done (commit `aa54346` —
-`handleDirectTCPIP` routes peer SSH dials through cloudbox's
-`/h/<peer>/ssh` WSS endpoint with this outpost's own `access_token`
-as bearer). Today cloudbox returns 403 for that token shape because
-the route expects an operator-elevated `matrix_elev` cookie, not a
-sibling-outpost JWT.
-
-**What's needed (cloudbox):** when the bearer's `sub` matches the
-account that owns the destination host, allow the request through as
-a pure transport (no elevation, no cookie) — the destination
-outpost's own SSH PasswordCallback still runs, so peer-membership
-alone never grants shell access. Roughly mirror the existing
-`X-Periscope-Role` skip path that elevated cookies trigger.
-
-**Workaround:** mutually-reachable peers (LAN, Tailscale, hairpin
-NAT) work via the existing allowlist policy + LAN DNS fallback.
-
 ### `screen -dmS` (T2.e)
 
 **Still parked, with findings.** macOS's bundled `screen 4.00.03`
@@ -232,10 +240,8 @@ Small, non-blocking. Listed so it doesn't get lost.
 
 ## Suggested sequencing for what's left
 
-1. **Cloudbox: accept sibling-outpost tokens on `/h/<peer>/ssh`** —
-   completes T3.k end-to-end; outpost side already shipped.
-2. **ControlMaster** — also cloudbox-blocked; same shape of
-   coordination as item 1.
-3. **`screen -dmS` (T2.e)** — needs `dtruss` access (SIP-off) to
+1. **ControlMaster** — cloudbox-blocked; needs a shared protocol
+   decision for WSS connection reuse across short SSH invocations.
+2. **`screen -dmS` (T2.e)** — needs `dtruss` access (SIP-off) to
    diagnose further; workaround is `brew install screen` or tmux.
-4. *(Indefinitely deferred)* numbered-fd refactor → real coproc.
+3. *(Indefinitely deferred)* numbered-fd refactor → real coproc.
