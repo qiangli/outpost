@@ -610,6 +610,31 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 		})
 	}
 
+	// Namespace allow-set refresh. Cloudbox is the source of truth for
+	// which sharee namespaces may schedule on this node (owner +
+	// HostShare rows with app="podman"). We do one synchronous fetch
+	// before the runner starts to populate the gate, then spawn a
+	// background loop that keeps it current. Failures never propagate
+	// up: the owner-only set stays in place until the next successful
+	// fetch (see access_refresh.go for the backoff policy).
+	if access != nil && fc.AccessToken != "" && cloudboxBase != "" {
+		if resp, err := vkpodman.FetchAccess(ctx, cloudboxBase, fc.AccessToken, nodeName); err == nil {
+			access.Set(resp.AllowedNamespaces...)
+			slog.Info("cluster mode: initial access refresh",
+				"node", nodeName, "namespaces", resp.AllowedNamespaces)
+		} else {
+			slog.Warn("cluster mode: initial access fetch failed (will retry on loop)",
+				"node", nodeName, "err", err)
+		}
+		accessRefresher := vkpodman.NewAccessRefresher(vkpodman.AccessRefreshDeps{
+			CloudboxBase: cloudboxBase,
+			AccessToken:  fc.AccessToken,
+			NodeName:     nodeName,
+			Access:       access,
+		})
+		g.Go(func() error { return accessRefresher.Run(ctx) })
+	}
+
 	return nil
 }
 
