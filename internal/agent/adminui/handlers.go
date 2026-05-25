@@ -1,218 +1,40 @@
 package adminui
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"errors"
-	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/qiangli/outpost/internal/agent"
-	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
-	"github.com/qiangli/outpost/internal/agent/portal"
-	"github.com/qiangli/outpost/internal/agent/vkpodman"
 )
 
-// generateProvisioningToken returns a 32-byte random hex string. Used
-// to mint the per-app bearer the cooperating app uses when pushing user
-// grants up to cloudbox via outpost. crypto/rand failure is fatal —
-// nothing the caller can do to recover, and a weak token defeats the
-// whole point.
-func generateProvisioningToken() (string, error) {
-	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("generate provisioning token: %w", err)
+// respondError maps an admincore.APIError to the matching HTTP status
+// code, or 500 when the error isn't an APIError. Single point of
+// translation so handlers stay one-liners.
+func respondError(c *gin.Context, err error) {
+	if ae := admincore.AsAPIError(err); ae != nil {
+		c.AbortWithStatusJSON(ae.HTTPStatus(), gin.H{"error": ae.Msg})
+		return
 	}
-	return hex.EncodeToString(b[:]), nil
-}
-
-// cloudboxHTTPBase derives the HTTP(S) base URL of cloudbox from the
-// matrix-tunnel pairing fields. Same logic as the helper in
-// cmd/outpost/main.go — kept duplicated to avoid a cmd→internal import
-// cycle (handlers.go would otherwise need to call into the cmd
-// package). Protocols are paired (wss↔https, websocket/ws/tcp↔http).
-func cloudboxHTTPBase(fc *conf.FileConfig) string {
-	if fc == nil || fc.ServerAddr == "" {
-		return ""
-	}
-	scheme := "https"
-	switch strings.ToLower(fc.Protocol) {
-	case "wss":
-		scheme = "https"
-	case "ws", "websocket", "tcp", "":
-		scheme = "http"
-	}
-	port := ""
-	if fc.ServerPort != 0 && !((scheme == "https" && fc.ServerPort == 443) || (scheme == "http" && fc.ServerPort == 80)) {
-		port = fmt.Sprintf(":%d", fc.ServerPort)
-	}
-	return scheme + "://" + fc.ServerAddr + port
-}
-
-// loadConfig reads the FileConfig (or returns an empty one on first run).
-// Callers must hold s.mu when intending to write back.
-func (s *Server) loadConfig() (*conf.FileConfig, error) {
-	fc, err := conf.LoadFile(s.deps.ConfigPath)
-	if err != nil {
-		return nil, err
-	}
-	if fc == nil {
-		fc = &conf.FileConfig{}
-	}
-	return fc, nil
-}
-
-// llmPoolStatusView returns the live pool diagnostic for the admin UI.
-// When the pool isn't wired (LLMPoolStatus closure nil) or pool
-// participation is off in the config, returns just {Enabled:false} —
-// the SPA renders that as "(disabled)" rather than hiding the block,
-// so the operator can see why nothing is publishing.
-func (s *Server) llmPoolStatusView(fc *conf.FileConfig) LLMPoolStatusView {
-	if s.deps.LLMPoolStatus == nil {
-		return LLMPoolStatusView{Enabled: fc.OllamaPoolOn()}
-	}
-	v := s.deps.LLMPoolStatus()
-	v.Enabled = fc.OllamaPoolOn()
-	return v
-}
-
-// builtinView is the admin-UI shape for one optional local-daemon proxy
-// (podman/ollama). Enabled reflects the saved config; Available is the
-// live detection result so the UI can grey out the toggle when the
-// daemon isn't running. Target is a human-readable description of where
-// the proxy would point ("unix:///run/podman/...", "http://127.0.0.1:11434").
-type builtinView struct {
-	Enabled   bool   `json:"enabled"`
-	Available bool   `json:"available"`
-	Target    string `json:"target,omitempty"`
-}
-
-func toBuiltinView(enabled bool, bt agent.BuiltinTarget) builtinView {
-	v := builtinView{Enabled: enabled, Available: bt.Available}
-	switch bt.Scheme {
-	case "unix", "npipe":
-		if bt.Socket != "" {
-			v.Target = bt.Scheme + "://" + bt.Socket
-		}
-	case "http", "https":
-		v.Target = bt.URL
-	}
-	return v
-}
-
-// safeView is the redacted FileConfig sent over the API. Token never
-// leaves the agent; presence is reported as has_token instead.
-type safeView struct {
-	AgentName            string               `json:"agent_name"`
-	ServerAddr           string               `json:"server_addr"`
-	ServerPort           int                  `json:"server_port"`
-	CloudboxURL          string               `json:"cloudbox_url,omitempty"`
-	Protocol             string               `json:"protocol,omitempty"`
-	RemotePort           int                  `json:"remote_port"`
-	AuthURL              string               `json:"auth_url,omitempty"`
-	HasToken             bool                 `json:"has_token"`
-	Apps                 []conf.AppConfig     `json:"apps"`
-	ShellEnabled         bool                 `json:"shell_enabled"`
-	DesktopEnabled       bool                 `json:"desktop_enabled"`
-	ClipboardEnabled     bool                 `json:"clipboard_enabled"`
-	SSHEnabled           bool                 `json:"ssh_enabled"`
-	SSHAllowLocalForward bool                 `json:"ssh_allow_local_forward"`
-	SFTPEnabled          bool                 `json:"sftp_enabled"`
-	Podman               builtinView          `json:"podman"`
-	Ollama               builtinView          `json:"ollama"`
-	OllamaPoolEnabled    bool                 `json:"ollama_pool_enabled"`
-	LLMPool              LLMPoolStatusView    `json:"llm_pool"`
-	Cluster              clusterView          `json:"cluster"`
-	Outbound             []agent.OutboundView `json:"outbound"`
-	Defaults             map[string]string    `json:"defaults"`
-}
-
-// clusterView is the redacted shape sent to the SPA for cluster status.
-// Token + CA bytes never leave the agent; presence is reported via
-// has_token / has_ca so the UI can render "joined / not joined" without
-// the credential.
-type clusterView struct {
-	Enabled  bool   `json:"enabled"`
-	APIURL   string `json:"api_url,omitempty"`
-	NodeName string `json:"node_name,omitempty"`
-	HasToken bool   `json:"has_token"`
-	HasCA    bool   `json:"has_ca"`
-}
-
-func toClusterView(fc *conf.FileConfig) clusterView {
-	if fc == nil || fc.Cluster == nil {
-		return clusterView{}
-	}
-	return clusterView{
-		Enabled:  fc.Cluster.Enabled,
-		APIURL:   fc.Cluster.APIURL,
-		NodeName: fc.ClusterNodeName(),
-		HasToken: fc.Cluster.Token != "",
-		HasCA:    len(fc.Cluster.CA) > 0,
-	}
-}
-
-func (s *Server) toSafeView(fc *conf.FileConfig) safeView {
-	apps := fc.Apps
-	if apps == nil {
-		apps = []conf.AppConfig{}
-	}
-	osUser, _ := hostauth.CurrentUser()
-	osHost, _ := os.Hostname()
-	defaultName := osHost
-	if osHost != "" && osUser != "" {
-		defaultName = osHost + "-" + osUser
-	}
-	return safeView{
-		AgentName:            fc.AgentName,
-		ServerAddr:           fc.ServerAddr,
-		ServerPort:           fc.ServerPort,
-		CloudboxURL:          cloudboxHTTPBase(fc),
-		Protocol:             fc.Protocol,
-		RemotePort:           fc.RemotePort,
-		AuthURL:              fc.AuthURL,
-		HasToken:             fc.Token != "",
-		Apps:                 apps,
-		ShellEnabled:         fc.ShellOn(),
-		DesktopEnabled:       fc.DesktopOn(),
-		ClipboardEnabled:     fc.ClipboardOn(),
-		SSHEnabled:           fc.SSHOn(),
-		SSHAllowLocalForward: fc.SSHAllowLocalForwardOn(),
-		SFTPEnabled:          fc.SFTPOn(),
-		Podman:               toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
-		Ollama:               toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
-		OllamaPoolEnabled:    fc.OllamaPoolOn(),
-		LLMPool:              s.llmPoolStatusView(fc),
-		Cluster:              toClusterView(fc),
-		Outbound:             s.outboundList(),
-		Defaults: map[string]string{
-			"server_url": "https://ai.dhnt.io",
-			"name":       defaultName,
-			"os_user":    osUser,
-		},
-	}
+	c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 }
 
 // handleStatus is the SPA's "what should I render?" call.
 func (s *Server) handleStatus(c *gin.Context) {
-	fc, err := s.loadConfig()
+	st, err := s.core.Status()
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondError(c, err)
 		return
 	}
-	osUser, _ := hostauth.CurrentUser()
 	c.JSON(http.StatusOK, gin.H{
-		"configured":      fc.AgentName != "",
-		"agent_name":      fc.AgentName,
-		"server_addr":     fc.ServerAddr,
-		"cloudbox_url":    cloudboxHTTPBase(fc),
-		"current_os_user": osUser,
+		"configured":      st.Configured,
+		"agent_name":      st.AgentName,
+		"server_addr":     st.ServerAddr,
+		"cloudbox_url":    st.CloudboxURL,
+		"current_os_user": st.CurrentOSUser,
 	})
 }
 
@@ -252,8 +74,6 @@ func (s *Server) handleLogin(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	// MaxAge matches the session TTL. Secure=false because admin UI is
-	// HTTP loopback; that's safe by design.
 	c.SetSameSite(http.SameSiteStrictMode)
 	c.SetCookie(cookieName, cookie, int(time.Hour.Seconds()), "/", "", false, true)
 	c.JSON(http.StatusOK, gin.H{"user": current})
@@ -268,546 +88,124 @@ func (s *Server) handleLogout(c *gin.Context) {
 }
 
 func (s *Server) handleGetConfig(c *gin.Context) {
-	fc, err := s.loadConfig()
+	sv, err := s.core.SafeView()
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, s.toSafeView(fc))
+	c.JSON(http.StatusOK, sv)
 }
 
-type registerReq struct {
-	Server  string `json:"server"`
-	Code    string `json:"code"`
-	Name    string `json:"name"`
-	Title   string `json:"title"`
-	AuthURL string `json:"auth_url"`
-}
-
-// handleRegister runs the pairing exchange and saves the resulting config
-// (preserving any apps/toggles that were already on disk). Then schedules
-// a restart so the new tunnel/identity takes effect.
+// handleRegister runs the pairing exchange and saves the resulting
+// config. Schedules a restart so the new tunnel/identity takes effect.
 func (s *Server) handleRegister(c *gin.Context) {
-	var req registerReq
+	var req admincore.PairParams
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if strings.TrimSpace(req.Code) == "" || strings.TrimSpace(req.Name) == "" {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "server, code, and name are required"})
+	res, err := s.core.Pair(c.Request.Context(), req)
+	if err != nil {
+		respondError(c, err)
 		return
 	}
-	server := strings.TrimSpace(req.Server)
-	if server == "" {
-		server = "https://ai.dhnt.io"
-	}
-
-	exchanged, err := portal.Exchange(c.Request.Context(), portal.ExchangeRequest{
-		ServerURL: server,
-		Code:      req.Code,
-		Name:      req.Name,
-		Title:     req.Title,
-		AuthURL:   req.AuthURL,
+	c.JSON(http.StatusOK, gin.H{
+		"ok":         res.OK,
+		"restarting": res.RestartPending,
+		"agent_name": res.AgentName,
 	})
-	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-		return
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	existing, err := s.loadConfig()
-	if err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	// Merge: keep locally-managed fields (apps, toggles) and overwrite
-	// portal-controlled fields with the exchanged values.
-	merged := *existing
-	merged.AgentName = exchanged.AgentName
-	merged.ServerAddr = exchanged.ServerAddr
-	merged.ServerPort = exchanged.ServerPort
-	merged.Protocol = exchanged.Protocol
-	merged.Token = exchanged.Token
-	merged.RemotePort = exchanged.RemotePort
-	merged.AuthURL = exchanged.AuthURL
-	merged.AccessToken = exchanged.AccessToken
-
-	if err := conf.SaveFile(s.deps.ConfigPath, &merged); err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "restarting": true, "agent_name": merged.AgentName})
-	s.scheduleRestart()
 }
 
-type builtinsReq struct {
-	Shell                *bool `json:"shell"`
-	Desktop              *bool `json:"desktop"`
-	Clipboard            *bool `json:"clipboard"`
-	SSH                  *bool `json:"ssh"`
-	SSHAllowLocalForward *bool `json:"ssh_allow_local_forward"`
-	SFTP                 *bool `json:"sftp"`
-	Podman               *bool `json:"podman"`
-	Ollama               *bool `json:"ollama"`
-	OllamaPool           *bool `json:"ollama_pool"`
-	Cluster              *bool `json:"cluster"`
-}
-
-// handleBuiltins toggles built-in routes (shell/desktop/clipboard/ssh)
-// and the optional local-daemon proxies (podman/ollama). All of these
-// are wired at boot, so saving triggers a restart.
-//
-// Enabling podman/ollama when the daemon isn't detected is allowed —
-// the user might be about to start the daemon. The boot path simply
-// skips the registration when the probe still fails, and the toggle
-// stays "on but inactive" until the daemon shows up.
+// handleBuiltins toggles built-in routes and optional local-daemon
+// proxies. Triggers a restart only when the host is already paired.
 func (s *Server) handleBuiltins(c *gin.Context) {
-	var req builtinsReq
+	var req admincore.BuiltinsParams
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	fc, err := s.loadConfig()
+	res, err := s.core.SetBuiltins(req)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondError(c, err)
 		return
 	}
-	if req.Shell != nil {
-		fc.ShellEnabled = req.Shell
-	}
-	if req.Desktop != nil {
-		fc.DesktopEnabled = req.Desktop
-	}
-	if req.Clipboard != nil {
-		fc.ClipboardEnabled = req.Clipboard
-	}
-	if req.SSH != nil {
-		fc.SSHEnabled = req.SSH
-	}
-	if req.SSHAllowLocalForward != nil {
-		fc.SSHAllowLocalForward = req.SSHAllowLocalForward
-	}
-	if req.SFTP != nil {
-		fc.SFTPEnabled = req.SFTP
-	}
-	if req.Podman != nil {
-		fc.PodmanEnabled = *req.Podman
-	}
-	if req.Ollama != nil {
-		fc.OllamaEnabled = *req.Ollama
-	}
-	if req.OllamaPool != nil {
-		fc.OllamaPoolEnabled = req.OllamaPool
-	}
-	if req.Cluster != nil {
-		if fc.Cluster == nil {
-			fc.Cluster = &conf.ClusterConfig{}
-		}
-		fc.Cluster.Enabled = *req.Cluster
-	}
-	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "restarting": fc.AgentName != ""})
-	if fc.AgentName != "" {
-		// Only restart when the tunnel was running. On first-time setup
-		// nothing is mounted yet, so a save is harmless.
-		s.scheduleRestart()
-	}
+	c.JSON(http.StatusOK, gin.H{"ok": res.OK, "restarting": res.RestartPending})
 }
 
 func (s *Server) handleListApps(c *gin.Context) {
-	fc, err := s.loadConfig()
+	apps, err := s.core.ListApps()
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondError(c, err)
 		return
-	}
-	apps := fc.Apps
-	if apps == nil {
-		apps = []conf.AppConfig{}
 	}
 	c.JSON(http.StatusOK, gin.H{"apps": apps})
 }
 
-// upsertAppReq accepts both the legacy {scheme, host, port, socket}
-// shape and the new single-URL form ("http://localhost:8080",
-// "unix:///run/podman/podman.sock"). When URL is set, it wins — the
-// split fields are derived from it.
-type upsertAppReq struct {
-	conf.AppConfig
-	URL string `json:"url,omitempty"`
-}
-
-// handleUpsertApp validates one AppConfig, persists it, and mutates the
-// live registry. No restart required — AppRegistry is concurrency-safe.
+// handleUpsertApp validates and persists an app config, mutates the
+// live AppRegistry. No restart required.
 func (s *Server) handleUpsertApp(c *gin.Context) {
-	var req upsertAppReq
+	var req admincore.AppUpsertParams
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	ac := req.AppConfig
-	if strings.TrimSpace(req.URL) != "" {
-		scheme, host, port, socket, perr := conf.AppTargetFromURL(req.URL)
-		if perr != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": perr.Error()})
-			return
-		}
-		ac.Scheme, ac.Host, ac.Port, ac.Socket = scheme, host, port, socket
-	}
-	if err := validateApp(&ac); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	fc, err := s.loadConfig()
+	ac, err := s.core.UpsertApp(req)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondError(c, err)
 		return
-	}
-
-	// Preserve an existing ProvisioningToken across edits — the upsert
-	// payload omits the token (since the UI never sends it back) and
-	// re-saving the AppConfig would otherwise blank it. Only auto-
-	// generate when the toggle is on and we don't already have one;
-	// rotation is a separate explicit endpoint so an accidental edit
-	// can't quietly mint a new token and lock out the cooperating app.
-	if ac.TrustCloudIdentity {
-		if strings.TrimSpace(ac.ProvisioningToken) == "" {
-			for _, existing := range fc.Apps {
-				if existing.Name == ac.Name && existing.ProvisioningToken != "" {
-					ac.ProvisioningToken = existing.ProvisioningToken
-					break
-				}
-			}
-		}
-		if strings.TrimSpace(ac.ProvisioningToken) == "" {
-			tok, terr := generateProvisioningToken()
-			if terr != nil {
-				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": terr.Error()})
-				return
-			}
-			ac.ProvisioningToken = tok
-		}
-	} else {
-		// Toggle off → drop the token. Otherwise a stale token would
-		// linger in agent.json and still authenticate against the
-		// relay endpoint (which would 401 since the registry no
-		// longer carries it, but the operator visibility is better
-		// when off truly means off).
-		ac.ProvisioningToken = ""
-	}
-
-	// Upsert: replace any existing entry with the same name, else append.
-	if fc.Apps == nil {
-		fc.Apps = []conf.AppConfig{}
-	}
-	replaced := false
-	for i, existing := range fc.Apps {
-		if existing.Name == ac.Name {
-			fc.Apps[i] = ac
-			replaced = true
-			break
-		}
-	}
-	if !replaced {
-		fc.Apps = append(fc.Apps, ac)
-	}
-	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	// Reflect into the live registry. Unregister first to handle the
-	// edit case (target URL changed) and the disable case (enabled=false).
-	s.deps.Apps.Unregister(ac.Name)
-	if ac.Enabled {
-		if err := s.deps.Apps.RegisterFromConfig(ac); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "app": ac})
 }
 
-// handleRotateProvisioningToken regenerates the bearer the cooperating
-// app uses to push grants. The previous token is invalidated immediately;
-// the app must be reconfigured with the new value. No restart needed —
-// the live registry's token map is updated in place.
-func (s *Server) handleRotateProvisioningToken(c *gin.Context) {
-	name := c.Param("name")
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	fc, err := s.loadConfig()
-	if err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+func (s *Server) handleDeleteApp(c *gin.Context) {
+	if err := s.core.DeleteApp(c.Param("name")); err != nil {
+		respondError(c, err)
 		return
 	}
-	idx := -1
-	for i, a := range fc.Apps {
-		if a.Name == name {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "unknown app"})
-		return
-	}
-	if !fc.Apps[idx].TrustCloudIdentity {
-		c.AbortWithStatusJSON(http.StatusBadRequest,
-			gin.H{"error": "enable Trust cloud identity first; rotation only meaningful when the relay is in use"})
-		return
-	}
-	tok, err := generateProvisioningToken()
-	if err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	fc.Apps[idx].ProvisioningToken = tok
-	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	// Reflect into the live registry without re-registering the proxy —
-	// just update the bearer map so the relay accepts the new value
-	// immediately. SetProvisioningToken is safe to call on a name that
-	// isn't in the proxy/tcp maps (disabled apps), so we don't need to
-	// gate on Enabled.
-	s.deps.Apps.SetProvisioningToken(name, tok)
-	c.JSON(http.StatusOK, gin.H{"ok": true, "provisioning_token": tok})
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-func (s *Server) handleDeleteApp(c *gin.Context) {
-	name := c.Param("name")
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	fc, err := s.loadConfig()
+// handleRotateProvisioningToken regenerates the per-app bearer the
+// cooperating app uses to push grants. Updates both the persisted
+// FileConfig and the live registry.
+func (s *Server) handleRotateProvisioningToken(c *gin.Context) {
+	tok, err := s.core.RotateProvisioningToken(c.Param("name"))
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondError(c, err)
 		return
 	}
-	filtered := fc.Apps[:0]
-	for _, app := range fc.Apps {
-		if app.Name != name {
-			filtered = append(filtered, app)
-		}
-	}
-	fc.Apps = filtered
-	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	s.deps.Apps.Unregister(name)
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	c.JSON(http.StatusOK, gin.H{"ok": true, "provisioning_token": tok})
 }
 
 func (s *Server) handleRestart(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true, "restarting": true})
-	s.scheduleRestart()
-}
-
-func validateApp(ac *conf.AppConfig) error {
-	ac.Name = strings.TrimSpace(ac.Name)
-	if ac.Name == "" {
-		return errors.New("name is required")
-	}
-	if strings.ContainsAny(ac.Name, "/ \t") {
-		return errors.New("name cannot contain slashes or whitespace")
-	}
-	// Reserved by the admin UI's own routes. Allowing an app with one of
-	// these names would shadow the admin API or the local-proxy itself.
-	switch strings.ToLower(ac.Name) {
-	case "api", "static", "healthz", "index.html", "app":
-		return fmt.Errorf("name %q is reserved by the admin UI", ac.Name)
-	}
-	ac.Scheme = strings.ToLower(strings.TrimSpace(ac.Scheme))
-	if ac.Scheme == "" {
-		ac.Scheme = "http"
-	}
-	switch ac.Scheme {
-	case "http", "https", "tcp":
-		ac.Host = strings.TrimSpace(ac.Host)
-		if ac.Host == "" {
-			ac.Host = "127.0.0.1"
-		}
-		if ac.Port < 1 || ac.Port > 65535 {
-			return fmt.Errorf("port %d is out of range", ac.Port)
-		}
-		// Clear socket so the persisted record is unambiguous.
-		ac.Socket = ""
-	case "unix", "npipe":
-		ac.Socket = strings.TrimSpace(ac.Socket)
-		if ac.Socket == "" {
-			return fmt.Errorf("socket path is required for scheme %q", ac.Scheme)
-		}
-		// Host/Port are not meaningful for socket-backed apps.
-		ac.Host = ""
-		ac.Port = 0
-	default:
-		return errors.New("scheme must be one of http|https|tcp|unix|npipe")
-	}
-	// Normalize the new access-control fields. RequireLogin is a plain
-	// bool (no normalization). LANOnlyPaths and IndexPath are path
-	// fragments — trim, prepend "/" when non-empty, strip trailing "/".
-	if ac.IndexPath != "" {
-		ac.IndexPath = normalizePathPrefix(ac.IndexPath)
-	}
-	cleaned := ac.LANOnlyPaths[:0]
-	for _, p := range ac.LANOnlyPaths {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if strings.ContainsAny(p, " \t*?") {
-			return fmt.Errorf("lan_only_paths entry %q must not contain whitespace or wildcards", p)
-		}
-		cleaned = append(cleaned, normalizePathPrefix(p))
-	}
-	ac.LANOnlyPaths = cleaned
-	// Legacy `role` field, if present from an older config, is dropped
-	// here — LoadFile already migrated it into RequireLogin.
-	ac.Role = ""
-	return nil
-}
-
-// normalizePathPrefix returns p with a leading slash and no trailing
-// slash, so /admin, admin, and /admin/ all canonicalize to "/admin".
-// Empty input stays empty.
-func normalizePathPrefix(p string) string {
-	p = strings.TrimSpace(p)
-	if p == "" {
-		return ""
-	}
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	return strings.TrimRight(p, "/")
-}
-
-// outboundList safely returns the manager's view list (or an empty
-// slice when no manager is wired, so /api/config never has a null
-// field).
-func (s *Server) outboundList() []agent.OutboundView {
-	if s.deps.Outbound == nil {
-		return []agent.OutboundView{}
-	}
-	return s.deps.Outbound.List()
+	s.core.ScheduleRestart()
 }
 
 // --- Outbound mounts ---
 
 func (s *Server) handleListOutbound(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"outbound": s.deps.Outbound.List()})
-}
-
-type outboundUpsertReq struct {
-	Path       string `json:"path"`
-	Name       string `json:"name"`
-	Host       string `json:"host"`
-	User       string `json:"user"`
-	Scheme     string `json:"scheme,omitempty"`
-	LocalPort  int    `json:"local_port,omitempty"`
-	TTLSeconds int64  `json:"ttl_seconds,omitempty"`
+	c.JSON(http.StatusOK, gin.H{"outbound": s.core.ListOutbound()})
 }
 
 func (s *Server) handleAddOutbound(c *gin.Context) {
-	var req outboundUpsertReq
+	var req admincore.OutboundParams
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := validateOutbound(&req); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if err := s.core.UpsertOutbound(req); err != nil {
+		respondError(c, err)
 		return
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	fc, err := s.loadConfig()
-	if err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	// Local-app and outbound names share the same NoRoute namespace —
-	// refuse to register an outbound that would shadow a local app.
-	for _, ac := range fc.Apps {
-		if strings.EqualFold(ac.Name, req.Path) {
-			c.AbortWithStatusJSON(http.StatusConflict,
-				gin.H{"error": fmt.Sprintf("path %q collides with custom app of the same name", req.Path)})
-			return
-		}
-	}
-	newCfg := conf.OutboundConfig{
-		Path:       req.Path,
-		Name:       req.Name,
-		Host:       req.Host,
-		User:       req.User,
-		Scheme:     req.Scheme,
-		LocalPort:  req.LocalPort,
-		TTLSeconds: req.TTLSeconds,
-	}
-	// A listener-binding outbound (tcp or ssh) MUST NOT collide on
-	// local_port with any other listener-binding outbound — both would
-	// race to bind 127.0.0.1:<port>.
-	if newCfg.BindsListener() {
-		for _, ob := range fc.Outbound {
-			if ob.Path == newCfg.Path {
-				continue
-			}
-			if ob.BindsListener() && ob.LocalPort == newCfg.LocalPort {
-				c.AbortWithStatusJSON(http.StatusConflict,
-					gin.H{"error": fmt.Sprintf("local_port %d already used by outbound %q", newCfg.LocalPort, ob.Path)})
-				return
-			}
-		}
-	}
-	// Upsert by path.
-	replaced := false
-	for i, ob := range fc.Outbound {
-		if ob.Path == req.Path {
-			fc.Outbound[i] = newCfg
-			replaced = true
-			break
-		}
-	}
-	if !replaced {
-		fc.Outbound = append(fc.Outbound, newCfg)
-	}
-	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	s.deps.Outbound.Register(fc.Outbound)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func (s *Server) handleDeleteOutbound(c *gin.Context) {
-	path := c.Param("path")
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	fc, err := s.loadConfig()
-	if err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if err := s.core.DeleteOutbound(c.Param("path")); err != nil {
+		respondError(c, err)
 		return
 	}
-	filtered := fc.Outbound[:0]
-	for _, ob := range fc.Outbound {
-		if ob.Path != path {
-			filtered = append(filtered, ob)
-		}
-	}
-	fc.Outbound = filtered
-	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	s.deps.Outbound.Register(fc.Outbound)
 	c.Status(http.StatusNoContent)
 }
 
@@ -816,179 +214,51 @@ type outboundConnectReq struct {
 }
 
 func (s *Server) handleConnectOutbound(c *gin.Context) {
-	path := c.Param("path")
-	if !s.deps.Outbound.Has(path) {
-		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "unknown outbound path"})
-		return
-	}
 	var req outboundConnectReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := s.deps.Outbound.Connect(path, req.Password); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+	if err := s.core.ConnectOutbound(c.Param("path"), req.Password); err != nil {
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func (s *Server) handleDisconnectOutbound(c *gin.Context) {
-	path := c.Param("path")
-	s.deps.Outbound.Disconnect(path)
+	if err := s.core.DisconnectOutbound(c.Param("path")); err != nil {
+		respondError(c, err)
+		return
+	}
 	c.Status(http.StatusNoContent)
 }
 
-// validateOutbound trims and sanity-checks the incoming fields. Path must
-// be safe as a URL segment (no slashes/whitespace) AND must not collide
-// with the admin UI's reserved paths. Scheme is normalized to "http",
-// "tcp", or "ssh". tcp+ssh require local_port in [1, 65535]; ssh does
-// not require name (it targets the remote outpost's built-in /ssh, not
-// a registered app).
-func validateOutbound(req *outboundUpsertReq) error {
-	req.Path = strings.TrimSpace(req.Path)
-	req.Name = strings.TrimSpace(req.Name)
-	req.Host = strings.TrimSpace(req.Host)
-	req.User = strings.TrimSpace(req.User)
-	if req.Path == "" || req.Host == "" || req.User == "" {
-		return errors.New("path, host, and user are all required")
-	}
-	if req.TTLSeconds < 0 {
-		return fmt.Errorf("ttl_seconds %d cannot be negative (use math.MaxInt64 for infinite)", req.TTLSeconds)
-	}
-	if strings.ContainsAny(req.Path, "/ \t") {
-		return errors.New("path cannot contain slashes or whitespace")
-	}
-	switch strings.ToLower(req.Path) {
-	case "api", "static", "healthz", "index.html", "app":
-		return fmt.Errorf("path %q is reserved by the admin UI", req.Path)
-	}
-	req.Scheme = strings.ToLower(strings.TrimSpace(req.Scheme))
-	switch req.Scheme {
-	case "", "http":
-		req.Scheme = "" // store empty for back-compat — defaults to "http"
-		req.LocalPort = 0
-		if req.Name == "" {
-			return errors.New("name is required for http outbound")
-		}
-	case "tcp":
-		if req.Name == "" {
-			return errors.New("name is required for tcp outbound")
-		}
-		if req.LocalPort < 1 || req.LocalPort > 65535 {
-			return fmt.Errorf("local_port %d is out of range (required for scheme tcp)", req.LocalPort)
-		}
-	case "ssh":
-		// Targets the remote outpost's built-in /ssh endpoint. Name is
-		// ignored — stored empty for clarity rather than letting stale
-		// values linger.
-		req.Name = ""
-		if req.LocalPort < 1 || req.LocalPort > 65535 {
-			return fmt.Errorf("local_port %d is out of range (required for scheme ssh)", req.LocalPort)
-		}
-	default:
-		return fmt.Errorf("scheme %q must be one of http|tcp|ssh", req.Scheme)
-	}
-	return nil
-}
+// --- Cluster (virtual-podman) ---
 
-// clusterKubeconfigReq is the body of POST /api/cluster/kubeconfig.
-// Kubeconfig is the full YAML the user pasted from k3s.yaml (dev/PoC)
-// or that cloudbox issued via its kubeconfig endpoint (production).
-// NodeName is an optional override; empty defaults to AgentName at boot.
-// Enable, when true, also flips Cluster.Enabled so the operator can
-// paste + activate in one action.
-type clusterKubeconfigReq struct {
-	Kubeconfig string `json:"kubeconfig" binding:"required"`
-	NodeName   string `json:"node_name,omitempty"`
-	Enable     bool   `json:"enable,omitempty"`
-}
-
-// handleSetClusterKubeconfig parses a pasted kubeconfig, extracts the
-// apiserver URL + bearer token + CA, and persists them into
-// fc.Cluster. The kubeconfig itself is NOT stored — only the three
-// fields the runner actually uses, so token rotation later is a
-// targeted update rather than a YAML round-trip.
-//
-// Triggers a restart when fc.Cluster.Enabled ends up true (joining the
-// cluster on the next boot) — same pattern as the built-in toggles.
 func (s *Server) handleSetClusterKubeconfig(c *gin.Context) {
-	var req clusterKubeconfigReq
+	var req admincore.KubeconfigParams
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	parsed, err := vkpodman.ParseKubeconfig([]byte(req.Kubeconfig))
+	res, err := s.core.SetKubeconfig(req)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondError(c, err)
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	fc, err := s.loadConfig()
-	if err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if fc.Cluster == nil {
-		fc.Cluster = &conf.ClusterConfig{}
-	}
-	fc.Cluster.APIURL = parsed.APIURL
-	fc.Cluster.Token = parsed.Token
-	fc.Cluster.CA = parsed.CA
-	if req.NodeName != "" {
-		fc.Cluster.NodeName = strings.TrimSpace(req.NodeName)
-	}
-	if req.Enable {
-		fc.Cluster.Enabled = true
-	}
-	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "cluster": toClusterView(fc), "restarting": fc.Cluster.Enabled && fc.AgentName != ""})
-	if fc.Cluster.Enabled && fc.AgentName != "" {
-		s.scheduleRestart()
-	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":         res.OK,
+		"cluster":    res.Cluster,
+		"restarting": res.RestartPending,
+	})
 }
 
-// handleClearClusterKubeconfig removes the cluster credentials and the
-// Enabled flag so a future boot doesn't try to dial a stale apiserver.
-// The toggle alone (handleBuiltins with cluster=false) just stops the
-// runner from starting; this is the "I'm leaving the cluster" path.
 func (s *Server) handleClearClusterKubeconfig(c *gin.Context) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	fc, err := s.loadConfig()
+	res, err := s.core.ClearKubeconfig()
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondError(c, err)
 		return
 	}
-	wasEnabled := fc.ClusterOn()
-	fc.Cluster = nil
-	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "restarting": wasEnabled})
-	if wasEnabled {
-		s.scheduleRestart()
-	}
-}
-
-// scheduleRestart asynchronously triggers the parent's restart closure
-// after a short delay so the in-flight HTTP response has time to flush
-// AND so multiple back-to-back toggles (the admin UI now auto-saves on
-// every switch flip) collapse into a single restart. Each call resets
-// the timer; only when ~1s passes without a new call does Restart fire.
-func (s *Server) scheduleRestart() {
-	if s.deps.Restart == nil {
-		return
-	}
-	s.restartMu.Lock()
-	defer s.restartMu.Unlock()
-	if s.restartTimer != nil {
-		s.restartTimer.Stop()
-	}
-	s.restartTimer = time.AfterFunc(time.Second, s.deps.Restart)
+	c.JSON(http.StatusOK, gin.H{"ok": res.OK, "restarting": res.RestartPending})
 }

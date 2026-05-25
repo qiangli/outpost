@@ -10,6 +10,11 @@
 // just launched the binary. Once a config exists the gate engages and every
 // API call must carry an outpost_admin session cookie minted by POST
 // /api/login (which verifies the running OS user's password via hostauth).
+//
+// Business-logic operations (validate / mutate FileConfig / mutate live
+// registries / debounce restart) live in internal/agent/admincore so the
+// MCP server can share them. This package is now a thin HTTP layer:
+// session-cookie auth, JSON binding, error→status mapping.
 package adminui
 
 import (
@@ -25,91 +30,82 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/qiangli/outpost/internal/agent"
+	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 )
 
 // DefaultAdminAddr is the loopback listener address the admin UI binds
-// when neither $OUTPOST_ADMIN_ADDR nor --admin-addr is set. The port is
-// chosen to be unprivileged (> 1024 so no root needed), below every
-// supported OS's ephemeral range (so it isn't transiently grabbed by an
-// outbound connection before bind), IANA-unregistered (no collision with
-// a documented service), and outside common dev-tool squats like 8080 /
-// 8888 / 9999 — relevant once an operator binds the admin UI to a LAN
-// address instead of loopback. Operators who need to move it should
-// override via $OUTPOST_ADMIN_ADDR or --admin-addr rather than editing
-// this constant, since the value is referenced by existing pairings,
-// bookmarks, and CLAUDE.md.
+// when neither $OUTPOST_ADMIN_ADDR nor --admin-addr is set.
 const DefaultAdminAddr = "127.0.0.1:17777"
 
+// LLMPoolStatusView is re-exported from admincore so existing callers
+// (main.go, tests) keep working without an import shuffle.
+type LLMPoolStatusView = admincore.LLMPoolStatusView
+
+// Suggestion is re-exported from admincore for backward compat with
+// tests that reference the name unqualified.
+type Suggestion = admincore.Suggestion
+
+// builtinView / clusterView aliases keep test reflection on these field
+// types working after the move into admincore.
+type builtinView = admincore.BuiltinView
+type clusterView = admincore.ClusterView
+
+// outboundUpsertReq + validateOutbound aliases keep the legacy
+// outbound_validate_test.go calling shape green.
+type outboundUpsertReq = admincore.OutboundParams
+
+var validateOutbound = admincore.ValidateOutbound
+
 // Deps is what main.go threads in when constructing the admin server.
+//
+// Two construction modes:
+//
+//  1. Production (main.go): supply Core, plus the HTTP-only fields
+//     (ListenAddr, Auth, SessionKey). The admincore.Server is shared
+//     with mcpapi so both surfaces see the same live state, the same
+//     file-save mutex, and the same restart-debounce timer.
+//
+//  2. Test convenience: leave Core nil and supply the legacy
+//     fields (ConfigPath, Apps, Outbound, ...). New() then
+//     constructs an admincore.Server internally.
 type Deps struct {
-	// ConfigPath is where to read and write the persistent FileConfig
-	// (typically conf.DefaultConfigPath()).
-	ConfigPath string
+	// Core, when non-nil, is the shared admincore.Server that mutation
+	// handlers dispatch into. When nil, New() builds one from the
+	// legacy fields below — the test path.
+	Core *admincore.Server
+
+	// HTTP-layer concerns (always read directly by adminui):
+
 	// ListenAddr is the loopback address+port the admin server binds.
 	// Defaults to 127.0.0.1:17777 if empty.
 	ListenAddr string
 	// Auth verifies the running OS user's password on POST /api/login.
 	Auth hostauth.Authenticator
-	// Apps is the live registry — admin handlers add/remove entries here
-	// without process restart for custom app changes.
-	Apps *agent.AppRegistry
-	// Restart, when invoked, exits this process and re-execs the binary.
-	// Called after saves that require the tunnel or built-in routes to
-	// reload (pairing/server URL/agent name/built-in toggles).
-	Restart func()
 	// SessionKey is the HMAC secret used to sign admin-UI session
 	// cookies. Persisting it across restarts is what keeps the admin
-	// logged in when a built-in toggle re-execs the binary. main.go
-	// loads/generates it via conf.EnsureAdminSessionKey.
+	// logged in when a built-in toggle re-execs the binary.
 	SessionKey []byte
-	// Outbound is the manager for `/<path>/...` mounts that proxy
-	// through cloudbox to remote outposts' apps. Optional — when nil
-	// the admin UI surface omits the Outbound section and the
-	// local-proxy NoRoute handler skips the outbound lookup. main.go
-	// constructs it once per boot and threads it in.
-	Outbound *agent.OutboundManager
 
-	// CloudboxBase + CloudboxAccessToken + AgentName feed the user-
-	// grant provisioning relay mounted at /_periscope/apps/:name/users.
-	// When CloudboxBase or CloudboxAccessToken are empty (outpost not
-	// paired yet), the routes still mount but return 503 — the
-	// operator sees a clear "not paired" error rather than a 404 they
-	// might mistake for a typo. main.go threads these in from the
-	// FileConfig at boot.
+	// Legacy fields — forwarded into admincore.New() when Core is nil.
+	// Production main.go leaves these empty and supplies Core.
+
+	ConfigPath          string
+	Apps                *agent.AppRegistry
+	Outbound            *agent.OutboundManager
+	Restart             func()
 	CloudboxBase        string
 	CloudboxAccessToken string
 	AgentName           string
-
-	// LLMPoolStatus, when set, is called on each /api/config refresh
-	// to populate the live pool diagnostic block (watcher push state
-	// + in-flight counter). Nil when the pool service wasn't built
-	// (Ollama off, or Ollama daemon undetected). Closure rather than
-	// a concrete type so adminui doesn't import the ollama package.
-	LLMPoolStatus func() LLMPoolStatusView
-}
-
-// LLMPoolStatusView is the wire shape rendered into safeView. Kept
-// here (not in the ollama package) so adminui doesn't depend on the
-// ollama package's internal type names — main.go does the conversion
-// when supplying the closure.
-type LLMPoolStatusView struct {
-	Enabled     bool      `json:"enabled"`
-	Running     bool      `json:"running"`
-	LastPushAt  time.Time `json:"last_push_at,omitzero"`
-	LastModels  int       `json:"last_models"`
-	PushCount   int64     `json:"push_count"`
-	LastError   string    `json:"last_error,omitempty"`
-	MaxParallel int       `json:"max_parallel"`
-	InFlight    int       `json:"in_flight"`
-	CloudboxURL string    `json:"cloudbox_url,omitempty"`
-	OllamaURL   string    `json:"ollama_url,omitempty"`
+	LLMPoolStatus       func() LLMPoolStatusView
 }
 
 // Server is the admin HTTP server. Construct with New, then call Serve.
 type Server struct {
-	deps     Deps
-	engine   *gin.Engine
+	deps   Deps
+	core   *admincore.Server
+	engine *gin.Engine
+
 	listener net.Listener
 	sessions *sessionStore
 	srv      *http.Server
@@ -125,27 +121,14 @@ type Server struct {
 	// non-loopback. Pre-existing PAM rate-limiting is also in play.
 	loginRL *loginLimiter
 
-	// detector caches podman/ollama availability probes so repeated
-	// /api/config and /api/status calls don't hammer the local sockets.
-	detector *agent.BuiltinDetector
-
-	// mu serializes load-modify-save sequences on the on-disk FileConfig
-	// so two concurrent POSTs to /api/apps don't race.
-	mu sync.Mutex
-
-	// restartMu + restartTimer debounce scheduleRestart calls: the admin
-	// UI flips multiple builtin toggles in quick succession (now that each
-	// switch auto-saves), and each one would otherwise re-exec the process.
-	// Collapse them into a single restart by resetting the timer on every
-	// new request.
-	restartMu    sync.Mutex
-	restartTimer *time.Timer
+	// muLocalProxy serializes NoRoute lookups; kept for backwards-compat
+	// with previous structure (not strictly required since the registries
+	// are concurrent-safe on their own).
+	muLocalProxy sync.Mutex
 }
 
 // isLoopbackAddr reports whether addr (the resolved bound address) is on
-// a loopback interface. IPv6 unspecified (::) listens on both loopback
-// and non-loopback, so we treat unspecified addresses as non-loopback —
-// the conservative choice for the auth gate.
+// a loopback interface.
 func isLoopbackAddr(addr net.Addr) bool {
 	host, _, err := net.SplitHostPort(addr.String())
 	if err != nil {
@@ -161,17 +144,63 @@ func isLoopbackAddr(addr net.Addr) bool {
 // New builds the admin server and binds its listener. The returned Server
 // is not yet serving — call Serve.
 func New(deps Deps) (*Server, error) {
-	if deps.ConfigPath == "" {
-		return nil, errors.New("adminui: ConfigPath required")
-	}
 	if deps.Auth == nil {
 		deps.Auth = hostauth.DefaultAuthenticator()
 	}
-	if deps.Apps == nil {
+	if deps.Apps == nil && deps.Core == nil {
 		deps.Apps = agent.NewAppRegistry()
 	}
 	if deps.ListenAddr == "" {
 		deps.ListenAddr = DefaultAdminAddr
+	}
+
+	// Production callers thread a shared admincore.Server through Deps.Core
+	// so adminui and mcpapi share live state. Test callers leave Core nil;
+	// we build one here from the legacy fields.
+	if deps.Core == nil {
+		if deps.ConfigPath == "" {
+			return nil, errors.New("adminui: ConfigPath required (or supply Deps.Core)")
+		}
+		core, err := admincore.New(admincore.Deps{
+			ConfigPath:          deps.ConfigPath,
+			Apps:                deps.Apps,
+			Outbound:            deps.Outbound,
+			Restart:             deps.Restart,
+			CloudboxBase:        deps.CloudboxBase,
+			CloudboxAccessToken: deps.CloudboxAccessToken,
+			AgentName:           deps.AgentName,
+			LLMPoolStatus:       deps.LLMPoolStatus,
+		})
+		if err != nil {
+			return nil, err
+		}
+		deps.Core = core
+	}
+	// Mirror the core's deps into adminui.Deps so backward-compat
+	// accessors (s.deps.Apps, s.deps.ConfigPath) used by the middleware
+	// and by existing tests keep resolving without ferrying every
+	// access through s.core.Deps().
+	cd := deps.Core.Deps()
+	if deps.ConfigPath == "" {
+		deps.ConfigPath = cd.ConfigPath
+	}
+	if deps.Apps == nil {
+		deps.Apps = cd.Apps
+	}
+	if deps.Outbound == nil {
+		deps.Outbound = cd.Outbound
+	}
+	if deps.AgentName == "" {
+		deps.AgentName = cd.AgentName
+	}
+	if deps.CloudboxBase == "" {
+		deps.CloudboxBase = cd.CloudboxBase
+	}
+	if deps.CloudboxAccessToken == "" {
+		deps.CloudboxAccessToken = cd.CloudboxAccessToken
+	}
+	if deps.LLMPoolStatus == nil {
+		deps.LLMPoolStatus = cd.LLMPoolStatus
 	}
 
 	gin.SetMode(gin.ReleaseMode)
@@ -180,10 +209,10 @@ func New(deps Deps) (*Server, error) {
 
 	s := &Server{
 		deps:     deps,
+		core:     deps.Core,
 		engine:   eng,
 		sessions: newSessionStore(time.Hour, deps.SessionKey),
 		loginRL:  newLoginLimiter(5, 12*time.Second),
-		detector: agent.NewBuiltinDetector(5 * time.Second),
 	}
 	s.registerRoutes()
 
@@ -204,8 +233,7 @@ func New(deps Deps) (*Server, error) {
 	return s, nil
 }
 
-// Addr returns the bound loopback address (after net.Listen resolved any
-// :0 port).
+// Addr returns the bound loopback address.
 func (s *Server) Addr() string {
 	if s.listener == nil {
 		return ""
@@ -239,26 +267,29 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 }
 
+// outboundEnabled reports whether the OutboundManager was wired (only
+// then do we register the outbound sub-routes).
+func (s *Server) outboundEnabled() bool {
+	return s.core.Deps().Outbound != nil
+}
+
 func (s *Server) registerRoutes() {
 	s.engine.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 
-	// Static SPA + assets (always served — the SPA itself decides what to
-	// render based on /api/status).
+	// Static SPA + assets.
 	s.mountUI()
 
-	// Provisioning relay: cooperating apps push grant changes through
-	// outpost up to cloudbox. Lives outside the admin session cookie
-	// gate (the app isn't a human and never logs in) and uses its own
-	// per-app bearer auth instead. Mounted before the session
-	// middleware so /api/* gating doesn't apply.
+	// Provisioning relay — outside the session cookie gate (per-app
+	// bearer auth lives in agent.RegisterProvisionRoutes).
+	cd := s.core.Deps()
 	agent.RegisterProvisionRoutes(s.engine, agent.ProvisionDeps{
-		Apps:         s.deps.Apps,
-		CloudboxBase: s.deps.CloudboxBase,
-		AccessToken:  s.deps.CloudboxAccessToken,
-		AgentName:    s.deps.AgentName,
+		Apps:         cd.Apps,
+		CloudboxBase: cd.CloudboxBase,
+		AccessToken:  cd.CloudboxAccessToken,
+		AgentName:    cd.AgentName,
 	})
 
-	// Login lives outside the gate (callers wouldn't have a session yet).
+	// Login lives outside the gate.
 	s.engine.POST("/api/login", s.handleLogin)
 
 	api := s.engine.Group("/api", s.requireSession())
@@ -273,18 +304,10 @@ func (s *Server) registerRoutes() {
 	api.DELETE("/apps/:name", s.handleDeleteApp)
 	api.POST("/apps/:name/provisioning-token/rotate", s.handleRotateProvisioningToken)
 	api.POST("/restart", s.handleRestart)
-
-	// Cluster (virtual-podman) — paste a kubeconfig to persist
-	// APIURL/Token/CA; the cluster toggle in /api/config/builtins flips
-	// the master switch. DELETE wipes both the credentials and the
-	// toggle (i.e. "leave the cluster").
 	api.POST("/cluster/kubeconfig", s.handleSetClusterKubeconfig)
 	api.DELETE("/cluster/kubeconfig", s.handleClearClusterKubeconfig)
 
-	// Outbound — local mounts that proxy through cloudbox to remote
-	// outposts' apps. Only registered when an OutboundManager was
-	// supplied via Deps.
-	if s.deps.Outbound != nil {
+	if s.outboundEnabled() {
 		api.GET("/outbound", s.handleListOutbound)
 		api.GET("/outbound/suggestions", s.handleOutboundSuggestions)
 		api.POST("/outbound", s.handleAddOutbound)
@@ -293,21 +316,13 @@ func (s *Server) registerRoutes() {
 		api.POST("/outbound/:path/disconnect", s.handleDisconnectOutbound)
 	}
 
-	// Local-access proxy: serve each registered app at the admin UI's
-	// own listener as `/<name>/...`, gated by the same session cookie.
-	// Lets users reach e.g. Ollama at http://localhost:17777/ollama/
-	// without going through the cloudbox tunnel. Outbound mounts have
-	// precedence over local apps when their names collide.
-	//
-	// Implemented via NoRoute so we don't fight with the static API/SPA
-	// routes above for the same prefix tree.
+	// Local-access proxy via NoRoute fallback (session-gated).
 	s.engine.NoRoute(s.handleLocalAppProxy)
 }
 
-// handleLocalAppProxy is the NoRoute fallback. It strips the first path
-// segment as the app name and forwards the rest to the AppRegistry's
-// proxy. Requires a valid admin session cookie — same gate as everything
-// else on this listener. Unknown app names 404.
+// handleLocalAppProxy is the NoRoute fallback. Strips the first path
+// segment as the app/outbound name and forwards to the corresponding
+// registry. Requires a valid admin session cookie.
 func (s *Server) handleLocalAppProxy(c *gin.Context) {
 	p := strings.TrimPrefix(c.Request.URL.Path, "/")
 	if p == "" {
@@ -319,18 +334,13 @@ func (s *Server) handleLocalAppProxy(c *gin.Context) {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
-	// Resolve precedence: outbound mounts win over local apps if the name
-	// matches both. (handleAddOutbound rejects shadowing a local-app
-	// name, so this only matters when the operator manually edits the
-	// config file.)
-	outboundMatch := s.deps.Outbound != nil && s.deps.Outbound.Has(name)
-	localMatch := s.deps.Apps != nil && s.deps.Apps.LookupTarget(name) != nil
+	cd := s.core.Deps()
+	outboundMatch := cd.Outbound != nil && cd.Outbound.Has(name)
+	localMatch := cd.Apps != nil && cd.Apps.LookupTarget(name) != nil
 	if !outboundMatch && !localMatch {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
-	// Auth: session cookie required. We can't use the requireSession
-	// middleware here because NoRoute's chain is one-shot.
 	if cookie, err := c.Cookie(cookieName); err != nil || cookie == "" {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "login required"})
 		return
@@ -343,8 +353,8 @@ func (s *Server) handleLocalAppProxy(c *gin.Context) {
 		upstreamPath = "/" + rest
 	}
 	if outboundMatch {
-		s.deps.Outbound.ProxyTo(c, name, upstreamPath)
+		cd.Outbound.ProxyTo(c, name, upstreamPath)
 		return
 	}
-	s.deps.Apps.ProxyTo(c, name, upstreamPath)
+	cd.Apps.ProxyTo(c, name, upstreamPath)
 }

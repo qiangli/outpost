@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/qiangli/outpost/internal/agent"
+	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 )
@@ -25,23 +26,32 @@ import (
 func newTestServer(t *testing.T, configPath string, want map[string]string, restartCalls *atomic.Int32) *Server {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
+	apps := agent.NewAppRegistry()
+	core, err := admincore.New(admincore.Deps{
+		ConfigPath: configPath,
+		Apps:       apps,
+		Restart: func() {
+			if restartCalls != nil {
+				restartCalls.Add(1)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	eng := gin.New()
 	s := &Server{
 		deps: Deps{
-			ConfigPath: configPath,
+			Core:       core,
 			Auth:       hostauth.StubAuth{Want: want},
-			Apps:       agent.NewAppRegistry(),
-			Restart: func() {
-				if restartCalls != nil {
-					restartCalls.Add(1)
-				}
-			},
+			ConfigPath: configPath,
+			Apps:       apps,
 		},
+		core:         core,
 		engine:       eng,
 		sessions:     newSessionStore(time.Minute, nil),
 		loginRL:      newLoginLimiter(50, time.Millisecond),
 		loopbackOnly: true,
-		detector:     agent.NewBuiltinDetector(0),
 	}
 	s.registerRoutes()
 	return s

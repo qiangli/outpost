@@ -42,9 +42,9 @@ type ProvisionDeps struct {
 // RegisterProvisionRoutes mounts the /_periscope/apps/:name/users
 // surface on rg. Routes:
 //
-//   POST   /_periscope/apps/:name/users           upsert a grant
-//   GET    /_periscope/apps/:name/users           list grants (30s cache)
-//   DELETE /_periscope/apps/:name/users/:email    revoke a grant
+//	POST   /_periscope/apps/:name/users           upsert a grant
+//	GET    /_periscope/apps/:name/users           list grants (30s cache)
+//	DELETE /_periscope/apps/:name/users/:email    revoke a grant
 //
 // Mounted on the main loopback listener — never advertised through the
 // matrix tunnel. Authentication is per-app bearer (AppConfig.

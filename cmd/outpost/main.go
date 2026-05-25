@@ -27,6 +27,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/qiangli/outpost/internal/agent"
+	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/adminui"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
@@ -249,12 +250,12 @@ func startCmd() *cobra.Command {
 			// can render a live pool diagnostic. When Ollama isn't
 			// enabled (ollamaSvc nil) the closure returns the
 			// zero view, which the SPA renders as "(disabled)".
-			llmPoolStatus := func() adminui.LLMPoolStatusView {
+			llmPoolStatus := func() admincore.LLMPoolStatusView {
 				if ollamaSvc == nil {
-					return adminui.LLMPoolStatusView{}
+					return admincore.LLMPoolStatusView{}
 				}
 				st := ollamaSvc.Status()
-				return adminui.LLMPoolStatusView{
+				return admincore.LLMPoolStatusView{
 					Running:     st.Watcher.Running,
 					LastPushAt:  st.Watcher.LastPushAt,
 					LastModels:  st.Watcher.LastModels,
@@ -267,18 +268,29 @@ func startCmd() *cobra.Command {
 				}
 			}
 
-			adminSrv, err := adminui.New(adminui.Deps{
+			// Construct the shared business-logic layer first. The same
+			// admincore.Server instance feeds adminui (human SPA) and
+			// — soon — mcpapi (agent tools), so the file-save mutex and
+			// restart-debounce timer are shared across the two surfaces.
+			core, err := admincore.New(admincore.Deps{
 				ConfigPath:          cfgPath,
-				ListenAddr:          adminAddr,
-				Auth:                hostauth.DefaultAuthenticator(),
 				Apps:                apps,
-				Restart:             restartFn,
-				SessionKey:          sessionKey,
 				Outbound:            outbound,
-				LLMPoolStatus:       llmPoolStatus,
+				Restart:             restartFn,
 				CloudboxBase:        cloudboxHTTPBase(fc),
 				CloudboxAccessToken: fc.AccessToken,
 				AgentName:           fc.AgentName,
+				LLMPoolStatus:       llmPoolStatus,
+			})
+			if err != nil {
+				return fmt.Errorf("admincore: %w", err)
+			}
+
+			adminSrv, err := adminui.New(adminui.Deps{
+				Core:       core,
+				ListenAddr: adminAddr,
+				Auth:       hostauth.DefaultAuthenticator(),
+				SessionKey: sessionKey,
 			})
 			if err != nil {
 				return fmt.Errorf("admin ui: %w", err)
