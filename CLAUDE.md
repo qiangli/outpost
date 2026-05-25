@@ -23,15 +23,32 @@ make clean
 #   internal/agent/{auth,apps,clipboard,ssh,hostkey,tunnel,outbound}_test.go
 #   internal/agent/portal/exchange_test.go
 #   internal/agent/conf/{file,url}_test.go
-#   internal/agent/adminui/{adminui,e2e,suggestions,builtins,login_limiter}_test.go
+#   internal/agent/admincore/networking_test.go
+#   internal/agent/adminui/{adminui,e2e,suggestions,builtins,cluster,login_limiter}_test.go
+#   internal/agent/mcpapi/mcpapi_test.go        — end-to-end MCP protocol roundtrip
+#   cmd/outpost/docs_test.go                    — drift detector for embedded docs
 go test ./...
 go test ./internal/agent -run TestAuth
 go test ./internal/agent/adminui -run TestE2E
+go test ./internal/agent/mcpapi                 # initialize → list tools → call
 
 # Run from source
 go run ./cmd/outpost register --server https://ai.dhnt.io --code <code> --name <host>
 go run ./cmd/outpost start
 go run ./cmd/outpost stop
+go run ./cmd/outpost status                # paired-yet + builtins + apps + outbound
+go run ./cmd/outpost docs settings         # embedded reference (every persisted setting)
+
+# MCP-backed CLI subcommands (drive the running daemon via /mcp/*):
+go run ./cmd/outpost apps {list,add,rm,rotate-token,suggest}
+go run ./cmd/outpost builtins {show,set --ssh=on/off …}
+go run ./cmd/outpost config {show,set --admin-addr 0.0.0.0:17777 …}
+go run ./cmd/outpost outbound {list,add,connect,disconnect,rm,suggest}
+go run ./cmd/outpost cluster {kubeconfig,set,clear}
+go run ./cmd/outpost mcp {endpoint,rotate-token}
+go run ./cmd/outpost {restart,unpair}
+
+# Client-side helpers (unchanged):
 go run ./cmd/outpost connect <host>        # mirrors the web "Connect" button
 go run ./cmd/outpost ssh-proxy <host>      # SSH ProxyCommand
 go run ./cmd/outpost ssh-config            # emit ~/.ssh/config stanzas
@@ -43,35 +60,100 @@ go run ./cmd/outpost ssh-config            # emit ~/.ssh/config stanzas
 
 ### Process layout
 
-`cmd/outpost/main.go` wires the CLI surface: `start`, `register`, `stop`, plus the client-side helpers `connect`, `ssh-proxy`, `ssh-config` (defined in `cmd/outpost/connect.go` and `cmd/outpost/ssh.go`). `start` always launches the **admin UI** (loopback, default `127.0.0.1:17777`, override via `$OUTPOST_ADMIN_ADDR`). The admin UI is bound on its own listener — it is *never* advertised through the matrix tunnel, so it is local-machine only.
+`cmd/outpost/main.go` wires a sprawling CLI surface (see "Common commands" above). `start` always launches the **admin / agent-tool loopback listener** (default `127.0.0.1:17777`, override via `$OUTPOST_ADMIN_ADDR` or `--admin-addr`). The listener hosts three things on disjoint path prefixes:
 
-After the admin server is up `start` looks at the merged config:
+```
+127.0.0.1:17777
+├── /                  SPA (humans, session-cookie auth)
+├── /api/*             admin REST API (humans, session-cookie auth)
+├── /mcp/*             MCP streamable HTTP server (agents, bearer-token auth)
+├── /_periscope/*      per-app provisioning relay (per-app bearer)
+└── /healthz
+```
 
-- **Unconfigured** (`AgentName == ""`): print the admin URL, block on signal/restart. No tunnel, no main loopback server. The user opens the admin URL, pairs, and the admin handler triggers a self-restart.
-- **Configured**: continue as before — bind a random loopback port for the main `gin.Engine` (`agent.RegisterRoutes`), build an embedded matrix-tunnel client (`agent.NewTunnel`) and dial `cfg.ServerAddr:ServerPort` with one TCP proxy pointing at the loopback port. All three (admin UI, main server, matrix tunnel) run in the same `errgroup`; cancelling the context shuts them all down.
+The listener is *never* advertised through the matrix tunnel — it is local-machine only. Two auth schemes coexist by path-prefix isolation (the session-cookie middleware is mounted only on the `/api/*` group; the bearer middleware lives inside `mcpapi.Server.bearerAuth` wrapping `/mcp/*`). They cannot leak into each other.
+
+After the listener is up `start` looks at the merged config:
+
+- **Unconfigured** (`AgentName == ""`): print the admin URL + MCP endpoint + bearer token, block on signal/restart. No matrix tunnel, no main loopback server. The user opens the admin URL (or uses MCP / CLI / `outpost register`) to pair; the operation triggers a self-restart.
+- **Configured**: continue as before — bind a random loopback port for the main `gin.Engine` (`agent.RegisterRoutes`), build an embedded matrix-tunnel client (`agent.NewTunnel`) and dial `cfg.ServerAddr:ServerPort` with one TCP proxy pointing at the loopback port. All three (admin listener, main server, matrix tunnel) run in the same `errgroup`; cancelling the context shuts them all down.
 
 `start` refuses to boot if another outpost owns the pidfile at `<UserCacheDir>/outpost/outpost.pid` (the matrix-tunnel `RemotePort` is fixed, so two instances would fight over the same slot). `stop` reads that pidfile, SIGTERMs, then SIGKILLs after 5 s.
 
 ### Self-restart for tunnel/identity changes
 
-The matrix tunnel is immutable after `NewTunnel`, and the built-in routes (`/shell`, `/desktop`, `/clipboard`) are mounted conditionally at boot. So any admin-UI save that changes pairing, server URL, agent name, or a built-in toggle triggers a binary self-restart:
+The matrix tunnel is immutable after `NewTunnel`, and the built-in routes (`/shell`, `/desktop`, `/clipboard`) are mounted conditionally at boot. So any save that changes pairing, server URL, agent name, networking binds, or a built-in toggle triggers a binary self-restart — regardless of which surface (SPA / MCP / CLI) initiated it. The flow:
 
-1. Handler writes the new config (`conf.SaveFile`).
-2. Handler sends its JSON response, then 250 ms later calls the `restartFn` closure threaded down from `main.go`.
-3. `restartFn` cancels the errgroup context (so all listeners drain).
-4. After `g.Wait()` returns, the parent clears the pidfile (so the child can claim it), `execSelfStart`s a detached child, and exits.
+1. Surface handler (`adminui.handleX` / MCP tool / CLI subcommand) calls into `admincore.Server.X(...)`.
+2. `admincore` writes the new config (`conf.SaveFile`), mutates live state where applicable, and calls `Server.ScheduleRestart()` — a 1-s debounced timer that collapses rapid toggle flips into a single restart.
+3. After the debounce fires, the `restartFn` closure threaded from `main.go` runs: it cancels the errgroup context (so all listeners drain).
+4. `g.Wait()` returns; the parent clears the pidfile (so the child can claim it), `execSelfStart`s a detached child, and exits.
 5. The deferred `removePidFile` becomes a no-op via an `atomic.Bool` flag — without that, the parent would race-delete the child's freshly-written pidfile.
 
-Custom-app add/edit/remove do *not* restart — `AppRegistry` is concurrency-safe, so the admin handler just mutates the live registry. Outbound mount add/remove/connect/disconnect also stays live (it only touches `OutboundManager`). Restart triggers are: pairing/identity changes, server URL, and any built-in toggle (`/shell`, `/desktop`, `/clipboard`, `/ssh`, `sftp` subsystem inside `/ssh`, plus the podman/ollama built-in proxy apps — those last two register into `AppRegistry` from boot, so flipping them on/off needs a restart).
+Custom-app add/edit/remove do *not* restart — `AppRegistry` is concurrency-safe, so the live registry is mutated in place. Outbound mount add/remove/connect/disconnect also stays live (it only touches `OutboundManager`). Restart triggers are: pairing/identity changes, server URL, any built-in toggle (`/shell`, `/desktop`, `/clipboard`, `/ssh`, `sftp` subsystem, plus the podman/ollama built-in proxy apps — those last two register into `AppRegistry` from boot), networking binds (`local_addr` / `vnc_addr` / `admin_addr`), and the `admin_users` allowlist (read once at boot into `AdminSet`).
 
 ### Config layering
 
 `internal/agent/conf/`:
 
-- `conf.Load()` reads env vars (`AGENT_*`, `MATRIX_*` — including `MATRIX_SERVER_ADDR`, `MATRIX_SERVER_PORT`, `MATRIX_TOKEN`, `MATRIX_PROTOCOL`, `MATRIX_REMOTE_PORT`, `MATRIX_APPS`, `MATRIX_ADMIN_USERS`, `MATRIX_AUTH_URL`).
-- `conf.LoadFile(path)` reads the JSON written by `register` or the admin UI (default path: `<UserConfigDir>/matrix/agent.json` — XDG-aware).
-- `start` layers them: env → file (only fills empty fields) → CLI flags override. The portal-returned `Protocol`/`Token`/`RemotePort`/`ServerAddr`/`ServerPort` come from the file.
+- `conf.Load()` reads env vars (`AGENT_*`, `MATRIX_*` — including `AGENT_ADDR`, `AGENT_VNC_ADDR`, `OUTPOST_ADMIN_ADDR`, `MATRIX_SERVER_ADDR`, `MATRIX_SERVER_PORT`, `MATRIX_TOKEN`, `MATRIX_PROTOCOL`, `MATRIX_REMOTE_PORT`, `MATRIX_APPS`, `MATRIX_ADMIN_USERS`, `MATRIX_AUTH_URL`). It deliberately does NOT apply hardcoded defaults — that would mask file lookups. Empty env = empty struct field.
+- `conf.LoadFile(path)` reads the JSON written by `register` / the admin UI / MCP / CLI (default path: `<UserConfigDir>/matrix/agent.json` — XDG-aware).
+- `start` layers in this precedence order: **CLI flag > env var > FileConfig > hardcoded default** (`conf.Default*` constants). Defaults are applied last so an empty env can fall through to the file value. The portal-returned `Protocol`/`Token`/`RemotePort`/`ServerAddr`/`ServerPort` come from the file and win over env when present.
 - `FileConfig.Apps` (structured `[]AppConfig`) is the source of truth once it is present — even an empty slice wins over `MATRIX_APPS`. The legacy env path is still consulted when `fc.Apps == nil` (configs written before the admin UI shipped). Built-in toggles use `*bool` so a missing JSON key on an old config defaults to enabled; read via `fc.ShellOn() / DesktopOn() / ClipboardOn()`.
+- Beyond pairing + apps + builtins, `FileConfig` now persists: `local_addr`, `vnc_addr`, `admin_addr`, `admin_users` (the env-only `$MATRIX_ADMIN_USERS` predecessor), `ssh_allow_remote_forward`, `ssh_allow_agent_forward`, `ssh_forward_sockets`, `client_only`, `outbound[]`, `cluster.{enabled,api_url,token,ca,node_name}`, plus two daemon-internal secrets: `admin_session_key` (HMAC for SPA cookies) and `mcp_bearer_token` (auth for `/mcp/*`). Auto-generated on first boot via `conf.EnsureAdminSessionKey` / `conf.EnsureMCPBearerToken`.
+- See `docs/settings.md` (also reachable via `outpost docs settings`) for the canonical inventory: every persistable field, its file key, CLI flag, UI location, MCP tool, and side-effect class (Restart / Live / Boot-only).
+
+### admincore — shared business-logic layer (`internal/agent/admincore/`)
+
+Every configuration operation outpost exposes converges on `admincore`. The package is protocol-agnostic — no HTTP, no JSON-RPC, no cobra. It owns:
+
+- `Server` struct holding the FileConfig serialization mutex, the restart-debounce timer, and the cached `BuiltinDetector` (podman/ollama probes).
+- Mutation methods one-per-domain: `Pair`, `Unpair`, `SetBuiltins`, `UpsertApp` / `DeleteApp` / `RotateProvisioningToken`, `UpsertOutbound` / `DeleteOutbound` / `ConnectOutbound` / `DisconnectOutbound`, `SetKubeconfig` / `ClearKubeconfig`, `SetNetworking`, `ScheduleRestart`.
+- Read-only views: `Status`, `SafeView` (redacted FileConfig), `ListApps`, `ListOutbound`, `AppSuggestions`, `OutboundSuggestions`.
+- Validation: `ValidateApp`, `ValidateOutbound`, `normalizePathPrefix`, plus a shared `reservedNames` set (`api`, `static`, `healthz`, `index.html`, `app`, `mcp`, `_periscope`) that all three surfaces enforce identically.
+- Typed errors: `*APIError{Status, Msg}`; HTTP layers map `Status` to gin codes, MCP maps to `CallToolResult.IsError=true` text content. Plain `error` becomes 500 / JSON-RPC error.
+
+`main.go` constructs ONE `*admincore.Server` and threads it into both `adminui.New` and `mcpapi.New`. The shared instance is what guarantees the SPA / MCP / CLI can't drift: same mutex serializing saves, same restart-debounce timer collapsing rapid flips, same `AppRegistry` / `OutboundManager` for live mutations.
+
+### Admin UI HTTP layer (`internal/agent/adminui/`)
+
+After the admincore extraction, this package is just the human-facing thin shell:
+- `server.go` — listener + gin engine + Serve(ctx). Exposes `Engine()` so `cmd/outpost/main.go` can mount the MCP handler on `/mcp/*` of the same engine.
+- `handlers.go` — one HTTP handler per `admincore` method. Each one binds JSON, calls the core method, and renders `respondError(c, err)` which uses `admincore.APIError.HTTPStatus()` for status code mapping.
+- `mcp.go` — `GET /api/mcp/credentials` and `POST /api/mcp/token/rotate` — the SPA's "Agent tool credentials" surface.
+- `sessions.go` — HMAC-signed cookies (1 h TTL, persisted key in `FileConfig.AdminSessionKey`).
+- `middleware.go` — `requireSession`. Skips the gate while `AgentName == ""` (no paired identity to protect yet) when the listener is loopback-only; on a LAN bind it's always-on.
+- `login_limiter.go` — per-IP token bucket on `POST /api/login` (default 5 burst / 12 s refill).
+- `ui.go` + `ui/index.html` — embedded vanilla-JS SPA via `//go:embed ui`. The Pair tab carries three fieldsets: pairing, MCP credentials (with reveal / copy / rotate), and Advanced settings (networking + admin_users + SSH-advanced toggles + ssh_forward_sockets). Built-in toggle rows render the canonical `agent.json` key as a small monospace `.key-hint` badge next to each label.
+
+### MCP server (`internal/agent/mcpapi/`)
+
+Mounted on the same gin engine at `/mcp/*` using `github.com/modelcontextprotocol/go-sdk` (the official Anthropic SDK; pinned in `go.mod`).
+
+- `server.go` — wraps `mcp.NewStreamableHTTPHandler` with constant-time bearer-token middleware (`bearerAuth`). Token lives in `FileConfig.MCPBearerToken`; the value is in-memory swappable via `Server.Rotate()` so the SPA's "Rotate" button and the `outpost_rotate_mcp_token` tool both update the live state atomically.
+- `tools.go` registers Phase-1 parity tools across files `tools_{pair,builtins,networking,apps,outbound,cluster,lifecycle}.go`. Every tool delegates to one `admincore.Server` method.
+- `resources.go` — `outpost://status`, `outpost://config`, `outpost://apps`, `outpost://outbound`. Read-only JSON snapshots; same shapes adminui's `/api/*` endpoints return.
+- `mcpapi_test.go` drives the full protocol end-to-end against an `httptest.Server`: initialize → list tools (asserts every parity tool is registered) → read resource → call tool. Also covers no-header / wrong-scheme / wrong-token / valid-token paths.
+
+Tool naming uses verb-noun (`outpost_upsert_app`, `outpost_delete_outbound`); CLI subcommands use Unix conventions (`apps add`, `outbound rm`). The mismatch is deliberate — the audiences differ — and `docs/settings.md` documents the mapping.
+
+### CLI as MCP client (`cmd/outpost/`)
+
+`outpost apps`, `outpost builtins`, `outpost config`, `outpost outbound suggest`, `outpost cluster set/clear`, `outpost status`, `outpost restart`, `outpost unpair`, `outpost mcp rotate-token` are all thin MCP clients. The shared plumbing is in `cmd/outpost/mcpclient.go`:
+
+- `dialMCP(ctx)` loads `FileConfig.MCPBearerToken` from disk (mode 0600 — same OS user) and opens a `mcp.StreamableClientTransport` against `http://127.0.0.1:17777/mcp` (or `$OUTPOST_ADMIN_ADDR` if set).
+- `callTool(ctx, name, args, out)` and `readResource(ctx, uri, out)` wrap the SDK with JSON round-trip into typed Go structs.
+- Connection-refused surfaces as "outpost daemon not running — run `outpost start`" rather than a raw net error.
+
+A few subcommands (`apps add`, `apps rm`, plus the legacy `register` flow) accept `--offline` to bypass MCP and mutate the on-disk `FileConfig` directly via a one-shot `admincore.Server`. Useful for installer scripts that provision a host before the daemon is started for the first time.
+
+The pre-MCP `outbound login/logout/list/add/connect/disconnect/rm` family still uses the session-cookie REST path (`adminClient` in `cmd/outpost/outbound.go`); the new `outbound suggest` uses MCP. Both auth shapes coexist.
+
+### Embedded operator docs (`cmd/outpost/embedded_docs/`, `cmd/outpost/docs.go`)
+
+The canonical operator references live in `docs/<topic>.md` and are mirrored byte-for-byte into `cmd/outpost/embedded_docs/<topic>.md` (the `go:embed` directive can't traverse `..` out of the package). `outpost docs [topic]` walks `embedded_docs/` via `//go:embed all:embedded_docs`. Topics are curated in `docsManifest`. `cmd/outpost/docs_test.go` fails the build if the two copies drift — re-sync with `cp docs/<topic>.md cmd/outpost/embedded_docs/<topic>.md`.
+
+Current topics: `settings` (full inventory of every persisted field), `mcp` (setup + tool catalog + `.mcp.json` snippet).
 
 ### Routes (`internal/agent/routes.go`)
 
@@ -105,18 +187,19 @@ The legacy `guest|user|admin` tier was replaced by three orthogonal knobs on `Ap
 - **`LANOnlyPaths` ([]string)** — segment-anchored prefix list. A request matching one of these is 404'd when `X-Forwarded-Prefix` is present, so kiosk-style endpoints (e.g. `/kiosk`) can be reachable on the LAN but invisible through the cloud surface. `matchSegmentPrefix` makes `/kiosk` match `/kiosk` and `/kiosk/foo` but not `/kiosks-of-truth`.
 - **`IndexPath` (string)** — landing sub-path the cloudbox SPA prepends when constructing this tile's URL. Lets two `AppConfig` rows on the same upstream open at different paths ("Class" and "Class Admin" pointing at one app, each with its own tile + Connect button + cookie scope). Outpost itself doesn't rewrite anything; the field is published via `/apps` for the cloud's benefit.
 
-### Admin UI (`internal/agent/adminui/`)
+### Admin UI REST surface (mounted under `/api/*` by `adminui`)
 
-Local-only web admin for pairing, built-in toggles, custom apps, and outbound mounts. Package layout: `server.go` (gin + listener + Serve(ctx)), `sessions.go` (in-memory cookie store, 1 h TTL, wiped on restart), `middleware.go` (gate engages once `fc.AgentName` is set), `handlers.go` (the API), `login_limiter.go` (per-IP token bucket on `POST /api/login`, default 5 burst / 12 s refill — see `login_limiter_test.go`), `ui.go` + `ui/index.html` (embedded vanilla-JS SPA via `//go:embed ui`).
+All paths take session-cookie auth (or bypass gate when unpaired + loopback). Each is a one-line wrapper into the matching `admincore.Server` method — see "Admin UI HTTP layer" above for the package layout.
 
-API surface:
 - `GET /api/status`, `POST /api/login`, `POST /api/logout`
-- `GET /api/config` (Token redacted; presence reported as `has_token`), `POST /api/config/register`, `POST /api/config/builtins`
-- `GET|POST /api/apps`, `DELETE /api/apps/:name`, `GET /api/apps/suggestions`
-- `GET|POST /api/outbound`, `DELETE /api/outbound/:path`, `POST /api/outbound/:path/connect`, `POST /api/outbound/:path/disconnect`
+- `GET /api/config` (Token redacted; presence reported as `has_token`), `POST /api/config/register`, `POST /api/config/builtins`, `POST /api/config/networking`
+- `GET|POST /api/apps`, `DELETE /api/apps/:name`, `POST /api/apps/:name/provisioning-token/rotate`, `GET /api/apps/suggestions`
+- `GET|POST /api/outbound`, `DELETE /api/outbound/:path`, `POST /api/outbound/:path/connect`, `POST /api/outbound/:path/disconnect`, `GET /api/outbound/suggestions`
+- `POST /api/cluster/kubeconfig`, `DELETE /api/cluster/kubeconfig`
+- `GET /api/mcp/credentials`, `POST /api/mcp/token/rotate`
 - `POST /api/restart`
 
-The `requireSession` middleware skips the gate while `AgentName == ""` (no paired identity to protect yet) — safe because the listener is loopback-only. Outbound endpoints are only registered when `deps.Outbound != nil` (i.e. once paired with an `access_token`).
+Outbound endpoints are only registered when `core.Deps().Outbound != nil` (i.e. once paired with an `access_token`). MCP-credential endpoints are only registered when `main.go` threaded `MCPToken` / `RotateMCPToken` closures in (skipped on test paths).
 
 ### Portal exchange (`internal/agent/portal/`)
 
@@ -220,5 +303,8 @@ Beyond the per-host `/app/ollama/...` proxy described above, an outpost can join
 ## Conventions worth knowing
 
 - "matrix-agent" and "outpost" refer to the same thing — older log messages say `matrix-agent:`. The portal-side namespace is "matrix"; the binary was renamed to "outpost" later.
-- The portal contract for register lives at `POST <server>/api/register/exchange` and returns `{agent_name, server_addr, server_port, protocol, token, remote_port}`. Any change to that response shape needs a coordinated portal change.
-- `loopback-only` is load-bearing: do not bind the local HTTP server to anything other than `127.0.0.1` — every code path assumes the matrix tunnel is the only ingress.
+- The portal contract for register lives at `POST <server>/api/register/exchange` and returns `{agent_name, server_addr, server_port, protocol, token, remote_port, access_token, client_only, auth_url}`. Any change to that response shape needs a coordinated portal change.
+- `loopback-only` is load-bearing for the *main* (matrix-tunnel ingress) HTTP server: do not bind it to anything other than `127.0.0.1` — every code path assumes the matrix tunnel is the only ingress. The admin/agent-tool listener at `:17777` *can* be bound to LAN (operator override via `admin_addr`), and outpost warns + forces the auth gate on every request when it detects that.
+- **Naming convention** (CLI / MCP / UI / file): the `agent.json` key is canonical. MCP arg names match it. CLI flags are kebab-case of the file key (`ssh_allow_local_forward` → `--ssh-allow-local-forward`). UI labels stay human-readable but each row shows the file key as a small monospace `.key-hint` badge. Historical short-form flags (e.g. `--ssh-local-fwd`) survive as deprecated aliases via `cobra.Flag.MarkDeprecated`. CLI subcommand verbs (`add`, `rm`, `list`) deliberately stay Unix-conventional and don't mirror MCP's `upsert/delete/list` — the audiences differ.
+- New configuration features land in `admincore` first, with HTTP / MCP / CLI wrappers added in lockstep. A new operation isn't done until all four surfaces (file key, REST handler, MCP tool, CLI subcommand) reach the same admincore method. `docs/settings.md` is the place where the operator-visible side of that work gets documented.
+- The pre-MCP `outpost outbound login/logout/list/add/connect/disconnect/rm` family uses session-cookie auth (its own `adminClient` in `cmd/outpost/outbound.go`); the newer subcommands (`apps`, `builtins`, `config`, `outbound suggest`, `cluster set/clear`, `status`, `restart`, `unpair`, `mcp rotate-token`) all go through `dialMCP()` and the bearer token. When adding a new CLI subcommand, default to the MCP path — it doesn't need a `login` dance and reuses the same `admincore` validation.
