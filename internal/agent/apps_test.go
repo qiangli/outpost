@@ -700,6 +700,67 @@ func TestRegisterFromConfig_XForwardedHeaders(t *testing.T) {
 	})
 }
 
+// TestProxy_RewritesAbsoluteLocationHeader: when the upstream returns
+// a 3xx with an absolute-path Location, we prepend the public prefix
+// (set by cloudbox via X-Forwarded-Prefix) so the browser stays inside
+// the proxied mount instead of escaping to /admin/login (which on
+// cloudbox is a legacy redirect to /cloudbox). Regression guard for
+// lern-admin opening cloudbox's admin instead of the app's admin page.
+func TestProxy_RewritesAbsoluteLocationHeader(t *testing.T) {
+	cases := []struct {
+		name, sent, prefix, want string
+	}{
+		{"absolute-path gets prefixed",
+			"/admin/login", "/h/dragon/app/lern-admin", "/h/dragon/app/lern-admin/admin/login"},
+		{"already prefixed left alone",
+			"/h/dragon/app/lern-admin/x", "/h/dragon/app/lern-admin", "/h/dragon/app/lern-admin/x"},
+		{"exact prefix match left alone",
+			"/h/dragon/app/lern-admin", "/h/dragon/app/lern-admin", "/h/dragon/app/lern-admin"},
+		{"full URL left alone",
+			"https://other.example/foo", "/h/dragon/app/lern-admin", "https://other.example/foo"},
+		{"protocol-relative left alone",
+			"//other.example/foo", "/h/dragon/app/lern-admin", "//other.example/foo"},
+		{"no inbound prefix → falls back to /app/<name>",
+			"/admin/login", "", "/app/lern-admin/admin/login"},
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", r.Header.Get("X-Test-Location"))
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer upstream.Close()
+	u, _ := url.Parse(upstream.URL)
+	uhost, portStr, _ := net.SplitHostPort(u.Host)
+	port, _ := strconv.Atoi(portStr)
+	reg := NewAppRegistry()
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "lern-admin", Scheme: "http", Host: uhost, Port: port, Enabled: true,
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	srv := httptest.NewServer(newTestRouter(reg))
+	defer srv.Close()
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, _ := http.NewRequest("GET", srv.URL+"/app/lern-admin/admin", nil)
+			req.Header.Set("X-Test-Location", tc.sent)
+			if tc.prefix != "" {
+				req.Header.Set("X-Forwarded-Prefix", tc.prefix)
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			_ = resp.Body.Close()
+			if got := resp.Header.Get("Location"); got != tc.want {
+				t.Errorf("Location = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestRegisterFromConfig_TCPBridge spins up a tiny upstream TCP echo,
 // registers it as a tcp-scheme app, dials a WebSocket against the gin
 // router, and confirms the bridge byte-splices both directions. This is

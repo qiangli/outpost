@@ -201,6 +201,36 @@ func (r *AppRegistry) RegisterWithMeta(name, target string, meta AppMeta) error 
 func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, transport http.RoundTripper) error {
 	rp := &httputil.ReverseProxy{
 		Transport: transport,
+		// Rewrite absolute-path Location headers (3xx redirects) so they
+		// stay inside the public mount. Without this, an upstream that
+		// returns `Location: /admin/login` (lots of CMS / classic web
+		// apps do) makes the browser navigate to
+		// https://<cloudbox>/admin/login — which on cloudbox is the
+		// legacy `/admin/*p → /cloudbox/*p` redirect, dumping the user
+		// into cloudbox itself instead of the app. Prepend our public
+		// prefix (set by cloudbox via X-Forwarded-Prefix, e.g.
+		// /h/dragon/app/lern-admin) so the redirect lands back on the
+		// proxy.
+		//
+		// Untouched: full URLs (`https://other.example/foo`),
+		// protocol-relative URLs (`//foo.example/x`), and paths already
+		// prefixed by the mount (so a well-behaved app that already
+		// honors X-Forwarded-Prefix doesn't get double-prefixed).
+		ModifyResponse: func(resp *http.Response) error {
+			loc := resp.Header.Get("Location")
+			if loc == "" || loc[0] != '/' || (len(loc) >= 2 && loc[1] == '/') {
+				return nil
+			}
+			prefix := resp.Request.Header.Get("X-Forwarded-Prefix")
+			if prefix == "" || prefix == "/" {
+				return nil
+			}
+			if loc == prefix || strings.HasPrefix(loc, prefix+"/") {
+				return nil
+			}
+			resp.Header.Set("Location", prefix+loc)
+			return nil
+		},
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			// httputil.ReverseProxy strips the four standard X-Forwarded-*

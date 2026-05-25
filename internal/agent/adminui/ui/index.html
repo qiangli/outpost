@@ -728,10 +728,16 @@ function renderMain(status, cfg) {
     });
     // Show a 🔒 pill when the app demands cloud-side login; show an
     // "/admin" pill when an IndexPath is set so the operator can tell
-    // the two virtual apps apart at a glance.
+    // the two virtual apps apart at a glance; show a "LAN-only: /a, /b"
+    // pill when the app has LAN-only path prefixes set (the gate that
+    // 404s those paths through cloudbox while leaving them reachable on
+    // the LAN — easy to forget once configured, so surface it).
     const pills = [];
     if (a.require_login) pills.push(el('span', {class: 'hint'}, '🔒 login'));
     if (a.index_path)    pills.push(el('span', {class: 'hint'}, a.index_path));
+    if (Array.isArray(a.lan_only_paths) && a.lan_only_paths.length > 0) {
+      pills.push(el('span', {class: 'hint'}, 'LAN-only: ' + a.lan_only_paths.join(', ')));
+    }
     row.append(
       el('span', {class: 'label'}, a.name),
       targetEl,
