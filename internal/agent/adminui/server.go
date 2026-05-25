@@ -241,6 +241,14 @@ func (s *Server) Addr() string {
 	return s.listener.Addr().String()
 }
 
+// Engine returns the underlying gin engine. mcpapi mounts its handler
+// at /mcp/* here so MCP and admin UI share one loopback listener (one
+// URL the operator copy-pastes, one port the firewall sees). The
+// bearer-token middleware lives inside mcpapi — adminui doesn't see
+// /mcp/* traffic; the route is registered after adminui's own routes,
+// so admin's session-cookie middleware never inspects it.
+func (s *Server) Engine() *gin.Engine { return s.engine }
+
 // URL is a convenience for the message printed to the console.
 func (s *Server) URL() string {
 	return "http://" + s.Addr()

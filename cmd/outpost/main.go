@@ -30,6 +30,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/adminui"
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/agent/mcpapi"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
@@ -295,6 +296,35 @@ func startCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("admin ui: %w", err)
 			}
+
+			// MCP server — same loopback listener as adminui, mounted
+			// at /mcp/*. Bearer-token auth (FileConfig.MCPBearerToken,
+			// auto-generated on first boot) is isolated from adminui's
+			// session-cookie auth by path-prefix routing.
+			mcpToken, err := conf.EnsureMCPBearerToken(cfgPath, fc)
+			if err != nil {
+				return fmt.Errorf("mcp bearer token: %w", err)
+			}
+			mcpSrv, err := mcpapi.New(mcpapi.Deps{
+				Core:    core,
+				Token:   mcpToken,
+				Version: agent.ReadBuildInfo().Short(),
+				RotateFn: func() (string, error) {
+					// Re-load the FileConfig from disk so any other write
+					// since boot is respected, then rotate atomically.
+					cur, lerr := conf.LoadFile(cfgPath)
+					if lerr != nil || cur == nil {
+						cur = fc
+					}
+					return conf.RotateMCPBearerToken(cfgPath, cur)
+				},
+			})
+			if err != nil {
+				return fmt.Errorf("mcp api: %w", err)
+			}
+			adminSrv.Engine().Any("/mcp", gin.WrapH(mcpSrv.Handler()))
+			adminSrv.Engine().Any("/mcp/*p", gin.WrapH(mcpSrv.Handler()))
+			fmt.Fprintf(os.Stderr, "MCP endpoint: %s/mcp/  (bearer: %s)\n", adminSrv.URL(), mcpToken)
 
 			g, gctx := errgroup.WithContext(ctx)
 			g.Go(func() error {

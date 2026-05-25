@@ -2,6 +2,7 @@ package conf
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -130,6 +131,16 @@ type FileConfig struct {
 	// in the JSON (32 random bytes worth of entropy). Auto-generated and
 	// saved on first boot via EnsureAdminSessionKey.
 	AdminSessionKey []byte `json:"admin_session_key,omitempty"`
+
+	// MCPBearerToken is the shared secret agent tools (Claude Code,
+	// Windsurf, the outpost CLI, ...) present in Authorization: Bearer
+	// headers when calling the MCP server mounted at /mcp/* on the same
+	// loopback listener as the admin UI. Distinct from the session
+	// cookie used by humans hitting /api/*. 32 random bytes encoded as
+	// hex (64 chars) so it can be pasted into a .mcp.json verbatim.
+	// Auto-generated on first boot via EnsureMCPBearerToken; the admin
+	// UI exposes a "rotate" action that re-mints it.
+	MCPBearerToken string `json:"mcp_bearer_token,omitempty"`
 
 	// Outbound configures local mount paths that proxy through cloudbox to
 	// remote outposts' apps. The local outpost holds an in-memory
@@ -572,6 +583,53 @@ func EnsureAdminSessionKey(path string, fc *FileConfig) ([]byte, error) {
 		}
 	}
 	return fc.AdminSessionKey, nil
+}
+
+// EnsureMCPBearerToken returns fc.MCPBearerToken, generating a fresh
+// 32-byte random hex string (and persisting it via SaveFile at path)
+// if the field is empty. Same shape as EnsureAdminSessionKey; the
+// MCP token is hex (not raw bytes) so it can be pasted into a
+// .mcp.json file verbatim.
+func EnsureMCPBearerToken(path string, fc *FileConfig) (string, error) {
+	if fc == nil {
+		return "", fmt.Errorf("nil FileConfig")
+	}
+	if len(fc.MCPBearerToken) >= 32 {
+		return fc.MCPBearerToken, nil
+	}
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generate mcp bearer token: %w", err)
+	}
+	fc.MCPBearerToken = hex.EncodeToString(b[:])
+	if path != "" {
+		if err := SaveFile(path, fc); err != nil {
+			return "", fmt.Errorf("save mcp bearer token: %w", err)
+		}
+	}
+	return fc.MCPBearerToken, nil
+}
+
+// RotateMCPBearerToken forces a fresh token regardless of the current
+// value, persists it, and returns the new value. The old token stops
+// authenticating immediately. Callers (admin UI / CLI / MCP itself)
+// must surface the new value so the operator can update their
+// .mcp.json before the next call.
+func RotateMCPBearerToken(path string, fc *FileConfig) (string, error) {
+	if fc == nil {
+		return "", fmt.Errorf("nil FileConfig")
+	}
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generate mcp bearer token: %w", err)
+	}
+	fc.MCPBearerToken = hex.EncodeToString(b[:])
+	if path != "" {
+		if err := SaveFile(path, fc); err != nil {
+			return "", fmt.Errorf("save mcp bearer token: %w", err)
+		}
+	}
+	return fc.MCPBearerToken, nil
 }
 
 // LoadFile reads a previously-saved FileConfig. Returns (nil, nil) if the
