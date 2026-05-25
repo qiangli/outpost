@@ -64,6 +64,8 @@ func builtinsShowCmd() *cobra.Command {
 func builtinsSetCmd() *cobra.Command {
 	var (
 		shell, desktop, clipboard, ssh, sshLocalFwd, sshRemoteFwd, sshAgentFwd, sftp, podman, ollama, ollamaPool, cluster string
+		sshForwardSockets                                                                                                 []string
+		clearSSHForwardSockets                                                                                            bool
 	)
 	cmd := &cobra.Command{
 		Use:   "set",
@@ -112,6 +114,11 @@ func builtinsSetCmd() *cobra.Command {
 			if params.Cluster, err = parseToggle("cluster", cluster); err != nil {
 				return err
 			}
+			if clearSSHForwardSockets {
+				params.SSHForwardSockets = []string{}
+			} else if cmd.Flags().Changed("ssh-forward-socket") {
+				params.SSHForwardSockets = sshForwardSockets
+			}
 			return runSetBuiltins(cmd.Context(), params)
 		},
 	}
@@ -127,6 +134,8 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&ollama, "ollama", "", "on|off")
 	cmd.Flags().StringVar(&ollamaPool, "ollama-pool", "", "on|off — share local Ollama with cloudbox's pool")
 	cmd.Flags().StringVar(&cluster, "cluster", "", "on|off — join cloudbox virtual-podman cluster")
+	cmd.Flags().StringSliceVar(&sshForwardSockets, "ssh-forward-socket", nil, "Allow this unix-socket path for SSH direct-streamlocal forwarding (repeatable; replaces the entire list)")
+	cmd.Flags().BoolVar(&clearSSHForwardSockets, "clear-ssh-forward-sockets", false, "Reset ssh-forward-sockets to the auto-detect default set")
 	return cmd
 }
 

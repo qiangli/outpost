@@ -12,8 +12,8 @@ type restartOut struct {
 }
 
 type rotateMCPOut struct {
-	OK              bool   `json:"ok"`
-	NewBearerToken  string `json:"new_bearer_token" jsonschema:"The freshly-minted token. The OLD token stops authenticating immediately — update your .mcp.json before the next call."`
+	OK             bool   `json:"ok"`
+	NewBearerToken string `json:"new_bearer_token" jsonschema:"The freshly-minted token. The OLD token stops authenticating immediately — update your .mcp.json before the next call."`
 }
 
 func (s *Server) registerLifecycleTools() {

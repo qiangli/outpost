@@ -32,8 +32,8 @@ type listAppsOut struct {
 }
 
 type upsertAppOut struct {
-	OK  bool            `json:"ok"`
-	App conf.AppConfig  `json:"app"`
+	OK  bool           `json:"ok"`
+	App conf.AppConfig `json:"app"`
 }
 
 type byNameIn struct {

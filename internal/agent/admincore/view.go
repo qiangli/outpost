@@ -58,32 +58,36 @@ func toClusterView(fc *conf.FileConfig) ClusterView {
 // SafeView is the redacted FileConfig sent over the API. Token never
 // leaves the agent; presence is reported as has_token instead.
 type SafeView struct {
-	AgentName            string               `json:"agent_name"`
-	ServerAddr           string               `json:"server_addr"`
-	ServerPort           int                  `json:"server_port"`
-	CloudboxURL          string               `json:"cloudbox_url,omitempty"`
-	Protocol             string               `json:"protocol,omitempty"`
-	RemotePort           int                  `json:"remote_port"`
-	AuthURL              string               `json:"auth_url,omitempty"`
-	HasToken             bool                 `json:"has_token"`
-	LocalAddr            string               `json:"local_addr,omitempty"`
-	VNCAddr              string               `json:"vnc_addr,omitempty"`
-	AdminAddr            string               `json:"admin_addr,omitempty"`
-	AdminUsers           []string             `json:"admin_users"`
-	Apps                 []conf.AppConfig     `json:"apps"`
-	ShellEnabled         bool                 `json:"shell_enabled"`
-	DesktopEnabled       bool                 `json:"desktop_enabled"`
-	ClipboardEnabled     bool                 `json:"clipboard_enabled"`
-	SSHEnabled           bool                 `json:"ssh_enabled"`
-	SSHAllowLocalForward bool                 `json:"ssh_allow_local_forward"`
-	SFTPEnabled          bool                 `json:"sftp_enabled"`
-	Podman               BuiltinView          `json:"podman"`
-	Ollama               BuiltinView          `json:"ollama"`
-	OllamaPoolEnabled    bool                 `json:"ollama_pool_enabled"`
-	LLMPool              LLMPoolStatusView    `json:"llm_pool"`
-	Cluster              ClusterView          `json:"cluster"`
-	Outbound             []agent.OutboundView `json:"outbound"`
-	Defaults             map[string]string    `json:"defaults"`
+	AgentName             string               `json:"agent_name"`
+	ServerAddr            string               `json:"server_addr"`
+	ServerPort            int                  `json:"server_port"`
+	CloudboxURL           string               `json:"cloudbox_url,omitempty"`
+	Protocol              string               `json:"protocol,omitempty"`
+	RemotePort            int                  `json:"remote_port"`
+	AuthURL               string               `json:"auth_url,omitempty"`
+	HasToken              bool                 `json:"has_token"`
+	LocalAddr             string               `json:"local_addr,omitempty"`
+	VNCAddr               string               `json:"vnc_addr,omitempty"`
+	AdminAddr             string               `json:"admin_addr,omitempty"`
+	AdminUsers            []string             `json:"admin_users"`
+	Apps                  []conf.AppConfig     `json:"apps"`
+	ShellEnabled          bool                 `json:"shell_enabled"`
+	DesktopEnabled        bool                 `json:"desktop_enabled"`
+	ClipboardEnabled      bool                 `json:"clipboard_enabled"`
+	SSHEnabled            bool                 `json:"ssh_enabled"`
+	SSHAllowLocalForward  bool                 `json:"ssh_allow_local_forward"`
+	SSHAllowRemoteForward bool                 `json:"ssh_allow_remote_forward"`
+	SSHAllowAgentForward  bool                 `json:"ssh_allow_agent_forward"`
+	SSHForwardSockets     []string             `json:"ssh_forward_sockets"`
+	SFTPEnabled           bool                 `json:"sftp_enabled"`
+	ClientOnly            bool                 `json:"client_only"`
+	Podman                BuiltinView          `json:"podman"`
+	Ollama                BuiltinView          `json:"ollama"`
+	OllamaPoolEnabled     bool                 `json:"ollama_pool_enabled"`
+	LLMPool               LLMPoolStatusView    `json:"llm_pool"`
+	Cluster               ClusterView          `json:"cluster"`
+	Outbound              []agent.OutboundView `json:"outbound"`
+	Defaults              map[string]string    `json:"defaults"`
 }
 
 // SafeView returns the redacted view of the on-disk FileConfig + live
@@ -113,32 +117,40 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 	if admins == nil {
 		admins = []string{}
 	}
+	sshSockets := fc.SSHForwardSockets
+	if sshSockets == nil {
+		sshSockets = []string{}
+	}
 	return SafeView{
-		AgentName:            fc.AgentName,
-		ServerAddr:           fc.ServerAddr,
-		ServerPort:           fc.ServerPort,
-		CloudboxURL:          CloudboxHTTPBase(fc),
-		Protocol:             fc.Protocol,
-		RemotePort:           fc.RemotePort,
-		AuthURL:              fc.AuthURL,
-		HasToken:             fc.Token != "",
-		LocalAddr:            fc.LocalAddr,
-		VNCAddr:              fc.VNCAddr,
-		AdminAddr:            fc.AdminAddr,
-		AdminUsers:           admins,
-		Apps:                 apps,
-		ShellEnabled:         fc.ShellOn(),
-		DesktopEnabled:       fc.DesktopOn(),
-		ClipboardEnabled:     fc.ClipboardOn(),
-		SSHEnabled:           fc.SSHOn(),
-		SSHAllowLocalForward: fc.SSHAllowLocalForwardOn(),
-		SFTPEnabled:          fc.SFTPOn(),
-		Podman:               toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
-		Ollama:               toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
-		OllamaPoolEnabled:    fc.OllamaPoolOn(),
-		LLMPool:              s.llmPoolStatusView(fc),
-		Cluster:              toClusterView(fc),
-		Outbound:             s.outboundList(),
+		AgentName:             fc.AgentName,
+		ServerAddr:            fc.ServerAddr,
+		ServerPort:            fc.ServerPort,
+		CloudboxURL:           CloudboxHTTPBase(fc),
+		Protocol:              fc.Protocol,
+		RemotePort:            fc.RemotePort,
+		AuthURL:               fc.AuthURL,
+		HasToken:              fc.Token != "",
+		LocalAddr:             fc.LocalAddr,
+		VNCAddr:               fc.VNCAddr,
+		AdminAddr:             fc.AdminAddr,
+		AdminUsers:            admins,
+		Apps:                  apps,
+		ShellEnabled:          fc.ShellOn(),
+		DesktopEnabled:        fc.DesktopOn(),
+		ClipboardEnabled:      fc.ClipboardOn(),
+		SSHEnabled:            fc.SSHOn(),
+		SSHAllowLocalForward:  fc.SSHAllowLocalForwardOn(),
+		SSHAllowRemoteForward: fc.SSHAllowRemoteForwardOn(),
+		SSHAllowAgentForward:  fc.SSHAllowAgentForwardOn(),
+		SSHForwardSockets:     sshSockets,
+		SFTPEnabled:           fc.SFTPOn(),
+		ClientOnly:            fc.ClientOnly,
+		Podman:                toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
+		Ollama:                toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
+		OllamaPoolEnabled:     fc.OllamaPoolOn(),
+		LLMPool:               s.llmPoolStatusView(fc),
+		Cluster:               toClusterView(fc),
+		Outbound:              s.outboundList(),
 		Defaults: map[string]string{
 			"server_url": "https://ai.dhnt.io",
 			"name":       defaultName,

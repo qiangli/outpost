@@ -32,10 +32,10 @@ func clusterCmd() *cobra.Command {
 // in the admin UI and the outpost_set_kubeconfig MCP tool.
 func clusterSetCmd() *cobra.Command {
 	var (
-		fileFlag   string
-		nodeName   string
-		enable     bool
-		stdinFlag  bool
+		fileFlag  string
+		nodeName  string
+		enable    bool
+		stdinFlag bool
 	)
 	cmd := &cobra.Command{
 		Use:   "set",

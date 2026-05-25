@@ -518,6 +518,140 @@ function buildMCPCredentialsSection() {
   return wrap;
 }
 
+// buildAdvancedSettingsSection covers the persisted settings that
+// don't fit any of the other panels: network bind addresses, the
+// admin-users allowlist, and the SSH channel/socket allow flags.
+// All save through admincore (POST /api/config/networking and
+// /api/config/builtins); changes trigger a restart on a paired host.
+function buildAdvancedSettingsSection(cfg) {
+  const wrap = el('fieldset', {});
+  wrap.append(el('legend', {}, 'Advanced settings'));
+  wrap.append(el('p', {class: 'hint'},
+    'Network binds and OS-auth admin allowlist. ' +
+    'Changes here restart the daemon when the host is paired.'));
+
+  // --- Networking row group -------------------------------------------------
+  const netForm = el('form', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.4rem 0.8rem;align-items:center'});
+  const localAddrIn = el('input', {type: 'text', name: 'local_addr', value: cfg.local_addr || '', placeholder: cfg.defaults.local_addr || '127.0.0.1:0'});
+  const vncAddrIn   = el('input', {type: 'text', name: 'vnc_addr',   value: cfg.vnc_addr   || '', placeholder: cfg.defaults.vnc_addr   || '127.0.0.1:5900'});
+  const adminAddrIn = el('input', {type: 'text', name: 'admin_addr', value: cfg.admin_addr || '', placeholder: cfg.defaults.admin_addr || '127.0.0.1:17777'});
+  netForm.append(
+    el('label', {for: 'local_addr'}, 'local_addr'), localAddrIn,
+    el('label', {for: 'vnc_addr'},   'vnc_addr'),   vncAddrIn,
+    el('label', {for: 'admin_addr'}, 'admin_addr'), adminAddrIn,
+  );
+  const netBtn = el('button', {type: 'button'}, 'Save networking');
+  netBtn.addEventListener('click', async () => {
+    // Pointer-string semantics on the wire: empty input means
+    // "clear to default", non-empty means "set to this value".
+    // We send all three explicitly because the operator may have
+    // intended an empty value (revert) as well as a new value.
+    const payload = {
+      local_addr: localAddrIn.value.trim(),
+      vnc_addr: vncAddrIn.value.trim(),
+      admin_addr: adminAddrIn.value.trim(),
+    };
+    netBtn.disabled = true;
+    try {
+      const res = await api('POST', '/api/config/networking', payload);
+      msg('ok', res.restarting ? 'Networking saved — restarting…' : 'Networking saved.');
+      if (res.restarting) pollUntilUp();
+    } catch (e) {
+      msg('err', e.message || 'Save failed');
+    } finally {
+      netBtn.disabled = false;
+    }
+  });
+
+  // --- Admin users textarea ------------------------------------------------
+  const adminUsersList = (cfg.admin_users || []).join('\n');
+  const adminUsersIn = el('textarea', {rows: 3, placeholder: 'one email per line; empty = anyone with OS password is admin'}, adminUsersList);
+  const adminUsersBtn = el('button', {type: 'button'}, 'Save admin users');
+  adminUsersBtn.addEventListener('click', async () => {
+    const users = adminUsersIn.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    adminUsersBtn.disabled = true;
+    try {
+      const res = await api('POST', '/api/config/networking', {set_admin_users: true, admin_users: users});
+      msg('ok', res.restarting ? 'Admin users saved — restarting…' : 'Admin users saved.');
+      if (res.restarting) pollUntilUp();
+    } catch (e) {
+      msg('err', e.message || 'Save failed');
+    } finally {
+      adminUsersBtn.disabled = false;
+    }
+  });
+
+  // --- SSH advanced toggles ------------------------------------------------
+  const sshList = el('div', {class: 'item-list'});
+  const sshRows = [
+    {key: 'ssh_allow_remote_forward', label: 'SSH remote port forwarding (-R)', enabled: !!cfg.ssh_allow_remote_forward},
+    {key: 'ssh_allow_agent_forward',  label: 'SSH agent forwarding (-A)',       enabled: !!cfg.ssh_allow_agent_forward},
+  ];
+  for (const item of sshRows) {
+    const row = el('div', {class: 'item-row'});
+    const sw = switchEl({checked: item.enabled});
+    sw.input.addEventListener('change', async () => {
+      const newVal = sw.input.checked;
+      sw.input.disabled = true;
+      try {
+        await api('POST', '/api/config/builtins', {[item.key]: newVal});
+        msg('ok', `${item.label} ${newVal ? 'on' : 'off'} — restarting…`);
+        pollUntilUp();
+      } catch (e) {
+        sw.input.checked = !newVal;
+        sw.input.disabled = false;
+        msg('err', e.message || 'Save failed');
+      }
+    });
+    row.append(sw.wrap, el('span', {class: 'label'}, item.label));
+    sshList.append(row);
+  }
+
+  // --- SSH forward-sockets allowlist ---------------------------------------
+  const sshSocketsList = (cfg.ssh_forward_sockets || []).join('\n');
+  const sshSocketsIn = el('textarea', {rows: 3, placeholder: 'one socket path per line; empty = auto-detect (podman/docker sockets)'}, sshSocketsList);
+  const sshSocketsBtn = el('button', {type: 'button'}, 'Save forward-sockets');
+  sshSocketsBtn.addEventListener('click', async () => {
+    const sockets = sshSocketsIn.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    sshSocketsBtn.disabled = true;
+    try {
+      await api('POST', '/api/config/builtins', {ssh_forward_sockets: sockets});
+      msg('ok', 'Forward-sockets saved — restarting…');
+      pollUntilUp();
+    } catch (e) {
+      msg('err', e.message || 'Save failed');
+    } finally {
+      sshSocketsBtn.disabled = false;
+    }
+  });
+
+  wrap.append(
+    el('h3', {style: 'margin:1rem 0 0.4rem;font-size:1rem'}, 'Networking'),
+    netForm,
+    el('div', {style: 'margin-top:0.6rem'}, netBtn),
+    el('p', {class: 'hint', style: 'margin-top:0.3rem'},
+      'Leave a field empty to use the default shown as placeholder. ' +
+      'admin_addr accepts 0.0.0.0:17777 for LAN binds (login always required).'),
+
+    el('h3', {style: 'margin:1.2rem 0 0.4rem;font-size:1rem'}, 'Admin allowlist'),
+    el('p', {class: 'hint'},
+      'Emails listed here are treated as admin when authenticating via the host OS. ' +
+      'Empty list = legacy behavior (anyone who proves the OS password is admin).'),
+    adminUsersIn,
+    el('div', {style: 'margin-top:0.4rem'}, adminUsersBtn),
+
+    el('h3', {style: 'margin:1.2rem 0 0.4rem;font-size:1rem'}, 'SSH advanced'),
+    sshList,
+    el('p', {class: 'hint', style: 'margin-top:0.4rem;margin-bottom:0.2rem'},
+      'Additional unix-socket paths to allow for direct-streamlocal forwards ' +
+      '(podman --connection=, ssh -L localport:/remote.sock). ' +
+      'Empty = the auto-detected podman/docker sockets only.'),
+    sshSocketsIn,
+    el('div', {style: 'margin-top:0.4rem'}, sshSocketsBtn),
+  );
+  return wrap;
+}
+
 function renderMain(status, cfg) {
   const app = $('#app');
   app.innerHTML = '';
@@ -566,6 +700,7 @@ function renderMain(status, cfg) {
 
   panelPair.append(buildPairSection(status, cfg));
   panelPair.append(buildMCPCredentialsSection());
+  panelPair.append(buildAdvancedSettingsSection(cfg));
 
   // Built-in apps section — one per line, toggle switches, auto-save on
   // change (no separate Save button). Each flip POSTs the single changed
