@@ -214,65 +214,180 @@ func TestSetProxyWrap_AppliesMiddleware(t *testing.T) {
 	}
 }
 
-// TestProxy_PreservesPeriscopeUser: cloudbox stamps X-Periscope-User on
-// authenticated forwards. The reverse proxy must pass it through to the
-// upstream so the upstream (and any future audit hook) can attribute
-// the request. ReverseProxy strips some forwarded headers by default;
-// the X-Periscope-* family is not one of them and should ride along.
-func TestProxy_PreservesPeriscopeUser(t *testing.T) {
-	gotUser := make(chan string, 1)
+// TestProxy_IdentityHeaders_Gated covers the three states of the
+// trusted-header SSO gate:
+//
+//  1. Default (TrustCloudIdentity=false): even cloud-origin requests with
+//     X-Periscope-User must NOT leak identity to the upstream. The
+//     cooperative-web-apps doc historically advertised X-Periscope-User
+//     as always-passing-through; this test guards the deliberate
+//     tightening (apps must opt in).
+//  2. Opted-in (TrustCloudIdentity=true) cloud-origin: upstream sees the
+//     full identity set — X-Periscope-User/Role passthrough plus the
+//     Authelia/oauth2-proxy Remote-* aliases derived from them.
+//  3. Spoof defense (loopback, no X-Forwarded-Prefix): attacker stamps
+//     Remote-User on the request; upstream MUST see it stripped, both
+//     with the toggle off AND on.
+func TestProxy_IdentityHeaders_Gated(t *testing.T) {
+	type seen struct {
+		periscopeUser, periscopeRole               string
+		remoteUser, remoteEmail, remoteName, group string
+	}
+	gotCh := make(chan seen, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
-		case gotUser <- r.Header.Get("X-Periscope-User"):
+		case gotCh <- seen{
+			periscopeUser: r.Header.Get("X-Periscope-User"),
+			periscopeRole: r.Header.Get("X-Periscope-Role"),
+			remoteUser:    r.Header.Get("Remote-User"),
+			remoteEmail:   r.Header.Get("Remote-Email"),
+			remoteName:    r.Header.Get("Remote-Name"),
+			group:         r.Header.Get("Remote-Groups"),
+		}:
 		default:
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(upstream.Close)
+	uhost, uport := splitHostPort(t, upstream.URL)
 
-	reg := NewAppRegistry()
-	if err := reg.RegisterFromConfig(conf.AppConfig{
-		Name: "ollama", Scheme: "http",
-		Host:    strings.TrimPrefix(strings.SplitN(upstream.URL, ":", 3)[1], "//"),
-		Port:    parsePort(t, upstream.URL),
-		Enabled: true,
-	}); err != nil {
-		t.Fatalf("register: %v", err)
-	}
-
-	front := httptest.NewServer(newTestRouter(reg))
-	t.Cleanup(front.Close)
-
-	req, _ := http.NewRequest("POST", front.URL+"/app/ollama/api/chat", nil)
-	req.Header.Set("X-Forwarded-Prefix", "/h/novicortex/app/ollama")
-	req.Header.Set("X-Periscope-User", "qiang@example.com")
-	req.Header.Set("X-Periscope-Role", "user")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("request: %v", err)
-	}
-	defer resp.Body.Close()
-	select {
-	case u := <-gotUser:
-		if u != "qiang@example.com" {
-			t.Errorf("upstream saw X-Periscope-User=%q, want qiang@example.com", u)
+	read := func(t *testing.T) seen {
+		t.Helper()
+		select {
+		case got := <-gotCh:
+			return got
+		case <-time.After(1 * time.Second):
+			t.Fatal("upstream never received the request")
+			return seen{}
 		}
-	case <-time.After(1 * time.Second):
-		t.Fatal("upstream never received the request")
+	}
+
+	t.Run("toggle off: cloud-origin identity is dropped", func(t *testing.T) {
+		reg := NewAppRegistry()
+		if err := reg.RegisterFromConfig(conf.AppConfig{
+			Name: "app", Scheme: "http", Host: uhost, Port: uport, Enabled: true,
+		}); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		front := httptest.NewServer(newTestRouter(reg))
+		t.Cleanup(front.Close)
+
+		req, _ := http.NewRequest("GET", front.URL+"/app/app/ping", nil)
+		req.Header.Set("X-Forwarded-Prefix", "/h/dragon/app/app")
+		req.Header.Set("X-Periscope-User", "alice@example.com")
+		req.Header.Set("X-Periscope-Role", "user")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		_ = resp.Body.Close()
+		got := read(t)
+		if got.periscopeUser != "" || got.remoteUser != "" || got.remoteEmail != "" ||
+			got.remoteName != "" || got.group != "" || got.periscopeRole != "" {
+			t.Errorf("identity leaked with toggle off: %+v", got)
+		}
+	})
+
+	t.Run("toggle on + cloud-origin: identity is stamped", func(t *testing.T) {
+		reg := NewAppRegistry()
+		if err := reg.RegisterFromConfig(conf.AppConfig{
+			Name: "app", Scheme: "http", Host: uhost, Port: uport, Enabled: true,
+			TrustCloudIdentity: true,
+		}); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		front := httptest.NewServer(newTestRouter(reg))
+		t.Cleanup(front.Close)
+
+		req, _ := http.NewRequest("GET", front.URL+"/app/app/ping", nil)
+		req.Header.Set("X-Forwarded-Prefix", "/h/dragon/app/app")
+		req.Header.Set("X-Periscope-User", "alice@example.com")
+		req.Header.Set("X-Periscope-Role", "admin")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		_ = resp.Body.Close()
+		got := read(t)
+		if got.periscopeUser != "alice@example.com" {
+			t.Errorf("X-Periscope-User = %q, want alice@example.com", got.periscopeUser)
+		}
+		if got.periscopeRole != "admin" {
+			t.Errorf("X-Periscope-Role = %q, want admin", got.periscopeRole)
+		}
+		if got.remoteUser != "alice@example.com" {
+			t.Errorf("Remote-User = %q, want alice@example.com", got.remoteUser)
+		}
+		if got.remoteEmail != "alice@example.com" {
+			t.Errorf("Remote-Email = %q, want alice@example.com", got.remoteEmail)
+		}
+		if got.remoteName != "alice" {
+			t.Errorf("Remote-Name = %q, want alice", got.remoteName)
+		}
+		if got.group != "admin" {
+			t.Errorf("Remote-Groups = %q, want admin", got.group)
+		}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		toggle bool
+	}{
+		{"spoof rejected with toggle off", false},
+		{"spoof rejected with toggle on", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := NewAppRegistry()
+			if err := reg.RegisterFromConfig(conf.AppConfig{
+				Name: "app", Scheme: "http", Host: uhost, Port: uport, Enabled: true,
+				TrustCloudIdentity: tc.toggle,
+			}); err != nil {
+				t.Fatalf("register: %v", err)
+			}
+			front := httptest.NewServer(newTestRouter(reg))
+			t.Cleanup(front.Close)
+
+			// No X-Forwarded-Prefix: simulates a LAN/loopback attacker
+			// hitting the main listener directly and trying to forge
+			// identity. The toggle is irrelevant — without the cloudbox
+			// vouch, nothing should reach the upstream.
+			req, _ := http.NewRequest("GET", front.URL+"/app/app/ping", nil)
+			req.Header.Set("Remote-User", "attacker@example.com")
+			req.Header.Set("Remote-Email", "attacker@example.com")
+			req.Header.Set("Remote-Groups", "admin")
+			req.Header.Set("X-Periscope-User", "attacker@example.com")
+			req.Header.Set("X-Periscope-Role", "admin")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			_ = resp.Body.Close()
+			got := read(t)
+			if got.periscopeUser != "" || got.remoteUser != "" || got.remoteEmail != "" ||
+				got.remoteName != "" || got.group != "" || got.periscopeRole != "" {
+				t.Errorf("spoof leaked: %+v", got)
+			}
+		})
 	}
 }
 
-func parsePort(t *testing.T, urlStr string) int {
+// splitHostPort is the shared helper for tests that point AppConfig.Host/Port
+// at an httptest.Server.
+func splitHostPort(t *testing.T, urlStr string) (string, int) {
 	t.Helper()
 	u, err := url.Parse(urlStr)
 	if err != nil {
 		t.Fatalf("parse url %q: %v", urlStr, err)
 	}
-	port, err := strconv.Atoi(u.Port())
+	host, portStr, err := net.SplitHostPort(u.Host)
 	if err != nil {
-		t.Fatalf("parse port from %q: %v", urlStr, err)
+		t.Fatalf("split host:port %q: %v", u.Host, err)
 	}
-	return port
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse port %q: %v", portStr, err)
+	}
+	return host, port
 }
 
 // TestRegisterFromConfig_RequireLoginPropagates: AppConfig.RequireLogin

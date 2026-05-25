@@ -734,6 +734,7 @@ function renderMain(status, cfg) {
     // the LAN — easy to forget once configured, so surface it).
     const pills = [];
     if (a.require_login) pills.push(el('span', {class: 'hint'}, '🔒 login'));
+    if (a.trust_cloud_identity) pills.push(el('span', {class: 'hint'}, '🪪 SSO'));
     if (a.index_path)    pills.push(el('span', {class: 'hint'}, a.index_path));
     if (Array.isArray(a.lan_only_paths) && a.lan_only_paths.length > 0) {
       pills.push(el('span', {class: 'hint'}, 'LAN-only: ' + a.lan_only_paths.join(', ')));
@@ -755,6 +756,60 @@ function renderMain(status, cfg) {
       }}, 'Remove'),
     );
     appsList.append(row);
+    // Provisioning-token disclosure for SSO-enabled apps. Sits below
+    // the main row as a dimmer details strip so it doesn't crowd the
+    // primary control affordances. Reveal-on-click avoids shoulder-
+    // surfing leaks of the bearer; Copy fills the clipboard; Rotate
+    // invalidates the existing token and mints a new one.
+    if (a.trust_cloud_identity && a.provisioning_token) {
+      const provRow = el('div', {class: 'item-row', style: 'opacity:0.85'});
+      const tokenSpan = el('code', {style: 'word-break:break-all'},
+        a.provisioning_token.replace(/./g, '•').slice(0, 16) + '…');
+      let revealed = false;
+      const revealBtn = el('button', {class: 'secondary', onclick: () => {
+        revealed = !revealed;
+        tokenSpan.textContent = revealed ? a.provisioning_token
+          : a.provisioning_token.replace(/./g, '•').slice(0, 16) + '…';
+        revealBtn.textContent = revealed ? 'Hide' : 'Reveal';
+      }}, 'Reveal');
+      const copyBtn = el('button', {class: 'secondary', onclick: async () => {
+        try {
+          await navigator.clipboard.writeText(a.provisioning_token);
+          msg('ok', 'Token copied to clipboard.');
+        } catch (e) {
+          msg('err', 'Copy failed: ' + (e.message || e));
+        }
+      }}, 'Copy');
+      const rotateBtn = el('button', {class: 'secondary danger', onclick: async () => {
+        const ok = await confirmDialog({
+          title: `Rotate provisioning token for "${a.name}"?`,
+          description: 'The current token is invalidated immediately. Reconfigure the app with the new value.',
+          confirmText: 'Rotate',
+        });
+        if (!ok) return;
+        try {
+          await api('POST', '/api/apps/' + encodeURIComponent(a.name) + '/provisioning-token/rotate');
+          msg('ok', 'Token rotated.');
+          render();
+        } catch (e) {
+          msg('err', e.message || 'Rotate failed');
+        }
+      }}, 'Rotate');
+      const provURL = `${location.origin}/_periscope/apps/${encodeURIComponent(a.name)}/users`;
+      provRow.append(
+        el('span', {class: 'hint'}, 'Provisioning bearer'),
+        tokenSpan,
+        revealBtn,
+        copyBtn,
+        rotateBtn,
+      );
+      const provHelp = el('div', {class: 'item-row', style: 'opacity:0.65; font-size:0.85em'},
+        el('span', {class: 'hint'},
+          'App POSTs to ', el('code', {}, provURL),
+          ' with ', el('code', {}, 'Authorization: Bearer <token>'), ' to push new users.'));
+      appsList.append(provRow);
+      appsList.append(provHelp);
+    }
   }
   if ((cfg.apps || []).length === 0) {
     appsList.append(el('div', {class: 'item-row', style: 'opacity:0.6'}, 'No custom apps yet.'));
@@ -809,6 +864,13 @@ function renderMain(status, cfg) {
   // genuinely public surfaces (welcome page, status pings).
   const appRequireLoginInput = el('input', {name: 'require_login', type: 'checkbox', checked: true});
 
+  // Trust cloudbox identity: when on, outpost stamps Remote-User /
+  // Remote-Email / Remote-Groups (and passes through X-Periscope-*)
+  // on cloud-origin requests so the app can skip its own login. Also
+  // enables the /_periscope/apps/<name>/users provisioning relay
+  // backed by an auto-generated per-app bearer.
+  const appTrustCloudInput = el('input', {name: 'trust_cloud_identity', type: 'checkbox'});
+
   addForm.append(el('h2', {style: 'margin-bottom: 0.2rem;'}, 'Add app'),
     el('label', {}, 'Name', el('input', {name: 'name', type: 'text', required: true,
       placeholder: 'e.g. grafana'})),
@@ -820,6 +882,8 @@ function renderMain(status, cfg) {
     appIndexLabel,
     appLanOnlyLabel,
     el('label', {class: 'check'}, appRequireLoginInput, 'Require login'),
+    el('label', {class: 'check'}, appTrustCloudInput,
+      'Trust cloudbox identity (SSO + grant push)'),
     el('label', {class: 'check'},
       el('input', {name: 'enabled', type: 'checkbox', checked: true}), 'Enabled'),
     el('button', {type: 'submit', style: 'align-self: start; margin-top: 0.3rem;'}, 'Add app'));
@@ -835,6 +899,7 @@ function renderMain(status, cfg) {
       icon: (fd.get('icon') || '').toString().trim(),
       scheme,
       require_login: appRequireLoginInput.checked,
+      trust_cloud_identity: appTrustCloudInput.checked,
       index_path: (fd.get('index_path') || '').toString().trim(),
       lan_only_paths: lanOnly,
       enabled: addForm.enabled.checked,

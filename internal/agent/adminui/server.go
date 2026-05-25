@@ -70,6 +70,17 @@ type Deps struct {
 	// constructs it once per boot and threads it in.
 	Outbound *agent.OutboundManager
 
+	// CloudboxBase + CloudboxAccessToken + AgentName feed the user-
+	// grant provisioning relay mounted at /_periscope/apps/:name/users.
+	// When CloudboxBase or CloudboxAccessToken are empty (outpost not
+	// paired yet), the routes still mount but return 503 — the
+	// operator sees a clear "not paired" error rather than a 404 they
+	// might mistake for a typo. main.go threads these in from the
+	// FileConfig at boot.
+	CloudboxBase        string
+	CloudboxAccessToken string
+	AgentName           string
+
 	// LLMPoolStatus, when set, is called on each /api/config refresh
 	// to populate the live pool diagnostic block (watcher push state
 	// + in-flight counter). Nil when the pool service wasn't built
@@ -235,6 +246,18 @@ func (s *Server) registerRoutes() {
 	// render based on /api/status).
 	s.mountUI()
 
+	// Provisioning relay: cooperating apps push grant changes through
+	// outpost up to cloudbox. Lives outside the admin session cookie
+	// gate (the app isn't a human and never logs in) and uses its own
+	// per-app bearer auth instead. Mounted before the session
+	// middleware so /api/* gating doesn't apply.
+	agent.RegisterProvisionRoutes(s.engine, agent.ProvisionDeps{
+		Apps:         s.deps.Apps,
+		CloudboxBase: s.deps.CloudboxBase,
+		AccessToken:  s.deps.CloudboxAccessToken,
+		AgentName:    s.deps.AgentName,
+	})
+
 	// Login lives outside the gate (callers wouldn't have a session yet).
 	s.engine.POST("/api/login", s.handleLogin)
 
@@ -248,6 +271,7 @@ func (s *Server) registerRoutes() {
 	api.GET("/apps/suggestions", s.handleListSuggestions)
 	api.POST("/apps", s.handleUpsertApp)
 	api.DELETE("/apps/:name", s.handleDeleteApp)
+	api.POST("/apps/:name/provisioning-token/rotate", s.handleRotateProvisioningToken)
 	api.POST("/restart", s.handleRestart)
 
 	// Cluster (virtual-podman) — paste a kubeconfig to persist

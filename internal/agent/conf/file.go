@@ -303,6 +303,31 @@ type AppConfig struct {
 	// cookie scope, its own RequireLogin and LANOnlyPaths.
 	IndexPath string `json:"index_path,omitempty"`
 
+	// TrustCloudIdentity opts this app into the trusted-header SSO
+	// contract: when set, outpost forwards the cloudbox-vouched caller
+	// identity to the upstream as Remote-User / Remote-Email /
+	// Remote-Groups (the Authelia / oauth2-proxy / nginx-auth-request
+	// lingua franca) and also passes through X-Periscope-User /
+	// X-Periscope-Role. Off by default so existing apps keep their own
+	// login UI; flip on for apps configured to trust dhnt.io.
+	//
+	// Stamping is conditional on the request having come through the
+	// matrix tunnel (X-Forwarded-Prefix present). Direct loopback /
+	// LAN hits never carry stamped identity regardless of this flag —
+	// see the always-on Remote-* / X-Periscope-* sanitization in
+	// internal/agent/apps.go's Rewrite callback.
+	TrustCloudIdentity bool `json:"trust_cloud_identity,omitempty"`
+
+	// ProvisioningToken is the opaque bearer the app uses when
+	// pushing user grants up to cloudbox via outpost's
+	// /_periscope/apps/<name>/users relay. Auto-generated (32 bytes,
+	// hex) when the admin UI flips TrustCloudIdentity on or the
+	// operator rotates it. Empty means provisioning is not yet
+	// enabled — the relay endpoint refuses the request. Stored in
+	// agent.json (mode 0600) and redacted out of the admin UI's
+	// safeView (presence reported separately).
+	ProvisioningToken string `json:"provisioning_token,omitempty"`
+
 	// Role is deprecated. Kept for back-compat parsing of older
 	// agent.json files. NewFromJSON migrates "guest" → RequireLogin
 	// false; "user"/"admin"/empty → true.

@@ -268,14 +268,17 @@ func startCmd() *cobra.Command {
 			}
 
 			adminSrv, err := adminui.New(adminui.Deps{
-				ConfigPath:    cfgPath,
-				ListenAddr:    adminAddr,
-				Auth:          hostauth.DefaultAuthenticator(),
-				Apps:          apps,
-				Restart:       restartFn,
-				SessionKey:    sessionKey,
-				Outbound:      outbound,
-				LLMPoolStatus: llmPoolStatus,
+				ConfigPath:          cfgPath,
+				ListenAddr:          adminAddr,
+				Auth:                hostauth.DefaultAuthenticator(),
+				Apps:                apps,
+				Restart:             restartFn,
+				SessionKey:          sessionKey,
+				Outbound:            outbound,
+				LLMPoolStatus:       llmPoolStatus,
+				CloudboxBase:        cloudboxHTTPBase(fc),
+				CloudboxAccessToken: fc.AccessToken,
+				AgentName:           fc.AgentName,
 			})
 			if err != nil {
 				return fmt.Errorf("admin ui: %w", err)

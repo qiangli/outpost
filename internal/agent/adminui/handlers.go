@@ -1,6 +1,8 @@
 package adminui
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -16,6 +18,19 @@ import (
 	"github.com/qiangli/outpost/internal/agent/portal"
 	"github.com/qiangli/outpost/internal/agent/vkpodman"
 )
+
+// generateProvisioningToken returns a 32-byte random hex string. Used
+// to mint the per-app bearer the cooperating app uses when pushing user
+// grants up to cloudbox via outpost. crypto/rand failure is fatal —
+// nothing the caller can do to recover, and a weak token defeats the
+// whole point.
+func generateProvisioningToken() (string, error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generate provisioning token: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
 
 // cloudboxHTTPBase derives the HTTP(S) base URL of cloudbox from the
 // matrix-tunnel pairing fields. Same logic as the helper in
@@ -457,6 +472,38 @@ func (s *Server) handleUpsertApp(c *gin.Context) {
 		return
 	}
 
+	// Preserve an existing ProvisioningToken across edits — the upsert
+	// payload omits the token (since the UI never sends it back) and
+	// re-saving the AppConfig would otherwise blank it. Only auto-
+	// generate when the toggle is on and we don't already have one;
+	// rotation is a separate explicit endpoint so an accidental edit
+	// can't quietly mint a new token and lock out the cooperating app.
+	if ac.TrustCloudIdentity {
+		if strings.TrimSpace(ac.ProvisioningToken) == "" {
+			for _, existing := range fc.Apps {
+				if existing.Name == ac.Name && existing.ProvisioningToken != "" {
+					ac.ProvisioningToken = existing.ProvisioningToken
+					break
+				}
+			}
+		}
+		if strings.TrimSpace(ac.ProvisioningToken) == "" {
+			tok, terr := generateProvisioningToken()
+			if terr != nil {
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": terr.Error()})
+				return
+			}
+			ac.ProvisioningToken = tok
+		}
+	} else {
+		// Toggle off → drop the token. Otherwise a stale token would
+		// linger in agent.json and still authenticate against the
+		// relay endpoint (which would 401 since the registry no
+		// longer carries it, but the operator visibility is better
+		// when off truly means off).
+		ac.ProvisioningToken = ""
+	}
+
 	// Upsert: replace any existing entry with the same name, else append.
 	if fc.Apps == nil {
 		fc.Apps = []conf.AppConfig{}
@@ -486,6 +533,54 @@ func (s *Server) handleUpsertApp(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "app": ac})
+}
+
+// handleRotateProvisioningToken regenerates the bearer the cooperating
+// app uses to push grants. The previous token is invalidated immediately;
+// the app must be reconfigured with the new value. No restart needed —
+// the live registry's token map is updated in place.
+func (s *Server) handleRotateProvisioningToken(c *gin.Context) {
+	name := c.Param("name")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fc, err := s.loadConfig()
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	idx := -1
+	for i, a := range fc.Apps {
+		if a.Name == name {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "unknown app"})
+		return
+	}
+	if !fc.Apps[idx].TrustCloudIdentity {
+		c.AbortWithStatusJSON(http.StatusBadRequest,
+			gin.H{"error": "enable Trust cloud identity first; rotation only meaningful when the relay is in use"})
+		return
+	}
+	tok, err := generateProvisioningToken()
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	fc.Apps[idx].ProvisioningToken = tok
+	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// Reflect into the live registry without re-registering the proxy —
+	// just update the bearer map so the relay accepts the new value
+	// immediately. SetProvisioningToken is safe to call on a name that
+	// isn't in the proxy/tcp maps (disabled apps), so we don't need to
+	// gate on Enabled.
+	s.deps.Apps.SetProvisioningToken(name, tok)
+	c.JSON(http.StatusOK, gin.H{"ok": true, "provisioning_token": tok})
 }
 
 func (s *Server) handleDeleteApp(c *gin.Context) {

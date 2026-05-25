@@ -74,10 +74,17 @@ type AppRegistry struct {
 	// Per-app access-control + display metadata. All keyed by app
 	// name; entries kept in lockstep with `apps`/`proxy`/`tcp` by
 	// register/registerTCP/Unregister.
-	requireLogin map[string]bool
-	lanOnly      map[string][]string
-	indexPath    map[string]string
-	capabilities map[string]*AppCapabilities
+	requireLogin       map[string]bool
+	lanOnly            map[string][]string
+	indexPath          map[string]string
+	capabilities       map[string]*AppCapabilities
+	trustCloudIdentity map[string]bool
+	// provisioningTokens maps app name → bearer token; the inverse map
+	// (token → app name) is built lazily by LookupByProvisioningToken to
+	// stay O(1) under r.mu without paying for the inverse on every
+	// register. The token only matters for the /_periscope/apps/<name>
+	// relay endpoint — it does not affect proxy behavior.
+	provisioningTokens map[string]string
 	// intercepts is a per-app list of path-prefix → handler bindings.
 	// When a /app/<name>/<rest> request matches one of an app's
 	// intercept prefixes, the intercept fires instead of forwarding to
@@ -105,18 +112,91 @@ type appIntercept struct {
 	handler http.Handler
 }
 
+// identityHeaders is the trusted-header SSO header set that outpost
+// owns end-to-end. Outpost strips these from every outgoing proxy
+// request and only re-stamps them when the per-app TrustCloudIdentity
+// flag is on AND the inbound request came through the matrix tunnel.
+// Listed canonically (net/http normalizes on read/write); the strip is
+// idempotent.
+var identityHeaders = []string{
+	"X-Periscope-User",
+	"X-Periscope-Role",
+	"Remote-User",
+	"Remote-Email",
+	"Remote-Name",
+	"Remote-Groups",
+}
+
+// remoteNameFromEmail derives a Remote-Name value from an email-shaped
+// identity. The Authelia / oauth2-proxy contract treats Remote-Name as
+// a human display name distinct from Remote-User; when cloudbox doesn't
+// supply one separately, the email's local-part is the best fallback.
+// Returns "" when the input isn't email-shaped (so we don't pollute the
+// header with raw subject IDs).
+func remoteNameFromEmail(s string) string {
+	at := strings.IndexByte(s, '@')
+	if at <= 0 {
+		return ""
+	}
+	return s[:at]
+}
+
 func NewAppRegistry() *AppRegistry {
 	return &AppRegistry{
-		apps:         map[string]*url.URL{},
-		proxy:        map[string]*httputil.ReverseProxy{},
-		requireLogin: map[string]bool{},
-		lanOnly:      map[string][]string{},
-		indexPath:    map[string]string{},
-		capabilities: map[string]*AppCapabilities{},
-		intercepts:   map[string][]appIntercept{},
-		proxyWrap:    map[string]func(http.Handler) http.Handler{},
-		tcp:          map[string]string{},
+		apps:               map[string]*url.URL{},
+		proxy:              map[string]*httputil.ReverseProxy{},
+		requireLogin:       map[string]bool{},
+		lanOnly:            map[string][]string{},
+		indexPath:          map[string]string{},
+		capabilities:       map[string]*AppCapabilities{},
+		trustCloudIdentity: map[string]bool{},
+		provisioningTokens: map[string]string{},
+		intercepts:         map[string][]appIntercept{},
+		proxyWrap:          map[string]func(http.Handler) http.Handler{},
+		tcp:                map[string]string{},
 	}
+}
+
+// SetProvisioningToken records or clears the bearer that the user-sync
+// relay endpoint (/_periscope/apps/<name>/users) accepts as the caller's
+// proof of identity. Empty token clears the entry. Safe to call on an
+// unknown name (token is stored regardless; if the app is later
+// registered with the same name, lookups will find it).
+func (r *AppRegistry) SetProvisioningToken(name, token string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if token == "" {
+		delete(r.provisioningTokens, name)
+		return
+	}
+	r.provisioningTokens[name] = token
+}
+
+// LookupByProvisioningToken returns the name of the app whose
+// ProvisioningToken matches the given bearer, or ("", false) on miss.
+// O(n) over registered apps, which is acceptable — provisioning is a
+// low-volume operation (user grants change infrequently).
+func (r *AppRegistry) LookupByProvisioningToken(token string) (string, bool) {
+	if token == "" {
+		return "", false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for name, t := range r.provisioningTokens {
+		if t == token {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// ProvisioningToken returns the bearer associated with name, or "" if
+// none is set. Used by the admin UI to surface the token to the
+// operator.
+func (r *AppRegistry) ProvisioningToken(name string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.provisioningTokens[name]
 }
 
 // AddIntercept binds prefix → h under app `name`. Subsequent requests
@@ -164,6 +244,13 @@ type AppMeta struct {
 	// {Type:"llm"} for the built-in ollama proxy). Nil for vanilla
 	// HTTP apps.
 	Capabilities *AppCapabilities
+	// TrustCloudIdentity opts the app into the trusted-header SSO
+	// contract — outpost stamps Remote-User / Remote-Email /
+	// Remote-Groups (and passes through X-Periscope-User /
+	// X-Periscope-Role) on requests that came through the matrix
+	// tunnel. Off by default; the per-app sanitize pass strips any
+	// inbound copies of these headers regardless.
+	TrustCloudIdentity bool
 }
 
 // Register adds (or replaces) an app entry with the default
@@ -199,6 +286,7 @@ func (r *AppRegistry) RegisterWithMeta(name, target string, meta AppMeta) error 
 // unchanged via the request clone; outpost only fills in defaults when
 // a header is missing (the common case for direct loopback access).
 func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, transport http.RoundTripper) error {
+	trustIdentity := meta.TrustCloudIdentity
 	rp := &httputil.ReverseProxy{
 		Transport: transport,
 		// Rewrite absolute-path Location headers (3xx redirects) so they
@@ -272,6 +360,45 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 				}
 				pr.Out.Header.Set("X-Forwarded-For", clientIP)
 			}
+			// Identity-header gate. Always strip the trusted-header SSO
+			// fields from the outgoing request first — without this, a
+			// LAN process could hit the loopback main listener with
+			// `Remote-User: admin@…` and the upstream would honor it.
+			// httputil.ReverseProxy clones pr.In's headers verbatim onto
+			// pr.Out, so the inbound copy is still there until we
+			// explicitly drop it.
+			for _, h := range identityHeaders {
+				pr.Out.Header.Del(h)
+			}
+			// Re-emit identity only when (a) the app opted in via
+			// TrustCloudIdentity, and (b) the request came through the
+			// matrix tunnel (X-Forwarded-Prefix present). Cloudbox is
+			// the only entity allowed to source these values; loopback
+			// requests carry no cloudbox vouch.
+			if trustIdentity && pr.In.Header.Get("X-Forwarded-Prefix") != "" {
+				user := pr.In.Header.Get("X-Periscope-User")
+				role := pr.In.Header.Get("X-Periscope-Role")
+				if user != "" {
+					// Pass through the existing Periscope names so apps
+					// written against the cooperative-web-apps doc keep
+					// working unchanged.
+					pr.Out.Header.Set("X-Periscope-User", user)
+					// Mirror onto the Authelia / oauth2-proxy / nginx
+					// trusted-header standard so off-the-shelf apps
+					// (Grafana auth.proxy, Forgejo REVERSE_PROXY_*,
+					// Sonarr/Radarr External, etc.) accept it without
+					// custom code.
+					pr.Out.Header.Set("Remote-User", user)
+					pr.Out.Header.Set("Remote-Email", user)
+					if name := remoteNameFromEmail(user); name != "" {
+						pr.Out.Header.Set("Remote-Name", name)
+					}
+				}
+				if role != "" {
+					pr.Out.Header.Set("X-Periscope-Role", role)
+					pr.Out.Header.Set("Remote-Groups", role)
+				}
+			}
 		},
 	}
 	r.mu.Lock()
@@ -281,6 +408,7 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 	r.lanOnly[name] = append([]string(nil), meta.LANOnlyPaths...)
 	r.indexPath[name] = meta.IndexPath
 	r.capabilities[name] = meta.Capabilities
+	r.trustCloudIdentity[name] = meta.TrustCloudIdentity
 	// Mode swap: an HTTP register wins over any prior tcp entry with the
 	// same name. (Re-registers in the other direction do the inverse in
 	// registerTCP.)
@@ -364,6 +492,8 @@ func (r *AppRegistry) Unregister(name string) {
 	delete(r.lanOnly, name)
 	delete(r.indexPath, name)
 	delete(r.capabilities, name)
+	delete(r.trustCloudIdentity, name)
+	delete(r.provisioningTokens, name)
 	delete(r.intercepts, name)
 	delete(r.proxyWrap, name)
 	delete(r.tcp, name)
@@ -379,14 +509,16 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 		return nil
 	}
 	meta := AppMeta{
-		RequireLogin: ac.RequireLogin,
-		LANOnlyPaths: ac.LANOnlyPaths,
-		IndexPath:    ac.IndexPath,
+		RequireLogin:       ac.RequireLogin,
+		LANOnlyPaths:       ac.LANOnlyPaths,
+		IndexPath:          ac.IndexPath,
+		TrustCloudIdentity: ac.TrustCloudIdentity,
 	}
 	scheme := strings.ToLower(strings.TrimSpace(ac.Scheme))
 	if scheme == "" {
 		scheme = "http"
 	}
+	var err error
 	switch scheme {
 	case "http", "https":
 		host := strings.TrimSpace(ac.Host)
@@ -397,7 +529,7 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 			return fmt.Errorf("app %q: port %d is out of range", ac.Name, ac.Port)
 		}
 		u := &url.URL{Scheme: scheme, Host: host + ":" + strconv.Itoa(ac.Port)}
-		return r.register(ac.Name, u, meta, nil)
+		err = r.register(ac.Name, u, meta, nil)
 	case "unix", "npipe":
 		sock := strings.TrimSpace(ac.Socket)
 		if sock == "" {
@@ -407,7 +539,7 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 		// per-app transport's DialContext. The upstream daemon (podman/
 		// docker/ollama) ignores the Host header.
 		u := &url.URL{Scheme: "http", Host: "socket"}
-		return r.register(ac.Name, u, meta, socketTransport(scheme, sock))
+		err = r.register(ac.Name, u, meta, socketTransport(scheme, sock))
 	case "tcp":
 		host := strings.TrimSpace(ac.Host)
 		if host == "" {
@@ -416,10 +548,18 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 		if ac.Port <= 0 || ac.Port > 65535 {
 			return fmt.Errorf("app %q: port %d is out of range", ac.Name, ac.Port)
 		}
-		return r.registerTCP(ac.Name, net.JoinHostPort(host, strconv.Itoa(ac.Port)), meta)
+		err = r.registerTCP(ac.Name, net.JoinHostPort(host, strconv.Itoa(ac.Port)), meta)
 	default:
 		return fmt.Errorf("app %q: scheme must be one of http|https|tcp|unix|npipe (got %q)", ac.Name, ac.Scheme)
 	}
+	if err != nil {
+		return err
+	}
+	// Provisioning token is independent of proxy plumbing — apps that
+	// don't push grants leave it empty. Set unconditionally so a
+	// re-register with a cleared token actually clears the entry.
+	r.SetProvisioningToken(ac.Name, strings.TrimSpace(ac.ProvisioningToken))
+	return nil
 }
 
 // registerTCP records name → host:port for a tcp-scheme app. The
@@ -438,6 +578,10 @@ func (r *AppRegistry) registerTCP(name, addr string, meta AppMeta) error {
 	r.lanOnly[name] = append([]string(nil), meta.LANOnlyPaths...)
 	r.indexPath[name] = meta.IndexPath
 	r.capabilities[name] = meta.Capabilities
+	// TCP apps don't speak HTTP, so trust-cloud-identity has nothing to
+	// stamp — but we keep the map entry in sync with the others so a
+	// later HTTP-mode swap on the same name reads the right value.
+	r.trustCloudIdentity[name] = meta.TrustCloudIdentity
 	r.mu.Unlock()
 	return nil
 }
