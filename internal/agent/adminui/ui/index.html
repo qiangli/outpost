@@ -352,19 +352,14 @@ function renderLogin() {
 }
 
 // activeTab is persisted across renders so a save-triggered re-render
-// doesn't kick the user back to the default tab. Keys: 'inbound',
-// 'outbound'. (The standalone 'pair' tab was folded into a header
-// section that appears above both; legacy 'pair' values migrate to
-// 'inbound'.)
+// doesn't kick the user back to the default tab. Keys: 'pair',
+// 'inbound', 'outbound'.
 const TAB_KEY = 'outpost.activeTab';
 
-// buildPairSection returns a fresh fieldset for the pair-host header.
+// buildPairSection returns a fresh fieldset for the pair-host tab.
 // Always shows the form so the operator can re-pair or update the host
 // name at any time. When already paired, a green status banner sits
-// above the form to make the current identity obvious. Called twice per
-// render (once per visible panel) so each panel gets its own DOM tree —
-// a node can only have one parent, and form event handlers are local
-// to each instance.
+// above the form to make the current identity obvious.
 function buildPairSection(status, cfg) {
   const pairing = el('fieldset', {});
   pairing.append(el('legend', {}, 'Pair host'));
@@ -421,23 +416,25 @@ function renderMain(status, cfg) {
   const app = $('#app');
   app.innerHTML = '';
 
-  // Tab bar + two panels. The pair-host fieldset is rendered as the
-  // first section inside each panel (built per-panel so each gets its
-  // own form instance), so the operator always sees pairing state and
-  // can re-pair without hunting for a dedicated tab.
+  // Tab bar + three panels: Pair host, Inbound, Outbound. Pair host has
+  // its own tab so the Inbound/Outbound panels stay focused on apps and
+  // mounts.
   const tabs = el('div', {class: 'tabs'});
   const panels = el('div', {class: 'tab-panels'});
+  const panelPair = el('div', {class: 'tab-panel', 'data-panel': 'pair'});
   const panelInbound = el('div', {class: 'tab-panel', 'data-panel': 'inbound'});
   const panelOutbound = el('div', {class: 'tab-panel', 'data-panel': 'outbound'});
-  panels.append(panelInbound, panelOutbound);
+  panels.append(panelPair, panelInbound, panelOutbound);
 
-  // Initial tab: stored preference if any, else 'inbound'. Migrate
-  // legacy 'pair' values from older builds.
+  // Initial tab: stored preference if any, else 'inbound' once paired
+  // (the common case), else 'pair' (operator still needs to finish
+  // setup).
   let active = localStorage.getItem(TAB_KEY);
-  if (!['inbound', 'outbound'].includes(active)) {
-    active = 'inbound';
+  if (!['pair', 'inbound', 'outbound'].includes(active)) {
+    active = status.configured ? 'inbound' : 'pair';
   }
   const tabDefs = [
+    ['pair', 'Pair host'],
     ['inbound', 'Inbound'],
     ['outbound', 'Outbound'],
   ];
@@ -452,6 +449,7 @@ function renderMain(status, cfg) {
     for (const [k] of tabDefs) {
       tabBtns[k].classList.toggle('active', k === key);
     }
+    panelPair.classList.toggle('hidden', key !== 'pair');
     panelInbound.classList.toggle('hidden', key !== 'inbound');
     panelOutbound.classList.toggle('hidden', key !== 'outbound');
     try { localStorage.setItem(TAB_KEY, key); } catch (_) {}
@@ -460,9 +458,7 @@ function renderMain(status, cfg) {
 
   app.append(tabs, panels);
 
-  // Pair-host header — first section in each panel.
-  panelInbound.append(buildPairSection(status, cfg));
-  panelOutbound.append(buildPairSection(status, cfg));
+  panelPair.append(buildPairSection(status, cfg));
 
   // Built-in apps section — one per line, toggle switches, auto-save on
   // change (no separate Save button). Each flip POSTs the single changed
