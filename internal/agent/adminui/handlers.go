@@ -182,6 +182,43 @@ func (s *Server) handleRestart(c *gin.Context) {
 	s.core.ScheduleRestart()
 }
 
+// handleSetNetworking persists local_addr / vnc_addr / admin_addr /
+// admin_users. Pointer-string semantics on the wire: absent field =
+// "leave alone"; explicit empty string = "revert to default at boot".
+type setNetworkingReq struct {
+	LocalAddr     *string  `json:"local_addr,omitempty"`
+	VNCAddr       *string  `json:"vnc_addr,omitempty"`
+	AdminAddr     *string  `json:"admin_addr,omitempty"`
+	AdminUsers    []string `json:"admin_users,omitempty"`
+	SetAdminUsers bool     `json:"set_admin_users,omitempty"`
+}
+
+func (s *Server) handleSetNetworking(c *gin.Context) {
+	var req setNetworkingReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	params := admincore.NetworkingParams{
+		LocalAddr: req.LocalAddr,
+		VNCAddr:   req.VNCAddr,
+		AdminAddr: req.AdminAddr,
+	}
+	if req.SetAdminUsers {
+		u := req.AdminUsers
+		if u == nil {
+			u = []string{}
+		}
+		params.AdminUsers = &u
+	}
+	res, err := s.core.SetNetworking(params)
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": res.OK, "restarting": res.RestartPending})
+}
+
 // --- Outbound mounts ---
 
 func (s *Server) handleListOutbound(c *gin.Context) {

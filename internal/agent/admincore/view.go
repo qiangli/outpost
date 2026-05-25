@@ -66,6 +66,10 @@ type SafeView struct {
 	RemotePort           int                  `json:"remote_port"`
 	AuthURL              string               `json:"auth_url,omitempty"`
 	HasToken             bool                 `json:"has_token"`
+	LocalAddr            string               `json:"local_addr,omitempty"`
+	VNCAddr              string               `json:"vnc_addr,omitempty"`
+	AdminAddr            string               `json:"admin_addr,omitempty"`
+	AdminUsers           []string             `json:"admin_users"`
 	Apps                 []conf.AppConfig     `json:"apps"`
 	ShellEnabled         bool                 `json:"shell_enabled"`
 	DesktopEnabled       bool                 `json:"desktop_enabled"`
@@ -105,6 +109,10 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 	if osHost != "" && osUser != "" {
 		defaultName = osHost + "-" + osUser
 	}
+	admins := fc.AdminUsers
+	if admins == nil {
+		admins = []string{}
+	}
 	return SafeView{
 		AgentName:            fc.AgentName,
 		ServerAddr:           fc.ServerAddr,
@@ -114,6 +122,10 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		RemotePort:           fc.RemotePort,
 		AuthURL:              fc.AuthURL,
 		HasToken:             fc.Token != "",
+		LocalAddr:            fc.LocalAddr,
+		VNCAddr:              fc.VNCAddr,
+		AdminAddr:            fc.AdminAddr,
+		AdminUsers:           admins,
 		Apps:                 apps,
 		ShellEnabled:         fc.ShellOn(),
 		DesktopEnabled:       fc.DesktopOn(),
@@ -131,6 +143,9 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 			"server_url": "https://ai.dhnt.io",
 			"name":       defaultName,
 			"os_user":    osUser,
+			"local_addr": conf.DefaultLocalAddr,
+			"vnc_addr":   conf.DefaultVNCAddr,
+			"admin_addr": conf.DefaultAdminAddr,
 		},
 	}
 }

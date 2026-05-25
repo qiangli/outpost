@@ -53,7 +53,7 @@ func main() {
 		outboundCmd(), jobsCmd(), fgCmd(), bgCmd(), killCmd(), runCmd(),
 		clusterCmd(), poolCmd(),
 		// MCP-client CLI parity (Phase 1.5):
-		appsCmd(), builtinsCmd(), statusCmd(), unpairCmd(), restartCmd(), mcpCmd(),
+		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), unpairCmd(), restartCmd(), mcpCmd(),
 	)
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -103,7 +103,16 @@ func startCmd() *cobra.Command {
 				fc = &conf.FileConfig{}
 			}
 
-			// Layer fc into cfg (env values stay primary unless empty).
+			// Layer the on-disk FileConfig under whatever the env supplied,
+			// then apply hardcoded defaults to fields still empty. CLI
+			// flags are applied last so they win regardless.
+			//
+			// Precedence per field: CLI flag > env > FileConfig > default.
+			//
+			// FileConfig.ServerAddr / ServerPort are special — they're
+			// portal-controlled (filled by `outpost register`), so the
+			// file wins over env when present. The other fields fall
+			// through normally.
 			if cfg.AgentName == "" {
 				cfg.AgentName = fc.AgentName
 			}
@@ -125,6 +134,33 @@ func startCmd() *cobra.Command {
 			if cfg.AuthURL == "" {
 				cfg.AuthURL = fc.AuthURL
 			}
+			if cfg.LocalAddr == "" {
+				cfg.LocalAddr = fc.LocalAddr
+			}
+			if cfg.VNCAddr == "" {
+				cfg.VNCAddr = fc.VNCAddr
+			}
+			if cfg.AdminAddr == "" {
+				cfg.AdminAddr = fc.AdminAddr
+			}
+			if cfg.AdminUsers == "" && len(fc.AdminUsers) > 0 {
+				cfg.AdminUsers = strings.Join(fc.AdminUsers, ",")
+			}
+
+			// Hardcoded defaults — applied only when nothing else
+			// supplied a value.
+			if cfg.LocalAddr == "" {
+				cfg.LocalAddr = conf.DefaultLocalAddr
+			}
+			if cfg.VNCAddr == "" {
+				cfg.VNCAddr = conf.DefaultVNCAddr
+			}
+			if cfg.ServerAddr == "" {
+				cfg.ServerAddr = conf.DefaultServerAddr
+			}
+			if cfg.ServerPort == 0 {
+				cfg.ServerPort = conf.DefaultServerPort
+			}
 
 			if addrFlag != "" {
 				cfg.LocalAddr = addrFlag
@@ -137,6 +173,12 @@ func startCmd() *cobra.Command {
 			}
 			if serverPortFlag != 0 {
 				cfg.ServerPort = serverPortFlag
+			}
+			if vncAddrFlag != "" {
+				cfg.VNCAddr = vncAddrFlag
+			}
+			if adminAddrFlag != "" {
+				cfg.AdminAddr = adminAddrFlag
 			}
 
 			apps, err := buildAppRegistry(fc, cfg.Apps)
@@ -224,10 +266,11 @@ func startCmd() *cobra.Command {
 				stop()
 			}
 
-			adminAddr := adminAddrFlag
-			if adminAddr == "" {
-				adminAddr = os.Getenv("OUTPOST_ADMIN_ADDR")
-			}
+			// AdminAddr already went through the env → file → default
+			// → CLI layering above. Apply the package default last
+			// (kept on the adminui side so a downstream import of just
+			// the adminui package keeps the same default).
+			adminAddr := cfg.AdminAddr
 			if adminAddr == "" {
 				adminAddr = adminui.DefaultAdminAddr
 			}
@@ -421,7 +464,7 @@ func startCmd() *cobra.Command {
 				Apps:                  apps,
 				Admins:                admins,
 				AuthURL:               cfg.AuthURL,
-				VNCAddr:               vncAddrFlag,
+				VNCAddr:               cfg.VNCAddr,
 				ShellDisabled:         !fc.ShellOn(),
 				DesktopDisabled:       !fc.DesktopOn(),
 				ClipboardDisabled:     !fc.ClipboardOn(),
@@ -552,7 +595,7 @@ func startCmd() *cobra.Command {
 	cmd.Flags().StringVar(&nameFlag, "name", "", "Agent name displayed in the portal (overrides $AGENT_NAME)")
 	cmd.Flags().StringVar(&serverAddrFlag, "server", "", "matrix-tunnel server host (overrides $MATRIX_SERVER_ADDR)")
 	cmd.Flags().IntVar(&serverPortFlag, "server-port", 0, "matrix-tunnel server port (overrides $MATRIX_SERVER_PORT)")
-	cmd.Flags().StringVar(&vncAddrFlag, "vnc-addr", "127.0.0.1:5900", "VNC server to expose for the desktop tab")
+	cmd.Flags().StringVar(&vncAddrFlag, "vnc-addr", "", "VNC server to expose for the desktop tab (overrides $AGENT_VNC_ADDR / FileConfig.VNCAddr; default 127.0.0.1:5900)")
 	cmd.Flags().StringVar(&adminAddrFlag, "admin-addr", "", "Admin UI listen address (overrides $OUTPOST_ADMIN_ADDR; default 127.0.0.1:17777). Use 0.0.0.0:17777 to expose to the LAN; login is then always required.")
 	return cmd
 }

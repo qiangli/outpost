@@ -322,6 +322,7 @@ func (s *Server) registerRoutes() {
 	api.GET("/config", s.handleGetConfig)
 	api.POST("/config/register", s.handleRegister)
 	api.POST("/config/builtins", s.handleBuiltins)
+	api.POST("/config/networking", s.handleSetNetworking)
 	api.GET("/apps", s.handleListApps)
 	api.GET("/apps/suggestions", s.handleListSuggestions)
 	api.POST("/apps", s.handleUpsertApp)

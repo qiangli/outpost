@@ -51,6 +51,35 @@ type FileConfig struct {
 	// `start` falls back to MATRIX_APPS for back-compat.
 	Apps []AppConfig `json:"apps,omitempty"`
 
+	// LocalAddr is the local-loopback bind for the main HTTP server
+	// (the one cloudbox reaches through the matrix tunnel). Default
+	// "127.0.0.1:0" — random port. Persist a fixed port here if the
+	// operator wants stable reverse-proxy rules or audit hooks pointed
+	// at the matrix-tunnel ingress.
+	LocalAddr string `json:"local_addr,omitempty"`
+
+	// VNCAddr is the upstream the built-in /desktop route bridges to.
+	// Default "127.0.0.1:5900" — the standard VNC port. Persist a
+	// non-default value when the VNC daemon lives elsewhere.
+	VNCAddr string `json:"vnc_addr,omitempty"`
+
+	// AdminAddr is the loopback (or LAN) bind for the admin UI + MCP
+	// server. Default "127.0.0.1:17777". Override here, via the
+	// $OUTPOST_ADMIN_ADDR env var, or via the --admin-addr CLI flag;
+	// the precedence is CLI flag > env > file > default. LAN binds
+	// (0.0.0.0:17777) log a warning and force the auth gate on every
+	// request — see adminui.requireSession.
+	AdminAddr string `json:"admin_addr,omitempty"`
+
+	// AdminUsers is an optional allowlist of OAuth-identified emails
+	// who should be treated as admin when authenticating via the host
+	// OS path. Empty list = the legacy "anyone who can prove the OS
+	// password is admin" behavior. Non-empty = only listed emails get
+	// admin; others get user. Ignored when AuthURL is set (the
+	// external endpoint owns role assignment then). Was previously
+	// reachable only as $MATRIX_ADMIN_USERS.
+	AdminUsers []string `json:"admin_users,omitempty"`
+
 	// Built-in route toggles. Pointer-bool so a missing field on an old
 	// config means "default on", which matches the pre-admin-UI behavior.
 	// Use ShellOn()/DesktopOn()/ClipboardOn()/SSHOn() to read; never deref directly.

@@ -25,6 +25,7 @@ func (s *Server) registerTools() {
 	// Keeping them split makes it easy to extend without one giant file.
 	s.registerPairingTools()
 	s.registerBuiltinsTools()
+	s.registerNetworkingTools()
 	s.registerAppsTools()
 	s.registerOutboundTools()
 	s.registerClusterTools()
