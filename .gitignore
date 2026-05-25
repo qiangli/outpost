@@ -5,3 +5,4 @@
 *.out
 .agents/
 .mcp.json
+.claude/
