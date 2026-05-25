@@ -352,31 +352,92 @@ function renderLogin() {
 }
 
 // activeTab is persisted across renders so a save-triggered re-render
-// doesn't kick the user back to the default tab. Keys: 'pair', 'inbound',
-// 'outbound'.
+// doesn't kick the user back to the default tab. Keys: 'inbound',
+// 'outbound'. (The standalone 'pair' tab was folded into a header
+// section that appears above both; legacy 'pair' values migrate to
+// 'inbound'.)
 const TAB_KEY = 'outpost.activeTab';
+
+// buildPairSection returns a fresh fieldset for the pair-host header.
+// Always shows the form so the operator can re-pair or update the host
+// name at any time. When already paired, a green status banner sits
+// above the form to make the current identity obvious. Called twice per
+// render (once per visible panel) so each panel gets its own DOM tree —
+// a node can only have one parent, and form event handlers are local
+// to each instance.
+function buildPairSection(status, cfg) {
+  const pairing = el('fieldset', {});
+  pairing.append(el('legend', {}, 'Pair host'));
+  if (status.configured) {
+    pairing.append(el('div', {class: 'paired-status'},
+      el('span', {class: 'check'}, '✓'),
+      el('div', {class: 'grow'},
+        el('div', {}, 'Currently paired as ',
+          el('strong', {}, status.agent_name || '(unknown)'),
+          ' on ',
+          el('code', {}, status.server_addr || '(unknown)'), '.'),
+        el('div', {class: 'hint', style: 'margin-top:0.25rem'},
+          'Submit a new pairing code below to re-pair or rename this host.')),
+    ));
+  } else {
+    pairing.append(el('p', {}, 'Not yet paired. Get a one-time code from the portal.'));
+  }
+  const portalURL = cfg.defaults.server_url || 'https://ai.dhnt.io';
+  const pf = el('form', {style: status.configured ? 'margin-top:0.8rem' : ''});
+  pf.append(
+    el('label', {}, 'Portal URL',
+      el('input', {type: 'url', name: 'server', value: portalURL, disabled: true})),
+    el('label', {}, 'Pairing code',
+      el('input', {type: 'text', name: 'code', autocomplete: 'off', required: true,
+        placeholder: status.configured ? 'paste a new one-time code to re-pair' : ''})),
+    el('label', {}, 'Host name',
+      el('input', {type: 'text', name: 'name',
+        value: cfg.agent_name || cfg.defaults.name || '', required: true})),
+    el('button', {type: 'submit'}, status.configured ? 'Re-pair & restart' : 'Save & restart'),
+  );
+  pf.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const fd = new FormData(pf);
+    const btn = pf.querySelector('button');
+    btn.disabled = true;
+    try {
+      await api('POST', '/api/config/register', {
+        server: portalURL,
+        code: fd.get('code'),
+        name: fd.get('name'),
+      });
+      msg('ok', 'Saved. Restarting outpost — refresh in a few seconds.');
+      pollUntilUp();
+    } catch (e) {
+      btn.disabled = false;
+      msg('err', e.message || 'Pairing failed');
+    }
+  });
+  pairing.append(pf);
+  return pairing;
+}
 
 function renderMain(status, cfg) {
   const app = $('#app');
   app.innerHTML = '';
 
-  // Tab bar + three panels. Pairing → "Pair host", Built-in + Custom →
-  // "Inbound", outbound mounts → "Outbound".
+  // Tab bar + two panels. The pair-host fieldset is rendered as the
+  // first section inside each panel (built per-panel so each gets its
+  // own form instance), so the operator always sees pairing state and
+  // can re-pair without hunting for a dedicated tab.
   const tabs = el('div', {class: 'tabs'});
   const panels = el('div', {class: 'tab-panels'});
-  const panelPair = el('div', {class: 'tab-panel', 'data-panel': 'pair'});
   const panelInbound = el('div', {class: 'tab-panel', 'data-panel': 'inbound'});
   const panelOutbound = el('div', {class: 'tab-panel', 'data-panel': 'outbound'});
-  panels.append(panelPair, panelInbound, panelOutbound);
+  panels.append(panelInbound, panelOutbound);
 
-  // Initial tab: stored preference if any, else 'inbound' when paired
-  // (the common case), else 'pair' (operator needs to finish setup).
+  // Initial tab: stored preference if any, else 'inbound'. Migrate
+  // legacy 'pair' values from older builds.
   let active = localStorage.getItem(TAB_KEY);
-  if (!['pair', 'inbound', 'outbound'].includes(active)) {
-    active = status.configured ? 'inbound' : 'pair';
+  if (!['inbound', 'outbound'].includes(active)) {
+    active = 'inbound';
   }
   const tabDefs = [
-    ['pair', 'Pair host'],
     ['inbound', 'Inbound'],
     ['outbound', 'Outbound'],
   ];
@@ -391,7 +452,6 @@ function renderMain(status, cfg) {
     for (const [k] of tabDefs) {
       tabBtns[k].classList.toggle('active', k === key);
     }
-    panelPair.classList.toggle('hidden', key !== 'pair');
     panelInbound.classList.toggle('hidden', key !== 'inbound');
     panelOutbound.classList.toggle('hidden', key !== 'outbound');
     try { localStorage.setItem(TAB_KEY, key); } catch (_) {}
@@ -400,62 +460,9 @@ function renderMain(status, cfg) {
 
   app.append(tabs, panels);
 
-  // Pairing section. Two flavors:
-  //  - paired   → green status banner only, no form (the operator can
-  //               always re-pair by clicking Unpair, but the common case
-  //               is "already done" and shouldn't tempt accidental edits).
-  //  - unpaired → simplified pairing form: Portal URL is locked to the
-  //               only supported cloudbox, and Subtitle / custom auth URL
-  //               are hidden (advanced surfaces no current operator
-  //               needs to see).
-  const pairing = el('fieldset', {});
-  pairing.append(el('legend', {}, 'Pair host'));
-  if (status.configured) {
-    pairing.append(el('div', {class: 'paired-status'},
-      el('span', {class: 'check'}, '✓'),
-      el('div', {class: 'grow'},
-        el('div', {}, 'Currently paired as ',
-          el('strong', {}, status.agent_name || '(unknown)'),
-          ' on ',
-          el('code', {}, status.server_addr || '(unknown)'), '.'),
-        el('div', {class: 'hint', style: 'margin-top:0.25rem'},
-          'To re-pair this host, contact the portal for a new pairing code.')),
-    ));
-  } else {
-    pairing.append(el('p', {}, 'Not yet paired. Get a one-time code from the portal.'));
-    const portalURL = cfg.defaults.server_url || 'https://ai.dhnt.io';
-    const pf = el('form', {});
-    pf.append(
-      el('label', {}, 'Portal URL',
-        el('input', {type: 'url', name: 'server', value: portalURL, disabled: true})),
-      el('label', {}, 'Pairing code',
-        el('input', {type: 'text', name: 'code', autocomplete: 'off', required: true})),
-      el('label', {}, 'Host name',
-        el('input', {type: 'text', name: 'name',
-          value: cfg.agent_name || cfg.defaults.name || '', required: true})),
-      el('button', {type: 'submit'}, 'Save & restart'),
-    );
-    pf.addEventListener('submit', async (ev) => {
-      ev.preventDefault();
-      const fd = new FormData(pf);
-      const btn = pf.querySelector('button');
-      btn.disabled = true;
-      try {
-        await api('POST', '/api/config/register', {
-          server: portalURL,
-          code: fd.get('code'),
-          name: fd.get('name'),
-        });
-        msg('ok', 'Saved. Restarting outpost — refresh in a few seconds.');
-        pollUntilUp();
-      } catch (e) {
-        btn.disabled = false;
-        msg('err', e.message || 'Pairing failed');
-      }
-    });
-    pairing.append(pf);
-  }
-  panelPair.append(pairing);
+  // Pair-host header — first section in each panel.
+  panelInbound.append(buildPairSection(status, cfg));
+  panelOutbound.append(buildPairSection(status, cfg));
 
   // Built-in apps section — one per line, toggle switches, auto-save on
   // change (no separate Save button). Each flip POSTs the single changed
