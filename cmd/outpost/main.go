@@ -47,7 +47,14 @@ func main() {
 		Use:   "outpost",
 		Short: "Pair a home host with the portal and tunnel local apps to it",
 	}
-	root.AddCommand(startCmd(), registerCmd(), stopCmd(), sshProxyCmd(), sshConfigCmd(), connectCmd(), outboundCmd(), jobsCmd(), fgCmd(), bgCmd(), killCmd(), runCmd(), clusterCmd(), poolCmd())
+	root.AddCommand(
+		startCmd(), registerCmd(), stopCmd(),
+		sshProxyCmd(), sshConfigCmd(), connectCmd(),
+		outboundCmd(), jobsCmd(), fgCmd(), bgCmd(), killCmd(), runCmd(),
+		clusterCmd(), poolCmd(),
+		// MCP-client CLI parity (Phase 1.5):
+		appsCmd(), builtinsCmd(), statusCmd(), unpairCmd(),
+	)
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
