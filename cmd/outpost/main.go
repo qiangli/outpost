@@ -287,16 +287,6 @@ func startCmd() *cobra.Command {
 				return fmt.Errorf("admincore: %w", err)
 			}
 
-			adminSrv, err := adminui.New(adminui.Deps{
-				Core:       core,
-				ListenAddr: adminAddr,
-				Auth:       hostauth.DefaultAuthenticator(),
-				SessionKey: sessionKey,
-			})
-			if err != nil {
-				return fmt.Errorf("admin ui: %w", err)
-			}
-
 			// MCP server — same loopback listener as adminui, mounted
 			// at /mcp/*. Bearer-token auth (FileConfig.MCPBearerToken,
 			// auto-generated on first boot) is isolated from adminui's
@@ -322,8 +312,28 @@ func startCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("mcp api: %w", err)
 			}
+
+			adminSrv, err := adminui.New(adminui.Deps{
+				Core:       core,
+				ListenAddr: adminAddr,
+				Auth:       hostauth.DefaultAuthenticator(),
+				SessionKey: sessionKey,
+				// MCP closures: the SPA's Pair tab uses these to show
+				// the .mcp.json snippet (endpoint + bearer) and to
+				// rotate the token when the operator clicks "Rotate".
+				// Rotation goes through mcpapi.Rotate so the in-memory
+				// token swap stays consistent with the persisted value.
+				MCPToken:       mcpSrv.Token,
+				RotateMCPToken: mcpSrv.Rotate,
+			})
+			if err != nil {
+				return fmt.Errorf("admin ui: %w", err)
+			}
 			adminSrv.Engine().Any("/mcp", gin.WrapH(mcpSrv.Handler()))
 			adminSrv.Engine().Any("/mcp/*p", gin.WrapH(mcpSrv.Handler()))
+			// Backfill the endpoint URL on the SPA-facing closure now
+			// that the listener address is known.
+			adminSrv.SetMCPEndpoint(adminSrv.URL() + "/mcp/")
 			fmt.Fprintf(os.Stderr, "MCP endpoint: %s/mcp/  (bearer: %s)\n", adminSrv.URL(), mcpToken)
 
 			g, gctx := errgroup.WithContext(ctx)

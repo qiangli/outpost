@@ -2,7 +2,6 @@ package mcpapi
 
 import (
 	"context"
-	"errors"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -30,14 +29,10 @@ func (s *Server) registerLifecycleTools() {
 		Name:        "outpost_rotate_mcp_token",
 		Description: "Mint a fresh MCP bearer token, persist it, and start accepting it for subsequent calls. The previous token stops working IMMEDIATELY — surface the new value to the operator so they can update their .mcp.json before the next request.",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, rotateMCPOut, error) {
-		if s.rotateFn == nil {
-			return nil, rotateMCPOut{}, errors.New("rotation not configured (daemon misconfigured)")
-		}
-		newTok, err := s.rotateFn()
+		newTok, err := s.Rotate()
 		if err != nil {
 			return nil, rotateMCPOut{}, err
 		}
-		s.token = newTok
 		return nil, rotateMCPOut{OK: true, NewBearerToken: newTok}, nil
 	})
 }

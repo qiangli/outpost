@@ -87,6 +87,17 @@ type Deps struct {
 	// logged in when a built-in toggle re-execs the binary.
 	SessionKey []byte
 
+	// MCPEndpoint is the URL the operator pastes into .mcp.json. Set
+	// by main.go after constructing mcpapi. Empty when the MCP server
+	// isn't wired (test paths).
+	MCPEndpoint string
+	// MCPToken returns the currently-accepted bearer (mcpapi rotates
+	// it in memory; this closure always reads the live value).
+	MCPToken func() string
+	// RotateMCPToken mints a fresh token, persists it, swaps mcpapi's
+	// in-memory copy, and returns the new value.
+	RotateMCPToken func() (string, error)
+
 	// Legacy fields — forwarded into admincore.New() when Core is nil.
 	// Production main.go leaves these empty and supplies Core.
 
@@ -249,6 +260,11 @@ func (s *Server) Addr() string {
 // so admin's session-cookie middleware never inspects it.
 func (s *Server) Engine() *gin.Engine { return s.engine }
 
+// SetMCPEndpoint backfills the URL the SPA's "Show .mcp.json snippet"
+// panel renders. main.go calls this after the listener is bound (the
+// URL isn't known earlier because :0 may resolve to a random port).
+func (s *Server) SetMCPEndpoint(url string) { s.deps.MCPEndpoint = url }
+
 // URL is a convenience for the message printed to the console.
 func (s *Server) URL() string {
 	return "http://" + s.Addr()
@@ -314,6 +330,17 @@ func (s *Server) registerRoutes() {
 	api.POST("/restart", s.handleRestart)
 	api.POST("/cluster/kubeconfig", s.handleSetClusterKubeconfig)
 	api.DELETE("/cluster/kubeconfig", s.handleClearClusterKubeconfig)
+
+	// MCP credentials — the SPA's Pair tab renders the endpoint URL
+	// and bearer token so the operator can paste them into an agent
+	// tool's .mcp.json. Only available when main.go threaded the
+	// closures in (skipped on test paths).
+	if s.deps.MCPToken != nil {
+		api.GET("/mcp/credentials", s.handleMCPCredentials)
+		if s.deps.RotateMCPToken != nil {
+			api.POST("/mcp/token/rotate", s.handleRotateMCPToken)
+		}
+	}
 
 	if s.outboundEnabled() {
 		api.GET("/outbound", s.handleListOutbound)

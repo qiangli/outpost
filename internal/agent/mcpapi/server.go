@@ -106,6 +106,24 @@ func (s *Server) Handler() http.Handler { return s.handler }
 // startup banner.
 func (s *Server) Token() string { return s.token }
 
+// Rotate mints a fresh bearer (via rotateFn — typically
+// conf.RotateMCPBearerToken), swaps s.token atomically, and returns the
+// new value. The OLD token stops authenticating immediately. The
+// admin UI's "Rotate" button and the outpost_rotate_mcp_token MCP tool
+// both end up here so the in-memory state stays consistent regardless
+// of which surface initiates the rotation.
+func (s *Server) Rotate() (string, error) {
+	if s.rotateFn == nil {
+		return "", errMissingDep("RotateFn")
+	}
+	newTok, err := s.rotateFn()
+	if err != nil {
+		return "", err
+	}
+	s.token = newTok
+	return newTok, nil
+}
+
 // bearerAuth is the middleware that gates every request to the MCP
 // handler. Constant-time comparison so a bad token can't be probed via
 // timing.

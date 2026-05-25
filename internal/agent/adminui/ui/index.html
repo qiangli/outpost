@@ -412,6 +412,112 @@ function buildPairSection(status, cfg) {
   return pairing;
 }
 
+// buildMCPCredentialsSection returns a fieldset showing the MCP
+// endpoint + bearer token agent tools (Claude Code, Windsurf, ...)
+// need in their .mcp.json. Always rendered — the MCP server runs
+// regardless of pairing, since outpost_pair is one of the tools.
+//
+// The token is masked by default; reveal/copy/rotate are buttons
+// next to it. Rotate is confirm-gated because the OLD token stops
+// authenticating immediately.
+function buildMCPCredentialsSection() {
+  const wrap = el('fieldset', {});
+  wrap.append(el('legend', {}, 'Agent tool credentials (MCP)'));
+  wrap.append(el('p', {class: 'hint'},
+    'Configure any MCP-capable agent (Claude Code, Windsurf, etc.) ' +
+    'to drive this outpost via the Model Context Protocol. Paste ' +
+    'the snippet below into your tool’s .mcp.json.'));
+
+  const endpointVal = el('code', {style: 'word-break:break-all'}, 'loading…');
+  const tokenVal    = el('code', {style: 'word-break:break-all'}, '•'.repeat(20));
+  const snippet     = el('pre', {style: 'background:#f6f8fa;padding:0.6rem;border-radius:4px;overflow-x:auto;font-size:0.85em'}, 'loading…');
+
+  let liveToken = '';
+  let revealed = false;
+  const revealBtn = el('button', {type: 'button', class: 'secondary'}, 'Reveal');
+  const copyEndpoint = el('button', {type: 'button', class: 'secondary'}, 'Copy URL');
+  const copyToken = el('button', {type: 'button', class: 'secondary'}, 'Copy token');
+  const rotateBtn = el('button', {type: 'button', class: 'secondary danger'}, 'Rotate');
+
+  function updateSnippet() {
+    const ep = endpointVal.textContent;
+    const tk = revealed ? liveToken : '<bearer-token>';
+    snippet.textContent =
+      '{\n' +
+      '  "mcpServers": {\n' +
+      '    "outpost": {\n' +
+      '      "type": "http",\n' +
+      '      "url": "' + ep + '",\n' +
+      '      "headers": {\n' +
+      '        "Authorization": "Bearer ' + tk + '"\n' +
+      '      }\n' +
+      '    }\n' +
+      '  }\n' +
+      '}';
+  }
+
+  function setRevealed(on) {
+    revealed = on;
+    tokenVal.textContent = on ? (liveToken || '(empty)') : '•'.repeat(20);
+    revealBtn.textContent = on ? 'Hide' : 'Reveal';
+    updateSnippet();
+  }
+
+  revealBtn.addEventListener('click', () => setRevealed(!revealed));
+  copyEndpoint.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(endpointVal.textContent); msg('ok', 'Endpoint copied'); }
+    catch (e) { msg('err', 'Clipboard write failed'); }
+  });
+  copyToken.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(liveToken); msg('ok', 'Token copied'); }
+    catch (e) { msg('err', 'Clipboard write failed'); }
+  });
+  rotateBtn.addEventListener('click', async () => {
+    const ok = await confirmDialog({
+      title: 'Rotate MCP bearer token?',
+      description: 'The CURRENT token stops authenticating immediately. ' +
+        'Any agent tool with the old token in its .mcp.json will fail ' +
+        'until you update it with the new value shown here.',
+      confirmText: 'Rotate',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const res = await api('POST', '/api/mcp/token/rotate');
+      liveToken = res.token || '';
+      endpointVal.textContent = res.endpoint || endpointVal.textContent;
+      setRevealed(true);
+      msg('ok', 'Token rotated. Update your .mcp.json with the new value.');
+    } catch (e) { msg('err', e.message || 'Rotation failed'); }
+  });
+
+  const rows = el('div', {class: 'mcp-creds-rows', style: 'display:grid;grid-template-columns:max-content 1fr max-content;gap:0.4rem 0.8rem;align-items:center;margin:0.6rem 0'});
+  rows.append(
+    el('strong', {}, 'Endpoint'),
+    endpointVal,
+    copyEndpoint,
+    el('strong', {}, 'Bearer'),
+    tokenVal,
+    el('span', {style: 'display:inline-flex;gap:0.3rem'}, revealBtn, copyToken, rotateBtn),
+  );
+  wrap.append(rows, snippet);
+
+  // Async fetch — the SPA renders the wrap synchronously with
+  // placeholders, then fills in once /api/mcp/credentials returns.
+  (async () => {
+    try {
+      const res = await api('GET', '/api/mcp/credentials');
+      liveToken = res.token || '';
+      endpointVal.textContent = res.endpoint || '';
+      updateSnippet();
+    } catch (e) {
+      endpointVal.textContent = '(unavailable)';
+      snippet.textContent = '(MCP credentials endpoint returned ' + (e.message || 'error') + ')';
+    }
+  })();
+  return wrap;
+}
+
 function renderMain(status, cfg) {
   const app = $('#app');
   app.innerHTML = '';
@@ -459,6 +565,7 @@ function renderMain(status, cfg) {
   app.append(tabs, panels);
 
   panelPair.append(buildPairSection(status, cfg));
+  panelPair.append(buildMCPCredentialsSection());
 
   // Built-in apps section — one per line, toggle switches, auto-save on
   // change (no separate Save button). Each flip POSTs the single changed
