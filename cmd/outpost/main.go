@@ -53,7 +53,7 @@ func main() {
 		outboundCmd(), jobsCmd(), fgCmd(), bgCmd(), killCmd(), runCmd(),
 		clusterCmd(), poolCmd(),
 		// MCP-client CLI parity (Phase 1.5):
-		appsCmd(), builtinsCmd(), statusCmd(), unpairCmd(), mcpCmd(),
+		appsCmd(), builtinsCmd(), statusCmd(), unpairCmd(), restartCmd(), mcpCmd(),
 	)
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
