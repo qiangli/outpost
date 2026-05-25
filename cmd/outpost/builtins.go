@@ -90,13 +90,13 @@ func builtinsSetCmd() *cobra.Command {
 			if params.SSH, err = parseToggle("ssh", ssh); err != nil {
 				return err
 			}
-			if params.SSHAllowLocalForward, err = parseToggle("ssh-local-fwd", sshLocalFwd); err != nil {
+			if params.SSHAllowLocalForward, err = parseToggle("ssh-allow-local-forward", sshLocalFwd); err != nil {
 				return err
 			}
-			if params.SSHAllowRemoteForward, err = parseToggle("ssh-remote-fwd", sshRemoteFwd); err != nil {
+			if params.SSHAllowRemoteForward, err = parseToggle("ssh-allow-remote-forward", sshRemoteFwd); err != nil {
 				return err
 			}
-			if params.SSHAllowAgentForward, err = parseToggle("ssh-agent-fwd", sshAgentFwd); err != nil {
+			if params.SSHAllowAgentForward, err = parseToggle("ssh-allow-agent-forward", sshAgentFwd); err != nil {
 				return err
 			}
 			if params.SFTP, err = parseToggle("sftp", sftp); err != nil {
@@ -126,9 +126,18 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&desktop, "desktop", "", "on|off")
 	cmd.Flags().StringVar(&clipboard, "clipboard", "", "on|off")
 	cmd.Flags().StringVar(&ssh, "ssh", "", "on|off")
-	cmd.Flags().StringVar(&sshLocalFwd, "ssh-local-fwd", "", "on|off — direct-tcpip channels (ssh -L)")
-	cmd.Flags().StringVar(&sshRemoteFwd, "ssh-remote-fwd", "", "on|off — tcpip-forward global requests (ssh -R)")
-	cmd.Flags().StringVar(&sshAgentFwd, "ssh-agent-fwd", "", "on|off — auth-agent-req channels (ssh -A)")
+	// Canonical names match the file/MCP key (ssh_allow_local_forward etc.);
+	// the old shorter spellings stay as deprecated aliases so existing
+	// scripts don't break.
+	cmd.Flags().StringVar(&sshLocalFwd, "ssh-allow-local-forward", "", "on|off — direct-tcpip channels (ssh -L)")
+	cmd.Flags().StringVar(&sshLocalFwd, "ssh-local-fwd", "", "deprecated alias for --ssh-allow-local-forward")
+	_ = cmd.Flags().MarkDeprecated("ssh-local-fwd", "use --ssh-allow-local-forward")
+	cmd.Flags().StringVar(&sshRemoteFwd, "ssh-allow-remote-forward", "", "on|off — tcpip-forward global requests (ssh -R)")
+	cmd.Flags().StringVar(&sshRemoteFwd, "ssh-remote-fwd", "", "deprecated alias for --ssh-allow-remote-forward")
+	_ = cmd.Flags().MarkDeprecated("ssh-remote-fwd", "use --ssh-allow-remote-forward")
+	cmd.Flags().StringVar(&sshAgentFwd, "ssh-allow-agent-forward", "", "on|off — auth-agent-req channels (ssh -A)")
+	cmd.Flags().StringVar(&sshAgentFwd, "ssh-agent-fwd", "", "deprecated alias for --ssh-allow-agent-forward")
+	_ = cmd.Flags().MarkDeprecated("ssh-agent-fwd", "use --ssh-allow-agent-forward")
 	cmd.Flags().StringVar(&sftp, "sftp", "", "on|off")
 	cmd.Flags().StringVar(&podman, "podman", "", "on|off")
 	cmd.Flags().StringVar(&ollama, "ollama", "", "on|off")

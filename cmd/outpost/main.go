@@ -859,8 +859,9 @@ func registerCmd() *cobra.Command {
 		clientOnly bool
 	)
 	cmd := &cobra.Command{
-		Use:   "register",
-		Short: "Pair this host with the portal",
+		Use:     "register",
+		Aliases: []string{"pair"},
+		Short:   "Pair this host with the portal (alias: `outpost pair`)",
 		Long: `Exchange a one-time pairing code for a persistent agent config.
 
 Run with no flags for an interactive prompt that walks you through pairing.

@@ -65,6 +65,12 @@
   .toggle-row label { display: flex; align-items: center; gap: 0.4rem; }
   .toggle-row label.disabled { opacity: 0.55; }
   .hint { font-size: 0.75rem; opacity: 0.7; margin-left: 0.4rem; }
+  /* key-hint surfaces the canonical agent.json key next to a human
+     label. Same color treatment as .hint but tighter type so it reads
+     as metadata rather than primary content. */
+  .key-hint { font-family: ui-monospace, SFMono-Regular, monospace;
+              font-size: 0.7rem; opacity: 0.55; margin-left: 0.4rem;
+              padding: 0.05rem 0.3rem; background: #f0f1f3; border-radius: 3px; }
   /* iOS-style toggle switch wrapping a hidden checkbox. */
   .switch { position: relative; display: inline-block; width: 36px; height: 20px; flex: 0 0 auto; }
   .switch input { opacity: 0; width: 0; height: 0; }
@@ -584,8 +590,8 @@ function buildAdvancedSettingsSection(cfg) {
   // --- SSH advanced toggles ------------------------------------------------
   const sshList = el('div', {class: 'item-list'});
   const sshRows = [
-    {key: 'ssh_allow_remote_forward', label: 'SSH remote port forwarding (-R)', enabled: !!cfg.ssh_allow_remote_forward},
-    {key: 'ssh_allow_agent_forward',  label: 'SSH agent forwarding (-A)',       enabled: !!cfg.ssh_allow_agent_forward},
+    {key: 'ssh_allow_remote_forward', fileKey: 'ssh_allow_remote_forward', label: 'SSH remote port forwarding (-R)', enabled: !!cfg.ssh_allow_remote_forward},
+    {key: 'ssh_allow_agent_forward',  fileKey: 'ssh_allow_agent_forward',  label: 'SSH agent forwarding (-A)',       enabled: !!cfg.ssh_allow_agent_forward},
   ];
   for (const item of sshRows) {
     const row = el('div', {class: 'item-row'});
@@ -603,7 +609,10 @@ function buildAdvancedSettingsSection(cfg) {
         msg('err', e.message || 'Save failed');
       }
     });
-    row.append(sw.wrap, el('span', {class: 'label'}, item.label));
+    row.append(
+      sw.wrap,
+      el('span', {class: 'label'}, item.label, ' ', el('code', {class: 'key-hint'}, item.fileKey)),
+    );
     sshList.append(row);
   }
 
@@ -710,26 +719,36 @@ function renderMain(status, cfg) {
   built.append(el('legend', {}, 'Built-in apps'));
   const builtList = el('div', {class: 'item-list'});
 
+  // Each row carries:
+  //   key     — JSON field on POST /api/config/builtins (REST/MCP arg)
+  //   fileKey — agent.json key (canonical name; usually `<key>_enabled`)
+  //   label   — human-readable display
+  // The fileKey is rendered as a small subtext so an operator switching
+  // between the SPA, the CLI (--<fileKey> minus _enabled), and the MCP
+  // tool args / agent.json can match concepts up at a glance.
   const builtinRows = [
-    {key: 'shell', label: 'Shell', enabled: cfg.shell_enabled},
-    {key: 'desktop', label: 'Desktop', enabled: cfg.desktop_enabled},
-    {key: 'clipboard', label: 'Clipboard', enabled: cfg.clipboard_enabled},
-    {key: 'ssh', label: 'SSH', enabled: cfg.ssh_enabled},
-    {key: 'ssh_allow_local_forward', label: 'SSH local port forwarding (-L)', enabled: cfg.ssh_allow_local_forward},
-    {key: 'sftp', label: 'SFTP subsystem (scp/sftp)', enabled: cfg.sftp_enabled},
-    {key: 'podman', label: 'Podman', daemon: cfg.podman || {}},
-    {key: 'ollama', label: 'Ollama', daemon: cfg.ollama || {}},
+    {key: 'shell',     fileKey: 'shell_enabled',     label: 'Shell',                          enabled: cfg.shell_enabled},
+    {key: 'desktop',   fileKey: 'desktop_enabled',   label: 'Desktop',                        enabled: cfg.desktop_enabled},
+    {key: 'clipboard', fileKey: 'clipboard_enabled', label: 'Clipboard',                      enabled: cfg.clipboard_enabled},
+    {key: 'ssh',       fileKey: 'ssh_enabled',       label: 'SSH',                            enabled: cfg.ssh_enabled},
+    {key: 'ssh_allow_local_forward', fileKey: 'ssh_allow_local_forward',
+     label: 'SSH local port forwarding (-L)', enabled: cfg.ssh_allow_local_forward},
+    {key: 'sftp',      fileKey: 'sftp_enabled',      label: 'SFTP subsystem (scp/sftp)',      enabled: cfg.sftp_enabled},
+    {key: 'podman',    fileKey: 'podman_enabled',    label: 'Podman',                         daemon: cfg.podman || {}},
+    {key: 'ollama',    fileKey: 'ollama_enabled',    label: 'Ollama',                         daemon: cfg.ollama || {}},
     // Pool participation rides on Ollama — disabled (dimmed) when Ollama itself is off.
     // Default is on whenever Ollama is on, so new operators contribute to the shared
     // pool by enabling Ollama alone; explicit-off here keeps the local proxy private.
-    {key: 'ollama_pool', label: 'Share Ollama with LLM pool',
+    {key: 'ollama_pool', fileKey: 'ollama_pool_enabled',
+     label: 'Share Ollama with LLM pool',
      enabled: !!cfg.ollama_pool_enabled, gatedBy: cfg.ollama || {}},
     // Cluster row is gated by having credentials pasted (has_token).
     // We re-use the same daemon-shape "gatedBy" by synthesizing one:
     // 'enabled' on the gate means credentials are present, so the
     // toggle becomes live. Hint text below tells the operator to paste
     // a kubeconfig first.
-    {key: 'cluster', label: 'Cluster (virtual-kubelet → podman)',
+    {key: 'cluster', fileKey: 'cluster.enabled',
+     label: 'Cluster (virtual-kubelet → podman)',
      enabled: !!(cfg.cluster && cfg.cluster.enabled),
      gatedBy: {enabled: !!(cfg.cluster && cfg.cluster.has_token)},
      gateHint: '(paste a kubeconfig below first)'},
@@ -760,7 +779,19 @@ function renderMain(status, cfg) {
         msg('err', e.message || 'Save failed');
       }
     });
-    row.append(sw.wrap, el('span', {class: 'label'}, item.label));
+    // Label + canonical key subtext. The key subtext is what an
+    // operator searches for in agent.json or types as a --<key> CLI
+    // flag (after dropping `_enabled`), so surfacing it visibly here
+    // keeps the SPA/CLI/MCP vocabulary aligned without forcing the
+    // human-facing label to be ugly.
+    row.append(
+      sw.wrap,
+      el('span', {class: 'label'},
+        item.label,
+        ' ',
+        el('code', {class: 'key-hint'}, item.fileKey),
+      ),
+    );
     if (isDaemon) {
       if (!available) {
         row.append(el('span', {class: 'hint'}, '(not available)'));

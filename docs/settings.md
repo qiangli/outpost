@@ -42,13 +42,32 @@ package-level defaults live in `internal/agent/conf/conf.go` (the
   `outpost start`. The matrix-tunnel pairing fields and network
   binds are boot-only (the tunnel client is built once at boot).
 
+## Naming convention
+
+The file key is the canonical name. The other surfaces follow:
+
+- **File** (`agent.json`): `snake_case`, e.g. `ssh_allow_local_forward`.
+- **MCP** tool arg: identical to the file key.
+- **CLI** flag: kebab-case of the file key, e.g.
+  `--ssh-allow-local-forward`. A few historical short spellings
+  (e.g. `--ssh-local-fwd`) survive as deprecated aliases that print
+  a one-line warning.
+- **UI** label: human English with the canonical file key shown as
+  a small subtext code-block so an operator can match concepts up
+  visually when moving between surfaces.
+
+CLI subcommand verbs (`add`, `rm`, `list`) intentionally stay
+Unix-conventional. MCP tool names use database-style verbs
+(`outpost_upsert_app`, `outpost_delete_app`). Both are fine — the
+audiences differ — and the mapping is one-to-one.
+
 ## Inventory
 
 ### Pairing identity (portal-controlled)
 
 | Field | File key | CLI | UI | MCP | Effect |
 |---|---|---|---|---|---|
-| Agent name | `agent_name` | `register --name`, `start --name` | Pair tab | `outpost_pair` | Restart |
+| Agent name | `agent_name` | `register --name` (alias: `outpost pair`), `start --name` | Pair tab | `outpost_pair` | Restart |
 | Portal server | `server_addr` / `server_port` / `protocol` | `register --server`, `start --server / --server-port`, `$MATRIX_SERVER_ADDR`, `$MATRIX_SERVER_PORT`, `$MATRIX_PROTOCOL` | Pair tab (display only) | `outpost_pair` | Restart |
 | Tunnel token | `token` | (portal-issued; never user-input) | `has_token` flag only | (never exposed) | Restart |
 | Cloudbox access token | `access_token` | (portal-issued) | `has_token` flag only | (never exposed) | Restart |
@@ -72,9 +91,9 @@ tool, or wipe `agent.json` by hand.
 | Desktop (VNC) | `desktop_enabled` | `builtins set --desktop` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Clipboard | `clipboard_enabled` | `builtins set --clipboard` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | SSH | `ssh_enabled` | `builtins set --ssh` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
-| SSH `-L` local-fwd | `ssh_allow_local_forward` | `builtins set --ssh-local-fwd` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
-| SSH `-R` remote-fwd | `ssh_allow_remote_forward` | `builtins set --ssh-remote-fwd` | Pair tab > Advanced | `outpost_set_builtins` | Restart |
-| SSH `-A` agent-fwd | `ssh_allow_agent_forward` | `builtins set --ssh-agent-fwd` | Pair tab > Advanced | `outpost_set_builtins` | Restart |
+| SSH `-L` local-fwd | `ssh_allow_local_forward` | `builtins set --ssh-allow-local-forward` (alias: `--ssh-local-fwd`) | Inbound > Built-ins | `outpost_set_builtins` | Restart |
+| SSH `-R` remote-fwd | `ssh_allow_remote_forward` | `builtins set --ssh-allow-remote-forward` (alias: `--ssh-remote-fwd`) | Pair tab > Advanced | `outpost_set_builtins` | Restart |
+| SSH `-A` agent-fwd | `ssh_allow_agent_forward` | `builtins set --ssh-allow-agent-forward` (alias: `--ssh-agent-fwd`) | Pair tab > Advanced | `outpost_set_builtins` | Restart |
 | SSH forward-sockets allowlist | `ssh_forward_sockets` | `builtins set --ssh-forward-socket /path ...` | Pair tab > Advanced | `outpost_set_builtins` | Restart |
 | SFTP subsystem | `sftp_enabled` | `builtins set --sftp` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Podman daemon proxy | `podman_enabled` | `builtins set --podman` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
