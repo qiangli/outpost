@@ -58,7 +58,7 @@ func NewClient(socket string) (*Client, error) {
 // as the node heartbeat. We hit /libpod/_ping rather than /info because
 // _ping returns "OK\n" and is the cheapest endpoint libpod exposes.
 func (c *Client) Ping(ctx context.Context) error {
-	resp, err := c.do(ctx, http.MethodGet, apiPrefix + "/libpod/_ping", nil, nil)
+	resp, err := c.do(ctx, http.MethodGet, apiPrefix+"/libpod/_ping", nil, nil)
 	if err != nil {
 		return err
 	}

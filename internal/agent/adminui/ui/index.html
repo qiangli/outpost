@@ -42,6 +42,20 @@
                                      min-height: 1rem; font-weight: 600; }
   dialog.auth-dialog .actions { display: flex; gap: 0.5rem; justify-content: flex-end;
                                 margin-top: 0.4rem; }
+  /* Pair-host paired-status banner: green-tinted card that replaces the
+     pair form once the outpost is paired. Mirrors the look of a success
+     message but heavier and more permanent. */
+  .paired-status { display: flex; align-items: center; gap: 0.8rem;
+                   padding: 0.9rem 1rem; border-radius: 8px;
+                   background: #16a34a1a; border: 1px solid #16a34a55;
+                   font-size: 0.95rem; }
+  .paired-status .check { width: 1.6rem; height: 1.6rem; border-radius: 50%;
+                          background: #16a34a; color: white; display: flex;
+                          align-items: center; justify-content: center;
+                          font-weight: 700; flex: 0 0 auto; }
+  .paired-status .grow { flex: 1; }
+  .paired-status code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                        font-size: 0.9em; opacity: 0.95; }
   table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
   th, td { text-align: left; padding: 0.4rem; border-bottom: 1px solid #8882; font-size: 0.9rem; }
   .pill { display: inline-block; padding: 0 0.4rem; border-radius: 999px; font-size: 0.75rem;
@@ -195,6 +209,32 @@ function passwordDialog({title, description, submitText = 'Connect', onSubmit}) 
 
     dlg.showModal();
     setTimeout(() => input.focus(), 0);
+  });
+}
+
+// confirmDialog renders a styled yes/no modal in the same auth-dialog
+// shell as passwordDialog. Returns a promise that resolves true on
+// confirm, false on cancel/Escape. Replaces window.confirm so the
+// styling matches the rest of the admin UI (the browser-native confirm
+// renders out of theme and pops outside the page on some platforms).
+function confirmDialog({title, description, confirmText = 'Remove', cancelText = 'Cancel', danger = true}) {
+  return new Promise((resolve) => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'auth-dialog';
+    const confirmBtn = el('button', {type: 'button', class: 'submit' + (danger ? ' danger' : '')}, confirmText);
+    const cancelBtn  = el('button', {type: 'button', class: 'secondary cancel'}, cancelText);
+    dlg.append(
+      el('h2', {}, title),
+      description ? el('p', {}, description) : '',
+      el('div', {class: 'actions'}, cancelBtn, confirmBtn),
+    );
+    document.body.append(dlg);
+    const close = (ok) => { dlg.close(); dlg.remove(); resolve(ok); };
+    cancelBtn.addEventListener('click', () => close(false));
+    confirmBtn.addEventListener('click', () => close(true));
+    dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); close(false); });
+    dlg.showModal();
+    setTimeout(() => confirmBtn.focus(), 0);
   });
 }
 
@@ -360,50 +400,61 @@ function renderMain(status, cfg) {
 
   app.append(tabs, panels);
 
-  // Pairing section
+  // Pairing section. Two flavors:
+  //  - paired   → green status banner only, no form (the operator can
+  //               always re-pair by clicking Unpair, but the common case
+  //               is "already done" and shouldn't tempt accidental edits).
+  //  - unpaired → simplified pairing form: Portal URL is locked to the
+  //               only supported cloudbox, and Subtitle / custom auth URL
+  //               are hidden (advanced surfaces no current operator
+  //               needs to see).
   const pairing = el('fieldset', {});
   pairing.append(el('legend', {}, 'Pair host'));
   if (status.configured) {
-    pairing.append(el('p', {}, 'Currently paired as ', el('strong', {}, status.agent_name),
-      ' on ', el('code', {}, status.server_addr || '(unknown)'), '.'));
+    pairing.append(el('div', {class: 'paired-status'},
+      el('span', {class: 'check'}, '✓'),
+      el('div', {class: 'grow'},
+        el('div', {}, 'Currently paired as ',
+          el('strong', {}, status.agent_name || '(unknown)'),
+          ' on ',
+          el('code', {}, status.server_addr || '(unknown)'), '.'),
+        el('div', {class: 'hint', style: 'margin-top:0.25rem'},
+          'To re-pair this host, contact the portal for a new pairing code.')),
+    ));
   } else {
     pairing.append(el('p', {}, 'Not yet paired. Get a one-time code from the portal.'));
+    const portalURL = cfg.defaults.server_url || 'https://ai.dhnt.io';
+    const pf = el('form', {});
+    pf.append(
+      el('label', {}, 'Portal URL',
+        el('input', {type: 'url', name: 'server', value: portalURL, disabled: true})),
+      el('label', {}, 'Pairing code',
+        el('input', {type: 'text', name: 'code', autocomplete: 'off', required: true})),
+      el('label', {}, 'Host name',
+        el('input', {type: 'text', name: 'name',
+          value: cfg.agent_name || cfg.defaults.name || '', required: true})),
+      el('button', {type: 'submit'}, 'Save & restart'),
+    );
+    pf.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const fd = new FormData(pf);
+      const btn = pf.querySelector('button');
+      btn.disabled = true;
+      try {
+        await api('POST', '/api/config/register', {
+          server: portalURL,
+          code: fd.get('code'),
+          name: fd.get('name'),
+        });
+        msg('ok', 'Saved. Restarting outpost — refresh in a few seconds.');
+        pollUntilUp();
+      } catch (e) {
+        btn.disabled = false;
+        msg('err', e.message || 'Pairing failed');
+      }
+    });
+    pairing.append(pf);
   }
-  const pf = el('form', {});
-  pf.append(
-    el('label', {}, 'Portal URL',
-      el('input', {type: 'url', name: 'server', value: cfg.server_addr ? '' : (cfg.defaults.server_url || '')})),
-    el('label', {}, 'Pairing code',
-      el('input', {type: 'text', name: 'code', autocomplete: 'off', required: true})),
-    el('label', {}, 'Host name',
-      el('input', {type: 'text', name: 'name', value: cfg.agent_name || cfg.defaults.name || '', required: true})),
-    el('label', {}, 'Subtitle (optional, required if auth URL is set)',
-      el('input', {type: 'text', name: 'title'})),
-    el('label', {}, 'Custom auth URL (advanced)',
-      el('input', {type: 'url', name: 'auth_url', value: cfg.auth_url || ''})),
-    el('button', {type: 'submit'}, 'Save & restart'),
-  );
-  pf.addEventListener('submit', async (ev) => {
-    ev.preventDefault();
-    const fd = new FormData(pf);
-    const btn = pf.querySelector('button');
-    btn.disabled = true;
-    try {
-      await api('POST', '/api/config/register', {
-        server: (fd.get('server') || cfg.defaults.server_url || '').toString().trim(),
-        code: fd.get('code'),
-        name: fd.get('name'),
-        title: fd.get('title'),
-        auth_url: fd.get('auth_url'),
-      });
-      msg('ok', 'Saved. Restarting outpost — refresh in a few seconds.');
-      pollUntilUp();
-    } catch (e) {
-      btn.disabled = false;
-      msg('err', e.message || 'Pairing failed');
-    }
-  });
-  pairing.append(pf);
   panelPair.append(pairing);
 
   // Built-in apps section — one per line, toggle switches, auto-save on
@@ -617,25 +668,32 @@ function renderMain(status, cfg) {
   const custom = el('fieldset', {});
   custom.append(el('legend', {}, 'Custom apps'));
   const appsList = el('div', {class: 'item-list'});
+  // Cloud URL of this paired outpost. Used to render the "incoming URL"
+  // an app exposes to users via cloudbox — e.g. https://ai.dhnt.io/h/<host>/app/<name>/.
+  // Empty when the outpost isn't paired yet (in which case the apps tab
+  // shows the local proxy URL instead, since there is no public surface).
+  const cloudboxURL = (cfg.cloudbox_url || '').replace(/\/+$/, '');
+  const agentName = cfg.agent_name || status.agent_name || '';
   for (const a of (cfg.apps || [])) {
     const row = el('div', {class: 'item-row'});
-    // Each HTTP-registered app is reachable on this admin-UI listener
-    // at `<origin>/<name>/` (proxied to the underlying target). That's
-    // the clickable URL — opening it goes through outpost's proxy with
-    // the current admin session, so unix sockets and loopback-only
-    // daemons become reachable from this browser too.
-    //
     // TCP-scheme apps deliberately don't get a clickable link: the
     // /<name>/ route is a WebSocket bridge to a raw TCP service (ssh,
     // postgres, …); a plain browser GET against it would 4xx and
     // confuse the operator. Show the upstream target instead so they
     // see where it points.
     const appIsTCP = a.scheme === 'tcp';
-    // For HTTP apps the admin-UI shortcut link can include IndexPath
-    // so the operator opens the same landing page the cloud tile
-    // would. Stays a same-origin loopback URL (no cloud).
+    // For HTTP apps we publish the cloud URL — that's where end users
+    // actually reach the app (cloudbox proxies it through the matrix
+    // tunnel into this outpost). Includes the configured IndexPath so
+    // operators see the exact landing path the SPA tile uses. When the
+    // outpost isn't paired yet, fall back to the local admin-UI proxy
+    // shortcut so the row still has something clickable for self-test.
     const idx = a.index_path || '';
-    const proxyHref = `${location.origin}/${encodeURIComponent(a.name)}${idx ? idx : '/'}`;
+    const cloudHref = cloudboxURL && agentName
+      ? `${cloudboxURL}/h/${encodeURIComponent(agentName)}/app/${encodeURIComponent(a.name)}${idx || '/'}`
+      : '';
+    const localHref = `${location.origin}/${encodeURIComponent(a.name)}${idx || '/'}`;
+    const incomingHref = cloudHref || localHref;
     let upstream;
     if (a.scheme === 'unix' || a.scheme === 'npipe') {
       upstream = `${a.scheme}://${a.socket || ''}`;
@@ -647,7 +705,7 @@ function renderMain(status, cfg) {
           el('span', {}, upstream),
           el('span', {class: 'hint', style: 'margin-left:0.5rem'}, '(tcp bridge — no http path)'))
       : el('span', {class: 'grow'},
-          el('a', {href: proxyHref, target: '_blank', rel: 'noopener noreferrer'}, proxyHref),
+          el('a', {href: incomingHref, target: '_blank', rel: 'noopener noreferrer'}, incomingHref),
           el('span', {class: 'hint', style: 'margin-left:0.5rem'}, '→ ' + upstream));
     const sw = switchEl({checked: !!a.enabled});
     sw.input.addEventListener('change', async () => {
@@ -677,7 +735,12 @@ function renderMain(status, cfg) {
       ...pills,
       sw.wrap,
       el('button', {class: 'secondary danger', onclick: async () => {
-        if (!confirm(`Remove app "${a.name}"?`)) return;
+        const ok = await confirmDialog({
+          title: `Remove app "${a.name}"?`,
+          description: 'This unregisters the proxy on this outpost. The upstream app itself is not touched.',
+          confirmText: 'Remove',
+        });
+        if (!ok) return;
         try { await api('DELETE', '/api/apps/' + encodeURIComponent(a.name)); render(); }
         catch (e) { msg('err', e.message); }
       }}, 'Remove'),
@@ -848,7 +911,14 @@ function renderMain(status, cfg) {
             }
           }}, 'Connect'),
       el('button', {class: 'secondary danger', onclick: async () => {
-        if (!confirm(`Remove outbound "${ob.path}"?`)) return;
+        const ok = await confirmDialog({
+          title: `Remove outbound "${ob.path}"?`,
+          description: ob.connected
+            ? 'This drops the active connection and removes the mount from this outpost.'
+            : 'This removes the mount from this outpost. No remote state is touched.',
+          confirmText: 'Remove',
+        });
+        if (!ok) return;
         try {
           await api('DELETE', `/api/outbound/${encodeURIComponent(ob.path)}`);
           render();

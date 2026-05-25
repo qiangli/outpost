@@ -77,19 +77,19 @@ endpoint includes the same diagnostic block).`,
 // CLI-only fields (effective config path, detected URL) that the
 // in-process watcher doesn't need to know about.
 type poolStatusReport struct {
-	ConfigPath     string             `json:"config_path"`
-	Paired         bool               `json:"paired"`
-	AgentName      string             `json:"agent_name,omitempty"`
-	OllamaEnabled  bool               `json:"ollama_enabled"`
-	PoolEnabled    bool               `json:"pool_enabled"`
-	OllamaURL      string             `json:"ollama_url"`
-	OllamaReached  bool               `json:"ollama_reached"`
-	CloudboxURL    string             `json:"cloudbox_url,omitempty"`
-	HasAccessToken bool               `json:"has_access_token"`
-	ProbedAt       time.Time          `json:"probed_at"`
-	Models         []poolStatusModel  `json:"models,omitempty"`
-	ProbeError     string             `json:"probe_error,omitempty"`
-	Notes          []string           `json:"notes,omitempty"`
+	ConfigPath     string            `json:"config_path"`
+	Paired         bool              `json:"paired"`
+	AgentName      string            `json:"agent_name,omitempty"`
+	OllamaEnabled  bool              `json:"ollama_enabled"`
+	PoolEnabled    bool              `json:"pool_enabled"`
+	OllamaURL      string            `json:"ollama_url"`
+	OllamaReached  bool              `json:"ollama_reached"`
+	CloudboxURL    string            `json:"cloudbox_url,omitempty"`
+	HasAccessToken bool              `json:"has_access_token"`
+	ProbedAt       time.Time         `json:"probed_at"`
+	Models         []poolStatusModel `json:"models,omitempty"`
+	ProbeError     string            `json:"probe_error,omitempty"`
+	Notes          []string          `json:"notes,omitempty"`
 }
 
 type poolStatusModel struct {

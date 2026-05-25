@@ -4,3 +4,4 @@
 *.test
 *.out
 .agents/
+.mcp.json

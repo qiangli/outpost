@@ -17,6 +17,29 @@ import (
 	"github.com/qiangli/outpost/internal/agent/vkpodman"
 )
 
+// cloudboxHTTPBase derives the HTTP(S) base URL of cloudbox from the
+// matrix-tunnel pairing fields. Same logic as the helper in
+// cmd/outpost/main.go — kept duplicated to avoid a cmd→internal import
+// cycle (handlers.go would otherwise need to call into the cmd
+// package). Protocols are paired (wss↔https, websocket/ws/tcp↔http).
+func cloudboxHTTPBase(fc *conf.FileConfig) string {
+	if fc == nil || fc.ServerAddr == "" {
+		return ""
+	}
+	scheme := "https"
+	switch strings.ToLower(fc.Protocol) {
+	case "wss":
+		scheme = "https"
+	case "ws", "websocket", "tcp", "":
+		scheme = "http"
+	}
+	port := ""
+	if fc.ServerPort != 0 && !((scheme == "https" && fc.ServerPort == 443) || (scheme == "http" && fc.ServerPort == 80)) {
+		port = fmt.Sprintf(":%d", fc.ServerPort)
+	}
+	return scheme + "://" + fc.ServerAddr + port
+}
+
 // loadConfig reads the FileConfig (or returns an empty one on first run).
 // Callers must hold s.mu when intending to write back.
 func (s *Server) loadConfig() (*conf.FileConfig, error) {
@@ -74,6 +97,7 @@ type safeView struct {
 	AgentName            string               `json:"agent_name"`
 	ServerAddr           string               `json:"server_addr"`
 	ServerPort           int                  `json:"server_port"`
+	CloudboxURL          string               `json:"cloudbox_url,omitempty"`
 	Protocol             string               `json:"protocol,omitempty"`
 	RemotePort           int                  `json:"remote_port"`
 	AuthURL              string               `json:"auth_url,omitempty"`
@@ -134,6 +158,7 @@ func (s *Server) toSafeView(fc *conf.FileConfig) safeView {
 		AgentName:            fc.AgentName,
 		ServerAddr:           fc.ServerAddr,
 		ServerPort:           fc.ServerPort,
+		CloudboxURL:          cloudboxHTTPBase(fc),
 		Protocol:             fc.Protocol,
 		RemotePort:           fc.RemotePort,
 		AuthURL:              fc.AuthURL,
@@ -171,6 +196,7 @@ func (s *Server) handleStatus(c *gin.Context) {
 		"configured":      fc.AgentName != "",
 		"agent_name":      fc.AgentName,
 		"server_addr":     fc.ServerAddr,
+		"cloudbox_url":    cloudboxHTTPBase(fc),
 		"current_os_user": osUser,
 	})
 }
