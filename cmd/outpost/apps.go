@@ -88,13 +88,13 @@ func appsListCmd() *cobra.Command {
 
 func appsAddCmd() *cobra.Command {
 	var (
-		url, scheme, host, socket, indexPath string
-		port                                 int
-		requireLogin, trustCloudIdentity     bool
-		lanOnly                              []string
-		disabled                             bool
-		offline                              bool
-		jsonOut                              bool
+		url, scheme, host, socket, indexPath, icon string
+		port                                       int
+		requireLogin, trustCloudIdentity           bool
+		lanOnly                                    []string
+		disabled                                   bool
+		offline                                    bool
+		jsonOut                                    bool
 	)
 	cmd := &cobra.Command{
 		Use:   "add <name>",
@@ -103,6 +103,7 @@ func appsAddCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ac := conf.AppConfig{
 				Name:               args[0],
+				Icon:               icon,
 				Scheme:             scheme,
 				Host:               host,
 				Port:               port,
@@ -125,6 +126,7 @@ func appsAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&host, "host", "", "Target host (default 127.0.0.1 for TCP schemes)")
 	cmd.Flags().IntVar(&port, "port", 0, "Target port (required for TCP schemes)")
 	cmd.Flags().StringVar(&socket, "socket", "", "Socket path (required for unix / npipe)")
+	cmd.Flags().StringVar(&icon, "icon", "", "URL to an icon image shown next to the tile in cloudbox")
 	cmd.Flags().StringVar(&indexPath, "index-path", "", "Landing sub-path the cloudbox SPA prepends")
 	cmd.Flags().StringSliceVar(&lanOnly, "lan-only-path", nil, "Path prefix 404'd on cloud requests (repeatable)")
 	cmd.Flags().BoolVar(&requireLogin, "require-login", false, "Refuse cloud requests that haven't cleared /elevate")

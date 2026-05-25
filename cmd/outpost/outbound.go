@@ -60,7 +60,74 @@ Two passwords are involved across the subcommands:
 		outboundConnectCmd(),
 		outboundDisconnectCmd(),
 		outboundRmCmd(),
+		outboundSuggestCmd(),
 	)
+	return cmd
+}
+
+// outboundSuggestCmd lists the (host, app) pairs cloudbox will let
+// this account mount. Backed by the MCP server (bearer token from
+// FileConfig) rather than the session-cookie REST path the rest of
+// this subcommand tree uses — no separate `outpost outbound login`
+// needed. Read-only; agents and humans share the same backend.
+func outboundSuggestCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "suggest",
+		Short: "List remote (host, app) pairs you could mount as an outbound (auth via MCP bearer token, no `login` required)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			session, err := dialMCP(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer session.close()
+			var out struct {
+				Suggestions []struct {
+					Host         string `json:"host"`
+					OsUser       string `json:"os_user,omitempty"`
+					Name         string `json:"name"`
+					Scheme       string `json:"scheme,omitempty"`
+					RequireLogin bool   `json:"require_login"`
+					IndexPath    string `json:"index_path,omitempty"`
+					Title        string `json:"title,omitempty"`
+					Online       bool   `json:"online"`
+					Shared       bool   `json:"shared,omitempty"`
+				} `json:"suggestions"`
+			}
+			if err := session.callTool(cmd.Context(), "outpost_suggest_outbound", map[string]any{}, &out); err != nil {
+				return err
+			}
+			if jsonOut {
+				b, _ := json.MarshalIndent(out, "", "  ")
+				fmt.Println(string(b))
+				return nil
+			}
+			if len(out.Suggestions) == 0 {
+				fmt.Println("No remote (host, app) pairs are visible to this account.")
+				return nil
+			}
+			fmt.Printf("%-18s  %-12s  %-18s  %-6s  %s\n", "HOST", "OS_USER", "APP", "SCHEME", "FLAGS")
+			for _, s := range out.Suggestions {
+				flags := []string{}
+				if !s.Online {
+					flags = append(flags, "offline")
+				}
+				if s.Shared {
+					flags = append(flags, "shared")
+				}
+				if s.RequireLogin {
+					flags = append(flags, "login")
+				}
+				name := s.Name
+				if name == "" {
+					name = "(built-in /ssh)"
+				}
+				fmt.Printf("%-18s  %-12s  %-18s  %-6s  %s\n", s.Host, s.OsUser, name, s.Scheme, strings.Join(flags, " "))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit JSON instead of a table")
 	return cmd
 }
 
