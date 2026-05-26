@@ -107,11 +107,64 @@ tool, or wipe `agent.json` by hand.
 | Ollama daemon proxy | `ollama_enabled` | `builtins set --ollama` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Ollama LLM-pool participation | `ollama_pool_enabled` | `builtins set --ollama-pool` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Cluster join | `cluster.enabled` | `builtins set --cluster` or `cluster set --enable` | Inbound > Cluster | `outpost_set_builtins` / `outpost_set_kubeconfig` | Restart |
+| Cloudbox-pushed self-upgrade | `auto_upgrade` | `builtins set --auto-upgrade` | Inbound > Built-ins | `outpost_set_builtins` | Live |
 
 All built-in toggles default to ON when the JSON key is absent (old
 configs) so an upgrade doesn't silently disable features. The
 exceptions are `podman_enabled` / `ollama_enabled` which are plain
 `bool` (default off — explicit opt-in).
+
+`auto_upgrade` is the only built-in toggle with **Live** effect — the
+upgrade worker re-reads the FileConfig on each `POST /admin/upgrade`,
+so flipping it doesn't require (and doesn't trigger) a restart. Default
+is **on** for paired hosts; flip off via `outpost builtins set
+--auto-upgrade=off` to freeze a specific box on its current build (e.g.
+during a debugging session you don't want a cloudbox release to
+disturb). Unpaired hosts ignore the flag — the `/admin/upgrade` route
+only mounts once cloudbox has issued an `access_token`.
+
+#### Cloudbox-pushed upgrade flow
+
+When `auto_upgrade` is on, cloudbox POSTs to `<this-host>/admin/upgrade`
+through the matrix tunnel with `Authorization: Bearer <access_token>`
+and an envelope shaped like:
+
+```json
+{
+  "release_id": "v0.42.1-abc1234",
+  "url": "https://releases.ai.dhnt.io/outpost/<sha>/outpost-darwin-arm64",
+  "sha256": "<hex>",
+  "commit": "abc1234",
+  "min_from": "0f572aa"
+}
+```
+
+The daemon downloads the binary (HTTPS, sha256-verified), execs the
+candidate with `version --json` to confirm its self-reported commit
+matches the envelope, hardlinks the live binary to
+`<binary>.previous` (one-generation rollback retention), atomically
+renames the candidate over the live path, and triggers a self-restart.
+Each phase emits one JSONL entry to `<cacheDir>/outpost/upgrade.log`,
+viewable via `outpost upgrade history` or the `outpost://upgrade-history`
+MCP resource. Failed phases abort the swap without touching the live
+binary.
+
+Rollback: `outpost rollback` swaps `<binary>.previous` back over the
+live binary and restarts. After rollback the previous file is gone —
+re-upgrade if you want to climb forward again.
+
+Status codes the daemon returns to cloudbox:
+
+| HTTP | Status | Meaning |
+|---|---|---|
+| 202 | accepted | upgrade staged + worker goroutine running |
+| 200 | replay | same `release_id` already handled this run (idempotent) |
+| 409 | in_flight | another upgrade is currently running |
+| 304 | same_commit | daemon is already at this commit |
+| 403 | disabled | operator turned `auto_upgrade` off |
+| 412 | min_from | daemon's current commit is older than `min_from` requires |
+| 400 | (invalid envelope) | required field missing or `url` is not https |
+| 401 | (auth) | bearer token missing or wrong |
 
 ### Apps (live)
 

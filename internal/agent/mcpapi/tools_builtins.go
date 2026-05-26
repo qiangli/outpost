@@ -25,6 +25,7 @@ type builtinsIn struct {
 	Ollama                *bool    `json:"ollama,omitempty" jsonschema:"Toggle the built-in ollama proxy"`
 	OllamaPool            *bool    `json:"ollama_pool,omitempty" jsonschema:"Participate in cloudbox's multi-host LLM pool (requires Ollama on)"`
 	Cluster               *bool    `json:"cluster,omitempty" jsonschema:"Join the cloudbox virtual-podman cluster as a node"`
+	AutoUpgrade           *bool    `json:"auto_upgrade,omitempty" jsonschema:"Accept cloudbox-pushed self-upgrades at POST /admin/upgrade (default on for paired hosts)"`
 }
 
 type setBuiltinsOut struct {
@@ -51,6 +52,7 @@ func (s *Server) registerBuiltinsTools() {
 			Ollama:                in.Ollama,
 			OllamaPool:            in.OllamaPool,
 			Cluster:               in.Cluster,
+			AutoUpgrade:           in.AutoUpgrade,
 		})
 		if err != nil {
 			return apiErrResult[setBuiltinsOut](err)

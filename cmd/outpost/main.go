@@ -35,6 +35,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
 	"github.com/qiangli/outpost/internal/agent/portal"
+	"github.com/qiangli/outpost/internal/agent/upgrade"
 	"github.com/qiangli/outpost/internal/agent/vkpodman"
 )
 
@@ -66,7 +67,7 @@ func main() {
 		clusterCmd(), poolCmd(),
 		// MCP-client CLI parity (Phase 1.5):
 		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), unpairCmd(), restartCmd(), mcpCmd(),
-		docsCmd(), versionCmd(), upgradeCmd(),
+		docsCmd(), versionCmd(), upgradeCmd(), rollbackCmd(),
 	)
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -363,6 +364,49 @@ func startCmd() *cobra.Command {
 				return fmt.Errorf("admincore: %w", err)
 			}
 
+			// Cloudbox-pushed self-upgrade worker + ledger. Constructed
+			// before mcpapi.New so the same Worker/Ledger feed both the
+			// MCP tools (outpost_rollback, outpost_upgrade_history) and
+			// the POST /admin/upgrade route mounted on the main tunnel
+			// server later in this function. Only wired for paired
+			// hosts — an unpaired daemon has no AccessToken cloudbox
+			// could authenticate with, and the MCP tools won't register
+			// either (they check s.upgrader != nil).
+			var (
+				upgradeWorker *upgrade.Worker
+				upgradeLedger *upgrade.Ledger
+			)
+			if fc.AccessToken != "" {
+				cacheDir, _ := conf.ResolveCacheDir()
+				ledgerPath := ""
+				if cacheDir != "" {
+					ledgerPath = filepath.Join(cacheDir, "upgrade.log")
+				}
+				upgradeLedger = upgrade.NewLedger(ledgerPath)
+				exe, _ := os.Executable()
+				upgradeWorker, err = upgrade.NewWorker(upgrade.Options{
+					State: func() upgrade.StateSnapshot {
+						// Re-read the current FileConfig so a just-toggled
+						// AutoUpgrade takes effect on the next /admin/upgrade
+						// POST without a daemon restart.
+						cur, _ := conf.LoadFile(cfgPath)
+						if cur == nil {
+							cur = fc
+						}
+						return upgrade.StateSnapshot{
+							AutoUpgrade:   cur.AutoUpgradeOn(),
+							CurrentCommit: agent.ReadBuildInfo().Short(),
+							BinaryPath:    exe,
+						}
+					},
+					Restart: core.ScheduleRestart,
+					Ledger:  upgradeLedger,
+				})
+				if err != nil {
+					return fmt.Errorf("upgrade worker: %w", err)
+				}
+			}
+
 			// MCP server — same loopback listener as adminui, mounted
 			// at /mcp/*. Bearer-token auth (FileConfig.MCPBearerToken,
 			// auto-generated on first boot) is isolated from adminui's
@@ -384,6 +428,8 @@ func startCmd() *cobra.Command {
 					}
 					return conf.RotateMCPBearerToken(cfgPath, cur)
 				},
+				Upgrader: upgradeWorker,
+				Ledger:   upgradeLedger,
 			})
 			if err != nil {
 				return fmt.Errorf("mcp api: %w", err)
@@ -512,6 +558,9 @@ func startCmd() *cobra.Command {
 				CloudboxProtocol:      cfg.Protocol,
 				AccessToken:           fc.AccessToken,
 				SelfName:              cfg.AgentName,
+				MountUpgradeRoute: func(rg *gin.RouterGroup, accessToken string) {
+					upgrade.MountRoute(rg, accessToken, upgradeWorker)
+				},
 			})
 
 			// Bind the local listener first so we know its port before

@@ -165,6 +165,7 @@ All mounted at root:
 - `GET /desktop` — WebSocket ↔ TCP VNC relay (`--vnc-addr`, default `127.0.0.1:5900`)
 - `GET|POST /clipboard` — pbpaste/pbcopy bridge (works around RFB clipboard quirks)
 - `GET /ssh` — WebSocket wrapped as a `net.Conn` and fed to an in-process `golang.org/x/crypto/ssh` server (see SSH section). Accepts the `sftp` subsystem channel when `FileConfig.SFTPEnabled` (default on); rejects everything else.
+- `POST /admin/upgrade` — cloudbox-pushed self-upgrade. Only mounts on paired hosts (the route helper is called from `RegisterRoutes` only when `deps.AccessToken != ""` *and* `deps.MountUpgradeRoute != nil`). Body is `upgrade.Envelope{release_id, url, sha256, commit, min_from?}`; auth is `Authorization: Bearer <fc.AccessToken>` (constant-time compare, same shape as the MCP bearer middleware). The handler dispatches to `upgrade.Worker.Apply` which runs StageFromURL → Probe → hardlink `<binary>.previous` → atomic rename → `ScheduleRestart`, emitting one JSONL line to `<cacheDir>/outpost/upgrade.log` per phase. Status codes: 202 accepted / 200 replay / 409 in_flight / 304 same_commit / 403 disabled / 412 min_from / 400 bad envelope / 401 bad token. See `docs/settings.md` ("Cloudbox-pushed upgrade flow") for the wire contract; the cloudbox sender is the only client.
 - `Any /app/:name/*p` — `httputil.ReverseProxy` to the URL registered under that name
 
 `GET /apps`' `builtins` map covers `shell|desktop|clipboard|ssh|sftp`; `*bool` toggles in `FileConfig` (`ShellEnabled`, `DesktopEnabled`, `ClipboardEnabled`, `SSHEnabled`, `SFTPEnabled`) default to enabled when absent for backwards-compat with old configs.
@@ -303,6 +304,20 @@ Beyond the per-host `/app/ollama/...` proxy described above, an outpost can join
 - `SetCapabilities(name, *AppCapabilities)` — decorates an existing entry with a typed-app descriptor. No-op when name is unknown (so a typo at boot doesn't crash).
 
 `OllamaPoolEnabled *bool` in `FileConfig` is the operator toggle (admin UI surfaces it under the Ollama row, dimmed when Ollama itself is off). Pool participation requires Ollama enabled + AccessToken present (paired). Push protocol contract lives in `internal/agent/ollama/types.go` — cloudbox decodes the same types from the request body.
+
+### Cloudbox-pushed self-upgrade (`internal/agent/upgrade/`)
+
+The daemon-side half of the "press button, fleet rolls" flow. Cloudbox initiates by POSTing an envelope to `<host>/admin/upgrade` through the matrix tunnel; the outpost downloads + atomically swaps its own binary + re-execs. The outpost decides what to do — cloudbox is a notifier, not a remote-control RPC.
+
+- **`upgrade.Envelope`** — wire shape `{release_id, url, sha256, commit, min_from?}`. `Validate()` enforces required fields + https-only. `release_id` is opaque to outpost; used solely for dedup (in-memory `lastReleaseID` returns 200 Replay on duplicate POST during the restart window).
+- **`upgrade.Worker`** — singleton per daemon. `Apply(ctx, env)` runs the state machine (in-flight rejection 409 / replay 200 / disabled 403 / same-commit 304 / min-from 412 / accepted 202) under `mu`, then spawns the goroutine that does the actual work: StageFromURL (downloads + sha256-verifies) → Probe (`<candidate> version --json`, refused if commit mismatches envelope) → `retainPrevious` (hardlink-with-copy-fallback to `<binary>.previous` for rollback) → `os.Rename` (the atomic swap) → `restart` closure (wired to `core.ScheduleRestart`). Each phase emits one JSONL line to the ledger. The `State` closure re-reads FileConfig on every Apply so a just-flipped `auto_upgrade` takes effect immediately.
+- **`upgrade.Ledger`** — JSONL appender at `<cacheDir>/outpost/upgrade.log`. One entry per phase (received, stage_failed, probe_failed, previous_unavailable, swap_done, rollback). `Tail(n)` reads the bounded newest-N for the `outpost upgrade history` CLI and the `outpost://upgrade-history` MCP resource. Append errors are logged-not-fatal — better to complete the upgrade than abort because we couldn't scribble a record.
+- **`upgrade.MountRoute(rg, accessToken, worker)`** — gin handler factory. Constant-time bearer-token compare against `fc.AccessToken`. The factory pattern keeps `internal/agent` from importing `internal/agent/upgrade` (which would cycle through `agent.BuildInfo`): `agent.Deps.MountUpgradeRoute` is a closure threaded by `cmd/outpost/main.go` that calls into the upgrade package.
+- **`upgrade.Rollback`** — single-shot swap of `<binary>.previous` back over the live binary. Probes the previous before swapping (refuses to swap a corrupted file). After rollback the `.previous` is gone; re-upgrade to climb forward again. Exposed via `outpost rollback` CLI + `outpost_rollback` MCP tool, both routed through the same `Worker.Rollback` so the dedup mutex blocks rollback while an upgrade is in flight.
+
+Trust model: HTTPS-to-cloudbox + sha256-in-envelope + cloudbox-as-artifact-owner. An `ArtifactVerifier` hook is reserved for future signed-manifest validation but defaults to the no-op probe — the daemon will refuse a candidate that doesn't self-report the envelope's commit, which is the load-bearing check today.
+
+CLI surfaces: `outpost upgrade` (local-driven, --local PATH | --from URL), `outpost upgrade history`, `outpost rollback`, `outpost builtins set --auto-upgrade=on/off`. MCP tools: `outpost_rollback`, `outpost_upgrade_history`, plus `auto_upgrade` slot on `outpost_set_builtins`. MCP resource: `outpost://upgrade-history`. The upgrade surface only mounts on paired hosts — the worker construction in main.go is guarded by `fc.AccessToken != ""`, and the MCP tools check `s.upgrader != nil` before registering.
 
 ## Conventions worth knowing
 

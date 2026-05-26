@@ -48,6 +48,22 @@ func (s *Server) registerReadOnlyResources() {
 		func(ctx context.Context) (any, error) {
 			return map[string]any{"outbound": s.core.ListOutbound()}, nil
 		})
+
+	if s.ledger != nil {
+		s.addJSONResource("outpost://upgrade-history",
+			"Upgrade ledger",
+			"JSONL-decoded history of cloudbox-pushed and CLI-driven upgrades on this host. One entry per phase (received, stage_failed, swap_done, rollback, etc). Empty {entries:[]} when no upgrades have ever run.",
+			func(ctx context.Context) (any, error) {
+				entries, err := s.ledger.Tail(0)
+				if err != nil {
+					return nil, err
+				}
+				if entries == nil {
+					return map[string]any{"entries": []any{}}, nil
+				}
+				return map[string]any{"entries": entries}, nil
+			})
+	}
 }
 
 // addJSONResource wires one read-only resource that always renders a

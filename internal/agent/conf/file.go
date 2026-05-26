@@ -154,6 +154,15 @@ type FileConfig struct {
 	// the most useful behavior for the typical operator.
 	OllamaPoolEnabled *bool `json:"ollama_pool_enabled,omitempty"`
 
+	// AutoUpgrade gates whether this outpost accepts cloudbox-pushed
+	// self-upgrades at POST /admin/upgrade. Default-on (paired hosts
+	// already trust cloudbox for tunnel routing; making this opt-in
+	// per host would defeat the "press button, fleet rolls" promise).
+	// Flip via the admin UI or `outpost config set --auto-upgrade=off`
+	// to freeze a specific box on its current build (e.g. during a
+	// debugging session you don't want a release to disturb).
+	AutoUpgrade *bool `json:"auto_upgrade,omitempty"`
+
 	// AdminSessionKey is the HMAC secret used to sign admin-UI session
 	// cookies. Persisting it across restarts is what keeps the admin user
 	// logged in when a built-in toggle re-execs the binary. Base64-encoded
@@ -536,6 +545,13 @@ func (fc *FileConfig) ClusterNodeName() string {
 		return n
 	}
 	return fc.AgentName
+}
+
+// AutoUpgradeOn reports whether this outpost accepts cloudbox-pushed
+// self-upgrades. Default-on when the field is absent or nil (paired
+// hosts already trust cloudbox; the operator opts *out* explicitly).
+func (fc *FileConfig) AutoUpgradeOn() bool {
+	return fc == nil || fc.AutoUpgrade == nil || *fc.AutoUpgrade
 }
 
 // OllamaPoolOn reports whether this outpost should join cloudbox's LLM

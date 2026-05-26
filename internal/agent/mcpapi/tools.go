@@ -30,6 +30,7 @@ func (s *Server) registerTools() {
 	s.registerOutboundTools()
 	s.registerClusterTools()
 	s.registerLifecycleTools()
+	s.registerUpgradeTools()
 }
 
 func (s *Server) registerResources() {

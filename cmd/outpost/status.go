@@ -74,6 +74,7 @@ func statusCmd() *cobra.Command {
 			row("ollama", cfg.Ollama.Enabled)
 			row("ollama_pool", cfg.OllamaPoolEnabled)
 			row("cluster", cfg.Cluster.Enabled)
+			row("auto_upgrade", cfg.AutoUpgrade)
 			fmt.Println()
 			fmt.Println("Apps")
 			if len(cfg.Apps) == 0 {

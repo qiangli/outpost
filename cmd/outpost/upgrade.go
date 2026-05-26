@@ -2,25 +2,16 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/admincore"
+	"github.com/qiangli/outpost/internal/agent/upgrade"
 )
 
 // outpost upgrade — swap the running daemon's binary in place and ask
@@ -92,7 +83,7 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.`,
 			// Phase 2: stage the candidate at "<binary>.upgrading" on the same
 			// filesystem as the target so the final rename is atomic.
 			candidate := before.BinaryPath + ".upgrading"
-			if err := stageCandidate(ctx, candidate, fromURL, localPath, sha256Hex); err != nil {
+			if err := stageCLICandidate(ctx, candidate, fromURL, localPath, sha256Hex); err != nil {
 				_ = os.Remove(candidate)
 				return err
 			}
@@ -106,8 +97,8 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.`,
 
 			// Phase 3: probe the candidate. This is the gate that keeps a
 			// cross-arch or wholly unrelated binary from clobbering the live
-			// one.
-			newBuild, err := probeCandidate(candidate)
+			// one. CLI doesn't pre-commit to a sha, so pass "".
+			newBuild, err := upgrade.Probe(candidate, "")
 			if err != nil {
 				return fmt.Errorf("verify candidate: %w", err)
 			}
@@ -152,6 +143,7 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.`,
 	cmd.Flags().BoolVar(&force, "force", false, "Swap even when candidate commit matches the running build")
 	cmd.Flags().BoolVar(&noRestart, "no-restart", false, "Swap binary on disk but do not trigger restart")
 	cmd.Flags().DurationVar(&waitFor, "wait", 30*time.Second, "Max time to wait for the daemon to come back on the new build")
+	cmd.AddCommand(upgradeHistoryCmd())
 	return cmd
 }
 
@@ -180,89 +172,18 @@ func restartViaMCP(ctx context.Context) error {
 	return session.callTool(ctx, "outpost_restart", map[string]any{}, nil)
 }
 
-// stageCandidate writes the candidate binary to `dst` from one of the
-// two source modes. Caller is responsible for cleaning up `dst` on
-// downstream errors.
-func stageCandidate(ctx context.Context, dst, fromURL, localPath, expectedSHA string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	// O_EXCL: if a stale "<binary>.upgrading" is around (previous crashed
-	// upgrade), surface it rather than silently clobbering.
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
-	if err != nil {
-		if os.IsExist(err) {
-			return fmt.Errorf("stale upgrade candidate at %s — remove it and retry", dst)
-		}
-		return err
-	}
-	defer out.Close()
-
-	var src io.ReadCloser
+// stageCLICandidate picks between the two CLI source modes (HTTPS URL
+// vs local path) and delegates to the corresponding upgrade-package
+// helper. The daemon worker never touches this — it only stages from
+// URLs delivered via the wire envelope.
+func stageCLICandidate(ctx context.Context, dst, fromURL, localPath, expectedSHA string) error {
 	switch {
 	case fromURL != "":
-		u, err := url.Parse(fromURL)
-		if err != nil || u.Scheme != "https" {
-			return errors.New("--from must be an https:// URL")
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fromURL, nil)
-		if err != nil {
-			return err
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return fmt.Errorf("download: %w", err)
-		}
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			return fmt.Errorf("download %s: HTTP %d", fromURL, resp.StatusCode)
-		}
-		src = resp.Body
+		return upgrade.StageFromURL(ctx, dst, fromURL, expectedSHA, nil)
 	case localPath != "":
-		f, err := os.Open(localPath)
-		if err != nil {
-			return err
-		}
-		src = f
+		return upgrade.StageFromLocal(localPath, dst, expectedSHA)
 	}
-	defer src.Close()
-
-	hasher := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(out, hasher), src); err != nil {
-		return fmt.Errorf("copy candidate: %w", err)
-	}
-	if expectedSHA != "" {
-		got := hex.EncodeToString(hasher.Sum(nil))
-		if !strings.EqualFold(strings.TrimSpace(expectedSHA), got) {
-			return fmt.Errorf("sha256 mismatch: expected %s, got %s", expectedSHA, got)
-		}
-	}
-	return nil
-}
-
-// probeCandidate execs the candidate with `version --json` and decodes
-// its BuildInfo. This is what proves the file is an outpost binary
-// rather than (say) a cross-arch build, a corrupted download, or an
-// unrelated executable that happened to land at the right path.
-func probeCandidate(path string) (agent.BuildInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, path, "version", "--json")
-	out, err := cmd.Output()
-	if err != nil {
-		return agent.BuildInfo{}, fmt.Errorf("exec %s version --json: %w", path, err)
-	}
-	var b agent.BuildInfo
-	if err := json.Unmarshal(out, &b); err != nil {
-		return agent.BuildInfo{}, fmt.Errorf("parse version --json output: %w (got %d bytes)", err, len(out))
-	}
-	// GoVersion is the one field debug.ReadBuildInfo always populates
-	// (Commit can be empty on `go run` builds); use it as the "this is
-	// at least a Go binary that knows the BuildInfo shape" sentinel.
-	if b.GoVersion == "" {
-		return agent.BuildInfo{}, errors.New("version --json output had no go_version field; not an outpost binary?")
-	}
-	return b, nil
+	return errors.New("internal: stageCLICandidate called with neither source")
 }
 
 // waitForBuild polls outpost://status until the reported Build.Commit

@@ -102,6 +102,13 @@ type Deps struct {
 	CloudboxBase     string
 	CloudboxProtocol string
 	AccessToken      string
+
+	// MountUpgradeRoute, if non-nil, is invoked once during
+	// RegisterRoutes with the root gin.RouterGroup so an external
+	// package can attach POST /admin/upgrade. Decoupled this way to
+	// avoid an import cycle: the upgrade package imports agent for
+	// BuildInfo, so agent can't import upgrade directly.
+	MountUpgradeRoute func(rg *gin.RouterGroup, accessToken string)
 }
 
 // RegisterRoutes attaches all matrix-agent routes onto rg. Always mounted
@@ -151,6 +158,15 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	// deps.AuthURL is set the agent delegates to it; otherwise it falls
 	// back to OS auth via hostauth. See Deps doc for the full contract.
 	rg.POST("/auth", authHandler(auth, deps.Admins, deps.AuthURL))
+
+	// Cloudbox-pushed self-upgrade. Only mounted when the daemon is
+	// paired (has an AccessToken) and main.go threaded a mount
+	// closure — the closure carries the upgrade.Worker that owns the
+	// state machine. Auth is "Authorization: Bearer <AccessToken>"
+	// enforced inside the closure.
+	if deps.MountUpgradeRoute != nil && deps.AccessToken != "" {
+		deps.MountUpgradeRoute(rg, deps.AccessToken)
+	}
 
 	// Tier-3 interactive shell. WS upgrade; the cloud also gates on
 	// RequireElevation before proxying. Disabled via the admin UI.

@@ -32,6 +32,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/qiangli/outpost/internal/agent/admincore"
+	"github.com/qiangli/outpost/internal/agent/upgrade"
 )
 
 // Server wraps the modelcontextprotocol/go-sdk MCP server with outpost-
@@ -48,6 +49,13 @@ type Server struct {
 	// new value. Wired in by main.go because the persistence path
 	// (FileConfig.MCPBearerToken) lives outside mcpapi.
 	rotateFn func() (string, error)
+
+	// upgrader + ledger gate the cloudbox-pushed upgrade tools
+	// (outpost_rollback, outpost_upgrade_history). Nil on unpaired
+	// hosts — the tools simply aren't registered there. Threaded in
+	// by main.go alongside core.
+	upgrader *upgrade.Worker
+	ledger   *upgrade.Ledger
 }
 
 // Deps is what main.go threads in. Core is the shared admincore.Server
@@ -55,11 +63,16 @@ type Server struct {
 // caller must present; RotateFn is invoked when a tool requests a
 // fresh value (returns the new token; mcpapi swaps s.token before
 // responding).
+//
+// Upgrader + Ledger are the cloudbox-upgrade surface. Nil on unpaired
+// hosts (and the corresponding tools simply don't register).
 type Deps struct {
 	Core     *admincore.Server
 	Token    string
 	Version  string
 	RotateFn func() (string, error)
+	Upgrader *upgrade.Worker
+	Ledger   *upgrade.Ledger
 }
 
 // New constructs the MCP server and registers every parity tool. Call
@@ -80,6 +93,8 @@ func New(deps Deps) (*Server, error) {
 		core:     deps.Core,
 		token:    deps.Token,
 		rotateFn: deps.RotateFn,
+		upgrader: deps.Upgrader,
+		ledger:   deps.Ledger,
 	}
 	s.mcp = mcp.NewServer(&mcp.Implementation{
 		Name:    "outpost",
