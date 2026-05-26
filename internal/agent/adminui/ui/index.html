@@ -529,12 +529,20 @@ function buildMCPCredentialsSection() {
 // admin-users allowlist, and the SSH channel/socket allow flags.
 // All save through admincore (POST /api/config/networking and
 // /api/config/builtins); changes trigger a restart on a paired host.
+//
+// Rendered as a collapsed <details> twister so the Pair tab stays
+// focused on the common path (pair + MCP credentials) and only
+// reveals these knobs when the operator clicks. Mirrors the
+// "Advanced: paste a kubeconfig" disclosure in the Cluster section.
 function buildAdvancedSettingsSection(cfg) {
-  const wrap = el('fieldset', {});
-  wrap.append(el('legend', {}, 'Advanced settings'));
-  wrap.append(el('p', {class: 'hint'},
-    'Network binds and OS-auth admin allowlist. ' +
-    'Changes here restart the daemon when the host is paired.'));
+  const wrap = el('details', {style: 'margin-top:1rem'});
+  wrap.append(el('summary',
+    {style: 'cursor:pointer;font-size:0.95rem;font-weight:600'},
+    'Advanced settings (networking, admin allowlist, SSH advanced)'));
+  wrap.append(el('p', {class: 'hint', style: 'margin-top:0.6rem'},
+    'Network binds, OS-auth admin allowlist, and the SSH channel / ' +
+    'socket allow flags. Changes here restart the daemon when the ' +
+    'host is paired.'));
 
   // --- Networking row group -------------------------------------------------
   const netForm = el('form', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.4rem 0.8rem;align-items:center'});
