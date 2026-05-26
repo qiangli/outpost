@@ -186,12 +186,19 @@ func (s *Server) outboundList() []agent.OutboundView {
 
 // StatusView is the small "is outpost paired yet?" shape the SPA polls
 // to decide what to render. Mirrors the legacy /api/status payload.
+//
+// Build + BinaryPath are added so a remote operator (e.g. `outpost
+// upgrade` running on another box that drives this daemon over MCP, or
+// cloudbox's fleet view) can see the running daemon's provenance and
+// the path of the binary to swap on disk.
 type StatusView struct {
-	Configured    bool   `json:"configured"`
-	AgentName     string `json:"agent_name,omitempty"`
-	ServerAddr    string `json:"server_addr,omitempty"`
-	CloudboxURL   string `json:"cloudbox_url,omitempty"`
-	CurrentOSUser string `json:"current_os_user,omitempty"`
+	Configured    bool             `json:"configured"`
+	AgentName     string           `json:"agent_name,omitempty"`
+	ServerAddr    string           `json:"server_addr,omitempty"`
+	CloudboxURL   string           `json:"cloudbox_url,omitempty"`
+	CurrentOSUser string           `json:"current_os_user,omitempty"`
+	Build         agent.BuildInfo  `json:"build"`
+	BinaryPath    string           `json:"binary_path,omitempty"`
 }
 
 // Status returns the lightweight paired-yet payload.
@@ -201,11 +208,14 @@ func (s *Server) Status() (StatusView, error) {
 		return StatusView{}, err
 	}
 	osUser, _ := hostauth.CurrentUser()
+	exe, _ := os.Executable()
 	return StatusView{
 		Configured:    fc.AgentName != "",
 		AgentName:     fc.AgentName,
 		ServerAddr:    fc.ServerAddr,
 		CloudboxURL:   CloudboxHTTPBase(fc),
 		CurrentOSUser: osUser,
+		Build:         agent.ReadBuildInfo(),
+		BinaryPath:    exe,
 	}, nil
 }

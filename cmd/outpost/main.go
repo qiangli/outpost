@@ -48,10 +48,17 @@ func main() {
 	// kills us before any normal logging fires. See trace.go.
 	emitStartupTrace()
 
+	build := agent.ReadBuildInfo()
 	root := &cobra.Command{
 		Use:   "outpost",
 		Short: "Pair a home host with the portal and tunnel local apps to it",
+		// cobra auto-adds `--version` when this is non-empty. The default
+		// template prints "outpost version <short-commit>"; keep it close
+		// to that with the Go version appended so `outpost --version`
+		// stays a useful one-liner.
+		Version: build.Short(),
 	}
+	root.SetVersionTemplate("outpost version {{.Version}}\n")
 	root.AddCommand(
 		startCmd(), registerCmd(), stopCmd(),
 		sshProxyCmd(), sshConfigCmd(), connectCmd(),
@@ -59,7 +66,7 @@ func main() {
 		clusterCmd(), poolCmd(),
 		// MCP-client CLI parity (Phase 1.5):
 		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), unpairCmd(), restartCmd(), mcpCmd(),
-		docsCmd(),
+		docsCmd(), versionCmd(), upgradeCmd(),
 	)
 	if err := root.Execute(); err != nil {
 		os.Exit(1)

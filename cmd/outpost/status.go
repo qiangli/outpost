@@ -50,6 +50,18 @@ func statusCmd() *cobra.Command {
 			}
 			fmt.Printf("  os_user     %s\n", status.CurrentOSUser)
 			fmt.Println()
+			fmt.Println("Build")
+			fmt.Printf("  version     %s\n", status.Build.Short())
+			if status.Build.VCSTime != "" {
+				fmt.Printf("  vcs_time    %s\n", status.Build.VCSTime)
+			}
+			if status.Build.GoVersion != "" {
+				fmt.Printf("  go          %s\n", status.Build.GoVersion)
+			}
+			if status.BinaryPath != "" {
+				fmt.Printf("  binary      %s\n", status.BinaryPath)
+			}
+			fmt.Println()
 			fmt.Println("Built-ins")
 			row := func(name string, on bool) { fmt.Printf("  %-22s  %t\n", name, on) }
 			row("shell", cfg.ShellEnabled)
