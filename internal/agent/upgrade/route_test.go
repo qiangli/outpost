@@ -52,21 +52,18 @@ func newRouteHarness(t *testing.T) *routeHarness {
 
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
-	MountRoute(engine.Group("/"), "secret", w)
+	MountRoute(engine.Group("/"), w)
 	h.server = httptest.NewServer(engine)
 	t.Cleanup(h.server.Close)
 	return h
 }
 
-func (h *routeHarness) post(token string, body any) *http.Response {
+func (h *routeHarness) post(body any) *http.Response {
 	h.t.Helper()
 	buf, _ := json.Marshal(body)
 	req, err := http.NewRequest(http.MethodPost, h.server.URL+"/admin/upgrade", bytes.NewReader(buf))
 	if err != nil {
 		h.t.Fatal(err)
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -76,27 +73,9 @@ func (h *routeHarness) post(token string, body any) *http.Response {
 	return resp
 }
 
-func TestRoute_RejectsMissingBearer(t *testing.T) {
-	h := newRouteHarness(t)
-	resp := h.post("", Envelope{})
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", resp.StatusCode)
-	}
-}
-
-func TestRoute_RejectsWrongBearer(t *testing.T) {
-	h := newRouteHarness(t)
-	resp := h.post("wrong-token", Envelope{})
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", resp.StatusCode)
-	}
-}
-
 func TestRoute_RejectsInvalidEnvelope(t *testing.T) {
 	h := newRouteHarness(t)
-	resp := h.post("secret", Envelope{ReleaseID: "r1"}) // missing required fields
+	resp := h.post(Envelope{ReleaseID: "r1"}) // missing required fields
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		body, _ := io.ReadAll(resp.Body)
@@ -107,7 +86,7 @@ func TestRoute_RejectsInvalidEnvelope(t *testing.T) {
 func TestRoute_DispatchesAndMapsStatus(t *testing.T) {
 	h := newRouteHarness(t)
 	// Envelope.Commit matches CurrentCommit → 304 same_commit.
-	resp := h.post("secret", Envelope{
+	resp := h.post(Envelope{
 		ReleaseID: "r1",
 		URL:       "https://example.com/x",
 		SHA256:    "deadbeef",
@@ -123,7 +102,6 @@ func TestRoute_DispatchesAndMapsStatus(t *testing.T) {
 func TestRoute_RejectsBadJSON(t *testing.T) {
 	h := newRouteHarness(t)
 	req, _ := http.NewRequest(http.MethodPost, h.server.URL+"/admin/upgrade", strings.NewReader("not-json"))
-	req.Header.Set("Authorization", "Bearer secret")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

@@ -126,12 +126,14 @@ only mounts once cloudbox has issued an `access_token`.
 #### Cloudbox-pushed upgrade flow
 
 When `auto_upgrade` is on, cloudbox POSTs to `<this-host>/admin/upgrade`
-through the matrix tunnel with `Authorization: Bearer <matrix_token>`
-(the same shared secret the tunnel uses — cloudbox holds it as
-`cfg.MatrixToken`, the outpost as `fc.Token`. Deliberately *not* the
-per-host `access_token`, because cloudbox keeps only a scrambled form
-of that JWT and can't reconstruct the cleartext for an outbound
-Bearer header.) The envelope is shaped like:
+through the matrix tunnel. No `Authorization` header — the route trusts
+the tunnel as the auth boundary, the same model `/apps` and `/healthz`
+already use. The daemon's main HTTP server binds 127.0.0.1 only, so
+cloudbox-via-tunnel is the only party that can reach the route.
+Defense-in-depth lives at the worker layer: the `auto_upgrade` toggle
+(operator opt-out), the sha256 + envelope.commit integrity checks, and
+the Probe step (`<candidate> version --json` must self-report
+envelope.commit). The envelope is shaped like:
 
 ```json
 {
@@ -168,7 +170,6 @@ Status codes the daemon returns to cloudbox:
 | 403 | disabled | operator turned `auto_upgrade` off |
 | 412 | min_from | daemon's current commit is older than `min_from` requires |
 | 400 | (invalid envelope) | required field missing or `url` is not https |
-| 401 | (auth) | bearer token missing or wrong |
 
 ### Apps (live)
 

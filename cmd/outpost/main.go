@@ -376,7 +376,7 @@ func startCmd() *cobra.Command {
 				upgradeWorker *upgrade.Worker
 				upgradeLedger *upgrade.Ledger
 			)
-			if fc.Token != "" {
+			if fc.AccessToken != "" {
 				cacheDir, _ := conf.ResolveCacheDir()
 				ledgerPath := ""
 				if cacheDir != "" {
@@ -557,10 +557,9 @@ func startCmd() *cobra.Command {
 				CloudboxBase:          cloudboxHTTPBase(fc),
 				CloudboxProtocol:      cfg.Protocol,
 				AccessToken:           fc.AccessToken,
-				MatrixToken:           fc.Token,
 				SelfName:              cfg.AgentName,
-				MountUpgradeRoute: func(rg *gin.RouterGroup, bearer string) {
-					upgrade.MountRoute(rg, bearer, upgradeWorker)
+				MountUpgradeRoute: func(rg *gin.RouterGroup) {
+					upgrade.MountRoute(rg, upgradeWorker)
 				},
 			})
 

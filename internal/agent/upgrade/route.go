@@ -1,18 +1,27 @@
 package upgrade
 
 import (
-	"crypto/subtle"
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 )
 
 // MountRoute attaches the cloudbox-pushed self-upgrade handler at
-// `POST /admin/upgrade` on the given route group. The handler is
-// gated by `Authorization: Bearer <accessToken>` (constant-time
-// compare, same shape as the MCP bearer middleware) and dispatches
-// validated envelopes through `w.Apply`.
+// `POST /admin/upgrade` on the given route group.
+//
+// **Auth model: trust the tunnel.** No bearer check at this layer.
+// The route lives on the daemon's matrix-tunnel-fronted main HTTP
+// server, which binds 127.0.0.1 only — cloudbox is the only entity
+// that can reach it (through the tunnel client's loopback proxy
+// port on the cloudbox side). This is the same model the existing
+// /apps and /healthz routes use; adding a per-host bearer here would
+// require a shared secret cloudbox can present, and the obvious
+// candidate (fc.Token aka cfg.MatrixToken) is empty in real
+// production deployments where cloudbox runs without a matrix-tunnel
+// auth secret. Defense-in-depth lives elsewhere: the AutoUpgrade
+// toggle (operator opt-out), the sha256 + envelope.commit checks
+// (artifact integrity), and the Probe step (commit-match self-
+// verify) all gate what the worker will actually do.
 //
 // The route is intentionally NOT under `/api/*` — cloudbox calls it
 // through the matrix tunnel and the daemon's main HTTP server is
@@ -22,31 +31,18 @@ import (
 // naming choice — signals "this is a cloudbox→outpost control path,"
 // not "this is an admin-UI route."
 //
-// Status codes: 202 accepted, 200 replay, 400 invalid envelope, 401
-// bad token, 403 auto_upgrade off, 304 same commit, 412 min_from
-// mismatch, 409 in-flight.
-func MountRoute(rg *gin.RouterGroup, accessToken string, w *Worker) {
-	if w == nil || accessToken == "" {
+// Status codes: 202 accepted, 200 replay, 400 invalid envelope,
+// 403 auto_upgrade off, 304 same commit, 412 min_from mismatch,
+// 409 in-flight.
+func MountRoute(rg *gin.RouterGroup, w *Worker) {
+	if w == nil {
 		return
 	}
-	rg.POST("/admin/upgrade", upgradeHandler(accessToken, w))
+	rg.POST("/admin/upgrade", upgradeHandler(w))
 }
 
-func upgradeHandler(accessToken string, w *Worker) gin.HandlerFunc {
-	expected := []byte(accessToken)
+func upgradeHandler(w *Worker) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		got := strings.TrimSpace(c.GetHeader("Authorization"))
-		const prefix = "Bearer "
-		if !strings.HasPrefix(got, prefix) {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "bearer token required"})
-			return
-		}
-		token := strings.TrimSpace(got[len(prefix):])
-		if subtle.ConstantTimeCompare([]byte(token), expected) != 1 {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid bearer token"})
-			return
-		}
-
 		var env Envelope
 		if err := c.BindJSON(&env); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "bad envelope: " + err.Error()})
