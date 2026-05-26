@@ -136,15 +136,21 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	}
 
 	rg.GET("/apps", func(c *gin.Context) {
-		// New shape: [{name, role}] plus a `builtins` map so cloudbox knows
-		// which of /shell, /desktop, /clipboard this agent actually serves.
-		// `version` is the short commit (e.g. "06d8d89" or "06d8d89-dirty")
-		// so cloudbox's /api/v1/hosts can show "outpost stale?" without
-		// hitting a second endpoint. Older outposts omit `builtins` and
-		// `version`; the cloud treats those as legacy / unknown.
+		// `version` is the short identifier (semver tag for tagged
+		// releases, e.g. "v0.2.0"; 7-char commit otherwise) so cloudbox
+		// can show "update available" without a separate roundtrip.
+		// `os`/`arch` tell cloudbox's fleet-upgrade dispatcher which
+		// release artifact to push to this host. `commit` exposes the
+		// full sha for hosts running pre-tag builds (the cloudbox UI
+		// falls back to commit-comparison when Version is empty).
+		// Older outposts omit `builtins`, `os`, `arch`; cloudbox treats
+		// missing fields as legacy / unknown.
 		c.JSON(http.StatusOK, gin.H{
 			"agent":   deps.AgentName,
 			"version": build.Short(),
+			"commit":  build.Commit,
+			"os":      build.OS,
+			"arch":    build.Arch,
 			"apps":    apps.Entries(),
 			"builtins": gin.H{
 				"shell":     !deps.ShellDisabled,

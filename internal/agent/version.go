@@ -1,31 +1,54 @@
 package agent
 
 import (
+	"runtime"
 	"runtime/debug"
 	"strings"
 )
 
-// BuildInfo describes the provenance of this outpost binary. Sourced from
-// runtime/debug.ReadBuildInfo(); the Go toolchain stamps these settings
-// automatically at `go build` time when the working directory is a VCS
-// checkout, so no -ldflags injection is needed.
+// releaseTag is populated at link time via -ldflags:
 //
-// Consumed by GET /version (full JSON) and embedded as a short string in
-// GET /apps so cloudbox can surface "is this outpost up to date" in its
-// /api/v1/hosts aggregate without a coordinated cloudbox change.
+//	go build -ldflags "-X github.com/qiangli/outpost/internal/agent.releaseTag=v0.2.0" ./cmd/outpost
+//
+// Empty for ad-hoc `go build` / `go run` invocations and dirty
+// working-tree builds. The release GH Action sets it from the
+// triggering git tag; cloudbox compares tags to highlight "update
+// available" without having to decode opaque commit shas.
+var releaseTag string
+
+// BuildInfo describes the provenance of this outpost binary. Sourced
+// from runtime/debug.ReadBuildInfo() (commit, vcs_time, dirty,
+// go_version are stamped automatically by `go build` in a VCS
+// checkout), plus Version which is ldflags-injected at release-tag
+// build time, plus OS/Arch from runtime.GOOS/GOARCH so cloudbox knows
+// which platform artifact to push when fan-out-rolling the fleet.
+//
+// Consumed by GET /version (full JSON) and embedded as a short string
+// in GET /apps so cloudbox can surface "is this outpost up to date"
+// without a coordinated cloudbox change.
 type BuildInfo struct {
+	Version   string `json:"version,omitempty"`  // semver tag, e.g. "v0.2.0"; empty for untagged builds
 	Commit    string `json:"commit"`             // full git sha1, empty if no VCS info
 	VCSTime   string `json:"vcs_time,omitempty"` // ISO-8601 commit timestamp
 	Dirty     bool   `json:"dirty"`              // true if working tree had uncommitted changes at build
-	GoVersion string `json:"go_version"`         // e.g. "go1.25.0"
+	GoVersion string `json:"go_version"`         // e.g. "go1.26.0"
+	OS        string `json:"os,omitempty"`       // runtime.GOOS — "darwin" / "linux" / "windows"
+	Arch      string `json:"arch,omitempty"`     // runtime.GOARCH — "arm64" / "amd64"
 }
 
-// Short returns a one-line human-readable identifier — 7-char commit, with
-// a "-dirty" suffix when applicable. Falls back to "unknown" when the
+// Short returns a one-line human-readable identifier. Prefers the
+// semver tag when present (e.g. "v0.2.0"); falls back to the 7-char
+// commit with a "-dirty" suffix when applicable; "unknown" when the
 // binary was built without VCS info (e.g. via `go run` or with
 // -buildvcs=false). Suitable for embedding in /apps for cloudbox.
 func (b BuildInfo) Short() string {
+	if b.Version != "" && !b.Dirty {
+		return b.Version
+	}
 	if b.Commit == "" {
+		if b.Version != "" {
+			return b.Version + "-dirty"
+		}
 		return "unknown"
 	}
 	c := b.Commit
@@ -38,11 +61,15 @@ func (b BuildInfo) Short() string {
 	return c
 }
 
-// ReadBuildInfo returns the build metadata embedded in the running binary.
-// Returns zero values if debug.ReadBuildInfo fails (which it doesn't, for
-// any normal `go build`-produced binary).
+// ReadBuildInfo returns the build metadata embedded in the running
+// binary. Returns zero values for the VCS fields if debug.ReadBuildInfo
+// fails (which it doesn't for any normal `go build`-produced binary).
 func ReadBuildInfo() BuildInfo {
-	var b BuildInfo
+	b := BuildInfo{
+		Version: releaseTag,
+		OS:      runtime.GOOS,
+		Arch:    runtime.GOARCH,
+	}
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return b
