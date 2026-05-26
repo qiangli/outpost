@@ -563,6 +563,13 @@ func startCmd() *cobra.Command {
 				MountUpgradeRoute: func(rg *gin.RouterGroup) {
 					upgrade.MountRoute(rg, upgradeWorker)
 				},
+				UpdateMode: func() string {
+					cur, _ := conf.LoadFile(cfgPath)
+					if cur == nil {
+						cur = fc
+					}
+					return cur.UpdateModeName()
+				},
 			})
 
 			// Bind the local listener first so we know its port before

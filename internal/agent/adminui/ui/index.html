@@ -1169,7 +1169,6 @@ function renderMain(status, cfg) {
      subBlock: buildPodmanSubBlock},
     {key: 'ollama',    fileKey: 'ollama_enabled',    label: 'Ollama',    daemon: cfg.ollama || {},
      subBlock: buildOllamaSubBlock},
-    {key: 'auto_upgrade', fileKey: 'auto_upgrade', label: 'Auto-upgrade (cloudbox-pushed)', enabled: cfg.auto_upgrade},
   ];
   for (const item of builtinRows) {
     const isDaemon = !!item.daemon;
@@ -1248,8 +1247,48 @@ function renderMain(status, cfg) {
     if (subContainer) builtList.append(subContainer);
   }
   built.append(builtList);
+
+  // Update mode — a 3-way select instead of a boolean toggle, so the
+  // operator can pick a "manual" middle ground between "always apply
+  // automatically" and "frozen, never accept." Saves immediately;
+  // unlike the other built-in toggles it doesn't restart the daemon
+  // (the worker re-reads the FileConfig on every push).
+  const updateRow = el('div', {class: 'item-row'});
+  const updateSelect = el('select', {style: 'min-width:120px'});
+  const currentMode = cfg.update_mode || 'auto';
+  for (const opt of [
+    {v: 'auto',   label: 'Auto', desc: 'apply cloudbox pushes immediately'},
+    {v: 'manual', label: 'Manual', desc: 'persist envelope; operator runs `outpost upgrade apply` or clicks Apply in cloudbox'},
+    {v: 'never',  label: 'Never', desc: 'refuse all cloudbox pushes (the host is operator-managed)'},
+  ]) {
+    const o = el('option', {value: opt.v, title: opt.desc}, opt.label);
+    if (opt.v === currentMode) o.selected = true;
+    updateSelect.append(o);
+  }
+  updateSelect.addEventListener('change', async () => {
+    const newVal = updateSelect.value;
+    updateSelect.disabled = true;
+    try {
+      await api('POST', '/api/config/builtins', {update_mode: newVal});
+      msg('ok', `Update mode → ${newVal}`);
+    } catch (e) {
+      updateSelect.value = currentMode;
+      msg('err', e.message || 'Save failed');
+    } finally {
+      updateSelect.disabled = false;
+    }
+  });
+  updateRow.append(
+    el('span', {class: 'label'},
+      'Cloudbox-pushed self-upgrades ',
+      el('code', {class: 'key-hint'}, 'update_mode'),
+    ),
+    updateSelect,
+  );
+  built.append(updateRow);
+
   built.append(el('p', {style: 'font-size:0.8rem;opacity:0.7;margin-top:0.8rem'},
-    'Changes save automatically. Toggling a built-in restarts the outpost. Podman/Ollama require the matching daemon to be running on this host.'));
+    'Changes save automatically. Toggling a built-in restarts the outpost (update_mode is the exception — it re-reads live without restart). Podman/Ollama require the matching daemon to be running on this host.'));
 
   panelInbound.append(built);
   // (LLM pool diagnostic was folded into the Ollama twister above —

@@ -13,6 +13,12 @@ import (
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
 )
 
+// UpdateModeProvider returns the current host's update_mode for
+// inclusion in the /apps envelope. Threaded as a closure so routes.go
+// doesn't need to import conf or admincore — the live FileConfig
+// value is re-read on each poll, picking up just-flipped settings.
+type UpdateModeProvider func() string
+
 // Deps is what `matrix-agent` (or a future host application) supplies to
 // the agent's local HTTP routes.
 //
@@ -111,6 +117,14 @@ type Deps struct {
 	// itself relies on tunnel-as-auth-boundary (same as /apps); no
 	// bearer is required at the HTTP layer.
 	MountUpgradeRoute func(rg *gin.RouterGroup)
+
+	// UpdateMode is the closure /apps calls to surface the current
+	// host's update policy (auto/manual/never). Reported alongside
+	// version/os/arch so cloudbox's SPA can render the right badge
+	// variant per host (e.g. "Pending — Apply" only for manual).
+	// nil → field omitted from the envelope; cloudbox treats absent
+	// as legacy / "auto".
+	UpdateMode UpdateModeProvider
 }
 
 // RegisterRoutes attaches all matrix-agent routes onto rg. Always mounted
@@ -145,7 +159,7 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 		// falls back to commit-comparison when Version is empty).
 		// Older outposts omit `builtins`, `os`, `arch`; cloudbox treats
 		// missing fields as legacy / unknown.
-		c.JSON(http.StatusOK, gin.H{
+		payload := gin.H{
 			"agent":   deps.AgentName,
 			"version": build.Short(),
 			"commit":  build.Commit,
@@ -159,7 +173,13 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 				"ssh":       !deps.SSHDisabled && deps.SSHHostKey != nil,
 				"sftp":      !deps.SSHDisabled && deps.SSHHostKey != nil && deps.SFTPEnabled,
 			},
-		})
+		}
+		if deps.UpdateMode != nil {
+			if m := deps.UpdateMode(); m != "" {
+				payload["update_mode"] = m
+			}
+		}
+		c.JSON(http.StatusOK, payload)
 	})
 
 	// Credential check (cloud's /h/:host/elevate proxies here). When
