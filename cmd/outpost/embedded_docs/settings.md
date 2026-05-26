@@ -6,8 +6,13 @@ takes effect when.
 
 Every setting has at most four surfaces:
 
-- **File**: `~/.config/matrix/agent.json` (XDG-aware) — the source of
-  truth on disk. Auto-generated on first boot; mode 0600.
+- **File**: `agent.json` under the OS user-config directory — the
+  source of truth on disk. Auto-generated on first boot; mode 0600.
+  Resolved via Go's `os.UserConfigDir()`, so the actual path varies
+  by platform:
+    - macOS:   `~/Library/Application Support/matrix/agent.json`
+    - Linux:   `~/.config/matrix/agent.json` (or `$XDG_CONFIG_HOME/matrix/`)
+    - Windows: `%AppData%\matrix\agent.json`
 - **CLI**: a `outpost <verb> [...]` invocation (cobra subcommand or
   flag on `outpost start` / `outpost register`).
 - **UI**: a field or toggle in the local admin SPA at
