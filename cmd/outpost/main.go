@@ -389,6 +389,12 @@ func startCmd() *cobra.Command {
 				// token swap stays consistent with the persisted value.
 				MCPToken:       mcpSrv.Token,
 				RotateMCPToken: mcpSrv.Rotate,
+				// On shutdown, close all MCP SSE sessions before
+				// http.Server.Shutdown waits for in-flight requests
+				// — otherwise the long-lived streamable-transport
+				// SSE connections block teardown until the 5-second
+				// timeout fires and `outpost stop` SIGKILLs.
+				OnShutdown: mcpSrv.Close,
 			})
 			if err != nil {
 				return fmt.Errorf("admin ui: %w", err)
@@ -1236,10 +1242,22 @@ func stopCmd() *cobra.Command {
 			if err := proc.Signal(syscall.SIGTERM); err != nil {
 				return fmt.Errorf("signal pid %d: %w", pid, err)
 			}
-			// Poll for graceful exit, up to 5 s.
+			// Poll for graceful exit, up to 5 s. We treat EITHER
+			// signal as "stopped cleanly":
+			//   - processAlive returns false (process truly gone)
+			//   - the pidfile disappeared (the daemon's deferred
+			//     removePidFile ran, meaning main returned cleanly
+			//     even if the process hasn't been reaped yet by
+			//     its parent — relevant when outpost runs as a
+			//     child of `go test` or similar, where it lingers
+			//     as a zombie until the parent calls wait).
 			for i := 0; i < 50; i++ {
 				if !processAlive(pid) {
 					_ = os.Remove(p)
+					fmt.Printf("Stopped outpost (pid %d).\n", pid)
+					return nil
+				}
+				if _, err := os.Stat(p); os.IsNotExist(err) {
 					fmt.Printf("Stopped outpost (pid %d).\n", pid)
 					return nil
 				}

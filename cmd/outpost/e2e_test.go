@@ -455,35 +455,42 @@ func TestE2E_DocsCommand(t *testing.T) {
 	}
 }
 
-// TestE2E_Stop verifies the daemon actually terminates after
-// `outpost stop`. Note: today the SIGTERM Shutdown path can race
-// with MCP SSE session teardown and fall back to SIGKILL after 5 s
-// — that's a real bug worth fixing separately, but for this test
-// we accept either path. What matters is that the process is gone
-// and /healthz stops responding.
-func TestE2E_Stop(t *testing.T) {
+// TestE2E_StopGraceful verifies `outpost stop` shuts the daemon down
+// gracefully via SIGTERM (no SIGKILL fallback). The MCP server has
+// to drop its long-lived SSE sessions on context cancel — otherwise
+// http.Server.Shutdown waits the full 5 s for those connections to
+// drain and stop falls back to SIGKILL. See mcpapi.Server.Close and
+// adminui.Deps.OnShutdown.
+func TestE2E_StopGraceful(t *testing.T) {
 	requireE2E(t)
 	d := spawnDaemon(t)
+
+	// Open an MCP session before stopping so we exercise the SSE
+	// teardown path. Without this the test would pass even if Close()
+	// were a no-op.
+	d.mustCLI(t, "status", "--json")
+
 	out := d.mustCLI(t, "stop")
-	if !strings.Contains(out, "Stopped outpost") && !strings.Contains(out, "Force-killed") {
-		t.Errorf("expected 'Stopped outpost' or 'Force-killed' in output:\n%s", out)
+	if !strings.Contains(out, "Stopped outpost") {
+		t.Errorf("expected 'Stopped outpost' (graceful), got:\n%s", out)
 	}
-	// /healthz should stop responding within a few seconds of stop
-	// returning (either path).
-	deadline := time.Now().Add(5 * time.Second)
-	dead := false
+	if strings.Contains(out, "Force-killed") {
+		t.Errorf("daemon fell back to SIGKILL — graceful shutdown regressed:\n%s", out)
+	}
+	// Belt-and-braces: /healthz should be dead within ~2 s. Graceful
+	// shutdown completes in tens of milliseconds when Close() works;
+	// the timeout here is just a safety net against the test going
+	// off the rails.
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		_, err := http.Get("http://" + d.addr + "/healthz")
 		if err != nil && (errors.Is(err, syscall.ECONNREFUSED) ||
 			strings.Contains(err.Error(), "connection refused")) {
-			dead = true
-			break
+			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
-	if !dead {
-		t.Errorf("daemon still serving /healthz 5s after stop returned")
-	}
+	t.Errorf("daemon still serving /healthz 2s after graceful stop returned")
 }
 
 // TestE2E_XDGMigrationAutoMoves pre-populates the legacy

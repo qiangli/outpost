@@ -98,6 +98,14 @@ type Deps struct {
 	// in-memory copy, and returns the new value.
 	RotateMCPToken func() (string, error)
 
+	// OnShutdown, when set, is called once on context cancel right
+	// before http.Server.Shutdown begins. Used by main.go to close
+	// long-lived MCP SSE sessions so Shutdown doesn't have to wait
+	// for them to drain (which would otherwise force `outpost stop`
+	// into its SIGKILL fallback after 5 seconds). Synchronous; runs
+	// in the Serve goroutine, so keep it bounded.
+	OnShutdown func()
+
 	// Legacy fields — forwarded into admincore.New() when Core is nil.
 	// Production main.go leaves these empty and supplies Core.
 
@@ -282,9 +290,21 @@ func (s *Server) Serve(ctx context.Context) error {
 	}()
 	select {
 	case <-ctx.Done():
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = s.srv.Shutdown(shutCtx)
+		// Notify any held-open subsystems first (MCP closes its
+		// protocol sessions cleanly so clients see end-of-stream
+		// rather than a torn TCP socket).
+		if s.deps.OnShutdown != nil {
+			s.deps.OnShutdown()
+		}
+		// Use Close() rather than Shutdown(): Shutdown does not
+		// close hijacked / streaming connections (HTTP doc:
+		// "Shutdown does not attempt to close nor wait for
+		//  hijacked connections such as WebSockets"), so the MCP
+		// SSE long-poll keeps the listener alive until the
+		// timeout. Close() drops all conns immediately — fine
+		// for a daemon being told to stop; the admin UI is not
+		// long-running-request territory.
+		_ = s.srv.Close()
 		return <-errCh
 	case err := <-errCh:
 		return err

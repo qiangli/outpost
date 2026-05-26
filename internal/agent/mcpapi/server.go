@@ -106,6 +106,24 @@ func (s *Server) Handler() http.Handler { return s.handler }
 // startup banner.
 func (s *Server) Token() string { return s.token }
 
+// Close terminates every open MCP session. Called on daemon shutdown
+// before http.Server.Shutdown so the long-lived SSE streams the
+// streamable transport keeps open don't block listener teardown
+// until the 5-second timeout fires (forcing an SIGKILL fallback in
+// `outpost stop`).
+//
+// Iterating Server.Sessions() during teardown is safe — no new
+// sessions are created once the listener is shutting down, and the
+// SDK guards the iterator against concurrent modification.
+func (s *Server) Close() {
+	if s.mcp == nil {
+		return
+	}
+	for sess := range s.mcp.Sessions() {
+		_ = sess.Close()
+	}
+}
+
 // Rotate mints a fresh bearer (via rotateFn — typically
 // conf.RotateMCPBearerToken), swaps s.token atomically, and returns the
 // new value. The OLD token stops authenticating immediately. The
