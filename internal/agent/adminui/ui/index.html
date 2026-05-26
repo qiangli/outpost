@@ -5,7 +5,25 @@
 <title>outpost admin</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  :root { color-scheme: light dark; font-family: system-ui, -apple-system, sans-serif; }
+  :root {
+    color-scheme: light dark;
+    font-family: system-ui, -apple-system, sans-serif;
+    /* Surface tints used by drawers, code blocks, and small
+       inline badges. Defined as variables so dark mode can
+       remap them in one place rather than at every callsite. */
+    --surface: #f7f9fc;
+    --surface-strong: #fbfcfd;
+    --surface-badge: #f0f1f3;
+    --surface-border: #d8dce0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface: #1a1d22;
+      --surface-strong: #1e2228;
+      --surface-badge: #2a2f36;
+      --surface-border: #353a42;
+    }
+  }
   body { margin: 0; padding: 2rem; max-width: 720px; }
   h1 { margin-top: 0; font-size: 1.4rem; }
   h2 { font-size: 1.05rem; margin-top: 1.8rem; }
@@ -70,7 +88,7 @@
      as metadata rather than primary content. */
   .key-hint { font-family: ui-monospace, SFMono-Regular, monospace;
               font-size: 0.7rem; opacity: 0.55; margin-left: 0.4rem;
-              padding: 0.05rem 0.3rem; background: #f0f1f3; border-radius: 3px; }
+              padding: 0.05rem 0.3rem; background: var(--surface-badge); border-radius: 3px; }
 
   /* Disclosure chevron used to expand/collapse nested settings under
      parent built-ins (SSH ▶ -L/-R/-A/sftp/forward-sockets;
@@ -130,14 +148,23 @@
   }
   /* Drawer revealed by the legend-action button. Sits between the
      legend and the list of existing items. Subtle tint + thin
-     border so it reads as a separate panel without dominating. */
+     border so it reads as a separate panel without dominating.
+     Surface vars adapt for prefers-color-scheme: dark. */
   .add-drawer {
     margin: 0.5rem 0 0.75rem;
     padding: 0.6rem 0.75rem;
-    background: #f7f9fc;
-    border: 1px solid #8884; border-radius: 6px;
+    background: var(--surface);
+    border: 1px solid var(--surface-border); border-radius: 6px;
   }
   .add-drawer.hidden { display: none; }
+
+  /* Code-block surface for the .mcp.json snippet on the Pair tab.
+     Same surface vars as the add-drawer so light/dark both work. */
+  .snippet-pre {
+    background: var(--surface-strong);
+    border: 1px solid var(--surface-border);
+    color: inherit;
+  }
   /* iOS-style toggle switch wrapping a hidden checkbox. */
   .switch { position: relative; display: inline-block; width: 36px; height: 20px; flex: 0 0 auto; }
   .switch input { opacity: 0; width: 0; height: 0; }
@@ -512,7 +539,7 @@ function buildMCPCredentialsSection() {
   const tokenVal    = el('code', {style: 'word-break:break-all'}, '•'.repeat(20));
   // Thin border + light tint instead of the previous solid gray
   // background — same monospace block feel, less "wall of white".
-  const snippet     = el('pre', {style: 'border:1px solid #d8dce0;padding:0.6rem 0.75rem;border-radius:6px;overflow-x:auto;font-size:0.85em;margin:0.5rem 0 0;line-height:1.4;background:#fbfcfd'}, '');
+  const snippet     = el('pre', {class: 'snippet-pre', style: 'padding:0.6rem 0.75rem;border-radius:6px;overflow-x:auto;font-size:0.85em;margin:0.5rem 0 0;line-height:1.4'}, '');
 
   let liveToken = '';
   let revealed = false;
