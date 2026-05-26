@@ -101,6 +101,43 @@
     margin: 0.4rem 0 0.2rem; font-size: 0.85rem;
     font-weight: 600; opacity: 0.75;
   }
+
+  /* Legend variant that sits the section title + an "Add" action
+     button on the same row. Used by Custom apps and Outbound. */
+  legend.with-action {
+    display: inline-flex; align-items: center; gap: 0.6rem;
+    padding: 0 0.4rem;
+  }
+  .legend-action {
+    background: none;
+    border: 1px solid #2563eb55;
+    color: #2563eb;
+    font-weight: 600; font-size: 0.82rem;
+    padding: 0.18rem 0.55rem;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    line-height: 1.2;
+  }
+  .legend-action:hover {
+    background: #2563eb11;
+    border-color: #2563eb;
+  }
+  .legend-action.open {
+    background: #2563eb;
+    color: white;
+    border-color: #2563eb;
+  }
+  /* Drawer revealed by the legend-action button. Sits between the
+     legend and the list of existing items. Subtle tint + thin
+     border so it reads as a separate panel without dominating. */
+  .add-drawer {
+    margin: 0.5rem 0 0.75rem;
+    padding: 0.6rem 0.75rem;
+    background: #f7f9fc;
+    border: 1px solid #8884; border-radius: 6px;
+  }
+  .add-drawer.hidden { display: none; }
   /* iOS-style toggle switch wrapping a hidden checkbox. */
   .switch { position: relative; display: inline-block; width: 36px; height: 20px; flex: 0 0 auto; }
   .switch input { opacity: 0; width: 0; height: 0; }
@@ -1195,9 +1232,15 @@ function renderMain(status, cfg) {
   // alongside the dependency they require.)
 
   // Custom apps section — one row per app, target as a clickable link
-  // (new tab), status as an auto-saving toggle switch.
+  // (new tab), status as an auto-saving toggle switch. The legend
+  // hosts the title and a "+ Add app" button on the same row;
+  // clicking the button toggles a drawer with the manual form +
+  // suggestions inline below the legend.
   const custom = el('fieldset', {});
-  custom.append(el('legend', {}, 'Custom apps'));
+  const customAddBtn = el('button', {type: 'button', class: 'legend-action'}, '+ Add app');
+  custom.append(el('legend', {class: 'with-action'},
+    el('span', {}, 'Custom apps'),
+    customAddBtn));
   const appsList = el('div', {class: 'item-list'});
   // Cloud URL of this paired outpost. Used to render the "incoming URL"
   // an app exposes to users via cloudbox — e.g. https://ai.dhnt.io/h/<host>/app/<name>/.
@@ -1309,9 +1352,10 @@ function renderMain(status, cfg) {
     if (provSubBlock) appsList.append(provSubBlock);
   }
   if ((cfg.apps || []).length === 0) {
-    appsList.append(el('div', {class: 'item-row', style: 'opacity:0.6'}, 'No custom apps yet.'));
+    appsList.append(el('div', {class: 'item-row', style: 'opacity:0.6'}, 'No custom apps yet — click + Add app above.'));
   }
-  custom.append(appsList);
+  // (appsList is appended to `custom` below, AFTER the add-row, so
+  // the "+ Add app" twister is the first row under the legend.)
 
   // Match the outbound form's visual rhythm: 22rem cap, flex-column,
   // gap, one field per line. Protocol dropdown drives whether the
@@ -1383,7 +1427,7 @@ function renderMain(status, cfg) {
       'Trust cloudbox identity (SSO + grant push)'),
     el('label', {class: 'check'},
       el('input', {name: 'enabled', type: 'checkbox', checked: true}), 'Enabled'),
-    el('button', {type: 'submit', style: 'align-self: start; margin-top: 0.3rem;'}, 'Add app'));
+    el('button', {type: 'submit', style: 'align-self: start; margin-top: 0.3rem;'}, 'Save'));
 
   addForm.addEventListener('submit', async (ev) => {
     ev.preventDefault();
@@ -1416,21 +1460,12 @@ function renderMain(status, cfg) {
       msg('err', e.message || 'Add failed');
     }
   });
-  // Wrap the manual add form + auto-detected suggestions in a single
-  // <details> twister opened by a "+ Add app" summary. Suggestions
-  // come from /api/apps/suggestions (probes well-known sockets +
-  // ~/.agents/ycode/manifest.json) and offer one-click register
-  // buttons for entries that don't already exist — surfacing a
-  // capability that previously lived only in the CLI / MCP.
-  const addPanel = el('details', {style: 'margin-top:0.6rem'});
-  addPanel.append(el('summary',
-    {style: 'cursor:pointer;font-size:0.95rem;font-weight:600;padding:0.4rem 0'},
-    '+ Add app'));
+  // Drawer revealed by the + Add app legend-action. Hidden by
+  // default; click toggles. Contains the suggestions sub-panel
+  // (fetched lazily on first open) + the manual add form.
+  const addDrawer = el('div', {class: 'add-drawer hidden'});
 
-  // Suggestions sub-panel. Renders async on first expand to avoid
-  // a probe on every page load when the operator never plans to
-  // touch this section.
-  const suggBox = el('div', {style: 'margin:0.5rem 0 0.8rem;padding:0.6rem 0.75rem;border:1px solid #8884;border-radius:6px;background:#10b98111;font-size:0.9rem;'});
+  const suggBox = el('div', {style: 'margin:0 0 0.8rem;padding:0.6rem 0.75rem;border:1px solid #8884;border-radius:6px;background:#10b98111;font-size:0.9rem;'});
   suggBox.append(el('div', {style: 'font-weight:600;margin-bottom:0.35rem'}, 'Detected on this host'));
   const suggList = el('div', {});
   suggBox.append(suggList,
@@ -1439,8 +1474,16 @@ function renderMain(status, cfg) {
       'One click registers the entry as a custom app.'));
 
   let suggLoaded = false;
-  addPanel.addEventListener('toggle', async () => {
-    if (!addPanel.open || suggLoaded) return;
+  customAddBtn.addEventListener('click', async () => {
+    const wasHidden = addDrawer.classList.contains('hidden');
+    addDrawer.classList.toggle('hidden');
+    customAddBtn.classList.toggle('open', wasHidden);
+    customAddBtn.textContent = wasHidden ? '− Close' : '+ Add app';
+    if (!wasHidden) return; // we just closed it; nothing else to do
+    // Focus the first text input so the operator can type immediately.
+    const firstInput = addForm.querySelector('input[name="name"]');
+    if (firstInput) setTimeout(() => firstInput.focus(), 0);
+    if (suggLoaded) return;
     suggLoaded = true;
     try {
       const res = await api('GET', '/api/apps/suggestions');
@@ -1450,17 +1493,28 @@ function renderMain(status, cfg) {
     }
   });
 
-  addPanel.append(suggBox);
-  addPanel.append(el('h3', {style: 'margin:0.6rem 0 0.4rem;font-size:0.95rem'}, 'Manual add'));
-  addPanel.append(addForm);
-  custom.append(addPanel);
+  addDrawer.append(
+    suggBox,
+    el('h3', {style: 'margin:0.6rem 0 0.4rem;font-size:0.95rem'}, 'Manual add'),
+    addForm,
+  );
+
+  // Order under the legend: drawer first (hidden by default), then
+  // the existing apps list. When the drawer opens it sits right
+  // below the legend, above the list — matching the operator's
+  // mental "add this above the existing rows".
+  custom.append(addDrawer, appsList);
   panelInbound.append(custom);
 
   // Outbound — local mount paths that proxy through cloudbox to remote
   // outposts' apps. Connect captures a remote elevation cookie; while
   // connected, http://<this host>:17777/<path>/ tunnels to the remote.
+  // Same legend + action-button pattern as Custom apps above.
   const outbound = el('fieldset', {});
-  outbound.append(el('legend', {}, 'Outbound'));
+  const outboundAddBtn = el('button', {type: 'button', class: 'legend-action'}, '+ Add outbound');
+  outbound.append(el('legend', {class: 'with-action'},
+    el('span', {}, 'Outbound'),
+    outboundAddBtn));
   const obList = el('div', {class: 'item-list'});
   for (const ob of (cfg.outbound || [])) {
     const row = el('div', {class: 'item-row stacked'});
@@ -1538,9 +1592,10 @@ function renderMain(status, cfg) {
   }
   if ((cfg.outbound || []).length === 0) {
     obList.append(el('div', {class: 'item-row', style: 'opacity:0.6'},
-      'No outbound mounts yet.'));
+      'No outbound mounts yet — click + Add outbound above.'));
   }
-  outbound.append(obList);
+  // (obList is appended to `outbound` below, AFTER the add-row, so
+  // the "+ Add outbound" twister is the first row under the legend.)
 
   // Cap the form's width so the inputs don't span the whole 720px page —
   // these fields hold short identifiers (hostnames, usernames, ports),
@@ -1607,13 +1662,13 @@ function renderMain(status, cfg) {
   };
   remoteSel.addEventListener('change', applyRemote);
 
-  addOb.append(el('h2', {style: 'margin-bottom: 0.2rem;'}, 'Add outbound'),
+  addOb.append(
     el('label', {}, 'Remote', remoteSel),
     remoteHint,
     pathLabel,
     portLabel,
     ttlLabel,
-    el('button', {type: 'submit', style: 'align-self: start; margin-top: 0.3rem;'}, 'Add outbound'));
+    el('button', {type: 'submit', style: 'align-self: start; margin-top: 0.3rem;'}, 'Save'));
 
   // Kick off the fetch after the form is in the DOM so the user sees
   // the placeholder option immediately. The result populates the
@@ -1711,7 +1766,20 @@ function renderMain(status, cfg) {
       msg('err', e.message || 'Add failed');
     }
   });
-  outbound.append(addOb);
+  // Drawer toggled by the + Add outbound legend-action. Same
+  // pattern as Custom apps: hidden by default, opens inline
+  // between the legend and the list of existing mounts.
+  const addObDrawer = el('div', {class: 'add-drawer hidden'});
+  addObDrawer.append(addOb);
+  outboundAddBtn.addEventListener('click', () => {
+    const wasHidden = addObDrawer.classList.contains('hidden');
+    addObDrawer.classList.toggle('hidden');
+    outboundAddBtn.classList.toggle('open', wasHidden);
+    outboundAddBtn.textContent = wasHidden ? '− Close' : '+ Add outbound';
+    if (wasHidden) setTimeout(() => remoteSel.focus(), 0);
+  });
+
+  outbound.append(addObDrawer, obList);
   panelOutbound.append(outbound);
 
   // Header actions (Restart / Sign out) — primary blue, right-aligned in
