@@ -141,6 +141,98 @@ func TestSession_InvalidCommandKeepsSessionAlive(t *testing.T) {
 	<-runErrCh
 }
 
+// TestSession_ArrowKeyHistory is the end-to-end smoke test for the
+// readline integration that motivates the mvdan.cc/sh/v3/interactive
+// package: type two commands, then send the ANSI "up arrow" sequence
+// (\x1b[A) twice and verify each historical line is redrawn at the
+// prompt. Failure means readline either never engaged raw mode on the
+// PTY slave (the bindTTY wiring is wrong), or its history buffer
+// isn't tracking submitted lines, or the kernel TTY's cooked-mode
+// echo is leaking through on top of readline's own echo. All three
+// were broken before the interactive package extraction.
+//
+// Uses TERM=xterm so readline emits real CSI sequences (not the
+// degraded "dumb" fallback) and OUTPOST_SHELL_HISTORY pointed at a
+// throwaway tempdir so the test doesn't pollute the dev user's
+// real shell history file.
+func TestSession_ArrowKeyHistory(t *testing.T) {
+	t.Setenv("OUTPOST_SHELL_HISTORY", t.TempDir()+"/shell_history")
+	s, err := NewSession(SessionOptions{Term: "xterm", Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer s.Close()
+
+	out := newPtyDrain(s.Master())
+	defer out.stop()
+	defer s.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runErrCh := make(chan error, 1)
+	go func() { runErrCh <- s.Run(ctx) }()
+
+	waitPrompt := func(label string) {
+		t.Helper()
+		if !out.waitFor("$ ", 3*time.Second) && !out.waitFor("# ", 3*time.Second) {
+			t.Fatalf("never saw prompt after %s; output so far:\n%s", label, out.snapshot())
+		}
+	}
+	writeAll := func(label, payload string) {
+		t.Helper()
+		if _, err := io.WriteString(s.Master(), payload); err != nil {
+			t.Fatalf("write %s: %v", label, err)
+		}
+	}
+
+	waitPrompt("greeting")
+
+	// Type two distinguishable commands; "true" exits 0 so there's no
+	// stderr noise after each line. The history tokens are what we'll
+	// search for when we navigate back to them.
+	out.discardSnapshot()
+	writeAll("first command", "true alpha-token-1\n")
+	if !out.waitFor("alpha-token-1", 3*time.Second) {
+		t.Fatalf("first command did not echo; output:\n%s", out.snapshot())
+	}
+	waitPrompt("first command")
+
+	out.discardSnapshot()
+	writeAll("second command", "true beta-token-2\n")
+	if !out.waitFor("beta-token-2", 3*time.Second) {
+		t.Fatalf("second command did not echo; output:\n%s", out.snapshot())
+	}
+	waitPrompt("second command")
+
+	// Up arrow once → expect readline to redraw the most recent line
+	// ("true beta-token-2") at the prompt. Snapshot is cleared first so
+	// the assertion sees only the newly drawn redraw, not the prior
+	// commands' echoes still in the buffer.
+	out.discardSnapshot()
+	writeAll("up arrow #1", "\x1b[A")
+	if !out.waitFor("beta-token-2", 3*time.Second) {
+		t.Fatalf("up-arrow #1 did not redraw the previous command; output:\n%s", out.snapshot())
+	}
+
+	// Up arrow twice → step further back, expect the FIRST command.
+	out.discardSnapshot()
+	writeAll("up arrow #2", "\x1b[A")
+	if !out.waitFor("alpha-token-1", 3*time.Second) {
+		t.Fatalf("up-arrow #2 did not redraw the earlier command; output:\n%s", out.snapshot())
+	}
+
+	// Ctrl-U kills the recalled line (so we don't re-execute it),
+	// then exit to end the session cleanly.
+	writeAll("ctrl-u", "\x15")
+	writeAll("exit", "exit\n")
+	select {
+	case <-s.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatalf("session did not terminate; output:\n%s", out.snapshot())
+	}
+	<-runErrCh
+}
+
 func testSessionTerminatesAfter(t *testing.T, line string) {
 	t.Helper()
 	s, err := NewSession(SessionOptions{Term: "dumb", Cols: 80, Rows: 24})
