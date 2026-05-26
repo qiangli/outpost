@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -91,26 +92,50 @@ func runSSHProxy(ctx context.Context, host string) error {
 	netConn := websocket.NetConn(ctx, conn, websocket.MessageBinary)
 	defer netConn.Close()
 
-	// Pipe stdin -> WS, WS -> stdout. Either side closing terminates.
-	errCh := make(chan error, 2)
+	return pipeSSHProxy(ctx, conn, netConn, os.Stdin, os.Stdout)
+}
+
+// pipeSSHProxy wires a duplex byte stream between the local SSH client
+// (in/out) and the remote outpost's /ssh endpoint (netConn). The
+// session is considered alive until the SERVER side ends — i.e. until
+// netConn.Read returns. Local stdin closing is treated as
+// "client stopped writing" only, not as session end.
+//
+// Why the asymmetry: SSH terminates via in-protocol CHANNEL_CLOSE
+// messages that arrive on the netConn read side. Some parent shells
+// and pty wrappers (agentic harnesses, ssh ProxyCommand under
+// non-standard $SHELL) expose an early EOF or non-EOF error on stdin
+// even when SSH is mid-handshake. Under a naive "first-side-to-end
+// terminates" design, that tore down the WS before the server's
+// KEX_REPLY could come back — visible as "Connection closed by
+// UNKNOWN port 65535" right after the client's KEXINIT. Splitting
+// netConn (authoritative) from stdin (advisory) makes the proxy
+// robust to those parent-shell quirks.
+//
+// conn is exposed separately from netConn so we can issue a clean
+// CloseFrame on exit; the netConn wrapper only supports byte-level
+// close.
+func pipeSSHProxy(ctx context.Context, conn *websocket.Conn, netConn net.Conn, stdin io.Reader, stdout io.Writer) error {
+	errStdout := make(chan error, 1)
 	go func() {
-		_, ce := io.Copy(netConn, os.Stdin)
-		errCh <- ce
+		_, e := io.Copy(stdout, netConn)
+		errStdout <- e
 	}()
 	go func() {
-		_, ce := io.Copy(os.Stdout, netConn)
-		errCh <- ce
+		// Fire-and-forget: an early/spurious EOF or error here must
+		// NOT terminate the session. See function-level comment.
+		// The deferred netConn.Close() in the caller unblocks any
+		// in-flight Read when the function returns.
+		_, _ = io.Copy(netConn, stdin)
 	}()
 
 	select {
 	case <-ctx.Done():
 		_ = conn.Close(websocket.StatusGoingAway, "ctx done")
 		return ctx.Err()
-	case e := <-errCh:
+	case e := <-errStdout:
 		_ = conn.Close(websocket.StatusNormalClosure, "")
 		if e != nil && !errors.Is(e, io.EOF) {
-			// Common case at session end: ssh client closes stdin → we get
-			// EOF here. That is not an error worth surfacing.
 			return e
 		}
 		return nil

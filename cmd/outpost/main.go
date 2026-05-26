@@ -43,6 +43,11 @@ import (
 const defaultPortal = "https://ai.dhnt.io"
 
 func main() {
+	// First instruction of main: record this invocation to a durable
+	// file so we have post-mortem evidence even if a sandbox/hook
+	// kills us before any normal logging fires. See trace.go.
+	emitStartupTrace()
+
 	root := &cobra.Command{
 		Use:   "outpost",
 		Short: "Pair a home host with the portal and tunnel local apps to it",
