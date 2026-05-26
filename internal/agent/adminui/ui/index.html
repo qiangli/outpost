@@ -465,9 +465,17 @@ function buildMCPCredentialsSection() {
     'endpoint + bearer are below; the full .mcp.json snippet sits ' +
     'inside the "Show snippet" twister to keep the page calm.'));
 
-  const endpointVal = el('code', {style: 'word-break:break-all'}, 'loading…');
+  // Default endpoint = current browser origin + /mcp/. That's the
+  // real MCP URL whenever the operator is hitting the SPA in a
+  // browser, so the snippet is correct even before the async
+  // /api/mcp/credentials fetch completes. The fetch just confirms +
+  // fills in the bearer.
+  const defaultEndpoint = location.origin + '/mcp/';
+  const endpointVal = el('code', {style: 'word-break:break-all'}, defaultEndpoint);
   const tokenVal    = el('code', {style: 'word-break:break-all'}, '•'.repeat(20));
-  const snippet     = el('pre', {style: 'background:#f6f8fa;padding:0.6rem;border-radius:4px;overflow-x:auto;font-size:0.85em;margin:0.5rem 0 0'}, 'loading…');
+  // Thin border + light tint instead of the previous solid gray
+  // background — same monospace block feel, less "wall of white".
+  const snippet     = el('pre', {style: 'border:1px solid #d8dce0;padding:0.6rem 0.75rem;border-radius:6px;overflow-x:auto;font-size:0.85em;margin:0.5rem 0 0;line-height:1.4;background:#fbfcfd'}, '');
 
   let liveToken = '';
   let revealed = false;
@@ -477,7 +485,7 @@ function buildMCPCredentialsSection() {
   const rotateBtn = el('button', {type: 'button', class: 'secondary danger'}, 'Rotate');
 
   function updateSnippet() {
-    const ep = endpointVal.textContent;
+    const ep = endpointVal.textContent || defaultEndpoint;
     const tk = revealed ? liveToken : '<bearer-token>';
     snippet.textContent =
       '{\n' +
@@ -492,6 +500,10 @@ function buildMCPCredentialsSection() {
       '  }\n' +
       '}';
   }
+  // Render the snippet immediately so the operator sees a valid
+  // template the moment they expand the twister — no "loading…"
+  // flash, no apparent-blank-block.
+  updateSnippet();
 
   function setRevealed(on) {
     revealed = on;
@@ -549,17 +561,21 @@ function buildMCPCredentialsSection() {
   );
   wrap.append(rows, snippetWrap);
 
-  // Async fetch — the SPA renders the wrap synchronously with
-  // placeholders, then fills in once /api/mcp/credentials returns.
+  // Async fetch — the SPA renders the wrap synchronously with a
+  // valid template using the browser-origin endpoint as a fallback,
+  // then fills in the real bearer once /api/mcp/credentials returns.
+  // On error we keep the default endpoint and add a small inline
+  // hint rather than blanking out the snippet.
   (async () => {
     try {
       const res = await api('GET', '/api/mcp/credentials');
       liveToken = res.token || '';
-      endpointVal.textContent = res.endpoint || '';
+      if (res.endpoint) endpointVal.textContent = res.endpoint;
       updateSnippet();
     } catch (e) {
-      endpointVal.textContent = '(unavailable)';
-      snippet.textContent = '(MCP credentials endpoint returned ' + (e.message || 'error') + ')';
+      const note = el('span', {class: 'hint', style: 'margin-left:0.4rem;color:#c2410c'},
+        '(bearer fetch failed: ' + (e.message || 'error') + ')');
+      tokenVal.after(note);
     }
   })();
   return wrap;
