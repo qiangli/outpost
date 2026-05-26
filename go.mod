@@ -39,6 +39,7 @@ require (
 	github.com/coreos/go-oidc/v3 v3.14.1 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.12.2 // indirect
+	github.com/ergochat/readline v0.1.3 // indirect
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/fatedier/golib v0.6.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
@@ -128,4 +129,4 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 v3.0.0-20260523222605-b62bf936fb73
+replace mvdan.cc/sh/v3 => ./external/sh

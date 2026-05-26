@@ -3,6 +3,14 @@
 // backspace, resize, and Ctrl-C all flow through the kernel TTY layer
 // just as they would for a child `bash` process — except there is no
 // child process.
+//
+// The interactive read-edit-execute loop lives in mvdan.cc/sh/v3/interactive
+// (a fork-only package). That layer hosts the ergochat/readline integration
+// — arrow-key history navigation, cursor movement, Ctrl-R reverse search —
+// that the upstream parser.Interactive API does not provide. The PTY slave
+// fd is what readline drives in raw mode while reading a line; for command
+// execution between prompts the slave goes back to whatever termios the
+// running command sets, so curses programs (vim, htop) see a real TTY.
 package shell
 
 import (
@@ -10,8 +18,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"mvdan.cc/sh/v3/interactive"
 	"mvdan.cc/sh/v3/interp"
 	"mvdan.cc/sh/v3/syntax"
 )
@@ -128,57 +138,62 @@ func (s *Session) RunOnce(ctx context.Context, command string) uint32 {
 // the runner. cols/rows in characters.
 func (s *Session) Resize(cols, rows uint16) error { return setPTYSize(s.ptm, cols, rows) }
 
-// Run starts the interactive parse-and-execute loop, blocking until ctx is
-// canceled, the parser hits EOF on the PTY slave, or a fatal interp error.
-// Each parsed statement runs against a child context so a Ctrl-C cancels
-// just the current command, not the whole shell.
+// Run starts the interactive read-edit-execute loop, blocking until ctx is
+// canceled, the user exits (the `exit` builtin or Ctrl-D on an empty line),
+// or a fatal interp error.
+//
+// All line editing — arrow-key history navigation, cursor movement,
+// backspace/Ctrl-W/Ctrl-U editing, Ctrl-R reverse search, history
+// persistence — is delegated to mvdan.cc/sh/v3/interactive (which wraps
+// ergochat/readline). The PTY slave fd is the TTY readline drives in raw
+// mode; the swap back to cooked between prompts is what lets curses
+// programs spawned by a stmt see a real /dev/ttysNN.
+//
+// Per-stmt cancellation: each parsed statement runs under a child context
+// so a future signal-handling layer (Ctrl-C wiring on the PTY) can cancel
+// just the current command without ending the session.
 func (s *Session) Run(ctx context.Context) error {
 	defer close(s.done)
 
-	greeting := "Matrix shell (qiangli/sh in-process) — type `exit` or close the tab.\r\n"
-	_, _ = io.WriteString(s.pts, greeting)
-
-	parser := syntax.NewParser()
-	// Emit PS1 before the first read; thereafter PS1/PS2 are emitted from
-	// the callback. Pattern mirrors the example in syntax.Parser.InteractiveSeq.
-	_, _ = io.WriteString(s.pts, ps1(s.runner))
-
-	return parser.Interactive(s.pts, func(stmts []*syntax.Stmt) bool {
-		if parser.Incomplete() {
-			// Multi-line statement still being typed (open quote, then-block,
-			// trailing pipe, …). Emit the continuation prompt and keep
-			// reading without running anything yet.
-			_, _ = io.WriteString(s.pts, ps2())
-			return true
-		}
-		for _, stmt := range stmts {
-			cmdCtx, cancel := context.WithCancel(ctx)
-			err := s.runner.Run(cmdCtx, stmt)
-			cancel()
-			if err != nil && !isExitStatus(err) {
-				// A real fatal error from a handler (not just a non-zero
-				// command exit code). Surface it like a real shell would.
-				// Plain `exit status N` from failing commands is intentionally
-				// swallowed — the command's own stderr already told the user
-				// what went wrong, and printing "exit status 127" on top is
-				// just noise.
-				_, _ = io.WriteString(s.pts, err.Error()+"\r\n")
-			}
-			if s.runner.Exited() {
-				// The `exit` builtin (or a fatal trap) asked us to end the
-				// session. Treat it like Ctrl-D.
-				return false
-			}
-		}
-		// Continue while the parent ctx is alive.
-		select {
-		case <-ctx.Done():
-			return false
-		default:
-			_, _ = io.WriteString(s.pts, ps1(s.runner))
-			return true
-		}
+	return interactive.Run(ctx, interactive.Options{
+		Runner:            s.runner,
+		Lang:              syntax.LangBash,
+		Stdin:             s.pts,
+		Stdout:            s.pts,
+		Stderr:            s.pts,
+		PS1:               func() string { return ps1(s.runner) },
+		PS2:               func() string { return ps2() },
+		Greeting:          "Matrix shell (qiangli/sh in-process) — type `exit` or close the tab.\r\n",
+		HistoryFile:       outpostShellHistoryFile(),
+		HistoryLimit:      1000,
+		HistorySearchFold: true,
+		// PTY writes use \r\n line endings; the default error formatter would
+		// emit only \n which renders as a stair-step in xterm.js.
+		OnRunError: func(err error) {
+			_, _ = io.WriteString(s.pts, err.Error()+"\r\n")
+		},
 	})
+}
+
+// outpostShellHistoryFile returns the path the matrix-shell session uses to
+// persist input lines across reconnects. Honors $OUTPOST_SHELL_HISTORY when
+// set; otherwise defaults to <UserCacheDir>/outpost/shell_history. Returns
+// "" (in-memory history only) when no cache dir is resolvable. The parent
+// directory is created on first call — readline opens the file but does
+// NOT create intermediate dirs.
+func outpostShellHistoryFile() string {
+	if v := os.Getenv("OUTPOST_SHELL_HISTORY"); v != "" {
+		return v
+	}
+	base, err := os.UserCacheDir()
+	if err != nil || base == "" {
+		return ""
+	}
+	dir := filepath.Join(base, "outpost")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "shell_history")
 }
 
 // Close releases the PTY pair. Safe to call multiple times.
@@ -248,23 +263,6 @@ func ps2() string {
 		return p
 	}
 	return "> "
-}
-
-// isExitStatus reports whether err is just a non-zero command exit code
-// (interp.ExitStatus) rather than a fatal handler error. Used to decide
-// whether to forward the error text to the user — bare exit codes are
-// noise, real errors are not.
-//
-// Critically, this does NOT decide whether to end the session. That's
-// the `runner.Exited()` check in Run — set only by the `exit` builtin
-// or a fatal trap, never by `false` or a missing binary. Older code
-// here conflated the two and ended the session on any non-zero status.
-func isExitStatus(err error) bool {
-	if err == nil {
-		return false
-	}
-	var ec interp.ExitStatus
-	return errorsAs(err, &ec)
 }
 
 // errorsAs is a tiny stand-in to avoid importing errors twice — we want a

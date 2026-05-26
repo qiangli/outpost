@@ -4,8 +4,10 @@
 package shell
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -177,15 +179,24 @@ func testSessionTerminatesAfter(t *testing.T, line string) {
 // ptyDrain pumps a PTY master fd into an in-memory buffer that tests can
 // poll. We keep it small and intentionally synchronous around the buffer
 // — these tests run for seconds, not microseconds.
+//
+// It also acts as a minimal terminal emulator: ergochat/readline (the line
+// editor inside mvdan.cc/sh/v3/interactive that Session.Run uses) emits a
+// DSR cursor-position query ("\x1b[6n") before printing each prompt and
+// blocks until the terminal replies with the matching CPR. In production
+// the responder is xterm.js / the SSH client's terminal emulator. In
+// tests there is no such emulator behind the PTY, so this pump answers
+// the query itself with a stub "\x1b[1;1R" — otherwise Run hangs forever
+// waiting for the prompt to render and the test deadlines out.
 type ptyDrain struct {
-	mu   sync.Mutex
-	buf  strings.Builder
-	done chan struct{}
-	src  io.Reader
+	mu     sync.Mutex
+	buf    strings.Builder
+	done   chan struct{}
+	master *os.File
 }
 
-func newPtyDrain(src io.Reader) *ptyDrain {
-	d := &ptyDrain{done: make(chan struct{}), src: src}
+func newPtyDrain(master *os.File) *ptyDrain {
+	d := &ptyDrain{done: make(chan struct{}), master: master}
 	go d.pump()
 	return d
 }
@@ -193,12 +204,33 @@ func newPtyDrain(src io.Reader) *ptyDrain {
 func (d *ptyDrain) pump() {
 	defer close(d.done)
 	buf := make([]byte, 4096)
+	const cprQuery = "\x1b[6n"
+	var tail []byte // straddler bytes from the previous read (≤ len(cprQuery)-1)
 	for {
-		n, err := d.src.Read(buf)
+		n, err := d.master.Read(buf)
 		if n > 0 {
+			chunk := buf[:n]
 			d.mu.Lock()
-			d.buf.Write(buf[:n])
+			d.buf.Write(chunk)
 			d.mu.Unlock()
+
+			// Search for the DSR query across the read boundary. tail
+			// holds the trailing bytes that could have been the start
+			// of a sequence split across reads.
+			scan := append(tail, chunk...)
+			for {
+				idx := bytes.Index(scan, []byte(cprQuery))
+				if idx < 0 {
+					break
+				}
+				_, _ = d.master.Write([]byte("\x1b[1;1R"))
+				scan = scan[idx+len(cprQuery):]
+			}
+			if keep := len(cprQuery) - 1; len(scan) > keep {
+				tail = append(tail[:0], scan[len(scan)-keep:]...)
+			} else {
+				tail = append(tail[:0], scan...)
+			}
 		}
 		if err != nil {
 			return

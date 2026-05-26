@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -141,28 +143,59 @@ func TestSSHHandlerShellGreets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stdout pipe: %v", err)
 	}
+	// Wire a real stdin pipe BEFORE calling Shell(). When Stdin is nil
+	// x/crypto/ssh substitutes an empty bytes.Buffer that returns EOF
+	// immediately and then CloseWrite()s the channel (see
+	// session.go:484-500). For an interactive shell that's a lie — a real
+	// user's terminal keeps stdin open until exit — and it races the
+	// server's greeting flush, which only the bytes-already-in-flight
+	// buffer might win. Holding the pipe writer here keeps the channel's
+	// stdin half open for the duration of the test, mirroring production.
+	stdinPipe, err := session.StdinPipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
+	}
+	defer stdinPipe.Close()
 	if err := session.Shell(); err != nil {
 		t.Fatalf("shell: %v", err)
 	}
 
-	// Read the first ~256 bytes within 2 s; we expect the qiangli/sh
-	// greeting banner to be in there. Confirms shell.NewSession was
-	// allocated, the runner started, and PTY → SSH-channel piping is
-	// wired up.
-	gotCh := make(chan string, 1)
+	// Drain stdout into a buffer and poll for the greeting. Cannot use
+	// io.ReadFull here — the greeting + prompt is far shorter than any
+	// fixed buffer size and ReadFull would only return once the buffer
+	// fills, missing the early flush.
+	var (
+		gotMu  sync.Mutex
+		gotBuf bytes.Buffer
+	)
 	go func() {
 		buf := make([]byte, 256)
-		n, _ := io.ReadFull(stdout, buf)
-		gotCh <- string(buf[:n])
-	}()
-	select {
-	case got := <-gotCh:
-		if !strings.Contains(got, "Matrix shell") && !strings.Contains(got, currentUser) {
-			t.Errorf("shell banner missing; got %q", got)
+		for {
+			n, err := stdout.Read(buf)
+			if n > 0 {
+				gotMu.Lock()
+				gotBuf.Write(buf[:n])
+				gotMu.Unlock()
+			}
+			if err != nil {
+				return
+			}
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for shell greeting")
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		gotMu.Lock()
+		got := gotBuf.String()
+		gotMu.Unlock()
+		if strings.Contains(got, "Matrix shell") || strings.Contains(got, currentUser) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
+	gotMu.Lock()
+	got := gotBuf.String()
+	gotMu.Unlock()
+	t.Errorf("shell banner missing; got %q", got)
 }
 
 // TestSSHHandlerRejectsWrongUsername — the SSH username MUST equal the
