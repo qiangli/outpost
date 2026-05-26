@@ -35,7 +35,7 @@ func newRouteHarness(t *testing.T) *routeHarness {
 	h := &routeHarness{
 		t: t,
 		state: StateSnapshot{
-			AutoUpgrade:   true,
+			UpdateMode:    "auto",
 			CurrentCommit: "abc1234",
 			BinaryPath:    bin,
 		},

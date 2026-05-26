@@ -48,9 +48,10 @@ func newHarness(t *testing.T) *harness {
 		binary: bin,
 		ledger: NewLedger(filepath.Join(dir, "upgrade.log")),
 		state: StateSnapshot{
-			AutoUpgrade:   true,
+			UpdateMode:    "auto",
 			CurrentCommit: "abc1234",
 			BinaryPath:    bin,
+			PendingPath:   filepath.Join(dir, "upgrade.pending.json"),
 		},
 	}
 	w, err := NewWorker(Options{
@@ -98,9 +99,9 @@ func TestWorker_RejectsInvalid(t *testing.T) {
 	}
 }
 
-func TestWorker_RejectsDisabled(t *testing.T) {
+func TestWorker_RejectsNever(t *testing.T) {
 	h := newHarness(t)
-	h.setState(func(s *StateSnapshot) { s.AutoUpgrade = false })
+	h.setState(func(s *StateSnapshot) { s.UpdateMode = "never" })
 	r := h.worker.Apply(context.Background(), Envelope{
 		ReleaseID: "r1",
 		URL:       "https://example.com/x",
@@ -112,6 +113,58 @@ func TestWorker_RejectsDisabled(t *testing.T) {
 	}
 	if r.HTTPStatusForTest() != 403 {
 		t.Fatalf("expected 403, got %d", r.HTTPStatusForTest())
+	}
+}
+
+func TestWorker_NeverRefusesEvenWithForce(t *testing.T) {
+	h := newHarness(t)
+	h.setState(func(s *StateSnapshot) { s.UpdateMode = "never" })
+	r := h.worker.Apply(context.Background(), Envelope{
+		ReleaseID: "r1",
+		URL:       "https://example.com/x",
+		SHA256:    "deadbeef",
+		Commit:    "def5678",
+		Force:     true, // operator-blessed but the host opted out
+	})
+	if r.Status != StatusDisabled {
+		t.Fatalf("expected disabled even with force, got %v", r.Status)
+	}
+}
+
+func TestWorker_ManualPersistsAndReturnsPending(t *testing.T) {
+	h := newHarness(t)
+	h.setState(func(s *StateSnapshot) { s.UpdateMode = "manual" })
+	env := Envelope{
+		ReleaseID: "r-manual",
+		URL:       "https://example.com/x",
+		SHA256:    "deadbeef",
+		Commit:    "def5678",
+	}
+	r := h.worker.Apply(context.Background(), env)
+	if r.Status != StatusPendingManual {
+		t.Fatalf("expected pending_manual, got %v: %s", r.Status, r.Detail)
+	}
+	if r.HTTPStatusForTest() != 202 {
+		t.Fatalf("pending_manual should map to 202, got %d", r.HTTPStatusForTest())
+	}
+	// The pending file must exist and decode back to the same envelope.
+	got, err := ReadPending(h.state.PendingPath)
+	if err != nil {
+		t.Fatalf("read pending: %v", err)
+	}
+	if got == nil || got.ReleaseID != "r-manual" || got.Commit != "def5678" {
+		t.Fatalf("pending mismatch: %+v", got)
+	}
+	// Ledger should include the pending_manual step.
+	entries, _ := h.ledger.Tail(0)
+	gotStep := false
+	for _, e := range entries {
+		if e.Step == "pending_manual" && e.ReleaseID == "r-manual" {
+			gotStep = true
+		}
+	}
+	if !gotStep {
+		t.Fatalf("expected pending_manual ledger entry: %+v", entries)
 	}
 }
 

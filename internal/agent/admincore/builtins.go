@@ -26,7 +26,11 @@ type BuiltinsParams struct {
 	Ollama                *bool    `json:"ollama,omitempty"`
 	OllamaPool            *bool    `json:"ollama_pool,omitempty"`
 	Cluster               *bool    `json:"cluster,omitempty"`
-	AutoUpgrade           *bool    `json:"auto_upgrade,omitempty"`
+	// UpdateMode is one of "auto" / "manual" / "never" (see
+	// conf.UpdateMode* constants). Pointer-string so nil = "leave
+	// unchanged"; non-nil with an invalid value is rejected by
+	// SetBuiltins with a 400-class APIError.
+	UpdateMode            *string  `json:"update_mode,omitempty"`
 }
 
 // BuiltinsResult reports what happened. RestartPending is true when
@@ -90,18 +94,24 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 		}
 		fc.Cluster.Enabled = *p.Cluster
 	}
-	// AutoUpgrade is live-read by the upgrade worker on each
+	// UpdateMode is live-read by the upgrade worker on each
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	autoUpgradeOnly := p.AutoUpgrade != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Podman == nil && p.Ollama == nil && p.OllamaPool == nil && p.Cluster == nil
-	if p.AutoUpgrade != nil {
-		fc.AutoUpgrade = p.AutoUpgrade
+	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Podman == nil && p.Ollama == nil && p.OllamaPool == nil && p.Cluster == nil
+	if p.UpdateMode != nil {
+		if !conf.ValidUpdateMode(*p.UpdateMode) {
+			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")
+		}
+		fc.UpdateMode = *p.UpdateMode
+		// Clear the legacy bool so it doesn't shadow the new field
+		// on the next round-trip through UpdateModeName.
+		fc.AutoUpgrade = nil
 	}
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		return BuiltinsResult{}, internalErr("%s", err.Error())
 	}
-	restart := fc.AgentName != "" && !autoUpgradeOnly
+	restart := fc.AgentName != "" && !updateModeOnly
 	if restart {
 		s.ScheduleRestart()
 	}

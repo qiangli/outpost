@@ -383,20 +383,22 @@ func startCmd() *cobra.Command {
 					ledgerPath = filepath.Join(cacheDir, "upgrade.log")
 				}
 				upgradeLedger = upgrade.NewLedger(ledgerPath)
+				pendingPath := upgrade.PendingPath(cacheDir)
 				exe, _ := os.Executable()
 				upgradeWorker, err = upgrade.NewWorker(upgrade.Options{
 					State: func() upgrade.StateSnapshot {
 						// Re-read the current FileConfig so a just-toggled
-						// AutoUpgrade takes effect on the next /admin/upgrade
+						// update_mode takes effect on the next /admin/upgrade
 						// POST without a daemon restart.
 						cur, _ := conf.LoadFile(cfgPath)
 						if cur == nil {
 							cur = fc
 						}
 						return upgrade.StateSnapshot{
-							AutoUpgrade:   cur.AutoUpgradeOn(),
+							UpdateMode:    cur.UpdateModeName(),
 							CurrentCommit: agent.ReadBuildInfo().Short(),
 							BinaryPath:    exe,
+							PendingPath:   pendingPath,
 						}
 					},
 					Restart: core.ScheduleRestart,

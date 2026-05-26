@@ -168,7 +168,7 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.`,
 	cmd.Flags().BoolVar(&force, "force", false, "Swap even when candidate commit matches the running build")
 	cmd.Flags().BoolVar(&noRestart, "no-restart", false, "Swap binary on disk but do not trigger restart")
 	cmd.Flags().DurationVar(&waitFor, "wait", 30*time.Second, "Max time to wait for the daemon to come back on the new build")
-	cmd.AddCommand(upgradeHistoryCmd())
+	cmd.AddCommand(upgradeHistoryCmd(), upgradeApplyCmd())
 	return cmd
 }
 

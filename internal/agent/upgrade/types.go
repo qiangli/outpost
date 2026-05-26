@@ -47,6 +47,16 @@ type Envelope struct {
 	// returns 412 if its current commit is older. Useful when a
 	// release requires migration state from a prior version.
 	MinFrom string `json:"min_from,omitempty"`
+
+	// Force bypasses the daemon's update_mode gate. Set by cloudbox
+	// (or the local `outpost upgrade apply` CLI) when the OPERATOR
+	// has explicitly chosen to apply this envelope right now — a
+	// "manual" host that gets Force=true behaves like an "auto"
+	// host for this one push. Never set by the GH-Action release
+	// webhook (those are advisory, not operator-blessed). "never"
+	// mode still refuses Force=true; the operator must flip the
+	// mode first.
+	Force bool `json:"force,omitempty"`
 }
 
 // Validate enforces non-empty required fields. Schema-level validity
@@ -77,20 +87,23 @@ func (e Envelope) Validate() error {
 type Status string
 
 const (
-	StatusAccepted   Status = "accepted"     // upgrade queued; worker goroutine running
-	StatusReplay     Status = "replay"       // same release_id we just handled; idempotent no-op
-	StatusInFlight   Status = "in_flight"    // another upgrade is currently running
-	StatusSameCommit Status = "same_commit"  // current daemon is already on this commit
-	StatusDisabled   Status = "disabled"     // operator turned auto_upgrade off
-	StatusMinFrom    Status = "min_from"     // current commit is older than envelope.min_from
+	StatusAccepted      Status = "accepted"       // upgrade queued; worker goroutine running
+	StatusReplay        Status = "replay"         // same release_id we just handled; idempotent no-op
+	StatusInFlight      Status = "in_flight"      // another upgrade is currently running
+	StatusSameCommit    Status = "same_commit"    // current daemon is already on this commit
+	StatusDisabled      Status = "disabled"       // operator turned update_mode to "never"
+	StatusMinFrom       Status = "min_from"       // current commit is older than envelope.min_from
+	StatusPendingManual Status = "pending_manual" // envelope persisted; operator must apply via UI/CLI
 )
 
 // HTTPStatus maps an Apply outcome to the wire HTTP status. 202
-// Accepted is the only "ack, work is happening" code; the rest are
-// terminal refusals with a human-readable reason.
+// Accepted covers both "work is happening async" (StatusAccepted)
+// and "envelope was persisted, awaiting operator" (StatusPendingManual);
+// the body's status field disambiguates. The rest are terminal
+// refusals with a human-readable reason.
 func (s Status) HTTPStatus() int {
 	switch s {
-	case StatusAccepted:
+	case StatusAccepted, StatusPendingManual:
 		return 202
 	case StatusReplay:
 		return 200

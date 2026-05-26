@@ -21,11 +21,12 @@ type State func() StateSnapshot
 
 // StateSnapshot is what State returns each tick. The worker treats
 // it as a momentary read — re-evaluates on each Apply call so a
-// just-flipped AutoUpgrade toggle takes effect immediately.
+// just-flipped update_mode toggle takes effect immediately.
 type StateSnapshot struct {
-	// AutoUpgrade reflects fc.AutoUpgradeOn(). When false, the
-	// worker returns StatusDisabled without staging anything.
-	AutoUpgrade bool
+	// UpdateMode is the per-host policy for incoming pushes. One of
+	// "auto", "manual", "never" (the conf.UpdateMode* constants;
+	// empty is treated as "auto"). See conf/file.go for the contract.
+	UpdateMode string
 	// CurrentCommit is the running daemon's short commit (e.g.
 	// "820e2e1"). Used for the same-commit short-circuit and the
 	// min_from precondition.
@@ -35,6 +36,11 @@ type StateSnapshot struct {
 	// to it and hardlinks the current to "<BinaryPath>.previous"
 	// before rename for rollback.
 	BinaryPath string
+	// PendingPath is the path to upgrade.pending.json — where the
+	// worker persists envelopes received while in manual mode. The
+	// operator's `outpost upgrade apply` reads this file and re-POSTs
+	// the envelope with Force=true to consume it.
+	PendingPath string
 }
 
 // Worker drives the cloudbox-pushed upgrade flow on the daemon side.
@@ -126,12 +132,12 @@ func (w *Worker) Apply(ctx context.Context, env Envelope) Result {
 	}
 
 	st := w.state()
-	if !st.AutoUpgrade {
+	// "never" beats everything (including Force=true) — operators
+	// who want a frozen host shouldn't be overridden by a cloudbox-
+	// side button. Flip the mode first.
+	if st.UpdateMode == "never" {
 		w.mu.Unlock()
-		// No ledger entry for disabled rejections — they're a steady-
-		// state condition, not an event. The operator flips the
-		// toggle elsewhere; logging every cloudbox poll is noise.
-		return Result{Status: StatusDisabled, Detail: "auto_upgrade is off; operator must enable to accept cloudbox-pushed upgrades", ReleaseID: env.ReleaseID}
+		return Result{Status: StatusDisabled, Detail: "update_mode is 'never'; operator must change it to accept cloudbox-pushed upgrades", ReleaseID: env.ReleaseID}
 	}
 	if st.CurrentCommit != "" && env.Commit == st.CurrentCommit {
 		w.mu.Unlock()
@@ -147,9 +153,30 @@ func (w *Worker) Apply(ctx context.Context, env Envelope) Result {
 		return Result{Status: StatusMinFrom, Detail: fmt.Sprintf("daemon at %s, envelope requires from %s", st.CurrentCommit, env.MinFrom), ReleaseID: env.ReleaseID}
 	}
 
+	// Manual mode: persist the envelope and return without staging.
+	// Force=true bypasses the manual gate (used by `outpost upgrade
+	// apply` + cloudbox's "Apply" UI button), in which case we fall
+	// through to the auto path.
+	if st.UpdateMode == "manual" && !env.Force {
+		w.mu.Unlock()
+		if err := writePendingEnvelope(st.PendingPath, env); err != nil {
+			w.logger.Warn("manual: persist pending envelope", "err", err)
+		}
+		_ = w.appendLedger(LedgerEntry{
+			ReleaseID: env.ReleaseID,
+			Step:      "pending_manual",
+			FromSHA:   st.CurrentCommit,
+			ToSHA:     env.Commit,
+			URL:       env.URL,
+			Detail:    "queued; awaiting operator apply",
+		})
+		return Result{Status: StatusPendingManual, Detail: "update queued; operator must run `outpost upgrade apply` or click Apply in cloudbox UI", ReleaseID: env.ReleaseID, Commit: env.Commit}
+	}
+
 	w.inFlight = true
 	w.lastReleaseID = env.ReleaseID
 	binaryPath := st.BinaryPath
+	pendingPath := st.PendingPath
 	w.mu.Unlock()
 
 	if binaryPath == "" {
@@ -167,7 +194,7 @@ func (w *Worker) Apply(ctx context.Context, env Envelope) Result {
 		URL:       env.URL,
 	})
 
-	go w.run(context.WithoutCancel(ctx), env, binaryPath, st.CurrentCommit)
+	go w.run(context.WithoutCancel(ctx), env, binaryPath, st.CurrentCommit, pendingPath)
 	return Result{Status: StatusAccepted, Detail: "staging candidate", ReleaseID: env.ReleaseID, Commit: env.Commit}
 }
 
@@ -175,7 +202,12 @@ func (w *Worker) Apply(ctx context.Context, env Envelope) Result {
 // → restart. Each phase emits one ledger entry. Errors abort the
 // flow but never escape (we're the only goroutine reading our state).
 // The defer guarantees inFlight clears even if we panic.
-func (w *Worker) run(ctx context.Context, env Envelope, binaryPath, fromSHA string) {
+//
+// pendingPath, when non-empty, is the upgrade.pending.json this run
+// is consuming — if Force was true and there's a pending envelope
+// for this release_id, the file is removed on success so the next
+// "Apply" UI click doesn't see a stale entry.
+func (w *Worker) run(ctx context.Context, env Envelope, binaryPath, fromSHA, pendingPath string) {
 	defer func() {
 		w.mu.Lock()
 		w.inFlight = false
@@ -231,6 +263,17 @@ func (w *Worker) run(ctx context.Context, env Envelope, binaryPath, fromSHA stri
 		ToSHA:     agent.BuildInfo{Commit: build.Commit, Dirty: build.Dirty}.Short(),
 		Detail:    "binary swapped; scheduling restart",
 	})
+
+	// Consume the pending file if this run was Force-driven and the
+	// release_id matches what was queued. Mismatches leave the file
+	// alone — a manual host might have a different pending update
+	// that an admin shouldn't see clobbered by an unrelated cloudbox
+	// push that happened to come through with Force=true.
+	if env.Force && pendingPath != "" {
+		if pending, _ := readPendingEnvelope(pendingPath); pending != nil && pending.ReleaseID == env.ReleaseID {
+			_ = os.Remove(pendingPath)
+		}
+	}
 
 	w.restart()
 	// After this point the daemon is on its way out. Any further

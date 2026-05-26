@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -63,7 +64,8 @@ func builtinsShowCmd() *cobra.Command {
 
 func builtinsSetCmd() *cobra.Command {
 	var (
-		shell, desktop, clipboard, ssh, sshLocalFwd, sshRemoteFwd, sshAgentFwd, sftp, podman, ollama, ollamaPool, cluster, autoUpgrade string
+		shell, desktop, clipboard, ssh, sshLocalFwd, sshRemoteFwd, sshAgentFwd, sftp, podman, ollama, ollamaPool, cluster string
+		updateMode, autoUpgradeLegacy                                                                                     string
 		sshForwardSockets                                                                                                 []string
 		clearSSHForwardSockets                                                                                            bool
 	)
@@ -114,8 +116,26 @@ func builtinsSetCmd() *cobra.Command {
 			if params.Cluster, err = parseToggle("cluster", cluster); err != nil {
 				return err
 			}
-			if params.AutoUpgrade, err = parseToggle("auto-upgrade", autoUpgrade); err != nil {
-				return err
+			// --update=auto|manual|never is the canonical knob; the
+			// deprecated --auto-upgrade=on|off folds in as auto/never.
+			if updateMode != "" {
+				m := strings.ToLower(strings.TrimSpace(updateMode))
+				if m != "auto" && m != "manual" && m != "never" {
+					return fmt.Errorf("--update must be one of auto / manual / never, got %q", updateMode)
+				}
+				params.UpdateMode = &m
+			} else if autoUpgradeLegacy != "" {
+				b, err := parseToggle("auto-upgrade", autoUpgradeLegacy)
+				if err != nil {
+					return err
+				}
+				if b != nil {
+					m := "never"
+					if *b {
+						m = "auto"
+					}
+					params.UpdateMode = &m
+				}
 			}
 			if clearSSHForwardSockets {
 				params.SSHForwardSockets = []string{}
@@ -146,7 +166,9 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&ollama, "ollama", "", "on|off")
 	cmd.Flags().StringVar(&ollamaPool, "ollama-pool", "", "on|off — share local Ollama with cloudbox's pool")
 	cmd.Flags().StringVar(&cluster, "cluster", "", "on|off — join cloudbox virtual-podman cluster")
-	cmd.Flags().StringVar(&autoUpgrade, "auto-upgrade", "", "on|off — accept cloudbox-pushed self-upgrades (POST /admin/upgrade)")
+	cmd.Flags().StringVar(&updateMode, "update", "", "auto|manual|never — policy for cloudbox-pushed self-upgrades")
+	cmd.Flags().StringVar(&autoUpgradeLegacy, "auto-upgrade", "", "deprecated alias for --update (on→auto, off→never)")
+	_ = cmd.Flags().MarkDeprecated("auto-upgrade", "use --update=auto|manual|never")
 	cmd.Flags().StringSliceVar(&sshForwardSockets, "ssh-forward-socket", nil, "Allow this unix-socket path for SSH direct-streamlocal forwarding (repeatable; replaces the entire list)")
 	cmd.Flags().BoolVar(&clearSSHForwardSockets, "clear-ssh-forward-sockets", false, "Reset ssh-forward-sockets to the auto-detect default set")
 	return cmd

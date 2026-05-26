@@ -107,25 +107,45 @@ tool, or wipe `agent.json` by hand.
 | Ollama daemon proxy | `ollama_enabled` | `builtins set --ollama` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Ollama LLM-pool participation | `ollama_pool_enabled` | `builtins set --ollama-pool` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Cluster join | `cluster.enabled` | `builtins set --cluster` or `cluster set --enable` | Inbound > Cluster | `outpost_set_builtins` / `outpost_set_kubeconfig` | Restart |
-| Cloudbox-pushed self-upgrade | `auto_upgrade` | `builtins set --auto-upgrade` | Inbound > Built-ins | `outpost_set_builtins` | Live |
+| Cloudbox-pushed self-upgrade | `update_mode` | `builtins set --update=auto\|manual\|never` | Inbound > Built-ins | `outpost_set_builtins` | Live |
 
 All built-in toggles default to ON when the JSON key is absent (old
 configs) so an upgrade doesn't silently disable features. The
 exceptions are `podman_enabled` / `ollama_enabled` which are plain
 `bool` (default off — explicit opt-in).
 
-`auto_upgrade` is the only built-in toggle with **Live** effect — the
+`update_mode` is the only built-in setting with **Live** effect — the
 upgrade worker re-reads the FileConfig on each `POST /admin/upgrade`,
-so flipping it doesn't require (and doesn't trigger) a restart. Default
-is **on** for paired hosts; flip off via `outpost builtins set
---auto-upgrade=off` to freeze a specific box on its current build (e.g.
-during a debugging session you don't want a cloudbox release to
-disturb). Unpaired hosts ignore the flag — the `/admin/upgrade` route
-only mounts once cloudbox has issued an `access_token`.
+so flipping it doesn't require (and doesn't trigger) a restart. Three
+values, default **auto** for paired hosts:
+
+- **`auto`** — incoming envelopes are staged + probed + swapped +
+  daemon re-execs. The "press button, fleet rolls" behavior.
+- **`manual`** — daemon validates the envelope, persists it to
+  `<cacheDir>/outpost/upgrade.pending.json`, returns 202
+  `pending_manual`, and does NOT swap. The cloudbox UI shows an
+  "Update pending — Apply" badge; the operator triggers the swap
+  by clicking Apply (which re-POSTs the envelope with `force: true`
+  to bypass the manual gate) or by running `outpost upgrade apply`
+  on the host. Use case: cautious operators who want notification
+  but not auto-application.
+- **`never`** — daemon returns 403 `disabled`. Even Force=true is
+  refused — the operator must flip the mode first. Use case: a
+  frozen box you fully control (debugging session, regression
+  bisection, compliance freeze).
+
+Migration: legacy `auto_upgrade: true` is read as `update_mode: auto`;
+`auto_upgrade: false` is read as `update_mode: never`. New writes
+clear `auto_upgrade` and persist only `update_mode`. The deprecated
+`--auto-upgrade=on|off` CLI flag survives as an alias.
+
+Unpaired hosts ignore the setting — the `/admin/upgrade` route only
+mounts once cloudbox has issued an `access_token`.
 
 #### Cloudbox-pushed upgrade flow
 
-When `auto_upgrade` is on, cloudbox POSTs to `<this-host>/admin/upgrade`
+When `update_mode` is `auto` (or `manual` with `force: true` in the
+envelope), cloudbox POSTs to `<this-host>/admin/upgrade`
 through the matrix tunnel. No `Authorization` header — the route trusts
 the tunnel as the auth boundary, the same model `/apps` and `/healthz`
 already use. The daemon's main HTTP server binds 127.0.0.1 only, so

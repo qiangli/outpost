@@ -26,6 +26,14 @@ type upgradeHistoryIn struct {
 	Limit int `json:"limit,omitempty" jsonschema:"Maximum number of newest entries to return. 0 means all."`
 }
 
+type applyPendingOut struct {
+	OK        bool   `json:"ok"`
+	Status    string `json:"status,omitempty"`
+	Detail    string `json:"detail,omitempty"`
+	ReleaseID string `json:"release_id,omitempty"`
+	Commit    string `json:"commit,omitempty"`
+}
+
 // registerUpgradeTools wires the cloudbox-pushed upgrade surface into
 // MCP. Only registered when main.go threaded an upgrade.Worker —
 // unpaired hosts skip these tools entirely so cloudbox-driven
@@ -56,10 +64,33 @@ func (s *Server) registerUpgradeTools() {
 		return nil, out, nil
 	})
 
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_apply_pending",
+		Description: "On a host with update_mode=manual, apply the envelope previously persisted to upgrade.pending.json. Re-submits the envelope through the worker with Force=true (bypassing the manual gate). Returns 'no_pending' when nothing is queued.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, applyPendingOut, error) {
+		env, err := s.upgrader.LoadPending()
+		if err != nil {
+			return nil, applyPendingOut{}, err
+		}
+		if env == nil {
+			return nil, applyPendingOut{Status: "no_pending", Detail: "no upgrade.pending.json on disk"}, nil
+		}
+		env.Force = true
+		result := s.upgrader.Apply(ctx, *env)
+		out := applyPendingOut{
+			Status:    string(result.Status),
+			Detail:    result.Detail,
+			ReleaseID: result.ReleaseID,
+			Commit:    result.Commit,
+		}
+		out.OK = result.Status == upgrade.StatusAccepted || result.Status == upgrade.StatusReplay
+		return nil, out, nil
+	})
+
 	if s.ledger != nil {
 		mcp.AddTool(s.mcp, &mcp.Tool{
 			Name:        "outpost_upgrade_history",
-			Description: "Return the upgrade ledger for this host — one JSON object per phase of every cloudbox-pushed or CLI-driven upgrade (received, stage_failed, swap_done, rollback, etc). Newest entries last. Pass {limit: N} to bound the response.",
+			Description: "Return the upgrade ledger for this host — one JSON object per phase of every cloudbox-pushed or CLI-driven upgrade (received, stage_failed, swap_done, rollback, pending_manual, etc). Newest entries last. Pass {limit: N} to bound the response.",
 		}, func(_ context.Context, _ *mcp.CallToolRequest, in upgradeHistoryIn) (*mcp.CallToolResult, upgradeHistoryOut, error) {
 			entries, err := s.ledger.Tail(in.Limit)
 			if err != nil {

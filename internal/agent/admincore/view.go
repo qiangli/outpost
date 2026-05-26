@@ -84,7 +84,7 @@ type SafeView struct {
 	Podman                BuiltinView          `json:"podman"`
 	Ollama                BuiltinView          `json:"ollama"`
 	OllamaPoolEnabled     bool                 `json:"ollama_pool_enabled"`
-	AutoUpgrade           bool                 `json:"auto_upgrade"`
+	UpdateMode            string               `json:"update_mode"`
 	LLMPool               LLMPoolStatusView    `json:"llm_pool"`
 	Cluster               ClusterView          `json:"cluster"`
 	Outbound              []agent.OutboundView `json:"outbound"`
@@ -149,7 +149,7 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		Podman:                toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
 		Ollama:                toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
 		OllamaPoolEnabled:     fc.OllamaPoolOn(),
-		AutoUpgrade:           fc.AutoUpgradeOn(),
+		UpdateMode:            fc.UpdateModeName(),
 		LLMPool:               s.llmPoolStatusView(fc),
 		Cluster:               toClusterView(fc),
 		Outbound:              s.outboundList(),
