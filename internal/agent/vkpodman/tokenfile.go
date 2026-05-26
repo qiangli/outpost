@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
 // WriteTokenFile atomically writes the bearer token to path, creating
@@ -34,15 +36,16 @@ func WriteTokenFile(path, token string) error {
 }
 
 // DefaultTokenFilePath returns the canonical path for the persisted
-// SA bearer token: <UserCacheDir>/outpost/cluster-token. Sharing the
-// outpost cache dir with the rest of the agent's runtime state
-// (pidfile, logs) keeps related state in one place — and the file
-// mode 0600 stops it leaking even when the user's cache dir is
-// world-readable.
+// SA bearer token: conf.DefaultCacheDir()/cluster-token (i.e.
+// ~/.cache/outpost/cluster-token on Linux+macOS, %USERPROFILE%\.cache\
+// outpost\cluster-token on Windows). Sharing the outpost cache dir
+// with the rest of the agent's runtime state (pidfile, logs) keeps
+// related state in one place — and the file mode 0600 stops it
+// leaking even when the user's cache dir is world-readable.
 func DefaultTokenFilePath() (string, error) {
-	base, err := os.UserCacheDir()
+	base, err := conf.DefaultCacheDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "outpost", "cluster-token"), nil
+	return filepath.Join(base, "cluster-token"), nil
 }

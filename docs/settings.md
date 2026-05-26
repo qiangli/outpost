@@ -6,13 +6,15 @@ takes effect when.
 
 Every setting has at most four surfaces:
 
-- **File**: `agent.json` under the OS user-config directory — the
-  source of truth on disk. Auto-generated on first boot; mode 0600.
-  Resolved via Go's `os.UserConfigDir()`, so the actual path varies
-  by platform:
-    - macOS:   `~/Library/Application Support/matrix/agent.json`
-    - Linux:   `~/.config/matrix/agent.json` (or `$XDG_CONFIG_HOME/matrix/`)
-    - Windows: `%AppData%\matrix\agent.json`
+- **File**: `~/.config/matrix/agent.json` on every platform
+  (XDG-style; mode 0600, auto-generated on first boot). Honors
+  `$XDG_CONFIG_HOME` when set. On Windows this resolves to
+  `C:\Users\<user>\.config\matrix\agent.json`. Cache files live under
+  `~/.cache/outpost/` with the same convention (`$XDG_CACHE_HOME`
+  honored). Older installs that wrote agent.json under
+  `~/Library/Application Support/matrix/` (macOS) or `%AppData%\matrix\`
+  (Windows) are auto-migrated on the next `outpost start`; the older
+  copy is renamed to `*.bak.<ts>` so nothing is silently lost.
 - **CLI**: a `outpost <verb> [...]` invocation (cobra subcommand or
   flag on `outpost start` / `outpost register`).
 - **UI**: a field or toggle in the local admin SPA at

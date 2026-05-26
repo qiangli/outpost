@@ -76,21 +76,21 @@ type OutboundView struct {
 	ConnectedAt string `json:"connected_at,omitempty"`
 }
 
-// outboundCookieSubdir is the relative path inside UserCacheDir where
+// outboundCookieSubdir is the relative path inside conf.DefaultCacheDir() where
 // per-mount matrix_elev cookies are persisted. Sibling of the SSH
 // session cookie cache (cmd/outpost/connect.go writes to
 // <UserCacheDir>/outpost/sessions/) so an operator inspecting cache
 // state sees both in one parent dir.
-const outboundCookieSubdir = "outpost/outbounds"
+const outboundCookieSubdir = "outbounds"
 
 // cookieCacheDir returns the absolute path of the outbound cookie
 // cache directory, creating it (mode 0700) when missing. Errors only
 // when UserCacheDir is unresolvable, which would be an OS-level
 // configuration issue.
 func cookieCacheDir() (string, error) {
-	base, err := os.UserCacheDir()
+	base, err := conf.DefaultCacheDir()
 	if err != nil {
-		return "", fmt.Errorf("user cache dir: %w", err)
+		return "", fmt.Errorf("outpost cache dir: %w", err)
 	}
 	dir := filepath.Join(base, outboundCookieSubdir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

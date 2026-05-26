@@ -74,6 +74,19 @@ func startCmd() *cobra.Command {
 		Use:   "start",
 		Short: "Start the local agent and dial the portal",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// One-shot migration from the legacy os.UserConfigDir() /
+			// os.UserCacheDir() locations (~/Library/Application Support
+			// + ~/Library/Caches on macOS; %AppData% + %LocalAppData%
+			// on Windows). After this returns, agent.json and the cache
+			// dir live at the canonical XDG-style location on every
+			// platform.
+			if _, err := conf.ResolveConfigPath(); err != nil {
+				return fmt.Errorf("resolve config path: %w", err)
+			}
+			if _, err := conf.ResolveCacheDir(); err != nil {
+				return fmt.Errorf("resolve cache dir: %w", err)
+			}
+
 			// Refuse to boot a second instance — the matrix tunnel uses
 			// a fixed remote port, and two outposts fighting for the
 			// same proxy slot is a recipe for confused users. Also
@@ -1124,14 +1137,14 @@ func execSelfStart() error {
 	return nil
 }
 
-// outpostLogPath returns ~/.cache/outpost/outpost.log (or the OS
-// equivalent), creating parent directories as needed.
+// outpostLogPath returns ~/.cache/outpost/outpost.log on Linux+macOS
+// (Windows: %USERPROFILE%\.cache\outpost\outpost.log), creating
+// parent directories as needed.
 func outpostLogPath() (string, error) {
-	base, err := os.UserCacheDir()
+	dir, err := conf.DefaultCacheDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(base, "outpost")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
@@ -1152,11 +1165,10 @@ func processAlive(pid int) bool {
 // pidFilePath returns the path where startCmd records its pid so stopCmd
 // (and the duplicate-instance check) can find it later.
 func pidFilePath() (string, error) {
-	base, err := os.UserCacheDir()
+	dir, err := conf.DefaultCacheDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(base, "outpost")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}

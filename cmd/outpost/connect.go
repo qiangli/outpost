@@ -515,11 +515,11 @@ func buildElevateURL(server string, port int, protocol, host string) (string, er
 
 // sessionCookiePath returns the on-disk cache path for a given host.
 func sessionCookiePath(host string) (string, error) {
-	base, err := os.UserCacheDir()
+	base, err := conf.DefaultCacheDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(base, "outpost", "sessions")
+	dir := filepath.Join(base, "sessions")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}

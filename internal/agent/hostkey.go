@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
 // LoadOrCreateHostKey returns outpost's persistent SSH host identity.
@@ -57,11 +59,11 @@ func loadOrCreateHostKeyAt(path string) (ssh.Signer, error) {
 }
 
 func hostKeyPath() (string, error) {
-	dir, err := os.UserConfigDir()
+	dir, err := conf.DefaultConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "matrix", "ssh_host_ed25519"), nil
+	return filepath.Join(dir, "ssh_host_ed25519"), nil
 }
 
 func writeHostKeyAtomic(path string, data []byte) error {

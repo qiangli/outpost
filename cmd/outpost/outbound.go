@@ -29,6 +29,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 )
 
@@ -570,11 +571,10 @@ func formatTTL(secs int64) string {
 // adminCookiePath returns ~/.cache/outpost/admin.cookie, creating the
 // parent dir on demand. Mirrors sessionCookiePath in connect.go.
 func adminCookiePath() (string, error) {
-	base, err := os.UserCacheDir()
+	dir, err := conf.DefaultCacheDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(base, "outpost")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}

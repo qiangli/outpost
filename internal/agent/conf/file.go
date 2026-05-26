@@ -554,15 +554,6 @@ func (fc *FileConfig) OllamaPoolOn() bool {
 	return *fc.OllamaPoolEnabled
 }
 
-// DefaultConfigPath is ~/.config/matrix/agent.json (XDG_CONFIG_HOME honored).
-func DefaultConfigPath() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "matrix", "agent.json"), nil
-}
-
 // SaveFile writes fc atomically (write+rename) to path, creating parents.
 func SaveFile(path string, fc *FileConfig) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
