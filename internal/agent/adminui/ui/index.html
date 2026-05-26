@@ -431,12 +431,13 @@ function buildMCPCredentialsSection() {
   wrap.append(el('legend', {}, 'Agent tool credentials (MCP)'));
   wrap.append(el('p', {class: 'hint'},
     'Configure any MCP-capable agent (Claude Code, Windsurf, etc.) ' +
-    'to drive this outpost via the Model Context Protocol. Paste ' +
-    'the snippet below into your tool’s .mcp.json.'));
+    'to drive this outpost via the Model Context Protocol. The ' +
+    'endpoint + bearer are below; the full .mcp.json snippet sits ' +
+    'inside the "Show snippet" twister to keep the page calm.'));
 
   const endpointVal = el('code', {style: 'word-break:break-all'}, 'loading…');
   const tokenVal    = el('code', {style: 'word-break:break-all'}, '•'.repeat(20));
-  const snippet     = el('pre', {style: 'background:#f6f8fa;padding:0.6rem;border-radius:4px;overflow-x:auto;font-size:0.85em'}, 'loading…');
+  const snippet     = el('pre', {style: 'background:#f6f8fa;padding:0.6rem;border-radius:4px;overflow-x:auto;font-size:0.85em;margin:0.5rem 0 0'}, 'loading…');
 
   let liveToken = '';
   let revealed = false;
@@ -506,7 +507,17 @@ function buildMCPCredentialsSection() {
     tokenVal,
     el('span', {style: 'display:inline-flex;gap:0.3rem'}, revealBtn, copyToken, rotateBtn),
   );
-  wrap.append(rows, snippet);
+
+  // Snippet sits inside a collapsed <details> so the Pair tab
+  // doesn't show a big gray pre-block at rest. Operators wanting
+  // to copy-paste expand the twister once.
+  const snippetWrap = el('details', {style: 'margin-top:0.6rem'});
+  snippetWrap.append(
+    el('summary', {style: 'cursor:pointer;font-size:0.9rem;opacity:0.85'},
+      'Show .mcp.json snippet'),
+    snippet,
+  );
+  wrap.append(rows, snippetWrap);
 
   // Async fetch — the SPA renders the wrap synchronously with
   // placeholders, then fills in once /api/mcp/credentials returns.
