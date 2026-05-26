@@ -653,6 +653,107 @@ function buildAdvancedSettingsSection(cfg) {
   return wrap;
 }
 
+// renderSuggestions populates a container with the auto-detected
+// app candidates returned by /api/apps/suggestions. Each row has
+// the human-friendly name, a hint with the discovery source/note,
+// and either a one-click [Add] button (when not yet registered) or
+// a "(already registered)" tag. Re-renders the page after a
+// successful add so the new app appears in the list immediately.
+function renderSuggestions(host, suggestions) {
+  host.innerHTML = '';
+  if (suggestions.length === 0) {
+    host.append(el('p', {class: 'hint'}, 'No suggestions on this host.'));
+    return;
+  }
+  for (const s of suggestions) {
+    const row = el('div', {class: 'item-row'});
+    const target = s.scheme === 'unix' || s.scheme === 'npipe'
+      ? `${s.scheme}://${s.socket || ''}`
+      : `${s.scheme || 'http'}://${s.host || '127.0.0.1'}:${s.port || ''}`;
+    row.append(
+      el('span', {class: 'label', style: 'min-width:9rem'}, s.name),
+      el('span', {class: 'grow', style: 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.85em'}, target),
+      el('span', {class: 'hint'}, s.note || s.source || ''),
+    );
+    if (s.existing) {
+      row.append(el('span', {class: 'hint'}, '(already registered)'));
+    } else {
+      const addBtn = el('button', {type: 'button'}, 'Add');
+      addBtn.addEventListener('click', async () => {
+        addBtn.disabled = true;
+        try {
+          await api('POST', '/api/apps', {
+            name: s.name,
+            scheme: s.scheme,
+            host: s.host || '',
+            port: s.port || 0,
+            socket: s.socket || '',
+            enabled: true,
+            require_login: false,
+          });
+          msg('ok', `Registered ${s.name}.`);
+          render();
+        } catch (e) {
+          addBtn.disabled = false;
+          msg('err', e.message || 'Add failed');
+        }
+      });
+      row.append(addBtn);
+    }
+    host.append(row);
+  }
+}
+
+// populateProvSubBlock fills a per-app sub-block with the
+// provisioning bearer (reveal / copy / rotate) and a one-line help
+// hint pointing at the relay URL. Called lazily on first chevron
+// expand for SSO-enabled apps. Mirrors the MCP-credentials panel on
+// the Pair tab — same reveal/mask/rotate affordances.
+function populateProvSubBlock(parent, a) {
+  const mask = t => t.replace(/./g, '•').slice(0, 16) + '…';
+  const tokenSpan = el('code', {style: 'word-break:break-all'}, mask(a.provisioning_token));
+  let revealed = false;
+  const revealBtn = el('button', {type: 'button', class: 'secondary'}, 'Reveal');
+  revealBtn.addEventListener('click', () => {
+    revealed = !revealed;
+    tokenSpan.textContent = revealed ? a.provisioning_token : mask(a.provisioning_token);
+    revealBtn.textContent = revealed ? 'Hide' : 'Reveal';
+  });
+  const copyBtn = el('button', {type: 'button', class: 'secondary'}, 'Copy');
+  copyBtn.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(a.provisioning_token); msg('ok', 'Token copied to clipboard.'); }
+    catch (e) { msg('err', 'Copy failed: ' + (e.message || e)); }
+  });
+  const rotateBtn = el('button', {type: 'button', class: 'secondary danger'}, 'Rotate');
+  rotateBtn.addEventListener('click', async () => {
+    const ok = await confirmDialog({
+      title: `Rotate provisioning token for "${a.name}"?`,
+      description: 'The current token is invalidated immediately. Reconfigure the app with the new value.',
+      confirmText: 'Rotate',
+    });
+    if (!ok) return;
+    try {
+      await api('POST', '/api/apps/' + encodeURIComponent(a.name) + '/provisioning-token/rotate');
+      msg('ok', 'Token rotated.');
+      render();
+    } catch (e) { msg('err', e.message || 'Rotate failed'); }
+  });
+  const provURL = `${location.origin}/_periscope/apps/${encodeURIComponent(a.name)}/users`;
+  parent.append(
+    el('div', {class: 'item-row'},
+      el('span', {class: 'hint'}, 'Provisioning bearer'),
+      tokenSpan,
+      revealBtn,
+      copyBtn,
+      rotateBtn,
+    ),
+    el('div', {style: 'opacity:0.65;font-size:0.85em;margin-top:0.2rem'},
+      el('span', {class: 'hint'},
+        'App POSTs to ', el('code', {}, provURL),
+        ' with ', el('code', {}, 'Authorization: Bearer <token>'), ' to push new users.')),
+  );
+}
+
 // buildSSHSubBlock populates the children that hide behind the SSH
 // twister: -L / -R / -A toggles, the SFTP subsystem toggle, and the
 // ssh_forward_sockets allowlist. All gate on cfg.ssh_enabled —
@@ -843,8 +944,9 @@ function buildPodmanSubBlock(parent, cfg, status) {
 }
 
 // buildOllamaSubBlock populates the children behind the Ollama
-// twister — currently just the LLM-pool participation toggle, which
-// only makes sense when the local Ollama daemon is actually wired.
+// twister: the LLM-pool participation toggle plus (when the pool is
+// running) the live watcher diagnostic. All Ollama-related state in
+// one place — matches the SSH/Podman twister pattern.
 function buildOllamaSubBlock(parent, cfg, status) {
   const ollamaOn = !!(cfg.ollama && cfg.ollama.enabled);
   const row = el('div', {class: 'item-row' + (!ollamaOn ? ' dim' : '')});
@@ -868,6 +970,44 @@ function buildOllamaSubBlock(parent, cfg, status) {
   );
   if (!ollamaOn) row.append(el('span', {class: 'hint'}, '(enable Ollama first)'));
   parent.append(row);
+
+  // LLM pool diagnostic — render only when pool participation is
+  // actually wired. Shows the watcher's last-push state + the live
+  // in-flight counter so the operator can confirm cloudbox is
+  // hearing from this outpost without log-spelunking. Moved here
+  // from a standalone block beneath Built-ins so all Ollama state
+  // lives behind one twister.
+  const pool = cfg.llm_pool || {};
+  if (pool.enabled) {
+    const poolBox = el('div', {style: 'margin-top:0.6rem;padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;background:#2563eb11;font-size:0.85rem;'});
+    poolBox.append(el('div', {style: 'font-weight:600;margin-bottom:0.3rem'}, 'Pool diagnostic'));
+    const grid = el('div', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.2rem 0.75rem'});
+    const kv = (k, v) => {
+      grid.append(el('span', {style: 'opacity:0.7'}, k));
+      grid.append(el('span', {style: 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace'}, v));
+    };
+    const ago = ts => {
+      if (!ts || ts.startsWith('0001')) return '— (never)';
+      const t = new Date(ts);
+      const s = Math.max(0, Math.round((Date.now() - t.getTime()) / 1000));
+      if (s < 60) return s + 's ago';
+      if (s < 3600) return Math.round(s/60) + 'm ago';
+      return Math.round(s/3600) + 'h ago';
+    };
+    kv('Watcher', pool.running ? 'running' : 'stopped');
+    kv('Last push', ago(pool.last_push_at) + (pool.last_models != null ? ` (${pool.last_models} models)` : ''));
+    kv('Pushes', String(pool.push_count || 0));
+    if (pool.max_parallel) {
+      kv('In flight', `${pool.in_flight || 0} / ${pool.max_parallel}`);
+    }
+    if (pool.last_error) {
+      kv('Last error', pool.last_error);
+    }
+    if (pool.cloudbox_url) kv('Cloudbox', pool.cloudbox_url);
+    if (pool.ollama_url)   kv('Ollama',   pool.ollama_url);
+    poolBox.append(grid);
+    parent.append(poolBox);
+  }
 }
 
 function renderMain(status, cfg) {
@@ -1030,43 +1170,9 @@ function renderMain(status, cfg) {
   built.append(el('p', {style: 'font-size:0.8rem;opacity:0.7;margin-top:0.8rem'},
     'Changes save automatically. Toggling a built-in restarts the outpost. Podman/Ollama require the matching daemon to be running on this host.'));
 
-  // LLM pool diagnostic — render only when pool is enabled. Shows
-  // the watcher's last-push state + the live in-flight counter so the
-  // operator can confirm cloudbox is hearing from this outpost without
-  // sqlite-spelunking.
-  const pool = cfg.llm_pool || {};
-  if (pool.enabled) {
-    const poolBox = el('div', {style: 'margin-top:0.8rem;padding:0.6rem 0.75rem;border:1px solid #8884;border-radius:6px;background:#2563eb11;font-size:0.85rem;'});
-    poolBox.append(el('div', {style: 'font-weight:600;margin-bottom:0.35rem'}, 'LLM pool status'));
-    const grid = el('div', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.2rem 0.75rem'});
-    const kv = (k, v) => {
-      grid.append(el('span', {style: 'opacity:0.7'}, k));
-      grid.append(el('span', {style: 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace'}, v));
-    };
-    const ago = ts => {
-      if (!ts || ts.startsWith('0001')) return '— (never)';
-      const t = new Date(ts);
-      const s = Math.max(0, Math.round((Date.now() - t.getTime()) / 1000));
-      if (s < 60) return s + 's ago';
-      if (s < 3600) return Math.round(s/60) + 'm ago';
-      return Math.round(s/3600) + 'h ago';
-    };
-    kv('Watcher', pool.running ? 'running' : 'stopped');
-    kv('Last push', ago(pool.last_push_at) + (pool.last_models != null ? ` (${pool.last_models} models)` : ''));
-    kv('Pushes', String(pool.push_count || 0));
-    if (pool.max_parallel) {
-      kv('In flight', `${pool.in_flight || 0} / ${pool.max_parallel}`);
-    }
-    if (pool.last_error) {
-      kv('Last error', pool.last_error);
-    }
-    if (pool.cloudbox_url) kv('Cloudbox', pool.cloudbox_url);
-    if (pool.ollama_url)   kv('Ollama',   pool.ollama_url);
-    poolBox.append(grid);
-    built.append(poolBox);
-  }
-
   panelInbound.append(built);
+  // (LLM pool diagnostic was folded into the Ollama twister above —
+  // all Ollama-related state in one place.)
 
   // (The Cluster Status section was folded into the Podman twister
   // above so all cluster-related controls live behind one twister
@@ -1161,61 +1267,30 @@ function renderMain(status, cfg) {
         catch (e) { msg('err', e.message); }
       }}, 'Remove'),
     );
-    appsList.append(row);
-    // Provisioning-token disclosure for SSO-enabled apps. Sits below
-    // the main row as a dimmer details strip so it doesn't crowd the
-    // primary control affordances. Reveal-on-click avoids shoulder-
-    // surfing leaks of the bearer; Copy fills the clipboard; Rotate
-    // invalidates the existing token and mints a new one.
+    // SSO-enabled apps get a chevron + collapsed bearer panel —
+    // same twister pattern as the SSH/Podman nests. Keeps the apps
+    // list one-line-per-app at rest; the bearer surface is one
+    // click away when the operator needs to copy/rotate it.
+    let provSubBlock = null;
     if (a.trust_cloud_identity && a.provisioning_token) {
-      const provRow = el('div', {class: 'item-row', style: 'opacity:0.85'});
-      const tokenSpan = el('code', {style: 'word-break:break-all'},
-        a.provisioning_token.replace(/./g, '•').slice(0, 16) + '…');
-      let revealed = false;
-      const revealBtn = el('button', {class: 'secondary', onclick: () => {
-        revealed = !revealed;
-        tokenSpan.textContent = revealed ? a.provisioning_token
-          : a.provisioning_token.replace(/./g, '•').slice(0, 16) + '…';
-        revealBtn.textContent = revealed ? 'Hide' : 'Reveal';
-      }}, 'Reveal');
-      const copyBtn = el('button', {class: 'secondary', onclick: async () => {
-        try {
-          await navigator.clipboard.writeText(a.provisioning_token);
-          msg('ok', 'Token copied to clipboard.');
-        } catch (e) {
-          msg('err', 'Copy failed: ' + (e.message || e));
-        }
-      }}, 'Copy');
-      const rotateBtn = el('button', {class: 'secondary danger', onclick: async () => {
-        const ok = await confirmDialog({
-          title: `Rotate provisioning token for "${a.name}"?`,
-          description: 'The current token is invalidated immediately. Reconfigure the app with the new value.',
-          confirmText: 'Rotate',
-        });
-        if (!ok) return;
-        try {
-          await api('POST', '/api/apps/' + encodeURIComponent(a.name) + '/provisioning-token/rotate');
-          msg('ok', 'Token rotated.');
-          render();
-        } catch (e) {
-          msg('err', e.message || 'Rotate failed');
-        }
-      }}, 'Rotate');
-      const provURL = `${location.origin}/_periscope/apps/${encodeURIComponent(a.name)}/users`;
-      provRow.append(
-        el('span', {class: 'hint'}, 'Provisioning bearer'),
-        tokenSpan,
-        revealBtn,
-        copyBtn,
-        rotateBtn,
-      );
-      const provHelp = el('div', {class: 'item-row', style: 'opacity:0.65; font-size:0.85em'},
-        el('span', {class: 'hint'},
-          'App POSTs to ', el('code', {}, provURL),
-          ' with ', el('code', {}, 'Authorization: Bearer <token>'), ' to push new users.'));
-      appsList.append(provRow);
-      appsList.append(provHelp);
+      const chev = el('button', {
+        type: 'button', class: 'chevron',
+        'aria-expanded': 'false',
+        title: 'Show provisioning bearer',
+      }, '▶');
+      provSubBlock = el('div', {class: 'item-subblock hidden'});
+      let built = false;
+      chev.addEventListener('click', () => {
+        if (!built) { populateProvSubBlock(provSubBlock, a); built = true; }
+        const open = provSubBlock.classList.contains('hidden');
+        provSubBlock.classList.toggle('hidden', !open);
+        chev.setAttribute('aria-expanded', open ? 'true' : 'false');
+        chev.title = open ? 'Hide provisioning bearer' : 'Show provisioning bearer';
+      });
+      row.append(chev);
     }
+    appsList.append(row);
+    if (provSubBlock) appsList.append(provSubBlock);
   }
   if ((cfg.apps || []).length === 0) {
     appsList.append(el('div', {class: 'item-row', style: 'opacity:0.6'}, 'No custom apps yet.'));
@@ -1277,7 +1352,7 @@ function renderMain(status, cfg) {
   // backed by an auto-generated per-app bearer.
   const appTrustCloudInput = el('input', {name: 'trust_cloud_identity', type: 'checkbox'});
 
-  addForm.append(el('h2', {style: 'margin-bottom: 0.2rem;'}, 'Add app'),
+  addForm.append(
     el('label', {}, 'Name', el('input', {name: 'name', type: 'text', required: true,
       placeholder: 'e.g. grafana'})),
     el('label', {}, 'Icon URL', el('input', {name: 'icon', type: 'url',
@@ -1325,7 +1400,44 @@ function renderMain(status, cfg) {
       msg('err', e.message || 'Add failed');
     }
   });
-  custom.append(addForm);
+  // Wrap the manual add form + auto-detected suggestions in a single
+  // <details> twister opened by a "+ Add app" summary. Suggestions
+  // come from /api/apps/suggestions (probes well-known sockets +
+  // ~/.agents/ycode/manifest.json) and offer one-click register
+  // buttons for entries that don't already exist — surfacing a
+  // capability that previously lived only in the CLI / MCP.
+  const addPanel = el('details', {style: 'margin-top:0.6rem'});
+  addPanel.append(el('summary',
+    {style: 'cursor:pointer;font-size:0.95rem;font-weight:600;padding:0.4rem 0'},
+    '+ Add app'));
+
+  // Suggestions sub-panel. Renders async on first expand to avoid
+  // a probe on every page load when the operator never plans to
+  // touch this section.
+  const suggBox = el('div', {style: 'margin:0.5rem 0 0.8rem;padding:0.6rem 0.75rem;border:1px solid #8884;border-radius:6px;background:#10b98111;font-size:0.9rem;'});
+  suggBox.append(el('div', {style: 'font-weight:600;margin-bottom:0.35rem'}, 'Detected on this host'));
+  const suggList = el('div', {});
+  suggBox.append(suggList,
+    el('p', {class: 'hint', style: 'margin-top:0.4rem'},
+      'Auto-discovered from well-known sockets and ~/.agents/ycode/manifest.json. ' +
+      'One click registers the entry as a custom app.'));
+
+  let suggLoaded = false;
+  addPanel.addEventListener('toggle', async () => {
+    if (!addPanel.open || suggLoaded) return;
+    suggLoaded = true;
+    try {
+      const res = await api('GET', '/api/apps/suggestions');
+      renderSuggestions(suggList, res.suggestions || []);
+    } catch (e) {
+      suggList.append(el('p', {class: 'hint'}, 'Suggestions unavailable: ' + (e.message || 'fetch failed')));
+    }
+  });
+
+  addPanel.append(suggBox);
+  addPanel.append(el('h3', {style: 'margin:0.6rem 0 0.4rem;font-size:0.95rem'}, 'Manual add'));
+  addPanel.append(addForm);
+  custom.append(addPanel);
   panelInbound.append(custom);
 
   // Outbound — local mount paths that proxy through cloudbox to remote
