@@ -71,6 +71,36 @@
   .key-hint { font-family: ui-monospace, SFMono-Regular, monospace;
               font-size: 0.7rem; opacity: 0.55; margin-left: 0.4rem;
               padding: 0.05rem 0.3rem; background: #f0f1f3; border-radius: 3px; }
+
+  /* Disclosure chevron used to expand/collapse nested settings under
+     parent built-ins (SSH ▶ -L/-R/-A/sftp/forward-sockets;
+     Podman ▶ cluster/kubeconfig). Triangle rotates 90° on open.
+     Kept small + subtle so it doesn't compete with the toggle. */
+  .chevron {
+    background: none; border: none; cursor: pointer;
+    font-size: 0.7rem; line-height: 1;
+    opacity: 0.55; color: inherit;
+    padding: 0.3rem 0.5rem; margin-left: 0.2rem;
+    transition: transform 0.18s ease, opacity 0.18s ease;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .chevron:hover { opacity: 0.95; }
+  .chevron[aria-expanded="true"] { transform: rotate(90deg); opacity: 0.9; }
+
+  /* Indented container for nested rows under a twistered parent.
+     Thin left accent so the visual hierarchy reads at a glance. */
+  .item-subblock {
+    margin: 0.15rem 0 0.4rem 1.8rem;
+    padding: 0.5rem 0 0.5rem 1rem;
+    border-left: 2px solid #e3e6ea;
+    display: flex; flex-direction: column; gap: 0.25rem;
+  }
+  .item-subblock.hidden { display: none; }
+  .item-subblock .item-row { padding: 0.25rem 0; }
+  .item-subblock h4 {
+    margin: 0.4rem 0 0.2rem; font-size: 0.85rem;
+    font-weight: 600; opacity: 0.75;
+  }
   /* iOS-style toggle switch wrapping a hidden checkbox. */
   .switch { position: relative; display: inline-block; width: 36px; height: 20px; flex: 0 0 auto; }
   .switch input { opacity: 0; width: 0; height: 0; }
@@ -535,25 +565,24 @@ function buildMCPCredentialsSection() {
   return wrap;
 }
 
-// buildAdvancedSettingsSection covers the persisted settings that
-// don't fit any of the other panels: network bind addresses, the
-// admin-users allowlist, and the SSH channel/socket allow flags.
-// All save through admincore (POST /api/config/networking and
-// /api/config/builtins); changes trigger a restart on a paired host.
+// buildAdvancedSettingsSection covers the persisted settings on the
+// Pair tab that don't fit pairing or MCP-credentials boxes: network
+// bind addresses + the OS-auth admin allowlist. SSH channel knobs
+// live under the SSH twister in the Inbound tab — they're SSH server
+// internals, so grouping them with SSH is clearer than scattering
+// them in a generic "advanced" bucket.
 //
 // Rendered as a collapsed <details> twister so the Pair tab stays
 // focused on the common path (pair + MCP credentials) and only
-// reveals these knobs when the operator clicks. Mirrors the
-// "Advanced: paste a kubeconfig" disclosure in the Cluster section.
+// reveals these knobs when the operator clicks.
 function buildAdvancedSettingsSection(cfg) {
   const wrap = el('details', {style: 'margin-top:1rem'});
   wrap.append(el('summary',
     {style: 'cursor:pointer;font-size:0.95rem;font-weight:600'},
-    'Advanced settings (networking, admin allowlist, SSH advanced)'));
+    'Advanced settings (networking, admin allowlist)'));
   wrap.append(el('p', {class: 'hint', style: 'margin-top:0.6rem'},
-    'Network binds, OS-auth admin allowlist, and the SSH channel / ' +
-    'socket allow flags. Changes here restart the daemon when the ' +
-    'host is paired.'));
+    'Network binds and the OS-auth admin allowlist. ' +
+    'Changes here restart the daemon when the host is paired.'));
 
   // --- Networking row group -------------------------------------------------
   const netForm = el('form', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.4rem 0.8rem;align-items:center'});
@@ -606,53 +635,6 @@ function buildAdvancedSettingsSection(cfg) {
     }
   });
 
-  // --- SSH advanced toggles ------------------------------------------------
-  const sshList = el('div', {class: 'item-list'});
-  const sshRows = [
-    {key: 'ssh_allow_remote_forward', fileKey: 'ssh_allow_remote_forward', label: 'SSH remote port forwarding (-R)', enabled: !!cfg.ssh_allow_remote_forward},
-    {key: 'ssh_allow_agent_forward',  fileKey: 'ssh_allow_agent_forward',  label: 'SSH agent forwarding (-A)',       enabled: !!cfg.ssh_allow_agent_forward},
-  ];
-  for (const item of sshRows) {
-    const row = el('div', {class: 'item-row'});
-    const sw = switchEl({checked: item.enabled});
-    sw.input.addEventListener('change', async () => {
-      const newVal = sw.input.checked;
-      sw.input.disabled = true;
-      try {
-        await api('POST', '/api/config/builtins', {[item.key]: newVal});
-        msg('ok', `${item.label} ${newVal ? 'on' : 'off'} — restarting…`);
-        pollUntilUp();
-      } catch (e) {
-        sw.input.checked = !newVal;
-        sw.input.disabled = false;
-        msg('err', e.message || 'Save failed');
-      }
-    });
-    row.append(
-      sw.wrap,
-      el('span', {class: 'label'}, item.label, ' ', el('code', {class: 'key-hint'}, item.fileKey)),
-    );
-    sshList.append(row);
-  }
-
-  // --- SSH forward-sockets allowlist ---------------------------------------
-  const sshSocketsList = (cfg.ssh_forward_sockets || []).join('\n');
-  const sshSocketsIn = el('textarea', {rows: 3, placeholder: 'one socket path per line; empty = auto-detect (podman/docker sockets)'}, sshSocketsList);
-  const sshSocketsBtn = el('button', {type: 'button'}, 'Save forward-sockets');
-  sshSocketsBtn.addEventListener('click', async () => {
-    const sockets = sshSocketsIn.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-    sshSocketsBtn.disabled = true;
-    try {
-      await api('POST', '/api/config/builtins', {ssh_forward_sockets: sockets});
-      msg('ok', 'Forward-sockets saved — restarting…');
-      pollUntilUp();
-    } catch (e) {
-      msg('err', e.message || 'Save failed');
-    } finally {
-      sshSocketsBtn.disabled = false;
-    }
-  });
-
   wrap.append(
     el('h3', {style: 'margin:1rem 0 0.4rem;font-size:1rem'}, 'Networking'),
     netForm,
@@ -667,17 +649,225 @@ function buildAdvancedSettingsSection(cfg) {
       'Empty list = legacy behavior (anyone who proves the OS password is admin).'),
     adminUsersIn,
     el('div', {style: 'margin-top:0.4rem'}, adminUsersBtn),
-
-    el('h3', {style: 'margin:1.2rem 0 0.4rem;font-size:1rem'}, 'SSH advanced'),
-    sshList,
-    el('p', {class: 'hint', style: 'margin-top:0.4rem;margin-bottom:0.2rem'},
-      'Additional unix-socket paths to allow for direct-streamlocal forwards ' +
-      '(podman --connection=, ssh -L localport:/remote.sock). ' +
-      'Empty = the auto-detected podman/docker sockets only.'),
-    sshSocketsIn,
-    el('div', {style: 'margin-top:0.4rem'}, sshSocketsBtn),
   );
   return wrap;
+}
+
+// buildSSHSubBlock populates the children that hide behind the SSH
+// twister: -L / -R / -A toggles, the SFTP subsystem toggle, and the
+// ssh_forward_sockets allowlist. All gate on cfg.ssh_enabled —
+// they're inert in the daemon when SSH is off.
+function buildSSHSubBlock(parent, cfg, status) {
+  const sshOn = !!cfg.ssh_enabled;
+  const rows = [
+    {key: 'ssh_allow_local_forward',  fileKey: 'ssh_allow_local_forward',  label: 'SSH local port forwarding (-L)',  enabled: !!cfg.ssh_allow_local_forward},
+    {key: 'ssh_allow_remote_forward', fileKey: 'ssh_allow_remote_forward', label: 'SSH remote port forwarding (-R)', enabled: !!cfg.ssh_allow_remote_forward},
+    {key: 'ssh_allow_agent_forward',  fileKey: 'ssh_allow_agent_forward',  label: 'SSH agent forwarding (-A)',       enabled: !!cfg.ssh_allow_agent_forward},
+    {key: 'sftp',                     fileKey: 'sftp_enabled',             label: 'SFTP subsystem (scp/sftp)',       enabled: !!cfg.sftp_enabled},
+  ];
+  for (const item of rows) {
+    const row = el('div', {class: 'item-row' + (!sshOn ? ' dim' : '')});
+    const sw = switchEl({checked: item.enabled && sshOn, disabled: !sshOn});
+    sw.input.addEventListener('change', async () => {
+      const newVal = sw.input.checked;
+      sw.input.disabled = true;
+      try {
+        await api('POST', '/api/config/builtins', {[item.key]: newVal});
+        msg('ok', `${item.label} ${newVal ? 'on' : 'off'} — restarting…`);
+        if (status && status.configured) pollUntilUp();
+      } catch (e) {
+        sw.input.checked = !newVal;
+        sw.input.disabled = false;
+        msg('err', e.message || 'Save failed');
+      }
+    });
+    row.append(
+      sw.wrap,
+      el('span', {class: 'label'}, item.label, ' ', el('code', {class: 'key-hint'}, item.fileKey)),
+    );
+    if (!sshOn) row.append(el('span', {class: 'hint'}, '(enable SSH first)'));
+    parent.append(row);
+  }
+
+  // ssh_forward_sockets allowlist — a textarea, not a toggle.
+  parent.append(el('h4', {}, 'Forward-sockets allowlist ', el('code', {class: 'key-hint'}, 'ssh_forward_sockets')));
+  const sockHint = el('p', {class: 'hint', style: 'margin:0.1rem 0 0.3rem'},
+    'Unix-socket paths to allow for direct-streamlocal forwards ' +
+    '(podman --connection=, ssh -L localport:/remote.sock). ' +
+    'Empty = the auto-detected podman/docker sockets only.');
+  const sockInput = el('textarea', {
+    rows: 3,
+    placeholder: 'one socket path per line; empty = auto-detect',
+    disabled: !sshOn,
+    style: !sshOn ? 'opacity:0.6' : '',
+  }, (cfg.ssh_forward_sockets || []).join('\n'));
+  const sockBtn = el('button', {type: 'button', disabled: !sshOn}, 'Save forward-sockets');
+  sockBtn.addEventListener('click', async () => {
+    const sockets = sockInput.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    sockBtn.disabled = true;
+    try {
+      await api('POST', '/api/config/builtins', {ssh_forward_sockets: sockets});
+      msg('ok', 'Forward-sockets saved — restarting…');
+      if (status && status.configured) pollUntilUp();
+    } catch (e) {
+      msg('err', e.message || 'Save failed');
+    } finally {
+      sockBtn.disabled = !sshOn;
+    }
+  });
+  parent.append(sockHint, sockInput, el('div', {style: 'margin-top:0.4rem'}, sockBtn));
+}
+
+// buildPodmanSubBlock populates the children behind the Podman
+// twister: cluster status banner + cluster toggle + kubeconfig YAML
+// editor + node-name + Save/Save+Join/Leave buttons. The cluster
+// toggle gates on having credentials pasted (has_token); the
+// kubeconfig editor stays editable but the save buttons gate on
+// cfg.podman_enabled — pasting a config with podman off doesn't
+// help (the runner needs the local socket).
+function buildPodmanSubBlock(parent, cfg, status) {
+  const podmanOn = !!(cfg.podman && cfg.podman.enabled);
+  const cv = cfg.cluster || {};
+
+  // --- cluster status banner ----------------------------------------------
+  parent.append(el('h4', {}, 'Cluster (virtual-kubelet → podman) ', el('code', {class: 'key-hint'}, 'cluster.enabled')));
+  const banner = el('div', {class: 'item-row'});
+  if (cv.has_token) {
+    banner.append(el('span', {class: 'grow'},
+      el('span', {}, 'Joined as '),
+      el('code', {}, cv.node_name || '(unset)'),
+      el('span', {}, ' → '),
+      el('code', {}, cv.api_url || ''),
+      el('span', {class: 'hint', style: 'margin-left:0.5rem'},
+        cv.has_ca ? '(custom CA)' : '(system roots)')));
+    const leave = el('button', {type: 'button'}, 'Leave cluster');
+    leave.addEventListener('click', async () => {
+      const ok = await confirmDialog({
+        title: 'Leave cluster?',
+        description: 'Clear cluster credentials and stop joining on next boot. This restarts the daemon.',
+        confirmText: 'Leave',
+      });
+      if (!ok) return;
+      leave.disabled = true;
+      try {
+        await api('DELETE', '/api/cluster/kubeconfig');
+        msg('ok', 'Cluster credentials cleared — restarting…');
+        if (status && status.configured && cv.enabled) pollUntilUp();
+      } catch (e) {
+        leave.disabled = false;
+        msg('err', e.message || 'Clear failed');
+      }
+    });
+    banner.append(leave);
+  } else if (cv.enabled) {
+    banner.append(el('span', {class: 'grow hint'},
+      'Enabled — outpost will fetch a kubeconfig from cloudbox on next start.'));
+  } else {
+    banner.append(el('span', {class: 'grow hint'},
+      podmanOn ? 'Disabled. Toggle Cluster below to join (cloudbox auto-fetches a kubeconfig using the saved access_token).' :
+                 'Disabled. Enable Podman first — cluster mode dials the local podman socket.'));
+  }
+  parent.append(banner);
+
+  // --- cluster toggle row -------------------------------------------------
+  const clusterRow = el('div', {class: 'item-row' + (!podmanOn ? ' dim' : '')});
+  const clusterOn = !!(cv && cv.enabled);
+  const clusterGateOK = podmanOn && cv.has_token;
+  const csw = switchEl({checked: clusterOn && clusterGateOK, disabled: !clusterGateOK});
+  csw.input.addEventListener('change', async () => {
+    const newVal = csw.input.checked;
+    csw.input.disabled = true;
+    try {
+      await api('POST', '/api/config/builtins', {cluster: newVal});
+      msg('ok', `Cluster ${newVal ? 'on' : 'off'} — restarting…`);
+      if (status && status.configured) pollUntilUp();
+    } catch (e) {
+      csw.input.checked = !newVal;
+      csw.input.disabled = false;
+      msg('err', e.message || 'Save failed');
+    }
+  });
+  clusterRow.append(
+    csw.wrap,
+    el('span', {class: 'label'}, 'Join cluster ', el('code', {class: 'key-hint'}, 'cluster.enabled')),
+  );
+  if (!podmanOn) {
+    clusterRow.append(el('span', {class: 'hint'}, '(enable Podman first)'));
+  } else if (!cv.has_token) {
+    clusterRow.append(el('span', {class: 'hint'}, '(paste a kubeconfig below first)'));
+  }
+  parent.append(clusterRow);
+
+  // --- kubeconfig editor (always visible inside the twister) --------------
+  parent.append(el('h4', {}, 'Kubeconfig (paste YAML for non-cloudbox clusters)'));
+  parent.append(el('p', {class: 'hint', style: 'margin:0.1rem 0 0.3rem'},
+    'For the cloudbox-managed flow you don\'t need to paste anything — flip Join cluster above ' +
+    'and outpost fetches its kubeconfig automatically using the saved access_token. ' +
+    'Token + CA never leave this machine.'));
+  const ta = el('textarea', {
+    rows: '6',
+    placeholder: '# Paste kubeconfig YAML, e.g. contents of /etc/rancher/k3s/k3s.yaml',
+    disabled: !podmanOn,
+    style: 'width:100%;font-family:monospace;font-size:0.85rem;' + (!podmanOn ? 'opacity:0.6' : ''),
+  });
+  const nodeOverride = el('input', {
+    type: 'text',
+    placeholder: 'Node name (default: agent name)',
+    disabled: !podmanOn,
+    style: 'width:50%;margin-right:0.5rem',
+  });
+  const save = el('button', {type: 'button', disabled: !podmanOn}, 'Save kubeconfig');
+  const saveAndJoin = el('button', {type: 'button', disabled: !podmanOn}, 'Save & join');
+  async function postKubeconfig(enable) {
+    const body = {kubeconfig: ta.value};
+    if (nodeOverride.value.trim()) body.node_name = nodeOverride.value.trim();
+    if (enable) body.enable = true;
+    save.disabled = true; saveAndJoin.disabled = true;
+    try {
+      const resp = await api('POST', '/api/cluster/kubeconfig', body);
+      msg('ok', enable ? 'Kubeconfig saved — joining cluster…' : 'Kubeconfig saved.');
+      if (resp.restarting) pollUntilUp();
+    } catch (e) {
+      msg('err', e.message || 'Save failed');
+    } finally {
+      save.disabled = !podmanOn;
+      saveAndJoin.disabled = !podmanOn;
+    }
+  }
+  save.addEventListener('click', () => postKubeconfig(false));
+  saveAndJoin.addEventListener('click', () => postKubeconfig(true));
+  parent.append(ta);
+  const btnRow = el('div', {style: 'margin-top:0.5rem;display:flex;align-items:center'});
+  btnRow.append(nodeOverride, save, el('span', {style: 'margin:0 0.4rem'}), saveAndJoin);
+  parent.append(btnRow);
+}
+
+// buildOllamaSubBlock populates the children behind the Ollama
+// twister — currently just the LLM-pool participation toggle, which
+// only makes sense when the local Ollama daemon is actually wired.
+function buildOllamaSubBlock(parent, cfg, status) {
+  const ollamaOn = !!(cfg.ollama && cfg.ollama.enabled);
+  const row = el('div', {class: 'item-row' + (!ollamaOn ? ' dim' : '')});
+  const sw = switchEl({checked: !!cfg.ollama_pool_enabled && ollamaOn, disabled: !ollamaOn});
+  sw.input.addEventListener('change', async () => {
+    const newVal = sw.input.checked;
+    sw.input.disabled = true;
+    try {
+      await api('POST', '/api/config/builtins', {ollama_pool: newVal});
+      msg('ok', `Ollama pool ${newVal ? 'on' : 'off'} — restarting…`);
+      if (status && status.configured) pollUntilUp();
+    } catch (e) {
+      sw.input.checked = !newVal;
+      sw.input.disabled = false;
+      msg('err', e.message || 'Save failed');
+    }
+  });
+  row.append(
+    sw.wrap,
+    el('span', {class: 'label'}, 'Share Ollama with LLM pool ', el('code', {class: 'key-hint'}, 'ollama_pool_enabled')),
+  );
+  if (!ollamaOn) row.append(el('span', {class: 'hint'}, '(enable Ollama first)'));
+  parent.append(row);
 }
 
 function renderMain(status, cfg) {
@@ -742,35 +932,23 @@ function renderMain(status, cfg) {
   //   key     — JSON field on POST /api/config/builtins (REST/MCP arg)
   //   fileKey — agent.json key (canonical name; usually `<key>_enabled`)
   //   label   — human-readable display
+  //   subBlock(parent, cfg) — optional; builds nested DOM (sub-toggles,
+  //     textareas, status banners) revealed by a chevron twister next
+  //     to the row. Used to nest SSH-channel knobs under SSH and the
+  //     cluster/kubeconfig surface under Podman.
   // The fileKey is rendered as a small subtext so an operator switching
   // between the SPA, the CLI (--<fileKey> minus _enabled), and the MCP
   // tool args / agent.json can match concepts up at a glance.
   const builtinRows = [
-    {key: 'shell',     fileKey: 'shell_enabled',     label: 'Shell',                          enabled: cfg.shell_enabled},
-    {key: 'desktop',   fileKey: 'desktop_enabled',   label: 'Desktop',                        enabled: cfg.desktop_enabled},
-    {key: 'clipboard', fileKey: 'clipboard_enabled', label: 'Clipboard',                      enabled: cfg.clipboard_enabled},
-    {key: 'ssh',       fileKey: 'ssh_enabled',       label: 'SSH',                            enabled: cfg.ssh_enabled},
-    {key: 'ssh_allow_local_forward', fileKey: 'ssh_allow_local_forward',
-     label: 'SSH local port forwarding (-L)', enabled: cfg.ssh_allow_local_forward},
-    {key: 'sftp',      fileKey: 'sftp_enabled',      label: 'SFTP subsystem (scp/sftp)',      enabled: cfg.sftp_enabled},
-    {key: 'podman',    fileKey: 'podman_enabled',    label: 'Podman',                         daemon: cfg.podman || {}},
-    {key: 'ollama',    fileKey: 'ollama_enabled',    label: 'Ollama',                         daemon: cfg.ollama || {}},
-    // Pool participation rides on Ollama — disabled (dimmed) when Ollama itself is off.
-    // Default is on whenever Ollama is on, so new operators contribute to the shared
-    // pool by enabling Ollama alone; explicit-off here keeps the local proxy private.
-    {key: 'ollama_pool', fileKey: 'ollama_pool_enabled',
-     label: 'Share Ollama with LLM pool',
-     enabled: !!cfg.ollama_pool_enabled, gatedBy: cfg.ollama || {}},
-    // Cluster row is gated by having credentials pasted (has_token).
-    // We re-use the same daemon-shape "gatedBy" by synthesizing one:
-    // 'enabled' on the gate means credentials are present, so the
-    // toggle becomes live. Hint text below tells the operator to paste
-    // a kubeconfig first.
-    {key: 'cluster', fileKey: 'cluster.enabled',
-     label: 'Cluster (virtual-kubelet → podman)',
-     enabled: !!(cfg.cluster && cfg.cluster.enabled),
-     gatedBy: {enabled: !!(cfg.cluster && cfg.cluster.has_token)},
-     gateHint: '(paste a kubeconfig below first)'},
+    {key: 'shell',     fileKey: 'shell_enabled',     label: 'Shell',     enabled: cfg.shell_enabled},
+    {key: 'desktop',   fileKey: 'desktop_enabled',   label: 'Desktop',   enabled: cfg.desktop_enabled},
+    {key: 'clipboard', fileKey: 'clipboard_enabled', label: 'Clipboard', enabled: cfg.clipboard_enabled},
+    {key: 'ssh',       fileKey: 'ssh_enabled',       label: 'SSH',       enabled: cfg.ssh_enabled,
+     subBlock: buildSSHSubBlock},
+    {key: 'podman',    fileKey: 'podman_enabled',    label: 'Podman',    daemon: cfg.podman || {},
+     subBlock: buildPodmanSubBlock},
+    {key: 'ollama',    fileKey: 'ollama_enabled',    label: 'Ollama',    daemon: cfg.ollama || {},
+     subBlock: buildOllamaSubBlock},
   ];
   for (const item of builtinRows) {
     const isDaemon = !!item.daemon;
@@ -823,7 +1001,30 @@ function renderMain(status, cfg) {
       // back-compat with rows that don't set one.
       row.append(el('span', {class: 'hint'}, item.gateHint || '(enable Ollama first)'));
     }
+    // If this row has nested settings, append a chevron + a collapsed
+    // sub-block container. The sub-block is built lazily on first
+    // expand so we never pay for DOM that the operator hasn't asked
+    // to see; once built, expand/collapse is just toggling .hidden.
+    let subContainer = null;
+    if (item.subBlock) {
+      const chev = el('button', {
+        type: 'button', class: 'chevron',
+        'aria-expanded': 'false',
+        title: 'Show nested settings',
+      }, '▶');
+      subContainer = el('div', {class: 'item-subblock hidden'});
+      let built = false;
+      chev.addEventListener('click', () => {
+        if (!built) { item.subBlock(subContainer, cfg, status); built = true; }
+        const open = subContainer.classList.contains('hidden');
+        subContainer.classList.toggle('hidden', !open);
+        chev.setAttribute('aria-expanded', open ? 'true' : 'false');
+        chev.title = open ? 'Hide nested settings' : 'Show nested settings';
+      });
+      row.append(chev);
+    }
     builtList.append(row);
+    if (subContainer) builtList.append(subContainer);
   }
   built.append(builtList);
   built.append(el('p', {style: 'font-size:0.8rem;opacity:0.7;margin-top:0.8rem'},
@@ -867,96 +1068,9 @@ function renderMain(status, cfg) {
 
   panelInbound.append(built);
 
-  // Cluster status section. The toggle above is the only consent
-  // gate; once flipped on, the outpost auto-fetches a kubeconfig
-  // from cloudbox on next boot using its existing access_token. This
-  // section just reports the current state. The paste-a-kubeconfig
-  // escape hatch lives below under "Advanced" — useful only for
-  // pointing outpost at a non-cloudbox cluster (e.g. local k3s for
-  // dev/PoC) or recovering from a cloudbox outage. Token + CA are
-  // never sent to the browser; we show presence flags only.
-  const cluster = el('fieldset', {});
-  cluster.append(el('legend', {}, 'Cluster status'));
-  const cv = cfg.cluster || {};
-  const summary = el('div', {class: 'item-row'});
-  if (cv.has_token) {
-    summary.append(el('span', {class: 'grow'},
-      el('span', {}, 'Joined as '),
-      el('code', {}, cv.node_name || '(unset)'),
-      el('span', {}, ' → '),
-      el('code', {}, cv.api_url || ''),
-      el('span', {class: 'hint', style: 'margin-left:0.5rem'},
-        cv.has_ca ? '(custom CA)' : '(system roots)')));
-    const leave = el('button', {type: 'button'}, 'Leave cluster');
-    leave.addEventListener('click', async () => {
-      if (!confirm('Clear cluster credentials and stop joining on next boot?')) return;
-      leave.disabled = true;
-      try {
-        await api('DELETE', '/api/cluster/kubeconfig');
-        msg('ok', 'Cluster credentials cleared — restarting…');
-        if (status.configured && cv.enabled) pollUntilUp();
-      } catch (e) {
-        leave.disabled = false;
-        msg('err', e.message || 'Clear failed');
-      }
-    });
-    summary.append(leave);
-  } else if (cv.enabled) {
-    summary.append(el('span', {class: 'grow hint'},
-      'Enabled — outpost will fetch a kubeconfig from cloudbox on next start.'));
-  } else {
-    summary.append(el('span', {class: 'grow hint'},
-      'Disabled. Flip the Cluster toggle above to join.'));
-  }
-  cluster.append(summary);
-
-  // Advanced: paste-a-kubeconfig escape hatch. Hidden behind a
-  // <details> so the common case (cloudbox-managed) doesn't see
-  // textarea + buttons it never needs. Open only when the operator
-  // is pointing outpost at a non-cloudbox cluster or recovering
-  // from cloudbox-side credential trouble.
-  const adv = el('details', {style: 'margin-top:0.8rem'});
-  adv.append(el('summary', {style: 'cursor:pointer;font-size:0.9rem;opacity:0.85'},
-    'Advanced: paste a kubeconfig (non-cloudbox clusters)'));
-  const ta = el('textarea', {
-    rows: '6',
-    placeholder: '# Paste kubeconfig YAML, e.g. contents of /etc/rancher/k3s/k3s.yaml',
-    style: 'width:100%;font-family:monospace;font-size:0.85rem;margin-top:0.5rem',
-  });
-  const nodeOverride = el('input', {
-    type: 'text',
-    placeholder: 'Node name (default: agent name)',
-    style: 'width:50%;margin-right:0.5rem',
-  });
-  const save = el('button', {type: 'button'}, 'Save kubeconfig');
-  const saveAndJoin = el('button', {type: 'button'}, 'Save & join');
-  async function postKubeconfig(enable) {
-    const body = {kubeconfig: ta.value};
-    if (nodeOverride.value.trim()) body.node_name = nodeOverride.value.trim();
-    if (enable) body.enable = true;
-    save.disabled = true; saveAndJoin.disabled = true;
-    try {
-      const resp = await api('POST', '/api/cluster/kubeconfig', body);
-      msg('ok', enable ? 'Kubeconfig saved — joining cluster…' : 'Kubeconfig saved.');
-      if (resp.restarting) pollUntilUp();
-    } catch (e) {
-      msg('err', e.message || 'Save failed');
-    } finally {
-      save.disabled = false; saveAndJoin.disabled = false;
-    }
-  }
-  save.addEventListener('click', () => postKubeconfig(false));
-  saveAndJoin.addEventListener('click', () => postKubeconfig(true));
-  adv.append(ta);
-  const btnRow = el('div', {style: 'margin-top:0.5rem;display:flex;align-items:center'});
-  btnRow.append(nodeOverride, save, el('span', {style: 'margin:0 0.4rem'}), saveAndJoin);
-  adv.append(btnRow);
-  adv.append(el('p', {style: 'font-size:0.8rem;opacity:0.7;margin-top:0.5rem'},
-    'For the cloudbox-managed flow you do not need to paste anything — flip the ' +
-    'Cluster toggle above and outpost fetches its kubeconfig automatically using ' +
-    'the saved access_token. Token + CA never leave this machine.'));
-  cluster.append(adv);
-  panelInbound.append(cluster);
+  // (The Cluster Status section was folded into the Podman twister
+  // above so all cluster-related controls live behind one twister
+  // alongside the dependency they require.)
 
   // Custom apps section — one row per app, target as a clickable link
   // (new tab), status as an auto-saving toggle switch.
