@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/qiangli/outpost/internal/agent/admincore"
+	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
 )
 
@@ -108,6 +110,17 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.`,
 				return fmt.Errorf("candidate is the same commit as the running daemon (%s) — pass --force to upgrade anyway", before.Build.Short())
 			}
 
+			// Phase 3.5: hardlink current → outpost.previous for rollback.
+			// Same retention contract the daemon Worker uses; keeping the
+			// CLI consistent so `outpost rollback` works after either path.
+			previous := before.BinaryPath + ".previous"
+			if err := upgrade.RetainPrevious(before.BinaryPath, previous); err != nil {
+				// Non-fatal — log and proceed. Rollback won't be available
+				// for this upgrade, but the upgrade itself can still
+				// complete. Mirrors the daemon Worker's behavior.
+				fmt.Printf("previous: WARN couldn't retain rollback target: %v\n", err)
+			}
+
 			// Phase 4: atomic rename. After this point os.Executable() on the
 			// daemon still resolves to the same path; subsequent execs (via
 			// the self-restart path) pick up the new binary.
@@ -116,6 +129,18 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.`,
 			}
 			swapped = true
 			fmt.Printf("swapped:  %s → %s\n", before.Build.Short(), newBuild.Short())
+
+			// Append a ledger entry so `outpost upgrade history` reflects
+			// CLI-driven swaps alongside cloudbox-pushed ones. Cache dir
+			// resolution mirrors the daemon's wiring in main.go.
+			if cacheDir, err := conf.ResolveCacheDir(); err == nil && cacheDir != "" {
+				_ = upgrade.NewLedger(filepath.Join(cacheDir, "upgrade.log")).Append(upgrade.LedgerEntry{
+					Step:    "swap_done",
+					FromSHA: before.Build.Short(),
+					ToSHA:   newBuild.Short(),
+					Detail:  "outpost upgrade (CLI)",
+				})
+			}
 
 			if noRestart {
 				fmt.Println("--no-restart set; daemon still running old build. Run `outpost restart` when ready.")

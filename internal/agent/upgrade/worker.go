@@ -207,7 +207,7 @@ func (w *Worker) run(ctx context.Context, env Envelope, binaryPath, fromSHA stri
 	}
 
 	previous := binaryPath + ".previous"
-	if err := retainPrevious(binaryPath, previous); err != nil {
+	if err := RetainPrevious(binaryPath, previous); err != nil {
 		// Rollback won't be available for this upgrade — but the
 		// upgrade itself can still proceed. The ledger records why.
 		_ = w.appendLedger(LedgerEntry{
@@ -240,10 +240,12 @@ func (w *Worker) run(ctx context.Context, env Envelope, binaryPath, fromSHA stri
 	// status push will carry the new sha).
 }
 
-// retainPrevious snapshots the running binary at "<binary>.previous"
+// RetainPrevious snapshots the running binary at "<binary>.previous"
 // before rename. Hardlink first (instant, single-fs); fall back to a
-// copy on cross-fs or filesystems without hardlink support.
-func retainPrevious(binary, previous string) error {
+// copy on cross-fs or filesystems without hardlink support. Exported
+// so the CLI's `outpost upgrade --local|--from` path can call it
+// before its own swap — both paths leave a rollback target on disk.
+func RetainPrevious(binary, previous string) error {
 	// Drop any older "previous" — we only keep one generation back.
 	// More than that would balloon disk usage for noisy upgrade
 	// cycles; rollback to N-2 is not a use case we're solving.
