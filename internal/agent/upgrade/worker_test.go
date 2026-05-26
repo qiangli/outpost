@@ -4,15 +4,19 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/qiangli/outpost/internal/agent"
 )
 
 // newWorker is a test helper that wires a Worker with sensible defaults:
@@ -159,6 +163,55 @@ func TestWorker_DedupsByReleaseID(t *testing.T) {
 	r2 := h.worker.Apply(context.Background(), env)
 	if r2.Status != StatusReplay {
 		t.Fatalf("second call: expected replay, got %v", r2.Status)
+	}
+}
+
+// failingVerifier is a test ArtifactVerifier that always refuses.
+type failingVerifier struct{ msg string }
+
+func (f failingVerifier) Verify(_ Envelope, _ string, _ agent.BuildInfo) error {
+	return errors.New(f.msg)
+}
+
+func TestWorker_VerifierRejectsCandidate(t *testing.T) {
+	h := newHarness(t)
+	// Wire a refusing verifier directly into the worker for this test.
+	h.worker.verifier = failingVerifier{msg: "signature missing"}
+
+	candidate := fakeOutpostBinary(t, `{"commit":"def56781234","go_version":"go1.26.0"}`, 0)
+	url, sha, _ := h.serveBinary(candidate)
+	h.worker.client = h.srvClient
+
+	r := h.worker.Apply(context.Background(), Envelope{
+		ReleaseID: "r-verify",
+		URL:       url,
+		SHA256:    sha,
+		Commit:    "def5678",
+	})
+	if r.Status != StatusAccepted {
+		t.Fatalf("expected accepted, got %v: %s", r.Status, r.Detail)
+	}
+	waitForInFlight(t, h.worker, false, 5*time.Second)
+
+	// The verifier refused → swap must NOT have happened.
+	if h.restarts != 0 {
+		t.Fatalf("expected no restart, got %d", h.restarts)
+	}
+	live, _ := os.ReadFile(h.binary)
+	if string(live) != "old binary content" {
+		t.Fatalf("binary was swapped despite verifier refusal: %q", live)
+	}
+
+	// Ledger should carry verify_failed entry naming the cause.
+	entries, _ := h.ledger.Tail(0)
+	gotVerify := false
+	for _, e := range entries {
+		if e.Step == "verify_failed" && strings.Contains(e.Error, "signature missing") {
+			gotVerify = true
+		}
+	}
+	if !gotVerify {
+		t.Fatalf("expected verify_failed in ledger: %+v", entries)
 	}
 }
 

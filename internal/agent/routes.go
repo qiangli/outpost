@@ -103,12 +103,19 @@ type Deps struct {
 	CloudboxProtocol string
 	AccessToken      string
 
+	// MatrixToken is fc.Token — the matrix-tunnel auth secret that
+	// cloudbox issued at pair time and both sides hold. Used as the
+	// bearer on POST /admin/upgrade (cloudbox doesn't keep
+	// AccessToken in a recoverable form, so cloudbox-→outpost calls
+	// can't reuse it). Same shared-secret model as the tunnel itself.
+	MatrixToken string
+
 	// MountUpgradeRoute, if non-nil, is invoked once during
 	// RegisterRoutes with the root gin.RouterGroup so an external
 	// package can attach POST /admin/upgrade. Decoupled this way to
 	// avoid an import cycle: the upgrade package imports agent for
 	// BuildInfo, so agent can't import upgrade directly.
-	MountUpgradeRoute func(rg *gin.RouterGroup, accessToken string)
+	MountUpgradeRoute func(rg *gin.RouterGroup, bearer string)
 }
 
 // RegisterRoutes attaches all matrix-agent routes onto rg. Always mounted
@@ -160,12 +167,16 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	rg.POST("/auth", authHandler(auth, deps.Admins, deps.AuthURL))
 
 	// Cloudbox-pushed self-upgrade. Only mounted when the daemon is
-	// paired (has an AccessToken) and main.go threaded a mount
-	// closure — the closure carries the upgrade.Worker that owns the
-	// state machine. Auth is "Authorization: Bearer <AccessToken>"
-	// enforced inside the closure.
-	if deps.MountUpgradeRoute != nil && deps.AccessToken != "" {
-		deps.MountUpgradeRoute(rg, deps.AccessToken)
+	// paired (has a MatrixToken — without it the tunnel didn't come
+	// up anyway) and main.go threaded a mount closure carrying the
+	// upgrade.Worker. Auth is "Authorization: Bearer <MatrixToken>"
+	// — the same shared secret the tunnel uses. Cloudbox has it as
+	// cfg.MatrixToken; outpost has it as fc.Token. Picked over
+	// fc.AccessToken because cloudbox only keeps the scrambled form
+	// of AccessToken and can't reconstruct the cleartext for an
+	// outbound Bearer header.
+	if deps.MountUpgradeRoute != nil && deps.MatrixToken != "" {
+		deps.MountUpgradeRoute(rg, deps.MatrixToken)
 	}
 
 	// Tier-3 interactive shell. WS upgrade; the cloud also gates on

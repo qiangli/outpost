@@ -51,11 +51,12 @@ type StateSnapshot struct {
 //     goroutine never mutates Worker fields after it's spawned (it
 //     just appends to the ledger and calls restart).
 type Worker struct {
-	state   State
-	restart func()
-	ledger  *Ledger
-	client  *http.Client
-	logger  *slog.Logger
+	state    State
+	restart  func()
+	ledger   *Ledger
+	client   *http.Client
+	logger   *slog.Logger
+	verifier ArtifactVerifier
 
 	mu       sync.Mutex
 	inFlight bool
@@ -64,14 +65,15 @@ type Worker struct {
 	lastReleaseID string
 }
 
-// Options configures a Worker. State, Restart, and Ledger are
-// required. Client and Logger default to sensible values.
+// Options configures a Worker. State and Restart are required;
+// everything else has a sensible zero default.
 type Options struct {
-	State   State
-	Restart func()
-	Ledger  *Ledger
-	Client  *http.Client
-	Logger  *slog.Logger
+	State    State
+	Restart  func()
+	Ledger   *Ledger
+	Client   *http.Client
+	Logger   *slog.Logger
+	Verifier ArtifactVerifier // nil → NoopVerifier (today's cloudbox-as-root-of-trust)
 }
 
 // NewWorker constructs a Worker. State and Restart are required —
@@ -86,17 +88,21 @@ func NewWorker(opts Options) (*Worker, error) {
 		return nil, errors.New("upgrade.NewWorker: Restart is required")
 	}
 	w := &Worker{
-		state:   opts.State,
-		restart: opts.Restart,
-		ledger:  opts.Ledger,
-		client:  opts.Client,
-		logger:  opts.Logger,
+		state:    opts.State,
+		restart:  opts.Restart,
+		ledger:   opts.Ledger,
+		client:   opts.Client,
+		logger:   opts.Logger,
+		verifier: opts.Verifier,
 	}
 	if w.client == nil {
 		w.client = http.DefaultClient
 	}
 	if w.logger == nil {
 		w.logger = slog.Default()
+	}
+	if w.verifier == nil {
+		w.verifier = NoopVerifier{}
 	}
 	return w, nil
 }
@@ -191,6 +197,12 @@ func (w *Worker) run(ctx context.Context, env Envelope, binaryPath, fromSHA stri
 	if err != nil {
 		_ = os.Remove(candidate)
 		w.fail(env, "probe_failed", fromSHA, err)
+		return
+	}
+
+	if err := w.verifier.Verify(env, candidate, build); err != nil {
+		_ = os.Remove(candidate)
+		w.fail(env, "verify_failed", fromSHA, err)
 		return
 	}
 

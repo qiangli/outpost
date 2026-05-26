@@ -369,14 +369,14 @@ func startCmd() *cobra.Command {
 			// MCP tools (outpost_rollback, outpost_upgrade_history) and
 			// the POST /admin/upgrade route mounted on the main tunnel
 			// server later in this function. Only wired for paired
-			// hosts — an unpaired daemon has no AccessToken cloudbox
-			// could authenticate with, and the MCP tools won't register
-			// either (they check s.upgrader != nil).
+			// hosts — an unpaired daemon has no matrix-tunnel secret
+			// for cloudbox to authenticate with, and the MCP tools
+			// won't register either (they check s.upgrader != nil).
 			var (
 				upgradeWorker *upgrade.Worker
 				upgradeLedger *upgrade.Ledger
 			)
-			if fc.AccessToken != "" {
+			if fc.Token != "" {
 				cacheDir, _ := conf.ResolveCacheDir()
 				ledgerPath := ""
 				if cacheDir != "" {
@@ -557,9 +557,10 @@ func startCmd() *cobra.Command {
 				CloudboxBase:          cloudboxHTTPBase(fc),
 				CloudboxProtocol:      cfg.Protocol,
 				AccessToken:           fc.AccessToken,
+				MatrixToken:           fc.Token,
 				SelfName:              cfg.AgentName,
-				MountUpgradeRoute: func(rg *gin.RouterGroup, accessToken string) {
-					upgrade.MountRoute(rg, accessToken, upgradeWorker)
+				MountUpgradeRoute: func(rg *gin.RouterGroup, bearer string) {
+					upgrade.MountRoute(rg, bearer, upgradeWorker)
 				},
 			})
 
@@ -911,7 +912,7 @@ func buildAppRegistry(fc *conf.FileConfig, envSpecs string) (*agent.AppRegistry,
 		}
 		return reg, nil
 	}
-	for _, entry := range strings.Split(specs, ",") {
+	for entry := range strings.SplitSeq(specs, ",") {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue
@@ -1312,7 +1313,7 @@ func stopCmd() *cobra.Command {
 			//     its parent — relevant when outpost runs as a
 			//     child of `go test` or similar, where it lingers
 			//     as a zombie until the parent calls wait).
-			for i := 0; i < 50; i++ {
+			for range 50 {
 				if !processAlive(pid) {
 					_ = os.Remove(p)
 					fmt.Printf("Stopped outpost (pid %d).\n", pid)

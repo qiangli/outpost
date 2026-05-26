@@ -126,8 +126,12 @@ only mounts once cloudbox has issued an `access_token`.
 #### Cloudbox-pushed upgrade flow
 
 When `auto_upgrade` is on, cloudbox POSTs to `<this-host>/admin/upgrade`
-through the matrix tunnel with `Authorization: Bearer <access_token>`
-and an envelope shaped like:
+through the matrix tunnel with `Authorization: Bearer <matrix_token>`
+(the same shared secret the tunnel uses — cloudbox holds it as
+`cfg.MatrixToken`, the outpost as `fc.Token`. Deliberately *not* the
+per-host `access_token`, because cloudbox keeps only a scrambled form
+of that JWT and can't reconstruct the cleartext for an outbound
+Bearer header.) The envelope is shaped like:
 
 ```json
 {

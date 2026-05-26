@@ -1169,6 +1169,7 @@ function renderMain(status, cfg) {
      subBlock: buildPodmanSubBlock},
     {key: 'ollama',    fileKey: 'ollama_enabled',    label: 'Ollama',    daemon: cfg.ollama || {},
      subBlock: buildOllamaSubBlock},
+    {key: 'auto_upgrade', fileKey: 'auto_upgrade', label: 'Auto-upgrade (cloudbox-pushed)', enabled: cfg.auto_upgrade},
   ];
   for (const item of builtinRows) {
     const isDaemon = !!item.daemon;
