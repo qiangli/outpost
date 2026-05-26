@@ -129,4 +129,4 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace mvdan.cc/sh/v3 => ./external/sh
+replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 v3.0.0-20260526163711-9069c3dd3e3f
