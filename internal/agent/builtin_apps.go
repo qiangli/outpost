@@ -39,8 +39,25 @@ const (
 // are reachable, Socket is still populated with the first candidate so
 // the UI can surface "tried <path>".
 func DetectPodman() BuiltinTarget {
-	cands := podmanCandidates()
 	bt := BuiltinTarget{Name: BuiltinPodman, Scheme: "unix"}
+	// Operator override: $OUTPOST_PODMAN_SOCKET wins over autodetection.
+	// Accepts either a literal path or a shell-style glob (any of *?[);
+	// when the glob expands to multiple matches the newest by mtime
+	// wins. Lets ycode-style sockets — `~/.agents/ycode/podman-<pid>.sock`,
+	// where the PID changes on every ycode restart — be configured once
+	// without baking the pattern into the candidate list.
+	if env := strings.TrimSpace(os.Getenv("OUTPOST_PODMAN_SOCKET")); env != "" {
+		sock := env
+		if strings.ContainsAny(env, "*?[") {
+			sock = newestGlobMatch(env)
+		}
+		bt.Socket = sock
+		if sock != "" && probeSocket(sock, 200*time.Millisecond) {
+			bt.Available = true
+		}
+		return bt
+	}
+	cands := podmanCandidates()
 	for _, p := range cands {
 		if probeSocket(p, 200*time.Millisecond) {
 			bt.Socket = p
@@ -52,6 +69,27 @@ func DetectPodman() BuiltinTarget {
 		bt.Socket = cands[0]
 	}
 	return bt
+}
+
+// newestGlobMatch expands a shell-style glob and returns the path
+// with the newest mtime, or "" when nothing matches. Used by the
+// OUTPOST_PODMAN_SOCKET override to track ycode-style sockets whose
+// filename embeds a PID that changes per ycode restart.
+func newestGlobMatch(pattern string) string {
+	matches, _ := filepath.Glob(pattern)
+	var newest string
+	var newestMtime time.Time
+	for _, m := range matches {
+		info, err := os.Stat(m)
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(newestMtime) {
+			newestMtime = info.ModTime()
+			newest = m
+		}
+	}
+	return newest
 }
 
 func podmanCandidates() []string {
