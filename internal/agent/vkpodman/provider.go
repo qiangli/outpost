@@ -26,7 +26,8 @@ import (
 // unique).
 type Provider struct {
 	client *Client
-	access *Access // nil = no namespace check (single-tenant dev)
+	access *Access        // nil = no namespace check (single-tenant dev)
+	apps   TransientApps  // nil = don't publish pods into the outpost's app router
 
 	mu   sync.RWMutex
 	pods map[string]*corev1.Pod // namespace/name → cached Pod
@@ -58,6 +59,16 @@ func (p *Provider) Client() *Client { return p.client }
 // startClusterRunner with an Access built from the outpost owner's
 // email + any sharee emails fetched from cloudbox.
 func (p *Provider) SetAccess(a *Access) { p.access = a }
+
+// SetTransientApps installs the local app router each Running pod
+// gets published into (one transient entry per Container port with
+// a non-zero HostPort). The published name follows
+// TransientAppName(...), so cloudbox's /api/cluster/svc/* handler
+// can compose a /h/<node>/app/<name>/ URL without negotiating
+// container-port mapping out of band. Pass nil to skip publishing —
+// the cluster still works, just only reachable via direct hostPort
+// on the node's LAN.
+func (p *Provider) SetTransientApps(a TransientApps) { p.apps = a }
 
 func podKey(namespace, name string) string { return namespace + "/" + name }
 
@@ -98,6 +109,7 @@ func (p *Provider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		p.cachePod(pod)
 		slog.Info("vkpodman: adopted existing container",
 			"pod", podKey(pod.Namespace, pod.Name), "container", existing)
+		publishPod(p.apps, pod)
 		return nil
 	}
 
@@ -122,6 +134,7 @@ func (p *Provider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	p.cachePod(pod)
 	slog.Info("vkpodman: created container",
 		"pod", podKey(pod.Namespace, pod.Name), "container", created.ID, "image", spec.Image)
+	publishPod(p.apps, pod)
 	return nil
 }
 
@@ -151,6 +164,7 @@ func (p *Provider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 			return fmt.Errorf("vkpodman: remove container %s: %w", cid, err)
 		}
 	}
+	unpublishPod(p.apps, pod)
 	p.forgetPod(pod.Namespace, pod.Name)
 	slog.Info("vkpodman: deleted pod",
 		"pod", podKey(pod.Namespace, pod.Name), "container", cid)

@@ -47,6 +47,13 @@ type RunOptions struct {
 	// agents build this from the outpost owner's email +
 	// (eventually) the share-receivers list cloudbox advertises.
 	Access *Access
+
+	// TransientApps, when non-nil, is the local app router each
+	// Running pod gets published into so cloudbox can reach it via
+	// the existing /h/<node>/app/<name>/ proxy. nil = don't publish
+	// (cluster works at the apiserver layer but no cloudbox-fronted
+	// pod URL).
+	TransientApps TransientApps
 }
 
 // Run blocks until ctx is canceled (or any sub-controller errors out),
@@ -77,6 +84,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 		return fmt.Errorf("provider: %w", err)
 	}
 	prov.SetAccess(opts.Access)
+	prov.SetTransientApps(opts.TransientApps)
 	if err := prov.Reconcile(ctx); err != nil {
 		return fmt.Errorf("reconcile: %w", err)
 	}

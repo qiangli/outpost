@@ -678,7 +678,7 @@ func startCmd() *cobra.Command {
 			// half-configured cluster section shouldn't prevent the rest
 			// of outpost from running.
 			if fc.ClusterOn() {
-				if err := startClusterRunner(gctx, g, fc, cfgPath); err != nil {
+				if err := startClusterRunner(gctx, g, fc, cfgPath, apps); err != nil {
 					slog.Warn("cluster mode: disabled", "err", err)
 				}
 				// Materialize the kubectl-ready kubeconfig on disk so
@@ -729,7 +729,7 @@ func startCmd() *cobra.Command {
 // half-configured Cluster section shouldn't stop the matrix tunnel or
 // admin UI from coming up. The caller logs the returned error and
 // moves on.
-func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string) error {
+func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry) error {
 	nodeName := fc.ClusterNodeName()
 	if nodeName == "" {
 		return errors.New("ClusterNodeName empty (agent_name unset?)")
@@ -806,10 +806,11 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 	g.Go(func() error {
 		slog.Info("cluster mode: joining", "node", nodeName, "apiserver", cc.APIURL, "podman_socket", bt.Socket)
 		if err := vkpodman.Run(ctx, vkpodman.RunOptions{
-			NodeName:     nodeName,
-			PodmanSocket: bt.Socket,
-			Kube:         kubeCfg,
-			Access:       access,
+			NodeName:      nodeName,
+			PodmanSocket:  bt.Socket,
+			Kube:          kubeCfg,
+			Access:        access,
+			TransientApps: appsAsTransient{apps},
 		}); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("cluster mode: runner exited", "err", err)
 		}
@@ -924,6 +925,30 @@ func cloudboxHTTPBase(fc *conf.FileConfig) string {
 		port = fmt.Sprintf(":%d", fc.ServerPort)
 	}
 	return scheme + "://" + fc.ServerAddr + port
+}
+
+// appsAsTransient bridges *agent.AppRegistry to vkpodman.TransientApps.
+// Each transient pod registration uses RequireLogin: false because
+// cluster-mode auth happens at cloudbox's /api/cluster/svc/* entry
+// point (TokenReview-gated), not via the per-app elevation cookie
+// the default AppRegistry.Register would require. The flag is the
+// only deviation from the default Register path; everything else
+// (scheme parsing, URL validation, mutual-exclusion with tcp-mode
+// names) is inherited.
+type appsAsTransient struct{ r *agent.AppRegistry }
+
+func (a appsAsTransient) Register(name, target string) error {
+	if a.r == nil {
+		return nil
+	}
+	return a.r.RegisterWithMeta(name, target, agent.AppMeta{RequireLogin: false})
+}
+
+func (a appsAsTransient) Unregister(name string) {
+	if a.r == nil {
+		return
+	}
+	a.r.Unregister(name)
 }
 
 // buildAppRegistry seeds the live AppRegistry from whichever app source
