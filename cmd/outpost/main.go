@@ -36,6 +36,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
 	"github.com/qiangli/outpost/internal/agent/portal"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
+	"github.com/qiangli/outpost/internal/agent/userkube"
 	"github.com/qiangli/outpost/internal/agent/vkpodman"
 )
 
@@ -668,6 +669,17 @@ func startCmd() *cobra.Command {
 			if fc.ClusterOn() {
 				if err := startClusterRunner(gctx, g, fc, cfgPath); err != nil {
 					slog.Warn("cluster mode: disabled", "err", err)
+				}
+				// Materialize the kubectl-ready kubeconfig on disk so
+				// the operator gets `kubectl get nodes` and `helm list`
+				// without running anything extra. Failures land in
+				// userkube.LastStatus (visible in the admin UI's
+				// Cluster section); we don't gate vkpodman startup on
+				// success — agent-side credentials work independently.
+				if path, err := userkube.FetchAndWrite(gctx, cloudboxHTTPBase(fc), fc.AccessToken, fc.ClusterNodeName(), ""); err != nil {
+					slog.Warn("cluster mode: user kubeconfig write failed (admin UI will show the error)", "err", err, "path", path)
+				} else {
+					slog.Info("cluster mode: user kubeconfig ready", "path", path)
 				}
 			}
 			g.Go(func() error {

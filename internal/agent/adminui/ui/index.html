@@ -990,6 +990,77 @@ function buildPodmanSubBlock(parent, cfg, status) {
       'cloudbox auto-fetches a kubeconfig using the saved access_token on next boot. Token + CA never leave this machine.'));
   }
   parent.append(clusterRow);
+
+  // --- kubectl readiness panel ------------------------------------------
+  // Shown only when the cluster toggle is on. Pulls from
+  // /api/cluster/user-kubeconfig (a small status doc: path, exists,
+  // last_refresh, last_error). The Refresh button re-mints from
+  // cloudbox and rewrites the file in place.
+  if (clusterOn && paired) {
+    const kubeBox = el('div', {style: 'margin-top:0.8rem;padding:0.6rem 0.8rem;border:1px solid #8884;border-radius:6px;background:rgba(37,99,235,0.06)'});
+    const heading = el('div', {style: 'font-weight:600;margin-bottom:0.3rem'}, 'kubectl / helm');
+    kubeBox.append(heading);
+    const body = el('div', {});
+    kubeBox.append(body);
+    const refreshBtn = el('button', {type: 'button', style: 'margin-top:0.4rem'}, 'Refresh');
+
+    async function loadKubeStatus(initial) {
+      body.innerHTML = '';
+      let st;
+      try {
+        st = await api('GET', '/api/cluster/user-kubeconfig');
+      } catch (e) {
+        body.append(el('p', {class: 'error'}, e.message || 'Failed to load kubeconfig status.'));
+        return;
+      }
+      if (st.last_error) {
+        body.append(el('p', {class: 'error'},
+          'Last refresh failed: ' + st.last_error));
+      } else if (st.exists) {
+        body.append(el('p', {class: 'hint', style: 'margin:0'},
+          'Ready. One-time shell setup:'));
+        body.append(el('pre', {style: 'background:#0001;padding:0.4rem;border-radius:4px;font-size:0.85rem;overflow-x:auto;margin:0.3rem 0'},
+          'export KUBECONFIG=' + st.path));
+        body.append(el('p', {class: 'hint', style: 'margin:0.3rem 0 0'},
+          'Then run ', el('code', {}, 'kubectl get nodes'), ' or ', el('code', {}, 'helm list -A'), '.'));
+      } else if (initial) {
+        body.append(el('p', {class: 'hint'},
+          'Kubeconfig not on disk yet — click Refresh to fetch from cloudbox.'));
+      } else {
+        body.append(el('p', {class: 'error'},
+          'Kubeconfig still missing after refresh. Check cloudbox cluster mode is enabled (CLUSTER_ENABLED=true).'));
+      }
+      const meta = el('p', {class: 'hint', style: 'margin:0.4rem 0 0;font-size:0.8rem'});
+      const bits = [];
+      if (st.path) bits.push(el('code', {}, st.path));
+      if (st.api_url) bits.push('apiserver=' + st.api_url);
+      if (st.node_name) bits.push('node=' + st.node_name);
+      if (st.last_refresh) bits.push('refreshed ' + new Date(st.last_refresh).toLocaleString());
+      for (let i = 0; i < bits.length; i++) {
+        if (i > 0) meta.append(' · ');
+        meta.append(bits[i]);
+      }
+      if (bits.length) body.append(meta);
+    }
+
+    refreshBtn.addEventListener('click', async () => {
+      refreshBtn.disabled = true;
+      try {
+        await api('POST', '/api/cluster/user-kubeconfig/refresh', {});
+        msg('ok', 'Kubeconfig refreshed.');
+      } catch (e) {
+        msg('err', e.message || 'Refresh failed');
+      } finally {
+        refreshBtn.disabled = false;
+        loadKubeStatus(false);
+      }
+    });
+    kubeBox.append(refreshBtn);
+    parent.append(kubeBox);
+    // Fire the initial load asynchronously so the rest of the panel
+    // renders immediately.
+    loadKubeStatus(true);
+  }
 }
 
 // buildOllamaSubBlock populates the children behind the Ollama

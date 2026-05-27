@@ -45,3 +45,25 @@ func (s *Server) handleRollbackUpgrade(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, res)
 }
+
+// handleClusterKubeconfigStatus returns the most recent state of
+// the on-disk kubectl-ready kubeconfig — path, existence, last
+// refresh, error message. The admin UI's Cluster section uses
+// this to render "kubectl ready: <path>" or surface a useful error.
+func (s *Server) handleClusterKubeconfigStatus(c *gin.Context) {
+	c.JSON(http.StatusOK, s.core.UserKubeconfigStatus())
+}
+
+// handleClusterKubeconfigRefresh re-mints + rewrites the kubectl-
+// ready kubeconfig file. Driven by the "Refresh" button in the
+// Cluster section. Always returns 200 + the updated status; failures
+// land in Status.LastError so the SPA can render them inline rather
+// than as a toast that hides the actionable detail.
+func (s *Server) handleClusterKubeconfigRefresh(c *gin.Context) {
+	st, err := s.core.RefreshUserKubeconfig(c.Request.Context())
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, st)
+}

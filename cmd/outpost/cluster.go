@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/agent/userkube"
 	"github.com/qiangli/outpost/internal/agent/vkpodman"
 )
 
@@ -69,36 +69,45 @@ func clusterClearCmd() *cobra.Command {
 	return cmd
 }
 
-// clusterKubeconfigCmd prints a kubectl-ready YAML kubeconfig to
-// stdout. It uses the persisted access_token to call cloudbox's
-// /api/cluster/kubeconfig endpoint (the same one the agent boot path
-// uses), then templates the response into the minimal three-stanza
-// kubeconfig kubectl needs.
+// clusterKubeconfigCmd writes a kubectl-ready YAML kubeconfig to
+// disk by default (was stdout). Reads the persisted access_token,
+// asks cloudbox for fresh credentials, renders the minimal four-
+// stanza kubeconfig kubectl needs, and writes it to the canonical
+// path ($OUTPOST_KUBECONFIG_PATH or $HOME/.kube/outpost.yaml).
+//
+// The daemon ALSO writes this file automatically when cluster.enabled
+// flips on, plus on a refresh button in the admin UI — this CLI is
+// kept around for headless flows / non-paired-host kubeconfig
+// minting via --node.
 //
 // Use:
 //
-//	outpost cluster kubeconfig > ~/.kube/outpost.yaml
-//	export KUBECONFIG=~/.kube/outpost.yaml
+//	outpost cluster kubeconfig                  # writes ~/.kube/outpost.yaml
+//	export KUBECONFIG=~/.kube/outpost.yaml      # one-time per shell
 //	kubectl get nodes
 //
-// --node defaults to the laptop's own paired name (fc.AgentName); pass
-// a different host name to mint a kubeconfig scoped to that host's
-// ServiceAccount instead (still requires the requesting account to
-// own that host on cloudbox).
+//	outpost cluster kubeconfig --stdout > foo.yaml   # backward-compat shape
+//	outpost cluster kubeconfig --output ~/foo.yaml   # custom path
+//	outpost cluster kubeconfig --node other-host     # mint for a different host
 func clusterKubeconfigCmd() *cobra.Command {
-	var nodeFlag string
+	var (
+		nodeFlag   string
+		outputFlag string
+		stdoutFlag bool
+	)
 	cmd := &cobra.Command{
 		Use:   "kubeconfig",
-		Short: "Print a YAML kubeconfig for the cloudbox cluster",
+		Short: "Mint a kubectl-ready kubeconfig and write it to disk (or stdout)",
 		Long: `Fetch a fresh per-host ServiceAccount token from cloudbox and
-render it as a kubeconfig YAML on stdout. Reads the saved
-access_token from agent.json (same file outpost register writes).
+render it as a kubeconfig YAML. By default writes to
+$HOME/.kube/outpost.yaml (or $OUTPOST_KUBECONFIG_PATH if set).
+Pass --stdout to print instead, --output to write to a custom path.
 
-The resulting kubeconfig authenticates as the host's
-ServiceAccount in the cloudbox outpost-nodes namespace; what RBAC
-it has is determined cloudbox-side. Token lifetime is what
-cloudbox mints (24h by default) — re-run the command for a fresh
-one before it expires.`,
+The resulting kubeconfig authenticates as the host's ServiceAccount
+in cloudbox's outpost-nodes namespace; what RBAC it has is
+determined cloudbox-side. Token lifetime is what cloudbox mints
+(24h by default) — re-run before expiry or click Refresh in the
+admin UI's Cluster section.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfgPath, err := conf.DefaultConfigPath()
 			if err != nil {
@@ -122,51 +131,30 @@ one before it expires.`,
 			if cloudboxBase == "" {
 				return errors.New("no cloudbox URL in saved config (server_addr / protocol missing)")
 			}
-			parsed, err := vkpodman.FetchKubeconfig(cmd.Context(), cloudboxBase, fc.AccessToken, node)
-			if err != nil {
-				return fmt.Errorf("fetch kubeconfig: %w", err)
+
+			if stdoutFlag {
+				parsed, err := vkpodman.FetchKubeconfig(cmd.Context(), cloudboxBase, fc.AccessToken, node)
+				if err != nil {
+					return fmt.Errorf("fetch kubeconfig: %w", err)
+				}
+				_, err = fmt.Fprint(os.Stdout, userkube.Render(node, parsed))
+				return err
 			}
-			_, err = fmt.Fprint(os.Stdout, renderKubeconfigYAML(node, parsed))
-			return err
+
+			path, err := userkube.FetchAndWrite(cmd.Context(), cloudboxBase, fc.AccessToken, node, outputFlag)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("wrote %s\n", path)
+			fmt.Println("Use it: export KUBECONFIG=" + path)
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&nodeFlag, "node", "",
 		"Host name to mint the kubeconfig for (defaults to this machine's agent name)")
+	cmd.Flags().StringVar(&outputFlag, "output", "",
+		"Path to write to (default $HOME/.kube/outpost.yaml or $OUTPOST_KUBECONFIG_PATH)")
+	cmd.Flags().BoolVar(&stdoutFlag, "stdout", false,
+		"Print to stdout instead of writing to a file (legacy behavior)")
 	return cmd
-}
-
-// renderKubeconfigYAML returns the minimal kubeconfig YAML kubectl
-// needs: one cluster, one user, one context, current-context set. CA
-// is inlined as certificate-authority-data when present; empty CA
-// means trust the system roots, which is what cloudbox-fronted
-// HTTPS deployments behind a real public cert want.
-//
-// The string is built by hand rather than going through sigs.k8s.io
-// /yaml because the surface is tiny, the field-order matters for
-// human readability, and not pulling another encoder dep into the
-// CLI keeps the binary small.
-func renderKubeconfigYAML(contextName string, p *vkpodman.ParsedKubeconfig) string {
-	clusterName := "outpost-cluster"
-	userName := "outpost-" + contextName
-	var caField string
-	if len(p.CA) > 0 {
-		caField = "    certificate-authority-data: " + base64.StdEncoding.EncodeToString(p.CA) + "\n"
-	}
-	return "apiVersion: v1\n" +
-		"kind: Config\n" +
-		"clusters:\n" +
-		"- name: " + clusterName + "\n" +
-		"  cluster:\n" +
-		"    server: " + p.APIURL + "\n" +
-		caField +
-		"users:\n" +
-		"- name: " + userName + "\n" +
-		"  user:\n" +
-		"    token: " + p.Token + "\n" +
-		"contexts:\n" +
-		"- name: " + contextName + "\n" +
-		"  context:\n" +
-		"    cluster: " + clusterName + "\n" +
-		"    user: " + userName + "\n" +
-		"current-context: " + contextName + "\n"
 }

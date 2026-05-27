@@ -359,6 +359,11 @@ func (s *Server) registerRoutes() {
 	// other cluster, pair a second outpost. DELETE survives for the
 	// "Leave cluster" UI affordance.
 	api.DELETE("/cluster/kubeconfig", s.handleClearClusterKubeconfig)
+	// User-facing kubectl kubeconfig — separate concern from the
+	// agent-internal credentials that vkpodman uses. GET returns
+	// the on-disk file status; POST re-fetches + rewrites.
+	api.GET("/cluster/user-kubeconfig", s.handleClusterKubeconfigStatus)
+	api.POST("/cluster/user-kubeconfig/refresh", s.handleClusterKubeconfigRefresh)
 
 	// MCP credentials — the SPA's Pair tab renders the endpoint URL
 	// and bearer token so the operator can paste them into an agent
