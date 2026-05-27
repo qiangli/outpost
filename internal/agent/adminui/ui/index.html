@@ -951,9 +951,18 @@ function buildPodmanSubBlock(parent, cfg, status) {
   parent.append(banner);
 
   // --- cluster toggle row -------------------------------------------------
+  // Opt-in / opt-out for the cloudbox-managed cluster. The daemon
+  // auto-fetches a kubeconfig from cloudbox using the saved
+  // access_token on the next boot after the toggle is flipped on, so
+  // the only prerequisites are: podman daemon running locally (we
+  // dial its socket) + host is paired with cloudbox (so the
+  // access_token exists). Bring-your-own kubeconfig is no longer
+  // supported in the SPA — operators with a third-party cluster
+  // should pair a second outpost against the cloudbox managing it.
   const clusterRow = el('div', {class: 'item-row' + (!podmanOn ? ' dim' : '')});
   const clusterOn = !!(cv && cv.enabled);
-  const clusterGateOK = podmanOn && cv.has_token;
+  const paired = !!(status && status.configured);
+  const clusterGateOK = podmanOn && paired;
   const csw = switchEl({checked: clusterOn && clusterGateOK, disabled: !clusterGateOK});
   csw.input.addEventListener('change', async () => {
     const newVal = csw.input.checked;
@@ -961,7 +970,7 @@ function buildPodmanSubBlock(parent, cfg, status) {
     try {
       await api('POST', '/api/config/builtins', {cluster: newVal});
       msg('ok', `Cluster ${newVal ? 'on' : 'off'} — restarting…`);
-      if (status && status.configured) pollUntilUp();
+      if (paired) pollUntilUp();
     } catch (e) {
       csw.input.checked = !newVal;
       csw.input.disabled = false;
@@ -974,53 +983,13 @@ function buildPodmanSubBlock(parent, cfg, status) {
   );
   if (!podmanOn) {
     clusterRow.append(el('span', {class: 'hint'}, '(enable Podman first)'));
-  } else if (!cv.has_token) {
-    clusterRow.append(el('span', {class: 'hint'}, '(paste a kubeconfig below first)'));
+  } else if (!paired) {
+    clusterRow.append(el('span', {class: 'hint'}, '(pair this host first)'));
+  } else {
+    clusterRow.append(el('span', {class: 'hint'},
+      'cloudbox auto-fetches a kubeconfig using the saved access_token on next boot. Token + CA never leave this machine.'));
   }
   parent.append(clusterRow);
-
-  // --- kubeconfig editor (always visible inside the twister) --------------
-  parent.append(el('h4', {}, 'Kubeconfig (paste YAML for non-cloudbox clusters)'));
-  parent.append(el('p', {class: 'hint', style: 'margin:0.1rem 0 0.3rem'},
-    'For the cloudbox-managed flow you don\'t need to paste anything — flip Join cluster above ' +
-    'and outpost fetches its kubeconfig automatically using the saved access_token. ' +
-    'Token + CA never leave this machine.'));
-  const ta = el('textarea', {
-    rows: '6',
-    placeholder: '# Paste kubeconfig YAML, e.g. contents of /etc/rancher/k3s/k3s.yaml',
-    disabled: !podmanOn,
-    style: 'width:100%;font-family:monospace;font-size:0.85rem;' + (!podmanOn ? 'opacity:0.6' : ''),
-  });
-  const nodeOverride = el('input', {
-    type: 'text',
-    placeholder: 'Node name (default: agent name)',
-    disabled: !podmanOn,
-    style: 'width:50%;margin-right:0.5rem',
-  });
-  const save = el('button', {type: 'button', disabled: !podmanOn}, 'Save kubeconfig');
-  const saveAndJoin = el('button', {type: 'button', disabled: !podmanOn}, 'Save & join');
-  async function postKubeconfig(enable) {
-    const body = {kubeconfig: ta.value};
-    if (nodeOverride.value.trim()) body.node_name = nodeOverride.value.trim();
-    if (enable) body.enable = true;
-    save.disabled = true; saveAndJoin.disabled = true;
-    try {
-      const resp = await api('POST', '/api/cluster/kubeconfig', body);
-      msg('ok', enable ? 'Kubeconfig saved — joining cluster…' : 'Kubeconfig saved.');
-      if (resp.restarting) pollUntilUp();
-    } catch (e) {
-      msg('err', e.message || 'Save failed');
-    } finally {
-      save.disabled = !podmanOn;
-      saveAndJoin.disabled = !podmanOn;
-    }
-  }
-  save.addEventListener('click', () => postKubeconfig(false));
-  saveAndJoin.addEventListener('click', () => postKubeconfig(true));
-  parent.append(ta);
-  const btnRow = el('div', {style: 'margin-top:0.5rem;display:flex;align-items:center'});
-  btnRow.append(nodeOverride, save, el('span', {style: 'margin:0 0.4rem'}), saveAndJoin);
-  parent.append(btnRow);
 }
 
 // buildOllamaSubBlock populates the children behind the Ollama

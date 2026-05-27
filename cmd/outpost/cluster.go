@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
@@ -23,69 +22,15 @@ func clusterCmd() *cobra.Command {
 		Use:   "cluster",
 		Short: "Interact with the cloudbox virtual-podman cluster",
 	}
-	cmd.AddCommand(clusterKubeconfigCmd(), clusterSetCmd(), clusterClearCmd())
+	cmd.AddCommand(clusterKubeconfigCmd(), clusterClearCmd())
 	return cmd
 }
 
-// clusterSetCmd persists a pasted kubeconfig into agent.json and
-// optionally flips the join switch. Mirrors POST /api/cluster/kubeconfig
-// in the admin UI and the outpost_set_kubeconfig MCP tool.
-func clusterSetCmd() *cobra.Command {
-	var (
-		fileFlag  string
-		nodeName  string
-		enable    bool
-		stdinFlag bool
-	)
-	cmd := &cobra.Command{
-		Use:   "set",
-		Short: "Persist a kubeconfig YAML (and optionally join the cluster)",
-		Long: `Read a kubeconfig YAML from --file or stdin and persist its
-apiserver URL + bearer token + CA into agent.json's Cluster section.
-Pass --enable to also flip the join switch — the daemon restarts so
-vkpodman picks up the new credentials.
-
-Examples:
-  outpost cluster set --file ./k3s.yaml --enable
-  cat ~/.kube/config | outpost cluster set --stdin --node-name laptop --enable
-`,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			yaml, err := readKubeconfigInput(fileFlag, stdinFlag)
-			if err != nil {
-				return err
-			}
-			session, err := dialMCP(cmd.Context())
-			if err != nil {
-				return err
-			}
-			defer session.close()
-			args := map[string]any{
-				"kubeconfig": yaml,
-				"enable":     enable,
-			}
-			if nodeName != "" {
-				args["node_name"] = nodeName
-			}
-			var out struct {
-				RestartPending bool `json:"restart_pending"`
-			}
-			if err := session.callTool(cmd.Context(), "outpost_set_kubeconfig", args, &out); err != nil {
-				return err
-			}
-			if out.RestartPending {
-				fmt.Println("Saved + joining. Restarting outpost — poll `outpost status` until configured=true.")
-			} else {
-				fmt.Println("Saved (cluster not yet enabled; pass --enable to join).")
-			}
-			return nil
-		},
-	}
-	cmd.Flags().StringVar(&fileFlag, "file", "", "Path to a kubeconfig YAML file")
-	cmd.Flags().BoolVar(&stdinFlag, "stdin", false, "Read the kubeconfig YAML from stdin")
-	cmd.Flags().StringVar(&nodeName, "node-name", "", "Optional override; empty defaults to AgentName")
-	cmd.Flags().BoolVar(&enable, "enable", false, "Also flip Cluster.Enabled (the daemon restarts to join)")
-	return cmd
-}
+// `outpost cluster set` (bring-your-own paste path) is gone — outposts
+// only join their owning cloudbox's cluster, which auto-fetches a
+// kubeconfig on next boot once `outpost builtins set --cluster=on` is
+// flipped. For a different cluster, pair another outpost against
+// the cloudbox managing that cluster.
 
 // clusterClearCmd wipes the persisted kubeconfig and disables the
 // cluster toggle — i.e. leave the cluster. Mirrors DELETE
@@ -122,29 +67,6 @@ func clusterClearCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip the confirmation prompt")
 	return cmd
-}
-
-// readKubeconfigInput resolves --file vs --stdin; exactly one must
-// be supplied. Returns the raw YAML bytes as a string.
-func readKubeconfigInput(file string, stdinFlag bool) (string, error) {
-	if file != "" && stdinFlag {
-		return "", errors.New("--file and --stdin are mutually exclusive")
-	}
-	if file == "" && !stdinFlag {
-		return "", errors.New("pass --file <path> or --stdin")
-	}
-	if stdinFlag {
-		b, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return "", fmt.Errorf("read stdin: %w", err)
-		}
-		return string(b), nil
-	}
-	b, err := os.ReadFile(file)
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", file, err)
-	}
-	return string(b), nil
 }
 
 // clusterKubeconfigCmd prints a kubectl-ready YAML kubeconfig to

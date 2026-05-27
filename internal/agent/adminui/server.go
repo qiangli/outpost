@@ -354,7 +354,10 @@ func (s *Server) registerRoutes() {
 	api.GET("/upgrade", s.handleUpgradeOverview)
 	api.POST("/upgrade/apply", s.handleApplyPendingUpgrade)
 	api.POST("/upgrade/rollback", s.handleRollbackUpgrade)
-	api.POST("/cluster/kubeconfig", s.handleSetClusterKubeconfig)
+	// POST /cluster/kubeconfig (bring-your-own paste) is gone —
+	// outposts only join their owning cloudbox's cluster; for any
+	// other cluster, pair a second outpost. DELETE survives for the
+	// "Leave cluster" UI affordance.
 	api.DELETE("/cluster/kubeconfig", s.handleClearClusterKubeconfig)
 
 	// MCP credentials — the SPA's Pair tab renders the endpoint URL

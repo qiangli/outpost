@@ -273,23 +273,10 @@ func (s *Server) handleDisconnectOutbound(c *gin.Context) {
 
 // --- Cluster (virtual-podman) ---
 
-func (s *Server) handleSetClusterKubeconfig(c *gin.Context) {
-	var req admincore.KubeconfigParams
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	res, err := s.core.SetKubeconfig(req)
-	if err != nil {
-		respondError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"ok":         res.OK,
-		"cluster":    res.Cluster,
-		"restarting": res.RestartPending,
-	})
-}
+// Setting kubeconfig was the bring-your-own-cluster paste path; it's
+// gone (outposts only join the cloudbox they're paired with — for a
+// different cluster, pair a second outpost). The DELETE handler
+// stays so the "Leave cluster" UI button can clear credentials.
 
 func (s *Server) handleClearClusterKubeconfig(c *gin.Context) {
 	res, err := s.core.ClearKubeconfig()

@@ -125,7 +125,8 @@ func TestToolListAndStatusResource(t *testing.T) {
 		"outpost_connect_outbound",
 		"outpost_disconnect_outbound",
 		"outpost_suggest_outbound",
-		"outpost_set_kubeconfig",
+		// outpost_set_kubeconfig (bring-your-own paste) was removed —
+		// outposts only join their owning cloudbox's cluster.
 		"outpost_clear_kubeconfig",
 		"outpost_restart",
 		"outpost_rotate_mcp_token",

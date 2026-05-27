@@ -11,28 +11,6 @@ import (
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 )
 
-// goldenKubeconfig is what k3s writes to /etc/rancher/k3s/k3s.yaml —
-// inline CA + inline token, single context. Synthetic values; we only
-// care that the parser pulls out the three fields we persist.
-const goldenKubeconfig = `apiVersion: v1
-kind: Config
-clusters:
-- cluster:
-    certificate-authority-data: ZmFrZS1jYQ==
-    server: https://127.0.0.1:6443
-  name: default
-contexts:
-- context:
-    cluster: default
-    user: default
-  name: default
-current-context: default
-users:
-- name: default
-  user:
-    token: fake-bearer-token
-`
-
 // loginAsCurrentUser handles the common test bootstrap: pair the
 // outpost, log the running OS user in, and return the session cookie.
 // Skips when the OS user can't be resolved (CI without a real user).
@@ -61,80 +39,12 @@ func loginAsCurrentUser(t *testing.T, configPath string, seed *conf.FileConfig) 
 	return s, cookie
 }
 
-func TestCluster_PasteKubeconfigPersistsThreeFields(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "agent.json")
-	s, cookie := loginAsCurrentUser(t, configPath, nil)
-
-	w := doJSON(s, http.MethodPost, "/api/cluster/kubeconfig", map[string]any{
-		"kubeconfig": goldenKubeconfig,
-		"enable":     true,
-	}, cookie)
-	if w.Code != http.StatusOK {
-		t.Fatalf("paste kubeconfig: %d %s", w.Code, w.Body.String())
-	}
-
-	fc, err := conf.LoadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fc.Cluster == nil {
-		t.Fatal("Cluster not persisted")
-	}
-	if fc.Cluster.APIURL != "https://127.0.0.1:6443" {
-		t.Errorf("APIURL: %q", fc.Cluster.APIURL)
-	}
-	if fc.Cluster.Token != "fake-bearer-token" {
-		t.Errorf("Token: %q", fc.Cluster.Token)
-	}
-	if string(fc.Cluster.CA) != "fake-ca" {
-		t.Errorf("CA: %q (decoded)", string(fc.Cluster.CA))
-	}
-	if !fc.Cluster.Enabled {
-		t.Error("Enabled flag not set despite enable=true")
-	}
-}
-
-func TestCluster_PasteKubeconfig_NodeNameOverride(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "agent.json")
-	s, cookie := loginAsCurrentUser(t, configPath, nil)
-
-	w := doJSON(s, http.MethodPost, "/api/cluster/kubeconfig", map[string]any{
-		"kubeconfig": goldenKubeconfig,
-		"node_name":  "cottage-vk",
-	}, cookie)
-	if w.Code != http.StatusOK {
-		t.Fatalf("paste: %d %s", w.Code, w.Body.String())
-	}
-
-	fc, _ := conf.LoadFile(configPath)
-	if fc.Cluster.NodeName != "cottage-vk" {
-		t.Errorf("NodeName override not persisted: %q", fc.Cluster.NodeName)
-	}
-	// ClusterNodeName() resolves the override.
-	if fc.ClusterNodeName() != "cottage-vk" {
-		t.Errorf("ClusterNodeName(): %q", fc.ClusterNodeName())
-	}
-}
-
-func TestCluster_PasteKubeconfig_InvalidYAMLReturns400(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "agent.json")
-	s, cookie := loginAsCurrentUser(t, configPath, nil)
-
-	w := doJSON(s, http.MethodPost, "/api/cluster/kubeconfig", map[string]any{
-		"kubeconfig": "not a real kubeconfig",
-	}, cookie)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("invalid yaml: got %d want 400, body=%s", w.Code, w.Body.String())
-	}
-
-	fc, _ := conf.LoadFile(configPath)
-	if fc != nil && fc.Cluster != nil {
-		t.Errorf("Cluster shouldn't have been written for invalid input: %+v", fc.Cluster)
-	}
-}
+// POST /api/cluster/kubeconfig (paste path) was removed — outposts
+// only join their owning cloudbox's cluster now. The three tests
+// that previously covered the paste flow (persist three fields,
+// node-name override, invalid YAML → 400) are gone with the
+// endpoint. TestCluster_ToggleViaBuiltins below still exercises
+// flipping the cluster enable flag through /api/config/builtins.
 
 func TestCluster_ToggleViaBuiltins(t *testing.T) {
 	dir := t.TempDir()
