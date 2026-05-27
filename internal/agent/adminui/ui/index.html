@@ -1090,31 +1090,288 @@ function buildOllamaSubBlock(parent, cfg, status) {
   }
 }
 
+// fmtDuration renders ms-since as a tight human label
+// ("2h13m", "47s", "3d4h"). Used by the Update tab's
+// "installed ... ago" + "running ... ago" lines.
+function fmtDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) {
+    const rem = min - hr * 60;
+    return rem ? `${hr}h${rem}m` : `${hr}h`;
+  }
+  const day = Math.floor(hr / 24);
+  const remHr = hr - day * 24;
+  return remHr ? `${day}d${remHr}h` : `${day}d`;
+}
+
+// fmtBytes renders a byte count as MB/KB/B for the Update tab's
+// "binary size" row.
+function fmtBytes(n) {
+  if (!Number.isFinite(n) || n <= 0) return '';
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${n} B`;
+}
+
+// fmtTimestamp renders an ISO date as "YYYY-MM-DD HH:MM:SS local
+// (Nd Nh ago)". Returns empty for missing / zero-ish input — skips
+// the Go zero-time ("0001-01-01T00:00:00Z") so legacy data doesn't
+// render as nonsense.
+function fmtTimestamp(s) {
+  if (!s) return '';
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return '';
+  if (d.getUTCFullYear() < 2000) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  const abs = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const since = fmtDuration(Date.now() - d.getTime());
+  return since ? `${abs} (${since} ago)` : abs;
+}
+
+// buildUpdateSection populates the Update tab. One fetch to
+// /api/upgrade gets everything we render — build info, source, the
+// update_mode selector, the pending envelope (if any), the recent
+// ledger, and the rollback availability flag. The panel re-renders
+// in place when the operator triggers an action so the visible state
+// stays fresh without a full SPA reload.
+async function buildUpdateSection(parent) {
+  parent.innerHTML = '';
+  let data;
+  try {
+    data = await api('GET', '/api/upgrade');
+  } catch (e) {
+    parent.append(el('p', {class: 'error'}, e.message || 'Failed to load upgrade overview.'));
+    return;
+  }
+  const b = data.build || {};
+
+  // === Current build ============================================
+  const build = el('fieldset', {});
+  build.append(el('legend', {}, 'Current build'));
+  const buildList = el('div', {class: 'item-list'});
+  const buildRow = (label, value, mono) => {
+    if (!value) return;
+    const row = el('div', {class: 'item-row'});
+    row.append(
+      el('span', {class: 'label', style: 'min-width:160px'}, label),
+      el('span', {class: mono ? 'hint font-mono' : 'hint', style: 'font-family:monospace;font-size:0.85rem;word-break:break-all'}, String(value)),
+    );
+    buildList.append(row);
+  };
+  // Prefer the semver tag when present + clean working tree
+  const versionLabel = (b.version && !b.dirty) ? b.version : (b.dirty ? `${(b.commit||'').slice(0,7)}-dirty` : (b.commit||'').slice(0,7) || 'unknown');
+  buildRow('Version', versionLabel, true);
+  buildRow('Commit (full)', b.commit, true);
+  buildRow('Built at', fmtTimestamp(b.vcs_time), true);
+  buildRow('Go version', b.go_version, true);
+  buildRow('OS', b.os_version ? `${b.os_version} (${b.os}/${b.arch})` : `${b.os||''}/${b.arch||''}`, true);
+  buildRow('Binary path', data.binary_path, true);
+  buildRow('Binary size', fmtBytes(b.binary_size), true);
+  buildRow('Installed at', fmtTimestamp(b.installed_at), true);
+  buildRow('Daemon running since', fmtTimestamp(b.daemon_started_at), true);
+  build.append(buildList);
+
+  // === Source ==================================================
+  const src = el('fieldset', {});
+  src.append(el('legend', {}, 'Source'));
+  const sl = el('div', {class: 'item-list'});
+  if (data.current_source) {
+    const cs = data.current_source;
+    const kindLabel = ({
+      'cloudbox': 'cloudbox push (GitHub release)',
+      'cli-local': 'CLI install (`outpost upgrade --local`)',
+      'cli-url': 'CLI install (`outpost upgrade --from URL`)',
+      'unknown':  'unknown (no matching received entry in ledger)',
+    })[cs.kind] || cs.kind;
+    buildRowInto(sl, 'Origin', kindLabel);
+    if (cs.url) {
+      const link = el('a', {href: cs.url, target: '_blank', rel: 'noopener', style: 'word-break:break-all'}, cs.url);
+      const row = el('div', {class: 'item-row'});
+      row.append(el('span', {class: 'label', style: 'min-width:160px'}, 'Download URL'), link);
+      sl.append(row);
+    }
+    if (cs.release_id) buildRowInto(sl, 'Release tag', cs.release_id);
+    if (cs.at) buildRowInto(sl, 'Swapped at', fmtTimestamp(cs.at));
+  } else {
+    sl.append(el('p', {class: 'hint'}, 'No upgrade has ever run on this host — current binary was installed manually (scp / installer / package).'));
+  }
+  src.append(sl);
+
+  // === Update policy ============================================
+  const policy = el('fieldset', {});
+  policy.append(el('legend', {}, 'Update policy'));
+  const updateRow = el('div', {class: 'item-row'});
+  const updateSelect = el('select', {style: 'min-width:120px'});
+  const currentMode = data.update_mode || 'auto';
+  for (const opt of [
+    {v: 'auto',   label: 'Auto',   desc: 'apply cloudbox pushes immediately'},
+    {v: 'manual', label: 'Manual', desc: 'persist envelope; operator clicks Apply (here or in cloudbox)'},
+    {v: 'never',  label: 'Never',  desc: 'refuse all cloudbox pushes'},
+  ]) {
+    const o = el('option', {value: opt.v, title: opt.desc}, opt.label);
+    if (opt.v === currentMode) o.selected = true;
+    updateSelect.append(o);
+  }
+  updateSelect.addEventListener('change', async () => {
+    const newVal = updateSelect.value;
+    updateSelect.disabled = true;
+    try {
+      await api('POST', '/api/config/builtins', {update_mode: newVal});
+      msg('ok', `Update mode → ${newVal}`);
+    } catch (e) {
+      updateSelect.value = currentMode;
+      msg('err', e.message || 'Save failed');
+    } finally { updateSelect.disabled = false; }
+  });
+  updateRow.append(
+    el('span', {class: 'label', style: 'min-width:160px'},
+      'Cloudbox-pushed self-upgrades ',
+      el('code', {class: 'key-hint'}, 'update_mode'),
+    ),
+    updateSelect,
+  );
+  policy.append(updateRow);
+  policy.append(el('p', {class: 'hint', style: 'margin-top:0.5rem'},
+    'Live: re-read on every cloudbox push without restarting the daemon.'));
+
+  // === Pending upgrade ==========================================
+  if (data.pending) {
+    const pend = el('fieldset', {});
+    pend.append(el('legend', {}, 'Pending upgrade (manual mode)'));
+    const pl = el('div', {class: 'item-list'});
+    const env = data.pending;
+    buildRowInto(pl, 'Release tag', env.release_id);
+    buildRowInto(pl, 'Commit', (env.commit||'').slice(0,12));
+    if (env.url) {
+      const link = el('a', {href: env.url, target: '_blank', rel: 'noopener', style: 'word-break:break-all'}, env.url);
+      const r = el('div', {class: 'item-row'});
+      r.append(el('span', {class: 'label', style: 'min-width:160px'}, 'Download URL'), link);
+      pl.append(r);
+    }
+    const applyBtn = el('button', {type: 'button'}, 'Apply now');
+    applyBtn.addEventListener('click', async () => {
+      if (!confirm(`Apply ${env.release_id}? The daemon will swap + restart.`)) return;
+      applyBtn.disabled = true;
+      try {
+        const r = await api('POST', '/api/upgrade/apply', {});
+        msg('ok', `Apply: ${r.status || 'queued'} — restarting…`);
+        pollUntilUp();
+        setTimeout(() => buildUpdateSection(parent), 4000);
+      } catch (e) {
+        msg('err', e.message || 'Apply failed');
+        applyBtn.disabled = false;
+      }
+    });
+    pl.append(el('div', {style: 'margin-top:0.4rem'}, applyBtn));
+    pend.append(pl);
+    parent.append(build, src, policy, pend);
+  } else {
+    parent.append(build, src, policy);
+  }
+
+  // === Rollback ================================================
+  if (data.rollback_available) {
+    const rb = el('fieldset', {});
+    rb.append(el('legend', {}, 'Rollback'));
+    rb.append(el('p', {class: 'hint'},
+      el('code', {style: 'font-family:monospace'}, (data.binary_path || 'outpost') + '.previous'),
+      ' is on disk — clicking Rollback restores it over the running binary and re-execs.'));
+    const rbBtn = el('button', {type: 'button'}, 'Roll back');
+    rbBtn.addEventListener('click', async () => {
+      if (!confirm('Roll back to the previous outpost binary? The daemon will restart.')) return;
+      rbBtn.disabled = true;
+      try {
+        const r = await api('POST', '/api/upgrade/rollback', {});
+        if (r.status === '' || !r.status) {
+          msg('ok', `Rolled back: ${r.from_commit||''} → ${r.to_commit||''}`);
+        } else {
+          msg('warn', `Rollback: ${r.status} — ${r.detail||''}`);
+        }
+        pollUntilUp();
+        setTimeout(() => buildUpdateSection(parent), 4000);
+      } catch (e) {
+        msg('err', e.message || 'Rollback failed');
+        rbBtn.disabled = false;
+      }
+    });
+    rb.append(el('div', {style: 'margin-top:0.4rem'}, rbBtn));
+    parent.append(rb);
+  }
+
+  // === History ================================================
+  if (data.history && data.history.length > 0) {
+    const hist = el('fieldset', {});
+    hist.append(el('legend', {}, 'Recent history'));
+    const det = el('details');
+    det.append(el('summary', {style: 'cursor:pointer;font-size:0.9rem'}, `${data.history.length} ledger entries`));
+    const tbl = el('table', {style: 'font-size:0.8rem;margin-top:0.4rem;font-family:monospace'});
+    const thead = el('thead', {});
+    thead.append(el('tr', {}, ...['When', 'Release', 'Step', 'From', 'To', 'Detail'].map(h => el('th', {style: 'text-align:left;padding:0.2rem 0.5rem;border-bottom:1px solid #8884'}, h))));
+    tbl.append(thead);
+    const tbody = el('tbody', {});
+    // newest first
+    for (const e of [...data.history].reverse()) {
+      const at = e.at ? new Date(e.at) : null;
+      const atStr = at ? `${at.getFullYear()}-${String(at.getMonth()+1).padStart(2,'0')}-${String(at.getDate()).padStart(2,'0')} ${String(at.getHours()).padStart(2,'0')}:${String(at.getMinutes()).padStart(2,'0')}` : '';
+      const td = (v) => el('td', {style: 'padding:0.2rem 0.5rem;border-bottom:1px solid #8881'}, v||'');
+      const stepCell = el('td', {style: `padding:0.2rem 0.5rem;border-bottom:1px solid #8881;color:${(e.step||'').includes('failed')?'#dc2626':(e.step==='swap_done'||e.step==='rollback')?'#16a34a':'inherit'}`}, e.step||'');
+      const detail = e.error ? `ERR: ${e.error}` : (e.detail||'');
+      const tr = el('tr', {}, td(atStr), td(e.release_id||''), stepCell, td((e.from_sha||'').slice(0,8)), td((e.to_sha||'').slice(0,8)), td(detail));
+      tbody.append(tr);
+    }
+    tbl.append(tbody);
+    det.append(tbl);
+    hist.append(det);
+    parent.append(hist);
+  }
+}
+
+// buildRowInto — small helper for buildUpdateSection's many label/value
+// rows. Just keeps the inline DOM construction tidy.
+function buildRowInto(parent, label, value) {
+  if (!value) return;
+  const row = el('div', {class: 'item-row'});
+  row.append(
+    el('span', {class: 'label', style: 'min-width:160px'}, label),
+    el('span', {class: 'hint', style: 'font-family:monospace;font-size:0.85rem;word-break:break-all'}, String(value)),
+  );
+  parent.append(row);
+}
+
 function renderMain(status, cfg) {
   const app = $('#app');
   app.innerHTML = '';
 
-  // Tab bar + three panels: Pair host, Inbound, Outbound. Pair host has
-  // its own tab so the Inbound/Outbound panels stay focused on apps and
-  // mounts.
+  // Tab bar + four panels: Pair host, Inbound, Outbound, Update.
+  // Update consolidates everything cloudbox-pushed-upgrade-related —
+  // current build info, the auto/manual/never policy selector, and
+  // (future) ledger / rollback affordances — so the operator has one
+  // place to look when they're thinking about versions.
   const tabs = el('div', {class: 'tabs'});
   const panels = el('div', {class: 'tab-panels'});
   const panelPair = el('div', {class: 'tab-panel', 'data-panel': 'pair'});
   const panelInbound = el('div', {class: 'tab-panel', 'data-panel': 'inbound'});
   const panelOutbound = el('div', {class: 'tab-panel', 'data-panel': 'outbound'});
-  panels.append(panelPair, panelInbound, panelOutbound);
+  const panelUpdate = el('div', {class: 'tab-panel', 'data-panel': 'update'});
+  panels.append(panelPair, panelInbound, panelOutbound, panelUpdate);
 
   // Initial tab: stored preference if any, else 'inbound' once paired
   // (the common case), else 'pair' (operator still needs to finish
   // setup).
   let active = localStorage.getItem(TAB_KEY);
-  if (!['pair', 'inbound', 'outbound'].includes(active)) {
+  if (!['pair', 'inbound', 'outbound', 'update'].includes(active)) {
     active = status.configured ? 'inbound' : 'pair';
   }
   const tabDefs = [
     ['pair', 'Pair host'],
     ['inbound', 'Inbound'],
     ['outbound', 'Outbound'],
+    ['update', 'Update'],
   ];
   const tabBtns = {};
   for (const [key, label] of tabDefs) {
@@ -1130,6 +1387,7 @@ function renderMain(status, cfg) {
     panelPair.classList.toggle('hidden', key !== 'pair');
     panelInbound.classList.toggle('hidden', key !== 'inbound');
     panelOutbound.classList.toggle('hidden', key !== 'outbound');
+    panelUpdate.classList.toggle('hidden', key !== 'update');
     try { localStorage.setItem(TAB_KEY, key); } catch (_) {}
   }
   activate(active);
@@ -1248,47 +1506,11 @@ function renderMain(status, cfg) {
   }
   built.append(builtList);
 
-  // Update mode — a 3-way select instead of a boolean toggle, so the
-  // operator can pick a "manual" middle ground between "always apply
-  // automatically" and "frozen, never accept." Saves immediately;
-  // unlike the other built-in toggles it doesn't restart the daemon
-  // (the worker re-reads the FileConfig on every push).
-  const updateRow = el('div', {class: 'item-row'});
-  const updateSelect = el('select', {style: 'min-width:120px'});
-  const currentMode = cfg.update_mode || 'auto';
-  for (const opt of [
-    {v: 'auto',   label: 'Auto', desc: 'apply cloudbox pushes immediately'},
-    {v: 'manual', label: 'Manual', desc: 'persist envelope; operator runs `outpost upgrade apply` or clicks Apply in cloudbox'},
-    {v: 'never',  label: 'Never', desc: 'refuse all cloudbox pushes (the host is operator-managed)'},
-  ]) {
-    const o = el('option', {value: opt.v, title: opt.desc}, opt.label);
-    if (opt.v === currentMode) o.selected = true;
-    updateSelect.append(o);
-  }
-  updateSelect.addEventListener('change', async () => {
-    const newVal = updateSelect.value;
-    updateSelect.disabled = true;
-    try {
-      await api('POST', '/api/config/builtins', {update_mode: newVal});
-      msg('ok', `Update mode → ${newVal}`);
-    } catch (e) {
-      updateSelect.value = currentMode;
-      msg('err', e.message || 'Save failed');
-    } finally {
-      updateSelect.disabled = false;
-    }
-  });
-  updateRow.append(
-    el('span', {class: 'label'},
-      'Cloudbox-pushed self-upgrades ',
-      el('code', {class: 'key-hint'}, 'update_mode'),
-    ),
-    updateSelect,
-  );
-  built.append(updateRow);
+  // (update_mode selector lives on the dedicated Update tab; this
+  // panel stays focused on routes + daemon-proxy toggles.)
 
   built.append(el('p', {style: 'font-size:0.8rem;opacity:0.7;margin-top:0.8rem'},
-    'Changes save automatically. Toggling a built-in restarts the outpost (update_mode is the exception — it re-reads live without restart). Podman/Ollama require the matching daemon to be running on this host.'));
+    'Changes save automatically. Toggling a built-in restarts the outpost. Podman/Ollama require the matching daemon to be running on this host.'));
 
   panelInbound.append(built);
   // (LLM pool diagnostic was folded into the Ollama twister above —
@@ -1848,6 +2070,12 @@ function renderMain(status, cfg) {
 
   outbound.append(addObDrawer, obList);
   panelOutbound.append(outbound);
+
+  // Update panel content. Loaded async (fetches /api/upgrade); the
+  // tab itself is interactive immediately because the panel renders
+  // inline with the others. Each Apply / Rollback action re-renders
+  // this panel after a short delay so the operator sees fresh state.
+  buildUpdateSection(panelUpdate);
 
   // Header actions (Restart / Sign out) — primary blue, right-aligned in
   // the page header.

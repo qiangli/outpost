@@ -27,6 +27,7 @@ import (
 
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/agent/upgrade"
 )
 
 // Deps is what main.go threads into admincore.New. Everything here is
@@ -66,6 +67,14 @@ type Deps struct {
 	// (Ollama off or daemon undetected). Closure rather than a concrete
 	// type so admincore doesn't import the ollama package.
 	LLMPoolStatus func() LLMPoolStatusView
+
+	// Upgrader + UpgradeLedger feed the Update tab on the admin UI
+	// and the corresponding MCP tools. Nil on unpaired hosts (the
+	// route falls back to a graceful 404 — see handlers/server.go
+	// for the gate). Threaded through admincore so the surface
+	// stays uniform across MCP / REST / future CLI.
+	Upgrader      *upgrade.Worker
+	UpgradeLedger *upgrade.Ledger
 }
 
 // LLMPoolStatusView is the wire shape rendered into SafeView. Kept here

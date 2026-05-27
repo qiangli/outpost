@@ -349,6 +349,11 @@ func (s *Server) registerRoutes() {
 	api.DELETE("/apps/:name", s.handleDeleteApp)
 	api.POST("/apps/:name/provisioning-token/rotate", s.handleRotateProvisioningToken)
 	api.POST("/restart", s.handleRestart)
+	// Update tab: consolidated build + source + ledger payload, plus
+	// the two operator-driven actions (apply pending / rollback).
+	api.GET("/upgrade", s.handleUpgradeOverview)
+	api.POST("/upgrade/apply", s.handleApplyPendingUpgrade)
+	api.POST("/upgrade/rollback", s.handleRollbackUpgrade)
 	api.POST("/cluster/kubeconfig", s.handleSetClusterKubeconfig)
 	api.DELETE("/cluster/kubeconfig", s.handleClearClusterKubeconfig)
 

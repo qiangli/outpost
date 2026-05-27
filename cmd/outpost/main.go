@@ -410,6 +410,10 @@ func startCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("upgrade worker: %w", err)
 				}
+				// Make the worker + ledger visible to admincore's
+				// shared business-logic layer so the adminui Update
+				// tab + MCP tools all read from the same source.
+				core.AttachUpgrade(upgradeWorker, upgradeLedger)
 			}
 
 			// MCP server — same loopback listener as adminui, mounted
