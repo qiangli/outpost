@@ -22,7 +22,7 @@ func clusterCmd() *cobra.Command {
 		Use:   "cluster",
 		Short: "Interact with the cloudbox virtual-podman cluster",
 	}
-	cmd.AddCommand(clusterKubeconfigCmd(), clusterClearCmd())
+	cmd.AddCommand(clusterKubeconfigCmd(), clusterUserKubeconfigCmd(), clusterClearCmd())
 	return cmd
 }
 
@@ -156,5 +156,92 @@ admin UI's Cluster section.`,
 		"Path to write to (default $HOME/.kube/outpost.yaml or $OUTPOST_KUBECONFIG_PATH)")
 	cmd.Flags().BoolVar(&stdoutFlag, "stdout", false,
 		"Print to stdout instead of writing to a file (legacy behavior)")
+	return cmd
+}
+
+// clusterUserKubeconfigCmd fetches a per-USER kubeconfig from cloudbox
+// (distinct from the per-host agent kubeconfig clusterKubeconfigCmd
+// produces) and, by default, merges it into the operator's existing
+// kubectl config at $KUBECONFIG / $HOME/.kube/config. The merge
+// preserves any other contexts already there; only the cloudbox
+// entries (stable names) get refreshed in place.
+//
+// The token cloudbox mints lives in the outpost-users namespace with
+// RBAC scoped to the operator's per-user workload namespace. Lifetime
+// is 1h — re-run before expiry (or wrap in cron / launchd timer for
+// hands-off refresh).
+//
+// Use:
+//
+//	outpost cluster userkubeconfig                  # merge into ~/.kube/config
+//	outpost cluster userkubeconfig --output ~/cloudbox.yaml   # standalone
+//	outpost cluster userkubeconfig --stdout > /tmp/k         # print only
+func clusterUserKubeconfigCmd() *cobra.Command {
+	var (
+		outputFlag string
+		stdoutFlag bool
+	)
+	cmd := &cobra.Command{
+		Use:   "userkubeconfig",
+		Short: "Refresh the per-user kubectl config from cloudbox (merges into ~/.kube/config by default)",
+		Long: `Fetch a fresh per-user kubectl kubeconfig from cloudbox and
+merge it into the local kubectl config (~/.kube/config, or the first
+entry of $KUBECONFIG).
+
+Cloudbox identifies the calling account via the outpost's persisted
+access_token (the same Bearer used for /api/cluster/agent) and mints a
+per-user ServiceAccount token bound to the operator's workload
+namespace. Token lifetime is 1 hour; re-run before expiry to refresh.
+
+By default the operation is a kubectl-style merge — only the cloudbox
+cluster/user/context entries get overwritten, and any other contexts
+already in the kubeconfig stay intact. Use --output to write a
+standalone YAML file instead (useful when you want to KUBECONFIG=
+chain it without touching the default), or --stdout to print.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfgPath, err := conf.DefaultConfigPath()
+			if err != nil {
+				return err
+			}
+			fc, err := conf.LoadFile(cfgPath)
+			if err != nil {
+				return fmt.Errorf("load %s: %w", cfgPath, err)
+			}
+			if fc == nil || fc.AccessToken == "" {
+				return errors.New("no access_token saved — run `outpost register` first")
+			}
+			cloudboxBase := cloudboxHTTPBase(fc)
+			if cloudboxBase == "" {
+				return errors.New("no cloudbox URL in saved config (server_addr / protocol missing)")
+			}
+			yaml, err := userkube.FetchUserKubeconfigYAML(cmd.Context(), cloudboxBase, fc.AccessToken)
+			if err != nil {
+				return err
+			}
+			if stdoutFlag {
+				_, err := os.Stdout.Write(yaml)
+				return err
+			}
+			if outputFlag != "" {
+				if err := userkube.WriteStandalone(yaml, outputFlag); err != nil {
+					return err
+				}
+				fmt.Printf("wrote %s\n", outputFlag)
+				fmt.Println("Use it: export KUBECONFIG=" + outputFlag)
+				return nil
+			}
+			path, err := userkube.MergeIntoKubectl(yaml, "")
+			if err != nil {
+				return err
+			}
+			fmt.Printf("merged into %s\n", path)
+			fmt.Println("kubectl / helm should now work — token good for 1h, re-run to refresh")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&outputFlag, "output", "",
+		"Write a standalone YAML kubeconfig to this path (skips the merge)")
+	cmd.Flags().BoolVar(&stdoutFlag, "stdout", false,
+		"Print the kubeconfig YAML to stdout (skips the merge)")
 	return cmd
 }
