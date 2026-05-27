@@ -37,8 +37,16 @@ func Probe(path, expectedCommit string) (agent.BuildInfo, error) {
 	if b.GoVersion == "" {
 		return agent.BuildInfo{}, errors.New("version --json output had no go_version field; not an outpost binary?")
 	}
-	if expectedCommit != "" && shortCommit(b.Commit) != expectedCommit {
-		return b, envelopeMismatch(expectedCommit, shortCommit(b.Commit))
+	// Normalize both sides to short commit. The envelope's Commit
+	// field can legitimately arrive in two shapes — short ("6e498ea",
+	// what the CLI surfaces and what BuildInfo.Short() returns) or
+	// full 40-char sha (what the GH-Action release webhook sends,
+	// via `github.sha`). Without this normalization, every cloudbox-
+	// pushed upgrade silently failed at probe_failed because the
+	// binary's BuildInfo.Commit is the full sha and shortCommit
+	// stripped it to 7, never matching the 40-char envelope value.
+	if expectedCommit != "" && shortCommit(b.Commit) != shortCommit(expectedCommit) {
+		return b, envelopeMismatch(shortCommit(expectedCommit), shortCommit(b.Commit))
 	}
 	return b, nil
 }

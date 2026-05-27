@@ -58,3 +58,17 @@ func TestProbe_AcceptsCommitMatch(t *testing.T) {
 		t.Fatalf("expected match, got %v", err)
 	}
 }
+
+// TestProbe_AcceptsFullShaExpected — the cloudbox release webhook
+// sends `github.sha` which is the full 40-char commit. Probe must
+// normalize both sides to short or the envelope.commit check fails
+// for every cloudbox-pushed upgrade. Regression test for the bug
+// where novidesign's upgrades silently no-op'd at probe_failed.
+func TestProbe_AcceptsFullShaExpected(t *testing.T) {
+	bin := fakeOutpostBinary(t, `{"commit":"abc1234567890def","go_version":"go1.26.0"}`, 0)
+	// Pass the full sha (40 chars in real GH; 16 here is enough to
+	// exceed the 7-char short threshold).
+	if _, err := Probe(bin, "abc1234567890def"); err != nil {
+		t.Fatalf("expected match against full sha, got %v", err)
+	}
+}
