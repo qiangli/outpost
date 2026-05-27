@@ -62,3 +62,4 @@ go build ./cmd/outpost
 ```
 
 Requires Go 1.25+.
+# release notes — see github.com/qiangli/outpost/releases
