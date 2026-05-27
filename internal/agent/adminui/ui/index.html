@@ -1186,6 +1186,7 @@ async function buildUpdateSection(parent) {
       'cloudbox': 'cloudbox push (GitHub release)',
       'cli-local': 'CLI install (`outpost upgrade --local`)',
       'cli-url': 'CLI install (`outpost upgrade --from URL`)',
+      'manual':   'manual install (binary replaced out-of-band since the last tracked swap)',
       'unknown':  'unknown (no matching received entry in ledger)',
     })[cs.kind] || cs.kind;
     buildRowInto(sl, 'Origin', kindLabel);

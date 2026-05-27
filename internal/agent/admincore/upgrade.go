@@ -3,6 +3,7 @@ package admincore
 import (
 	"context"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/qiangli/outpost/internal/agent"
@@ -86,7 +87,7 @@ func (s *Server) UpgradeOverview() (UpgradeOverview, error) {
 		entries, lerr := s.deps.UpgradeLedger.Tail(20)
 		if lerr == nil && entries != nil {
 			out.History = entries
-			out.CurrentSource = deriveCurrentSource(entries)
+			out.CurrentSource = deriveCurrentSource(entries, out.Build.Short())
 		}
 	}
 	return out, nil
@@ -97,12 +98,25 @@ func (s *Server) UpgradeOverview() (UpgradeOverview, error) {
 // release_id) carries the URL — that's the source for cloudbox-driven
 // upgrades. CLI-driven swaps have Detail "outpost upgrade (CLI)"
 // without a matching received entry, distinguished by that string.
+//
+// `currentCommit` is the running daemon's short commit. When the
+// most recent swap_done's to_sha doesn't match it, the binary has
+// been replaced out-of-band since the last tracked swap (e.g.
+// manual scp + launchd respawn) — we surface that as Kind="manual"
+// so the operator isn't misled into thinking the current binary
+// came from cloudbox just because the LAST tracked upgrade did.
+//
 // Returns nil when no swap has ever run on this host (initial install).
-func deriveCurrentSource(entries []upgrade.LedgerEntry) *UpgradeSource {
+func deriveCurrentSource(entries []upgrade.LedgerEntry, currentCommit string) *UpgradeSource {
 	for i := len(entries) - 1; i >= 0; i-- {
 		e := entries[i]
 		if e.Step != "swap_done" {
 			continue
+		}
+		// Stale-ledger check: the binary on disk no longer matches
+		// what the last swap landed. Manual replacement happened.
+		if currentCommit != "" && e.ToSHA != "" && !strings.EqualFold(e.ToSHA, currentCommit) && !strings.HasPrefix(strings.ToLower(currentCommit), strings.ToLower(e.ToSHA)) {
+			return &UpgradeSource{Kind: "manual", At: e.At}
 		}
 		// Look earlier for a matching received entry.
 		for j := i - 1; j >= 0; j-- {
