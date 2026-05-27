@@ -178,6 +178,49 @@ func (s *Server) RotateProvisioningToken(name string) (string, error) {
 	return tok, nil
 }
 
+// SetAppEnabled flips an app's Enabled flag without re-supplying the
+// rest of its config — what `outpost apps stop`/`start` and the
+// outpost_set_app_enabled MCP tool delegate to. Persists the change
+// and updates the live AppRegistry: enabling re-mounts the proxy,
+// disabling unregisters it. Idempotent — setting to the current value
+// is a no-op (still returns the row so callers can confirm the state).
+//
+// This only flips the proxy gate. The upstream container/process is
+// untouched — operators stop those out-of-band (e.g. `podman stop`).
+// 404s when the app name isn't registered.
+func (s *Server) SetAppEnabled(name string, enabled bool) (conf.AppConfig, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fc, err := s.loadConfig()
+	if err != nil {
+		return conf.AppConfig{}, err
+	}
+	idx := -1
+	for i, a := range fc.Apps {
+		if a.Name == name {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return conf.AppConfig{}, notFound("unknown app")
+	}
+	fc.Apps[idx].Enabled = enabled
+	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
+		return conf.AppConfig{}, internalErr("%s", err.Error())
+	}
+	// Reflect into the live registry. Unregister-then-conditionally-
+	// reregister mirrors UpsertApp so a stale entry can't linger when
+	// the toggle is flipped off.
+	s.deps.Apps.Unregister(name)
+	if enabled {
+		if err := s.deps.Apps.RegisterFromConfig(fc.Apps[idx]); err != nil {
+			return conf.AppConfig{}, internalErr("%s", err.Error())
+		}
+	}
+	return fc.Apps[idx], nil
+}
+
 // generateProvisioningToken returns a 32-byte random hex string. Used
 // for the per-app bearer the cooperating app sends when pushing user
 // grants up to cloudbox via outpost's relay. crypto/rand failure is a

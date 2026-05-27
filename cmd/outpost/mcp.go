@@ -41,7 +41,7 @@ func mcpEndpointCmd() *cobra.Command {
 			if fc == nil || fc.MCPBearerToken == "" {
 				return fmt.Errorf("no MCP bearer token in %s — run `outpost start` once to generate one", cfgPath)
 			}
-			url := mcpEndpointURL() + "/"
+			url := localMCPEndpointURL() + "/"
 			if !snippet {
 				fmt.Printf("endpoint  %s\n", url)
 				fmt.Printf("bearer    %s\n", fc.MCPBearerToken)

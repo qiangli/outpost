@@ -35,6 +35,7 @@ var docsManifest = []struct {
 }{
 	{"settings", "Settings reference", "Every persistable setting: file key, CLI flag, UI location, MCP tool, side-effects."},
 	{"mcp", "MCP server guide", "Setup, tool catalog, .mcp.json snippet, token rotation, security posture."},
+	{"dev-deploy", "Direct-local dev → deploy", "Makefile recipes for same-machine and LAN deploys (podman); apps stop/start; remote-cred caching."},
 }
 
 func docsCmd() *cobra.Command {

@@ -61,6 +61,16 @@ func main() {
 		Version: build.Short(),
 	}
 	root.SetVersionTemplate("outpost version {{.Version}}\n")
+	// Persistent flags that target a remote outpost via MCP. Read by
+	// dialMCP via the rootDialOpts package var. --host / --token are
+	// the explicit one-shot path; --remote is the cached-credentials
+	// path (set up via `outpost remote login <name>`).
+	root.PersistentFlags().StringVar(&rootDialOpts.Host, "host", "",
+		"Admin endpoint of the target outpost (host:port or http://host:port). Overrides $OUTPOST_HOST / $OUTPOST_ADMIN_ADDR.")
+	root.PersistentFlags().StringVar(&rootDialOpts.Token, "token", "",
+		"MCP bearer token for the target outpost. Overrides $OUTPOST_MCP_TOKEN and the local FileConfig.")
+	root.PersistentFlags().StringVar(&rootDialOpts.Remote, "remote", os.Getenv("OUTPOST_REMOTE"),
+		"Use a cached remote (~/.config/outpost/remotes/<name>.json). Set up with 'outpost remote login <name>'.")
 	root.AddCommand(
 		startCmd(), registerCmd(), stopCmd(),
 		sshProxyCmd(), sshConfigCmd(), connectCmd(),
@@ -68,6 +78,7 @@ func main() {
 		clusterCmd(), poolCmd(),
 		// MCP-client CLI parity (Phase 1.5):
 		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), unpairCmd(), restartCmd(), mcpCmd(),
+		remoteCmd(),
 		docsCmd(), versionCmd(), upgradeCmd(), rollbackCmd(),
 	)
 	if err := root.Execute(); err != nil {

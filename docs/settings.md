@@ -204,7 +204,7 @@ Status codes the daemon returns to cloudbox:
 | Port | `port` | `--port` | Port |
 | Socket | `socket` | `--socket` | (unix/npipe only) |
 | URL (single-string alt.) | (parsed into the above) | `--url` | (n/a) |
-| Enabled | `enabled` | `--disabled` inverts | Toggle |
+| Enabled | `enabled` | `--disabled` inverts; flip later with `apps stop` / `apps start` | Toggle |
 | Require login | `require_login` | `--require-login` | Checkbox |
 | LAN-only paths | `lan_only_paths` | `--lan-only-path /p` (repeatable) | Textarea |
 | Index path | `index_path` | `--index-path` | Index path |
@@ -212,10 +212,13 @@ Status codes the daemon returns to cloudbox:
 | Provisioning token | `provisioning_token` | auto-generated; rotate with `apps rotate-token` | Reveal / Copy / Rotate |
 
 MCP equivalents: `outpost_upsert_app`, `outpost_delete_app`,
-`outpost_rotate_app_token`, `outpost_suggest_apps`.
+`outpost_set_app_enabled`, `outpost_rotate_app_token`,
+`outpost_suggest_apps`.
 
 App add / update is **live** — the running `AppRegistry` is mutated
 under a mutex, no restart needed. App removal is also live.
+`apps stop` / `apps start` (and `outpost_set_app_enabled`) flip
+only the proxy gate — the upstream container/process is untouched.
 
 ### Outbound mounts (live)
 

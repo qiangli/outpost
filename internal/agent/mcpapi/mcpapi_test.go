@@ -117,6 +117,7 @@ func TestToolListAndStatusResource(t *testing.T) {
 		"outpost_list_apps",
 		"outpost_upsert_app",
 		"outpost_delete_app",
+		"outpost_set_app_enabled",
 		"outpost_rotate_app_token",
 		"outpost_suggest_apps",
 		"outpost_list_outbound",

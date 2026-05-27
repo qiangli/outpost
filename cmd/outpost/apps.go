@@ -25,10 +25,63 @@ func appsCmd() *cobra.Command {
 		appsListCmd(),
 		appsAddCmd(),
 		appsRmCmd(),
+		appsStopCmd(),
+		appsStartCmd(),
 		appsRotateTokenCmd(),
 		appsSuggestCmd(),
 	)
 	return cmd
+}
+
+// appsStopCmd / appsStartCmd flip an app's Enabled flag without re-
+// supplying the rest of its config. The proxy gate flips immediately
+// (cloudbox-side tile starts 503'ing on stop), but the upstream
+// container/process is untouched — operators stop those out-of-band
+// (e.g. `podman stop <name>` or `systemctl stop …`).
+func appsStopCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "stop <name>",
+		Short: "Disable an app's proxy gate (upstream untouched)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSetAppEnabled(cmd.Context(), args[0], false)
+		},
+	}
+}
+
+func appsStartCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "start <name>",
+		Short: "Enable an app's proxy gate",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSetAppEnabled(cmd.Context(), args[0], true)
+		},
+	}
+}
+
+func runSetAppEnabled(ctx context.Context, name string, enabled bool) error {
+	session, err := dialMCP(ctx)
+	if err != nil {
+		return err
+	}
+	defer session.close()
+	var out struct {
+		OK  bool           `json:"ok"`
+		App conf.AppConfig `json:"app"`
+	}
+	if err := session.callTool(ctx, "outpost_set_app_enabled", map[string]any{
+		"name":    name,
+		"enabled": enabled,
+	}, &out); err != nil {
+		return err
+	}
+	verb := "started"
+	if !enabled {
+		verb = "stopped"
+	}
+	fmt.Printf("%s app %q (enabled=%t)\n", verb, out.App.Name, out.App.Enabled)
+	return nil
 }
 
 func appsListCmd() *cobra.Command {

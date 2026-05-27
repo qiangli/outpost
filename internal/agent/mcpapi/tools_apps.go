@@ -40,6 +40,11 @@ type byNameIn struct {
 	Name string `json:"name" jsonschema:"App name"`
 }
 
+type setAppEnabledIn struct {
+	Name    string `json:"name" jsonschema:"App name"`
+	Enabled bool   `json:"enabled" jsonschema:"Whether the proxy gate is open. Flipping false makes the cloudbox-side tile 503 while leaving the upstream container/process untouched."`
+}
+
 type okOut struct {
 	OK bool `json:"ok"`
 }
@@ -100,6 +105,17 @@ func (s *Server) registerAppsTools() {
 			return apiErrResult[okOut](err)
 		}
 		return nil, okOut{OK: true}, nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_set_app_enabled",
+		Description: "Flip an app's Enabled flag without re-supplying its target (the CLI verbs `outpost apps stop` / `outpost apps start` delegate here). Only flips the proxy gate — the upstream container/process is untouched. 404s when the app name isn't registered.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in setAppEnabledIn) (*mcp.CallToolResult, upsertAppOut, error) {
+		ac, err := s.core.SetAppEnabled(in.Name, in.Enabled)
+		if err != nil {
+			return apiErrResult[upsertAppOut](err)
+		}
+		return nil, upsertAppOut{OK: true, App: ac}, nil
 	})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
