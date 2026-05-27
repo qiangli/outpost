@@ -1,10 +1,19 @@
 package agent
 
 import (
+	"os"
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"time"
+
+	"github.com/qiangli/outpost/internal/agent/osversion"
 )
+
+// daemonStartedAt is captured at process start by an init() so the
+// /apps poller can surface "running for N hours" without any threading
+// from main.go. Stable for the life of the process.
+var daemonStartedAt = time.Now()
 
 // releaseTag is populated at link time via -ldflags:
 //
@@ -32,8 +41,32 @@ type BuildInfo struct {
 	VCSTime   string `json:"vcs_time,omitempty"` // ISO-8601 commit timestamp
 	Dirty     bool   `json:"dirty"`              // true if working tree had uncommitted changes at build
 	GoVersion string `json:"go_version"`         // e.g. "go1.26.0"
-	OS        string `json:"os,omitempty"`       // runtime.GOOS — "darwin" / "linux" / "windows"
+	OS        string `json:"os,omitempty"`       // runtime.GOOS — "darwin" / "linux" / "windows" (compile target)
 	Arch      string `json:"arch,omitempty"`     // runtime.GOARCH — "arm64" / "amd64"
+
+	// OSVersion is the actual host OS at RUNTIME (sw_vers / /etc/
+	// os-release / cmd ver), e.g. "macOS 15.1.0" / "Ubuntu 24.04
+	// LTS". Distinct from OS above which is the binary's compile
+	// target — they typically match but can disagree if a binary
+	// is shipped cross-OS (mostly an alert that something's
+	// misconfigured).
+	OSVersion string `json:"os_version,omitempty"`
+
+	// BinarySize is the on-disk size of os.Executable() in bytes.
+	// Useful for the SPA host row's at-a-glance "is the binary the
+	// expected ballpark size or is something truncated."
+	BinarySize int64 `json:"binary_size,omitempty"`
+
+	// InstalledAt is the mtime of os.Executable() — when the binary
+	// file was last written to disk. Reflects the most recent
+	// upgrade/install (the daemon's previous swap or the operator's
+	// scp), NOT the daemon's process start.
+	InstalledAt time.Time `json:"installed_at,omitempty"`
+
+	// DaemonStartedAt is the process-start timestamp captured at
+	// the first ReadBuildInfo call via the package-level var. Stable
+	// for the life of this daemon.
+	DaemonStartedAt time.Time `json:"daemon_started_at,omitempty"`
 }
 
 // Short returns a one-line human-readable identifier. Prefers the
@@ -66,9 +99,17 @@ func (b BuildInfo) Short() string {
 // fails (which it doesn't for any normal `go build`-produced binary).
 func ReadBuildInfo() BuildInfo {
 	b := BuildInfo{
-		Version: releaseTag,
-		OS:      runtime.GOOS,
-		Arch:    runtime.GOARCH,
+		Version:         releaseTag,
+		OS:              runtime.GOOS,
+		Arch:            runtime.GOARCH,
+		OSVersion:       osversion.String(),
+		DaemonStartedAt: daemonStartedAt,
+	}
+	if exe, err := os.Executable(); err == nil {
+		if st, err := os.Stat(exe); err == nil {
+			b.BinarySize = st.Size()
+			b.InstalledAt = st.ModTime()
+		}
 	}
 	info, ok := debug.ReadBuildInfo()
 	if !ok {

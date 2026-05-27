@@ -160,12 +160,17 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 		// Older outposts omit `builtins`, `os`, `arch`; cloudbox treats
 		// missing fields as legacy / unknown.
 		payload := gin.H{
-			"agent":   deps.AgentName,
-			"version": build.Short(),
-			"commit":  build.Commit,
-			"os":      build.OS,
-			"arch":    build.Arch,
-			"apps":    apps.Entries(),
+			"agent":             deps.AgentName,
+			"version":           build.Short(),
+			"commit":            build.Commit,
+			"os":                build.OS,
+			"arch":              build.Arch,
+			"os_version":        build.OSVersion,
+			"build_time":        build.VCSTime,
+			"binary_size":       build.BinarySize,
+			"installed_at":      build.InstalledAt,
+			"daemon_started_at": build.DaemonStartedAt,
+			"apps":              apps.Entries(),
 			"builtins": gin.H{
 				"shell":     !deps.ShellDisabled,
 				"desktop":   !deps.DesktopDisabled,

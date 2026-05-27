@@ -61,6 +61,18 @@ func statusCmd() *cobra.Command {
 			if status.BinaryPath != "" {
 				fmt.Printf("  binary      %s\n", status.BinaryPath)
 			}
+			if status.Build.BinarySize > 0 {
+				fmt.Printf("  size        %.1f MB\n", float64(status.Build.BinarySize)/(1024*1024))
+			}
+			if !status.Build.InstalledAt.IsZero() {
+				fmt.Printf("  installed   %s\n", status.Build.InstalledAt.Local().Format("2006-01-02 15:04:05"))
+			}
+			if !status.Build.DaemonStartedAt.IsZero() {
+				fmt.Printf("  running     %s\n", status.Build.DaemonStartedAt.Local().Format("2006-01-02 15:04:05"))
+			}
+			if status.Build.OSVersion != "" {
+				fmt.Printf("  os          %s (%s/%s)\n", status.Build.OSVersion, status.Build.OS, status.Build.Arch)
+			}
 			fmt.Println()
 			fmt.Println("Built-ins")
 			row := func(name string, on bool) { fmt.Printf("  %-22s  %t\n", name, on) }
