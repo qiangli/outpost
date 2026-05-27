@@ -145,6 +145,15 @@ func (p *Provider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 // are an apiserver concern; the container is unaffected.)
 func (p *Provider) UpdatePod(_ context.Context, pod *corev1.Pod) error {
 	p.cachePod(pod)
+	// Republish the transient app registration. UpdatePod is the
+	// PodController's first call for each pod on daemon restart
+	// (vkpodman.Reconcile's adopt path only builds a port-less
+	// skeleton, so publishPod from CreatePod's adopt branch would
+	// be a no-op there). With this, transient apps survive a daemon
+	// restart even when libpod still owns the container.
+	// AppRegistry.Register is idempotent (it overwrites entries),
+	// so repeated UpdatePods for the same pod converge cleanly.
+	publishPod(p.apps, pod)
 	return nil
 }
 
