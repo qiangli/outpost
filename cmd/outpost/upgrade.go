@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -64,9 +63,6 @@ Examples:
 The candidate binary is verified by exec'ing "<candidate> version --json"
 before the swap. Same-commit upgrades are a no-op unless --force is passed.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if runtime.GOOS == "windows" {
-				return errors.New("outpost upgrade is not supported on windows yet — swap the .exe manually and run `outpost restart`")
-			}
 			if (fromURL == "") == (localPath == "") {
 				return errors.New("exactly one of --from or --local is required")
 			}
@@ -121,10 +117,13 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.`,
 				fmt.Printf("previous: WARN couldn't retain rollback target: %v\n", err)
 			}
 
-			// Phase 4: atomic rename. After this point os.Executable() on the
-			// daemon still resolves to the same path; subsequent execs (via
-			// the self-restart path) pick up the new binary.
-			if err := os.Rename(candidate, before.BinaryPath); err != nil {
+			// Phase 4: atomic swap. SwapAtomic is one rename on Unix (the
+			// kernel allows overwriting the running binary's path) and
+			// rename-old-out-then-new-in on Windows (which doesn't allow
+			// the one-shot variant). After this point os.Executable() on
+			// the daemon still resolves to the same path; subsequent
+			// execs (via the self-restart path) pick up the new binary.
+			if err := upgrade.SwapAtomic(before.BinaryPath, candidate); err != nil {
 				return fmt.Errorf("swap binary into place: %w", err)
 			}
 			swapped = true

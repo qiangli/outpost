@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -172,19 +171,9 @@ func readRecord(path string) (JobRecord, error) {
 }
 
 // pidAlive reports whether the given PID names a live process. Uses
-// syscall.Kill(pid, 0) (Unix semantics): nil = alive + owned by us;
-// EPERM = alive but owned elsewhere (treat as alive — conservative);
-// ESRCH = no such process.
-func pidAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	if err == nil {
-		return true
-	}
-	return !errors.Is(err, syscall.ESRCH)
-}
+// pidAlive lives in pidalive_unix.go / pidalive_windows.go — the
+// liveness probe is the only os-specific bit in this file, so split
+// it out behind build tags rather than tagging the whole module.
 
 func currentOSUser() string {
 	u, err := user.Current()

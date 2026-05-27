@@ -1,9 +1,15 @@
+//go:build !windows
+
 // `outpost jobs / fg / bg / kill` are the external job-control commands
 // the matrix shell points users at when they try to run `fg`/`bg`/`jobs`
 // in-shell — those builtins can't work because subshells in the
 // qiangli/sh interpreter are goroutines, not real OS processes. Outpost
 // records each detached PID via the WithBgPidCallback hook on the shell
 // runner; these commands read that persistent registry.
+//
+// Windows: see jobs_windows.go — the signal-based job-control model is
+// Unix-specific (no SIGSTOP/SIGCONT/SIGUSR1/SIGUSR2 equivalents on
+// Windows), so the verbs stub out to "not supported."
 package main
 
 import (

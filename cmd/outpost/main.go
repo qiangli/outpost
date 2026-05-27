@@ -385,6 +385,9 @@ func startCmd() *cobra.Command {
 				upgradeLedger = upgrade.NewLedger(ledgerPath)
 				pendingPath := upgrade.PendingPath(cacheDir)
 				exe, _ := os.Executable()
+				// Drop any <exe>.replaced-* siblings left behind by a
+				// prior Windows-swap run. No-op on Unix. Idempotent.
+				upgrade.CleanupStaleSwaps(exe)
 				upgradeWorker, err = upgrade.NewWorker(upgrade.Options{
 					State: func() upgrade.StateSnapshot {
 						// Re-read the current FileConfig so a just-toggled

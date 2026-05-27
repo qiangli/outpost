@@ -250,7 +250,7 @@ func (w *Worker) run(ctx context.Context, env Envelope, binaryPath, fromSHA, pen
 		})
 	}
 
-	if err := os.Rename(candidate, binaryPath); err != nil {
+	if err := SwapAtomic(binaryPath, candidate); err != nil {
 		_ = os.Remove(candidate)
 		w.fail(env, "swap_failed", fromSHA, err)
 		return

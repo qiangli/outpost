@@ -36,6 +36,10 @@ jobs:
             arch: arm64
           - os: linux
             arch: amd64
+          - os: windows
+            arch: amd64
+          - os: windows
+            arch: arm64
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,6 +60,13 @@ jobs:
         run: |
           mkdir -p dist
           out="dist/outpost-${RELEASE_TAG}-${GOOS}-${GOARCH}"
+          # Windows binaries get the .exe extension so Windows hosts
+          # download a file the OS recognizes as executable; the
+          # publish step strips .exe when parsing the os/arch from the
+          # filename.
+          if [ "${GOOS}" = "windows" ]; then
+            out="${out}.exe"
+          fi
           go build \
             -ldflags "-X github.com/qiangli/outpost/internal/agent.releaseTag=${RELEASE_TAG}" \
             -trimpath \
@@ -128,8 +139,9 @@ jobs:
             case "$name" in
               *.sha256) continue ;;
             esac
-            # name format: outpost-<TAG>-<OS>-<ARCH>
+            # name format: outpost-<TAG>-<OS>-<ARCH>[.exe]
             platform=${name#outpost-${TAG}-}
+            platform=${platform%.exe}
             os=${platform%-*}
             arch=${platform##*-}
             sha=$(shasum -a 256 "$f" | awk '{print $1}')
