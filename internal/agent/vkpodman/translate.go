@@ -129,6 +129,12 @@ func buildLabels(pod *corev1.Pod, containerName string) map[string]string {
 		PodNameLabel:       pod.Name,
 		ContainerNameLabel: containerName,
 	}
+	// Record the resolved host ports as labels so HydratePodPortsFromLabels
+	// can re-derive them on daemon restart without re-allocating
+	// (which would pick different ports and break running clients).
+	for k, v := range LabelsForHostPorts(pod) {
+		out[k] = v
+	}
 	// Forward user labels so the host operator's `podman ps --format
 	// '{{.Labels}}'` shows what the workload owner attached. We skip
 	// anything in the kubernetes.io/* and outpost.io/* namespaces so a

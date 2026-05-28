@@ -90,6 +90,13 @@ func (p *Provider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			"pod", podKey(pod.Namespace, pod.Name), "allowed", p.access.Snapshot())
 		return fmt.Errorf("vkpodman: namespace %q is not permitted to schedule on this outpost", pod.Namespace)
 	}
+	// Allocate ports for any containerPort the Pod manifest left without
+	// an explicit hostPort. Mutates the in-memory pod in place so the
+	// later BuildSpec, the labels we stamp on the container, and the
+	// transient app publish all agree on the resolved port set.
+	if _, err := AllocateMissingHostPorts(pod); err != nil {
+		return err
+	}
 	spec, err := BuildSpec(pod)
 	if err != nil {
 		return err
@@ -103,6 +110,19 @@ func (p *Provider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		return fmt.Errorf("vkpodman: lookup existing container for pod %s: %w", podKey(pod.Namespace, pod.Name), err)
 	}
 	if existing != "" {
+		// Container survived a prior daemon run — read the host-port
+		// labels we stamped at original-create time so the in-memory
+		// pod (and the subsequent publishPod) sees the SAME hostPort
+		// the original allocation chose. Without this, daemon restart
+		// can leave a Running container reachable on port X while
+		// vkpodman's view still says HostPort=0 and the transient
+		// AppRegistry entry never gets created.
+		if ins, ierr := p.client.InspectContainer(ctx, existing); ierr == nil && ins != nil {
+			HydratePodPortsFromLabels(pod, ins.Config.Labels)
+		} else if ierr != nil {
+			slog.Warn("vkpodman: inspect existing container for port hydration",
+				"container", existing, "err", ierr)
+		}
 		if err := p.client.StartContainer(ctx, existing); err != nil && !IsConflict(err) {
 			return fmt.Errorf("vkpodman: start existing container %s: %w", existing, err)
 		}
@@ -275,6 +295,7 @@ func (p *Provider) Reconcile(ctx context.Context) error {
 				Containers: []corev1.Container{{
 					Name:  cname,
 					Image: item.Image,
+					Ports: portsFromLabels(item.Labels),
 				}},
 			},
 		}
@@ -390,6 +411,37 @@ func inspectToPodStatus(pod *corev1.Pod, ins *InspectContainer) *corev1.PodStatu
 		t := metav1.NewTime(ins.State.StartedAt)
 		status.StartTime = &t
 	}
+	// Conditions[Ready] tracks libpod's running state directly.
+	// Strict semantics (reflect a readiness probe) would be the v2
+	// upgrade — here, "container is running and not stopping" is the
+	// only signal we can derive without an HTTP probe machinery, and
+	// it's what cloudbox /api/cluster/svc/* already uses as the
+	// proxy gate so the two layers agree.
+	readyState := corev1.ConditionFalse
+	readyReason := ""
+	switch {
+	case ins.State.Running && !ins.State.Restarting && !ins.State.Paused:
+		readyState = corev1.ConditionTrue
+	case ins.State.Status == "exited" || ins.State.Status == "stopped" || ins.State.Dead:
+		readyReason = "ContainersNotReady"
+	default:
+		readyReason = "ContainersNotReady"
+	}
+	now := metav1.Now()
+	status.Conditions = append(status.Conditions,
+		corev1.PodCondition{
+			Type:               corev1.PodReady,
+			Status:             readyState,
+			LastTransitionTime: now,
+			Reason:             readyReason,
+		},
+		corev1.PodCondition{
+			Type:               corev1.ContainersReady,
+			Status:             readyState,
+			LastTransitionTime: now,
+			Reason:             readyReason,
+		},
+	)
 	return status
 }
 
