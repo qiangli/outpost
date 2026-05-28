@@ -2,7 +2,6 @@ package vkpodman
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -75,11 +74,12 @@ func BuildSpec(pod *corev1.Pod) (*SpecGenerator, error) {
 	}
 
 	if len(c.VolumeMounts) > 0 {
-		mounts, err := buildMounts(pod, c.VolumeMounts)
+		mounts, volumes, err := buildMounts(pod, c.VolumeMounts)
 		if err != nil {
 			return nil, err
 		}
 		spec.Mounts = mounts
+		spec.Volumes = volumes
 	}
 
 	if rl := buildResourceLimits(c.Resources); rl != nil {
@@ -163,103 +163,86 @@ func buildEnv(envs []corev1.EnvVar) (map[string]string, error) {
 
 // buildMounts walks each VolumeMount, looks up the matching pod.Spec.Volume
 // by name, and emits a libpod Mount. Only HostPath and EmptyDir are
-// supported in v1 — EmptyDir is materialized as a tmpfs mount when
-// Medium=="Memory" and as an anonymous bind into a per-pod tmpdir
-// otherwise. (For the anonymous case the bind source is left empty and
-// libpod auto-creates an anonymous named volume; the lifetime is tied
-// to the container via Remove=false + per-pod cleanup at DeletePod time.)
+// supported in v1.
+//
+// HostPath and disk-backed EmptyDir both translate to **libpod named
+// volumes**, not host bind mounts. The names are deterministic — see
+// hostPathVolumeName / emptyDirVolumeName for the keying. The reason
+// is environmental: on macOS, podman runs inside a vfkit/libkrun Linux
+// VM, and the VM does not have the host's filesystem mounted in. A
+// literal bind of "/tmp/x" or "/Users/qiangli/y" fails with
+// "statfs ...: no such file or directory" because that path doesn't
+// exist inside the VM. Named volumes live inside the VM's own storage
+// (Mountpoint: /var/home/core/.local/share/containers/storage/volumes/...)
+// and therefore work uniformly on macOS and Linux. The trade-off: the
+// HostPath path string is now a logical identifier rather than a
+// literal host directory — operators inspect with `podman volume ls`
+// / `podman volume inspect outpost-hp-<hash>` instead of `ls /tmp/...`.
+//
+// Lifetime: HostPath-backed volumes persist until an operator manually
+// removes them — matching the K8s "this is a persistent directory on
+// the host" intent. EmptyDir-backed volumes are reaped at DeletePod
+// (see RemoveEmptyDirsForPod), matching K8s's per-Pod lifetime guarantee.
+//
+// hostPath.type is now informational only — there's nothing to mkdir
+// since the path isn't a real host path. We still validate that path
+// is absolute so an obvious user typo gets a clear error.
 //
 // kube-api-access-* projected volumes (the SA token + CA bundle k8s
 // auto-injects on every pod since 1.21) are SILENTLY SKIPPED rather
 // than rejected — workload pods on outposts don't need in-cluster API
-// access, and rejecting these would refuse every kubectl-run pod. If
-// a future workload genuinely needs the projected SA token we'll
-// implement the volume properly; for now they're discarded.
-func buildMounts(pod *corev1.Pod, vms []corev1.VolumeMount) ([]Mount, error) {
+// access, and rejecting these would refuse every kubectl-run pod.
+func buildMounts(pod *corev1.Pod, vms []corev1.VolumeMount) ([]Mount, []NamedVolume, error) {
 	volByName := make(map[string]corev1.Volume, len(pod.Spec.Volumes))
 	for _, v := range pod.Spec.Volumes {
 		volByName[v.Name] = v
 	}
-	out := make([]Mount, 0, len(vms))
+	var mounts []Mount
+	var namedVols []NamedVolume
 	for _, vm := range vms {
 		if strings.HasPrefix(vm.Name, "kube-api-access-") {
 			continue
 		}
 		v, ok := volByName[vm.Name]
 		if !ok {
-			return nil, fmt.Errorf("vkpodman: volumeMount %q references unknown volume", vm.Name)
+			return nil, nil, fmt.Errorf("vkpodman: volumeMount %q references unknown volume", vm.Name)
 		}
 		switch {
 		case v.HostPath != nil:
 			src := v.HostPath.Path
 			if !filepath.IsAbs(src) {
-				return nil, fmt.Errorf("vkpodman: hostPath %q must be absolute", src)
+				return nil, nil, fmt.Errorf("vkpodman: hostPath %q must be absolute", src)
 			}
-			// Honor hostPath.type semantics — DirectoryOrCreate /
-			// FileOrCreate cause the path to be materialized if
-			// missing, instead of the bind failing with ENOENT.
-			// Empty type matches k8s's "unset" default which is "no
-			// check"; here we mkdir-p as a pragmatic default for
-			// single-tenant outposts (no security boundary lost —
-			// the namespace gate already restricts which workloads
-			// land here). Existing-but-wrong-shape (file vs dir
-			// mismatch) is left to libpod's bind layer to error on.
-			t := v.HostPath.Type
-			wantDir := t == nil || *t == "" ||
-				*t == corev1.HostPathDirectory ||
-				*t == corev1.HostPathDirectoryOrCreate ||
-				*t == corev1.HostPathUnset
-			if wantDir {
-				if err := os.MkdirAll(src, 0o755); err != nil {
-					return nil, fmt.Errorf("vkpodman: ensure hostPath %q: %w", src, err)
-				}
-			}
-			m := Mount{
-				Type:        "bind",
-				Source:      src,
-				Destination: vm.MountPath,
+			nv := NamedVolume{
+				Name: hostPathVolumeName(pod.Namespace, src),
+				Dest: vm.MountPath,
 			}
 			if vm.ReadOnly {
-				m.Options = append(m.Options, "ro")
+				nv.Options = append(nv.Options, "ro")
 			}
-			out = append(out, m)
+			namedVols = append(namedVols, nv)
 		case v.EmptyDir != nil:
-			// EmptyDir with Medium=Memory stays tmpfs (k8s spec
-			// guarantees that). Default medium (disk-backed) now
-			// renders as a per-pod bind-mount under the outpost's
-			// cache dir so the data actually survives container
-			// restart within the pod's lifetime — the k8s contract
-			// EmptyDir promises. Lifetime is bounded by DeletePod
-			// which removes the dir tree.
 			if v.EmptyDir.Medium == corev1.StorageMediumMemory {
 				m := Mount{Type: "tmpfs", Destination: vm.MountPath}
 				if vm.ReadOnly {
 					m.Options = append(m.Options, "ro")
 				}
-				out = append(out, m)
+				mounts = append(mounts, m)
 				break
 			}
-			dir, err := emptyDirHostPath(string(pod.UID), vm.Name)
-			if err != nil {
-				return nil, err
-			}
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				return nil, fmt.Errorf("vkpodman: ensure emptyDir %q: %w", dir, err)
-			}
-			m := Mount{
-				Type:        "bind",
-				Source:      dir,
-				Destination: vm.MountPath,
+			nv := NamedVolume{
+				Name: emptyDirVolumeName(string(pod.UID), vm.Name),
+				Dest: vm.MountPath,
 			}
 			if vm.ReadOnly {
-				m.Options = append(m.Options, "ro")
+				nv.Options = append(nv.Options, "ro")
 			}
-			out = append(out, m)
+			namedVols = append(namedVols, nv)
 		default:
-			return nil, fmt.Errorf("vkpodman: volume %q has unsupported type in v1 (only hostPath and emptyDir)", vm.Name)
+			return nil, nil, fmt.Errorf("vkpodman: volume %q has unsupported type in v1 (only hostPath and emptyDir)", vm.Name)
 		}
 	}
-	return out, nil
+	return mounts, namedVols, nil
 }
 
 // buildResourceLimits maps K8s container resource limits to libpod's

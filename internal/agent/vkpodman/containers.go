@@ -30,19 +30,36 @@ type SpecGenerator struct {
 	Remove         bool              `json:"remove,omitempty"`
 	RestartPolicy  string            `json:"restart_policy,omitempty"`
 	Mounts         []Mount           `json:"mounts,omitempty"`
+	Volumes        []NamedVolume     `json:"volumes,omitempty"`
 	NetNS          *Namespace        `json:"netns,omitempty"`
 	PortMappings   []PortMapping     `json:"portmappings,omitempty"`
 	ResourceLimits *ResourceLimits   `json:"resource_limits,omitempty"`
 }
 
 // Mount mirrors OCI runtime spec mounts as libpod accepts them.
-// Type is "bind" / "volume" / "tmpfs"; Options is a free-form list
-// passed through to runc (e.g. "ro", "rprivate", "noexec").
+// Type is "bind" / "tmpfs"; Options is a free-form list passed
+// through to runc (e.g. "ro", "rprivate", "noexec").
+//
+// Named volumes do NOT go here — libpod has a separate `volumes`
+// field for those (see NamedVolume). A Mount with Type="volume"
+// is silently treated as a bind to a path matching the Source
+// string, which yields the misleading "No such device" at start.
 type Mount struct {
 	Type        string   `json:"Type"`
 	Source      string   `json:"Source,omitempty"`
 	Destination string   `json:"Destination"`
 	Options     []string `json:"Options,omitempty"`
+}
+
+// NamedVolume is the libpod-side representation of a Docker-style
+// `-v <name>:<dest>:<opts>` named volume reference. Lives on
+// SpecGenerator.Volumes (not Mounts). The volume identified by Name
+// must exist before container create — pre-create it with
+// CreateVolume.
+type NamedVolume struct {
+	Name    string   `json:"Name"`
+	Dest    string   `json:"Dest"`
+	Options []string `json:"Options,omitempty"`
 }
 
 // Namespace describes one of the OCI namespaces (net/pid/ipc/uts/user).
@@ -277,6 +294,65 @@ func (c *Client) ListContainers(ctx context.Context, all bool, labelFilter map[s
 
 // PullImage issues POST /libpod/images/pull. The endpoint streams a
 // JSON-lines progress body which we discard; the call returns once the
+// CreateVolume issues POST /libpod/volumes/create with the given name +
+// labels. Returns nil on success and on the "already exists" path —
+// the latter is what we hit when a second pod from the same Deployment
+// claims a HostPath volume that an earlier pod already created.
+//
+// Libpod's status code for duplicate-name is inconsistent across
+// versions: some return 409 (Conflict), others return 500 with
+// "volume already exists" in the body. We accept either, falling back
+// to a body-match on 500.
+func (c *Client) CreateVolume(ctx context.Context, name string, labels map[string]string) error {
+	body := map[string]any{"Name": name}
+	if len(labels) > 0 {
+		body["Labels"] = labels
+	}
+	resp, err := c.do(ctx, http.MethodPost, apiPrefix+"/libpod/volumes/create", nil, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusCreated, http.StatusConflict:
+		return nil
+	case http.StatusInternalServerError:
+		// Read once for the message check; if it's not the
+		// already-exists case, surface the normal status error using
+		// the message we already consumed.
+		b, _ := io.ReadAll(resp.Body)
+		if strings.Contains(string(b), "already exists") {
+			return nil
+		}
+		return fmt.Errorf("vkpodman: create volume: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	default:
+		return statusErr("create volume", resp)
+	}
+}
+
+// RemoveVolume issues DELETE /libpod/volumes/{name}. force=true asks
+// libpod to detach any container still referencing the volume before
+// removing it (we set this on DeletePod cleanup so a still-running
+// container doesn't block the per-pod volume reap). A missing volume
+// returns 404 which we treat as success — idempotent.
+func (c *Client) RemoveVolume(ctx context.Context, name string, force bool) error {
+	q := url.Values{}
+	if force {
+		q.Set("force", "true")
+	}
+	resp, err := c.do(ctx, http.MethodDelete, apiPrefix+"/libpod/volumes/"+url.PathEscape(name), q, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusNoContent, http.StatusNotFound:
+		return nil
+	default:
+		return statusErr("remove volume", resp)
+	}
+}
+
 // stream closes (image is fully pulled). reference is the full image
 // ref ("docker.io/library/alpine:3.20").
 func (c *Client) PullImage(ctx context.Context, reference string) error {

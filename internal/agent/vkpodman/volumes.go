@@ -1,64 +1,153 @@
 package vkpodman
 
 import (
-	"errors"
-	"os"
-	"path/filepath"
+	"context"
+	"crypto/sha1"
+	"encoding/hex"
+	"fmt"
+	"log/slog"
+	"strings"
 
-	"github.com/qiangli/outpost/internal/agent/conf"
+	corev1 "k8s.io/api/core/v1"
 )
 
-// emptyDirHostPath returns the host filesystem path where an
-// EmptyDir volume's data is materialized for a given pod. Disk-
-// backed EmptyDirs become bind mounts of this directory; tmpfs
-// EmptyDirs don't go through here at all.
+// hostPathVolumeName is the deterministic libpod volume name for a K8s
+// HostPath volume. Keyed by (namespace, path) so two pods in the same
+// namespace declaring the same HostPath share storage — which is the
+// K8s HostPath contract ("this exact directory on the host"). The
+// namespace gate prevents cross-tenant collisions on a path everyone
+// might happen to pick (/data, /var/lib/x).
 //
-// Layout: <cacheDir>/cluster/emptydir/<podUID>/<volumeName>
-// — keyed by pod UID rather than namespace+name so two pods that
-// happen to share the same name across separate lifetimes don't
-// collide on the same dir. DeletePod removes the per-pod tree.
+// Format: outpost-hp-<sha1(ns + "\x00" + path)[:16]>.
+// The hash collapses arbitrary path characters into the libpod volume
+// name alphabet ([a-zA-Z0-9_.-]) without us having to escape; 16 hex
+// chars = 64 bits of namespace, ample for "no collisions across the
+// volumes any one outpost holds".
 //
-// Pure path-shaping; mkdir is the caller's job so it can decide
-// what permission mode to use for the leaf (default 0755 from the
-// translator).
-func emptyDirHostPath(podUID, volumeName string) (string, error) {
-	if podUID == "" {
-		return "", errors.New("vkpodman: emptyDir requires pod UID")
-	}
-	if volumeName == "" {
-		return "", errors.New("vkpodman: emptyDir requires volume name")
-	}
-	base, err := emptyDirRoot()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(base, podUID, volumeName), nil
+// We use a libpod-managed named volume instead of a host bind mount
+// because on macOS podman runs in a vfkit/libkrun Linux VM — bind-
+// mounting "/tmp/x" or "/Users/qiangli/y" from the host into a
+// container fails with "no such file or directory" since those paths
+// don't exist inside the VM. Named volumes live inside the VM's own
+// storage (/var/home/core/.local/share/containers/storage/volumes/),
+// so they "just work" on both macOS and Linux outposts and still
+// survive container removal — which is what the SeaweedFS-style
+// "Deployment recreates the pod, data should persist" use case needs.
+func hostPathVolumeName(namespace, path string) string {
+	sum := sha1.Sum([]byte(namespace + "\x00" + path))
+	return "outpost-hp-" + hex.EncodeToString(sum[:8])
 }
 
-// emptyDirRoot returns the directory under which per-pod EmptyDir
-// trees live. Defaults to <conf.DefaultCacheDir>/cluster/emptydir.
-// Wraps the cache-dir lookup so the value is computed once per call
-// (rather than threaded through the translator's signature).
-func emptyDirRoot() (string, error) {
-	cache, err := conf.DefaultCacheDir()
-	if err != nil {
-		return "", err
+// emptyDirVolumeName is the deterministic libpod volume name for a K8s
+// EmptyDir volume. Keyed by (podUID, volumeName) so the lifetime
+// tracks the Pod — DeletePod reaps both. A new Pod (different UID)
+// declaring the same volume name gets a fresh volume, matching the
+// K8s EmptyDir guarantee that data is per-Pod.
+func emptyDirVolumeName(podUID, volumeName string) string {
+	uid := strings.ReplaceAll(podUID, "-", "")
+	if len(uid) > 12 {
+		uid = uid[:12]
 	}
-	return filepath.Join(cache, "cluster", "emptydir"), nil
+	return "outpost-ed-" + uid + "-" + sanitizeVolName(volumeName)
 }
 
-// RemoveEmptyDirsForPod removes the per-pod EmptyDir tree at
-// DeletePod time. Idempotent — RemoveAll on a missing path is a
-// no-op. Called from the Provider's DeletePod path so disk-backed
-// EmptyDir lifetime tracks the pod lifetime (which is the k8s
-// contract).
-func RemoveEmptyDirsForPod(podUID string) error {
-	if podUID == "" {
+func sanitizeVolName(s string) string {
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z',
+			c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9',
+			c == '-', c == '_', c == '.':
+			out = append(out, c)
+		default:
+			out = append(out, '_')
+		}
+	}
+	return string(out)
+}
+
+// EnsureVolumesForPod pre-creates every named libpod volume the
+// translator will reference for this Pod. Required because libpod's
+// /containers/create endpoint does NOT auto-materialize named volumes
+// — only `podman run -v name:/path` does, and that's a CLI-side
+// convenience. Without this, the container starts then immediately
+// fails with crun's "No such device" mount error.
+//
+// Idempotent: CreateVolume returns 409 for already-exists, which the
+// client treats as success. Skips the Memory medium (tmpfs needs no
+// volume) and any non-supported volume type (translator will reject
+// those at BuildSpec time anyway).
+//
+// Labels stamped on each volume so an operator using
+// `podman volume inspect <name>` / `podman volume ls --filter label=...`
+// can recover which K8s namespace and HostPath / EmptyDir name is
+// behind a given opaque outpost-* identifier.
+func EnsureVolumesForPod(ctx context.Context, c *Client, pod *corev1.Pod) error {
+	if pod == nil || c == nil {
 		return nil
 	}
-	base, err := emptyDirRoot()
-	if err != nil {
-		return err
+	for _, v := range pod.Spec.Volumes {
+		switch {
+		case v.HostPath != nil:
+			name := hostPathVolumeName(pod.Namespace, v.HostPath.Path)
+			labels := map[string]string{
+				"outpost.io/managed":   "true",
+				"outpost.io/kind":      "hostpath",
+				"outpost.io/namespace": pod.Namespace,
+				"outpost.io/hostpath":  v.HostPath.Path,
+			}
+			if err := c.CreateVolume(ctx, name, labels); err != nil {
+				return fmt.Errorf("vkpodman: ensure hostPath volume %q: %w", name, err)
+			}
+		case v.EmptyDir != nil:
+			if v.EmptyDir.Medium == corev1.StorageMediumMemory {
+				continue
+			}
+			name := emptyDirVolumeName(string(pod.UID), v.Name)
+			labels := map[string]string{
+				"outpost.io/managed":     "true",
+				"outpost.io/kind":        "emptydir",
+				"outpost.io/namespace":   pod.Namespace,
+				"outpost.io/pod-uid":     string(pod.UID),
+				"outpost.io/volume-name": v.Name,
+			}
+			if err := c.CreateVolume(ctx, name, labels); err != nil {
+				return fmt.Errorf("vkpodman: ensure emptyDir volume %q: %w", name, err)
+			}
+		}
 	}
-	return os.RemoveAll(filepath.Join(base, podUID))
+	return nil
+}
+
+// RemoveEmptyDirsForPod drops every libpod volume that DeletePod is
+// responsible for cleaning up — namely the per-pod EmptyDir volumes,
+// keyed by emptyDirVolumeName(podUID, volumeName). HostPath-derived
+// volumes are NOT reaped here: their lifetime is "as long as the
+// namespace wants the data", which DeletePod has no opinion on.
+//
+// Best-effort — individual volume removal failures are logged-not-
+// returned so the larger DeletePod path still succeeds. A leftover
+// volume becomes inspectable via `podman volume ls` (outpost-ed-*
+// prefix) and the operator can drop it manually.
+func RemoveEmptyDirsForPod(ctx context.Context, c *Client, pod *corev1.Pod) error {
+	if pod == nil || c == nil {
+		return nil
+	}
+	for _, v := range pod.Spec.Volumes {
+		if v.EmptyDir == nil {
+			continue
+		}
+		if v.EmptyDir.Medium == corev1.StorageMediumMemory {
+			// tmpfs — never had a backing volume.
+			continue
+		}
+		name := emptyDirVolumeName(string(pod.UID), v.Name)
+		if err := c.RemoveVolume(ctx, name, true); err != nil {
+			slog.Warn("vkpodman: remove emptyDir volume",
+				"pod", pod.Namespace+"/"+pod.Name, "volume", v.Name, "name", name, "err", err)
+		}
+	}
+	return nil
 }

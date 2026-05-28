@@ -36,14 +36,34 @@ spec:
         outpost.dhnt.io/build-dockerfile: "Dockerfile"
         outpost.dhnt.io/build-context: "examples/seaweedfs"
     spec:
+      # Pinned to a single node while we don't have replication —
+      # the named volume that backs HostPath lives in *that* node's
+      # podman volume store, so re-scheduling onto a different node
+      # would silently give the new pod an empty volume. Remove the
+      # nodeSelector once the per-node volume DaemonSet ships.
+      nodeSelector:
+        kubernetes.io/hostname: dragon
       tolerations: [{key: virtual-kubelet.io/provider, operator: Exists}]
-      # Persistent storage via HostPath: vkpodman bind-mounts the
-      # host directory below into /data inside the container. The
-      # hostPath.type: DirectoryOrCreate causes vkpodman to mkdir
-      # the source if it doesn't exist, so first-run works without
-      # pre-provisioning. Without this, the SeaweedFS index +
-      # volume files would live in the container's overlay and
-      # vanish on every pod recreation.
+      # K8s otherwise auto-injects $S3_PORT=tcp://… for every
+      # Service in the namespace named "s3" — and SeaweedFS reads
+      # $S3_PORT as the numeric S3 listener port, so the container
+      # crashes immediately with "strconv.ParseInt … invalid
+      # syntax". Disabling service-links suppresses the entire
+      # service-env-var family (we don't need any of them; pods
+      # discover services via cluster-svc, not env).
+      enableServiceLinks: false
+      # Persistent storage via HostPath. In outpost vkpodman the
+      # path is a **logical identifier**, not a literal host
+      # directory: the translator turns it into a libpod named
+      # volume (outpost-hp-<sha1(namespace+path)>) so the data
+      # lives inside podman's volume store and survives container
+      # removal. Two pods in the same namespace declaring the same
+      # path share the volume — which is the K8s HostPath contract
+      # ("this exact directory") expressed in terms podman can
+      # honor on macOS (where /tmp on the host is not visible to
+      # the vfkit/libkrun VM). Operators inspect with `podman volume
+      # inspect outpost-hp-...`; drop persistent data with
+      # `podman volume rm`.
       volumes:
       - name: data
         hostPath:

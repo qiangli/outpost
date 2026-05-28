@@ -196,6 +196,7 @@ func TestBuildSpec_Env(t *testing.T) {
 
 func TestBuildSpec_HostPathMount(t *testing.T) {
 	p := basePod()
+	p.Namespace = "user-test"
 	p.Spec.Volumes = []corev1.Volume{{
 		Name:         "data",
 		VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/srv/data"}},
@@ -207,19 +208,44 @@ func TestBuildSpec_HostPathMount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(spec.Mounts) != 1 {
-		t.Fatalf("Mounts: %+v", spec.Mounts)
+	if len(spec.Mounts) != 0 {
+		t.Errorf("HostPath should render via Volumes, not Mounts: %+v", spec.Mounts)
 	}
-	m := spec.Mounts[0]
-	if m.Type != "bind" || m.Source != "/srv/data" || m.Destination != "/data" {
-		t.Errorf("mount: %+v", m)
+	if len(spec.Volumes) != 1 {
+		t.Fatalf("Volumes: %+v", spec.Volumes)
 	}
-	if len(m.Options) != 1 || m.Options[0] != "ro" {
-		t.Errorf("ro option missing: %+v", m.Options)
+	nv := spec.Volumes[0]
+	want := hostPathVolumeName(p.Namespace, "/srv/data")
+	if nv.Name != want || nv.Dest != "/data" {
+		t.Errorf("named vol: %+v (want name=%s)", nv, want)
+	}
+	if len(nv.Options) != 1 || nv.Options[0] != "ro" {
+		t.Errorf("ro option missing: %+v", nv.Options)
 	}
 }
 
-func TestBuildSpec_EmptyDirMount(t *testing.T) {
+func TestBuildSpec_EmptyDirMount_Memory(t *testing.T) {
+	p := basePod()
+	p.Spec.Volumes = []corev1.Volume{{
+		Name: "scratch",
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+			Medium: corev1.StorageMediumMemory,
+		}},
+	}}
+	p.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{Name: "scratch", MountPath: "/tmp/scratch"}}
+	spec, err := BuildSpec(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Mounts) != 1 || spec.Mounts[0].Type != "tmpfs" || spec.Mounts[0].Destination != "/tmp/scratch" {
+		t.Errorf("mount: %+v", spec.Mounts)
+	}
+	if len(spec.Volumes) != 0 {
+		t.Errorf("Memory EmptyDir should not emit a NamedVolume: %+v", spec.Volumes)
+	}
+}
+
+func TestBuildSpec_EmptyDirMount_DiskBacked(t *testing.T) {
 	p := basePod()
 	p.Spec.Volumes = []corev1.Volume{{
 		Name:         "scratch",
@@ -230,8 +256,12 @@ func TestBuildSpec_EmptyDirMount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(spec.Mounts) != 1 || spec.Mounts[0].Type != "tmpfs" || spec.Mounts[0].Destination != "/tmp/scratch" {
-		t.Errorf("mount: %+v", spec.Mounts)
+	if len(spec.Mounts) != 0 {
+		t.Errorf("EmptyDir should render via Volumes, not Mounts: %+v", spec.Mounts)
+	}
+	want := emptyDirVolumeName(string(p.UID), "scratch")
+	if len(spec.Volumes) != 1 || spec.Volumes[0].Name != want {
+		t.Errorf("named vol: %+v (want name=%s)", spec.Volumes, want)
 	}
 }
 

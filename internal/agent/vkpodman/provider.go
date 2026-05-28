@@ -113,6 +113,17 @@ func (p *Provider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		return fmt.Errorf("vkpodman: build for pod %s: %w", podKey(pod.Namespace, pod.Name), err)
 	}
 
+	// Pre-materialize HostPath / EmptyDir named volumes before any
+	// container start — both the first-create and the daemon-restart
+	// adopt path need the volumes to exist. Libpod's
+	// /containers/create does not auto-create named volumes referenced
+	// via mounts (only the `podman run -v` CLI shortcut does); without
+	// this, a container created in a previous outpost incarnation
+	// fails to start on adoption with crun's "No such device".
+	if err := EnsureVolumesForPod(ctx, p.client, pod); err != nil {
+		return fmt.Errorf("vkpodman: ensure volumes for pod %s: %w", podKey(pod.Namespace, pod.Name), err)
+	}
+
 	// Look for an existing container that already belongs to this Pod
 	// UID. If found, we own it from a prior incarnation — just make sure
 	// it's running and cache the spec.
@@ -222,10 +233,12 @@ func (p *Provider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 	}
 	unpublishPod(p.apps, pod)
-	// Reap per-pod EmptyDir tree. Best-effort — a leftover dir is
-	// disk-junk on the operator's machine, not a correctness issue.
-	if err := RemoveEmptyDirsForPod(string(pod.UID)); err != nil {
-		slog.Warn("vkpodman: remove emptyDir tree",
+	// Reap per-pod EmptyDir-backed libpod volumes. Best-effort — a
+	// leftover volume is inspectable via `podman volume ls` (outpost-ed-*
+	// prefix) and the operator can drop it manually; it isn't a
+	// correctness issue.
+	if err := RemoveEmptyDirsForPod(ctx, p.client, pod); err != nil {
+		slog.Warn("vkpodman: remove emptyDir volumes",
 			"pod", podKey(pod.Namespace, pod.Name), "err", err)
 	}
 	p.forgetPod(pod.Namespace, pod.Name)
