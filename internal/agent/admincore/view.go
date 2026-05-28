@@ -36,11 +36,15 @@ func toBuiltinView(enabled bool, bt agent.BuiltinTarget) BuiltinView {
 // Token + CA bytes never leave the agent; presence is reported via
 // has_token / has_ca.
 type ClusterView struct {
-	Enabled  bool   `json:"enabled"`
-	APIURL   string `json:"api_url,omitempty"`
-	NodeName string `json:"node_name,omitempty"`
-	HasToken bool   `json:"has_token"`
-	HasCA    bool   `json:"has_ca"`
+	Enabled        bool   `json:"enabled"`
+	Mode           string `json:"mode,omitempty"`
+	APIURL         string `json:"api_url,omitempty"`
+	NodeName       string `json:"node_name,omitempty"`
+	HasToken       bool   `json:"has_token"`
+	HasCA          bool   `json:"has_ca"`
+	HasNodeToken   bool   `json:"has_node_token,omitempty"`
+	HasSTCPSecret  bool   `json:"has_stcp_secret,omitempty"`
+	K8sAPIPort     int    `json:"k8s_api_port,omitempty"`
 }
 
 // YcodeView is the redacted-and-flattened ycode supervisor status the
@@ -90,11 +94,15 @@ func toClusterView(fc *conf.FileConfig) ClusterView {
 		return ClusterView{}
 	}
 	return ClusterView{
-		Enabled:  fc.Cluster.Enabled,
-		APIURL:   fc.Cluster.APIURL,
-		NodeName: fc.ClusterNodeName(),
-		HasToken: fc.Cluster.Token != "",
-		HasCA:    len(fc.Cluster.CA) > 0,
+		Enabled:       fc.Cluster.Enabled,
+		Mode:          fc.Cluster.Mode,
+		APIURL:        fc.Cluster.APIURL,
+		NodeName:      fc.ClusterNodeName(),
+		HasToken:      fc.Cluster.Token != "",
+		HasCA:         len(fc.Cluster.CA) > 0,
+		HasNodeToken:  fc.Cluster.NodeToken != "",
+		HasSTCPSecret: fc.Cluster.STCPSecret != "",
+		K8sAPIPort:    fc.Cluster.K8sAPIPort,
 	}
 }
 

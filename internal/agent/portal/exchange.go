@@ -98,12 +98,21 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		RemotePort  int    `json:"remote_port"`
 		AccessToken string `json:"access_token"`
 		ClientOnly  bool   `json:"client_only"`
+
+		// Cluster join data — populated only when cloudbox is running
+		// in cluster mode AND has already materialized the node-token.
+		// Outpost persists into ClusterConfig.{NodeToken,STCPSecret,
+		// K8sAPIPort} so the daemon can spin up the k3s-agent path on
+		// next boot (operator still has to flip --cluster-mode=agent).
+		ClusterNodeToken  string `json:"cluster_node_token"`
+		ClusterSTCPSecret string `json:"cluster_stcp_secret"`
+		ClusterAPIPort    int    `json:"cluster_api_port"`
 	}
 	if err := json.Unmarshal(respBody, &ex); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
-	return &conf.FileConfig{
+	fc := &conf.FileConfig{
 		AgentName:   ex.AgentName,
 		ServerAddr:  ex.ServerAddr,
 		ServerPort:  ex.ServerPort,
@@ -113,5 +122,19 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		AuthURL:     authURL,
 		AccessToken: ex.AccessToken,
 		ClientOnly:  ex.ClientOnly,
-	}, nil
+	}
+	// Carry the cluster-join bits onto the persisted ClusterConfig
+	// when cloudbox returned them. Mode stays empty here — the
+	// operator opts into Mode="agent" via the builtins toggle, which
+	// preserves backward compat for outposts that flip --cluster=on
+	// expecting vkpodman.
+	if ex.ClusterNodeToken != "" || ex.ClusterSTCPSecret != "" || ex.ClusterAPIPort != 0 {
+		if fc.Cluster == nil {
+			fc.Cluster = &conf.ClusterConfig{}
+		}
+		fc.Cluster.NodeToken = ex.ClusterNodeToken
+		fc.Cluster.STCPSecret = ex.ClusterSTCPSecret
+		fc.Cluster.K8sAPIPort = ex.ClusterAPIPort
+	}
+	return fc, nil
 }

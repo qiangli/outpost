@@ -43,6 +43,31 @@ type TCPProxy struct {
 	RemotePort int
 }
 
+// STCPVisitor declares a "secret TCP" visitor — frp's reverse-direction
+// primitive that opens a local listener and tunnels each accepted conn
+// through the matrix-tunnel server to a service some OTHER frp client
+// has published as an STCP proxy. Cloudbox uses this to expose its
+// embedded apiserver to outposts (see hub/internal/tunnel/serverdial.go
+// on the publisher side) so `k3s agent` can dial https://127.0.0.1:PORT
+// from this outpost.
+//
+//   - ServerUser : the User the publisher registered under (cloudbox
+//     publishes as "cloudbox"; outposts pass that here).
+//   - ServerName : the Name of the published proxy (e.g. "k3s-apiserver").
+//   - Secret     : shared-secret authenticating the visitor to the
+//     publisher. Distinct from TunnelConfig.Token, which only gates
+//     entry to the tunnel itself.
+//   - BindAddr / BindPort : where to expose the visitor's local listener
+//     for in-process clients on this outpost. 127.0.0.1 by default.
+type STCPVisitor struct {
+	Name       string
+	ServerUser string
+	ServerName string
+	Secret     string
+	BindAddr   string
+	BindPort   int
+}
+
 // Reconnect tuning for the supervisor loop in Run. Exported as vars (not
 // consts) so tests can shrink them; production paths shouldn't touch.
 var (
@@ -60,28 +85,30 @@ var (
 // svc.Run in a supervisor that rebuilds the service whenever it exits
 // before ctx is canceled.
 type Tunnel struct {
-	cfg     TunnelConfig
-	proxies []TCPProxy
+	cfg      TunnelConfig
+	proxies  []TCPProxy
+	visitors []STCPVisitor
 
 	mu  sync.Mutex
 	svc *tunnelclient.Service
 }
 
-// NewTunnel builds the matrix-tunnel client with the given proxies
-// pre-registered via the in-memory ConfigSource — no config-file path
-// involved.
-func NewTunnel(tc TunnelConfig, proxies []TCPProxy) (*Tunnel, error) {
-	svc, err := newTunnelService(tc, proxies)
+// NewTunnel builds the matrix-tunnel client with the given proxies (and
+// optional STCP visitors) pre-registered via the in-memory ConfigSource —
+// no config-file path involved. Pass nil for visitors when only legacy
+// outbound-proxy behavior is needed.
+func NewTunnel(tc TunnelConfig, proxies []TCPProxy, visitors []STCPVisitor) (*Tunnel, error) {
+	svc, err := newTunnelService(tc, proxies, visitors)
 	if err != nil {
 		return nil, err
 	}
-	return &Tunnel{cfg: tc, proxies: proxies, svc: svc}, nil
+	return &Tunnel{cfg: tc, proxies: proxies, visitors: visitors, svc: svc}, nil
 }
 
 // newTunnelService builds a fresh FRP Service from the same config — used
 // both at first New and by the Run supervisor when the previous Service
 // exited.
-func newTunnelService(tc TunnelConfig, proxies []TCPProxy) (*tunnelclient.Service, error) {
+func newTunnelService(tc TunnelConfig, proxies []TCPProxy, visitors []STCPVisitor) (*tunnelclient.Service, error) {
 	// LoginFailExit defaults to true, which makes the agent exit if the
 	// matrix-tunnel server isn't reachable on the first dial. For a
 	// long-running home-host agent that needs to survive cloud restarts
@@ -136,8 +163,25 @@ func newTunnelService(tc TunnelConfig, proxies []TCPProxy) (*tunnelclient.Servic
 	}
 	configurers = tunnelconfig.CompleteProxyConfigurers(configurers)
 
+	visitorConfigurers := make([]v1.VisitorConfigurer, 0, len(visitors))
+	for _, v := range visitors {
+		vc := &v1.STCPVisitorConfig{
+			VisitorBaseConfig: v1.VisitorBaseConfig{
+				Name:       v.Name,
+				Type:       "stcp",
+				ServerUser: v.ServerUser,
+				ServerName: v.ServerName,
+				SecretKey:  v.Secret,
+				BindAddr:   orDefault(v.BindAddr, "127.0.0.1"),
+				BindPort:   v.BindPort,
+			},
+		}
+		visitorConfigurers = append(visitorConfigurers, vc)
+	}
+	visitorConfigurers = tunnelconfig.CompleteVisitorConfigurers(visitorConfigurers)
+
 	cs := source.NewConfigSource()
-	if err := cs.ReplaceAll(configurers, nil); err != nil {
+	if err := cs.ReplaceAll(configurers, visitorConfigurers); err != nil {
 		return nil, fmt.Errorf("matrix-tunnel client proxies: %w", err)
 	}
 	agg := source.NewAggregator(cs)
@@ -179,7 +223,7 @@ func (t *Tunnel) Run(ctx context.Context) error {
 		case <-time.After(backoff):
 		}
 
-		next, err := newTunnelService(t.cfg, t.proxies)
+		next, err := newTunnelService(t.cfg, t.proxies, t.visitors)
 		if err != nil {
 			// A rebuild failure here means our config is fundamentally
 			// rejected (bad proxy spec, etc.) — there's no point thrashing.

@@ -27,6 +27,12 @@ type BuiltinsParams struct {
 	OllamaPool            *bool    `json:"ollama_pool,omitempty"`
 	Ycode                 *bool    `json:"ycode,omitempty"`
 	Cluster               *bool    `json:"cluster,omitempty"`
+	// ClusterMode selects which runtime joins the cluster:
+	// "" / "vkpodman" → legacy virtual-kubelet path (default).
+	// "agent" → real `k3s agent` subprocess (Linux only). Pointer-string
+	// so nil = "leave unchanged"; non-nil with an unknown value is
+	// rejected by SetBuiltins with a 400-class APIError.
+	ClusterMode           *string  `json:"cluster_mode,omitempty"`
 	// UpdateMode is one of "auto" / "manual" / "never" (see
 	// conf.UpdateMode* constants). Pointer-string so nil = "leave
 	// unchanged"; non-nil with an invalid value is rejected by
@@ -98,11 +104,23 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 		}
 		fc.Cluster.Enabled = *p.Cluster
 	}
+	if p.ClusterMode != nil {
+		mode := *p.ClusterMode
+		switch mode {
+		case "", "vkpodman", "agent":
+			if fc.Cluster == nil {
+				fc.Cluster = &conf.ClusterConfig{}
+			}
+			fc.Cluster.Mode = mode
+		default:
+			return BuiltinsResult{}, badRequest("cluster_mode must be one of \"\" / vkpodman / agent")
+		}
+	}
 	// UpdateMode is live-read by the upgrade worker on each
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Podman == nil && p.Ollama == nil && p.OllamaPool == nil && p.Ycode == nil && p.Cluster == nil
+	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Podman == nil && p.Ollama == nil && p.OllamaPool == nil && p.Ycode == nil && p.Cluster == nil && p.ClusterMode == nil
 	if p.UpdateMode != nil {
 		if !conf.ValidUpdateMode(*p.UpdateMode) {
 			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")

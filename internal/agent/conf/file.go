@@ -238,8 +238,21 @@ type FileConfig struct {
 // becomes a one-line file save instead of a file-format dance.
 type ClusterConfig struct {
 	// Enabled is the master switch. When false, the rest is ignored and
-	// the vkpodman loop never starts.
+	// neither the vkpodman loop nor the k3s-agent supervisor starts.
 	Enabled bool `json:"enabled,omitempty"`
+
+	// Mode selects which runtime joins the cluster on this outpost:
+	//   - "" or "vkpodman" — legacy v1 virtual-kubelet that translates
+	//     k8s Pods to local podman containers (per-outpost pod-shape
+	//     limits: no PodIP, PVC, init/sidecar containers, etc.)
+	//   - "agent" — real `k3s agent` subprocess that joins as a normal
+	//     kubelet via the matrix-tunnel STCP visitor (Phase 1 of the
+	//     "real shared k8s" plan; Linux-only).
+	// Default empty for backward compat. Cloudbox does not push a Mode
+	// at pairing time — operator sets this via `outpost builtins set
+	// --cluster-mode=agent`.
+	Mode string `json:"mode,omitempty"`
+
 	// APIURL is the cluster's apiserver — typically the cloudbox-proxied
 	// URL like https://ai.dhnt.io/api/cluster/agent for production, or
 	// https://127.0.0.1:6443 against a local k3s for dev/PoC.
@@ -257,6 +270,32 @@ type ClusterConfig struct {
 	// uses) but can be overridden if multiple outposts on the same host
 	// want distinct cluster identities.
 	NodeName string `json:"node_name,omitempty"`
+
+	// NodeToken is the k3s join token (K10…::node:…) cloudbox handed
+	// out at register time. Consumed only by Mode="agent"; passed as
+	// `k3s agent --token`. Empty when cloudbox isn't running in cluster
+	// mode or hasn't materialized the token yet (re-pair to refresh).
+	NodeToken string `json:"node_token,omitempty"`
+
+	// STCPSecret authenticates the local frp STCP visitor that opens a
+	// 127.0.0.1:<K8sAPIPort> listener and tunnels each accepted conn to
+	// cloudbox's embedded apiserver. Cluster-wide; minted by cloudbox at
+	// register time. Consumed only by Mode="agent".
+	STCPSecret string `json:"stcp_secret,omitempty"`
+
+	// K8sAPIPort is the TCP port the STCP visitor binds locally for the
+	// apiserver listener. `k3s agent --server` dials
+	// https://127.0.0.1:<K8sAPIPort>. Matches cloudbox's
+	// ClusterAPIServerPort so kubeconfigs round-trip cleanly. Default
+	// 6443 when empty.
+	K8sAPIPort int `json:"k8s_api_port,omitempty"`
+}
+
+// ClusterModeAgent reports whether the outpost should run the real
+// `k3s agent` path (Mode="agent") rather than vkpodman. Centralized so
+// future modes can be added without touching every call site.
+func (c *ClusterConfig) ClusterModeAgent() bool {
+	return c != nil && c.Mode == "agent"
 }
 
 // OutboundConfig is one local mount that proxies to a remote outpost.

@@ -55,6 +55,11 @@ func builtinsShowCmd() *cobra.Command {
 			row("ollama", view.Ollama.Enabled)
 			row("ollama_pool", view.OllamaPoolEnabled)
 			row("cluster", view.Cluster.Enabled)
+			mode := view.Cluster.Mode
+			if mode == "" {
+				mode = "vkpodman"
+			}
+			fmt.Printf("  %-22s  %s\n", "cluster_mode", mode)
 			return nil
 		},
 	}
@@ -65,6 +70,7 @@ func builtinsShowCmd() *cobra.Command {
 func builtinsSetCmd() *cobra.Command {
 	var (
 		shell, desktop, clipboard, ssh, sshLocalFwd, sshRemoteFwd, sshAgentFwd, sftp, podman, ollama, ollamaPool, cluster string
+		clusterMode                                                                                                       string
 		updateMode, autoUpgradeLegacy                                                                                     string
 		sshForwardSockets                                                                                                 []string
 		clearSSHForwardSockets                                                                                            bool
@@ -116,6 +122,13 @@ func builtinsSetCmd() *cobra.Command {
 			if params.Cluster, err = parseToggle("cluster", cluster); err != nil {
 				return err
 			}
+			if clusterMode != "" {
+				m := strings.ToLower(strings.TrimSpace(clusterMode))
+				if m != "vkpodman" && m != "agent" {
+					return fmt.Errorf("--cluster-mode must be vkpodman|agent, got %q", clusterMode)
+				}
+				params.ClusterMode = &m
+			}
 			// --update=auto|manual|never is the canonical knob; the
 			// deprecated --auto-upgrade=on|off folds in as auto/never.
 			if updateMode != "" {
@@ -166,6 +179,7 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&ollama, "ollama", "", "on|off")
 	cmd.Flags().StringVar(&ollamaPool, "ollama-pool", "", "on|off — share local Ollama with cloudbox's pool")
 	cmd.Flags().StringVar(&cluster, "cluster", "", "on|off — join cloudbox virtual-podman cluster")
+	cmd.Flags().StringVar(&clusterMode, "cluster-mode", "", "vkpodman|agent — vkpodman (default; v1 virtual-kubelet) or agent (Linux-only real `k3s agent`)")
 	cmd.Flags().StringVar(&updateMode, "update", "", "auto|manual|never — policy for cloudbox-pushed self-upgrades")
 	cmd.Flags().StringVar(&autoUpgradeLegacy, "auto-upgrade", "", "deprecated alias for --update (on→auto, off→never)")
 	_ = cmd.Flags().MarkDeprecated("auto-upgrade", "use --update=auto|manual|never")

@@ -31,6 +31,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/adminui"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
+	"github.com/qiangli/outpost/internal/agent/k3sagent"
 	"github.com/qiangli/outpost/internal/agent/mcpapi"
 	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
@@ -632,6 +633,34 @@ func startCmd() *cobra.Command {
 				ReadHeaderTimeout: 10 * time.Second,
 			}
 
+			// When cluster mode is on AND Mode="agent", register an
+			// STCP visitor for the cloudbox-side apiserver publisher
+			// (see hub/internal/tunnel/serverdial.go). This opens a
+			// loopback listener that `k3s agent` dials as if the
+			// apiserver were local — the matrix tunnel carries the
+			// bytes to cloudbox, no new public port needed. Names
+			// here MUST match the publisher's User + ProxyName ("cloudbox"
+			// / "k3s-apiserver" — fixed by cloudbox-side constants).
+			var visitors []agent.STCPVisitor
+			if fc.ClusterOn() && fc.Cluster.ClusterModeAgent() {
+				apiPort := fc.Cluster.K8sAPIPort
+				if apiPort == 0 {
+					apiPort = 6443
+				}
+				if fc.Cluster.STCPSecret == "" {
+					slog.Warn("cluster mode=agent: STCPSecret empty; visitor disabled (re-pair to fetch from cloudbox)")
+				} else {
+					visitors = append(visitors, agent.STCPVisitor{
+						Name:       "k3s-apiserver-visitor",
+						ServerUser: "cloudbox",
+						ServerName: "k3s-apiserver",
+						Secret:     fc.Cluster.STCPSecret,
+						BindAddr:   "127.0.0.1",
+						BindPort:   apiPort,
+					})
+				}
+			}
+
 			tunnel, err := agent.NewTunnel(agent.TunnelConfig{
 				ServerAddr: cfg.ServerAddr,
 				ServerPort: cfg.ServerPort,
@@ -643,7 +672,7 @@ func startCmd() *cobra.Command {
 				LocalIP:    "127.0.0.1",
 				LocalPort:  localPort,
 				RemotePort: cfg.RemotePort,
-			}})
+			}}, visitors)
 			if err != nil {
 				return err
 			}
@@ -706,7 +735,16 @@ func startCmd() *cobra.Command {
 			// half-configured cluster section shouldn't prevent the rest
 			// of outpost from running.
 			if fc.ClusterOn() {
-				if err := startClusterRunner(gctx, g, fc, cfgPath, apps); err != nil {
+				// Mode=agent: launch the real `k3s agent` subprocess
+				// against the loopback STCP visitor wired into the
+				// matrix tunnel above. vkpodman stays disabled in this
+				// mode — outposts can't run both the v1 virtual-kubelet
+				// AND a real kubelet on the same Node identity.
+				if fc.Cluster.ClusterModeAgent() {
+					if err := startK3sAgentRunner(gctx, g, fc); err != nil {
+						slog.Warn("cluster mode=agent: disabled", "err", err)
+					}
+				} else if err := startClusterRunner(gctx, g, fc, cfgPath, apps); err != nil {
 					slog.Warn("cluster mode: disabled", "err", err)
 				}
 				// Materialize the kubectl-ready kubeconfig on disk so
@@ -798,6 +836,57 @@ func notifyDeparting(ctx context.Context, cloudboxBase, accessToken, agentName s
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("cloudbox responded %d", resp.StatusCode)
 	}
+	return nil
+}
+
+// startK3sAgentRunner launches the real `k3s agent` subprocess
+// (k3sagent.Run) that joins the cloudbox-embedded apiserver via the
+// STCP visitor wired into the matrix tunnel. Phase 1 of the
+// "real shared k8s" plan — replaces the v1 vkpodman virtual-kubelet
+// path when fc.Cluster.Mode == "agent".
+//
+// Setup errors return; the long-running loop's errors flow through the
+// errgroup the same way the tunnel's do. Like startClusterRunner, we
+// never make a cluster-mode boot failure fatal to the outpost.
+func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig) error {
+	cc := fc.Cluster
+	if cc == nil {
+		return errors.New("cluster mode=agent: no Cluster config")
+	}
+	if cc.NodeToken == "" {
+		return errors.New("cluster mode=agent: NodeToken empty (re-pair to refresh)")
+	}
+	if cc.STCPSecret == "" {
+		return errors.New("cluster mode=agent: STCPSecret empty (re-pair to refresh)")
+	}
+	apiPort := cc.K8sAPIPort
+	if apiPort == 0 {
+		apiPort = 6443
+	}
+	nodeName := fc.ClusterNodeName()
+	if nodeName == "" {
+		return errors.New("cluster mode=agent: NodeName empty (agent_name unset?)")
+	}
+
+	g.Go(func() error {
+		slog.Info("cluster mode=agent: starting k3s agent",
+			"node", nodeName, "apiserver", fmt.Sprintf("https://127.0.0.1:%d", apiPort))
+		err := k3sagent.Run(ctx, k3sagent.Options{
+			Server:   fmt.Sprintf("https://127.0.0.1:%d", apiPort),
+			Token:    cc.NodeToken,
+			NodeName: nodeName,
+		})
+		switch {
+		case err == nil || errors.Is(err, context.Canceled):
+			return nil
+		case errors.Is(err, k3sagent.ErrUnsupported):
+			slog.Warn("cluster mode=agent: not supported on this platform (use vkpodman or run k3s in a Linux VM)")
+			return nil
+		default:
+			slog.Warn("cluster mode=agent: supervisor exited", "err", err)
+			return nil
+		}
+	})
 	return nil
 }
 
