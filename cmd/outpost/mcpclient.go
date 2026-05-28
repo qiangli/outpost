@@ -173,9 +173,20 @@ func localMCPEndpointURL() string {
 // normalizeMCPEndpoint accepts any of: "host:port", "127.0.0.1:17777",
 // "http://host.local:17777", "https://outpost.example.com/" and
 // returns the full ".../mcp" URL the SDK expects.
+//
+// "0.0.0.0:<port>" is rewritten to "127.0.0.1:<port>" before any URL
+// shaping. 0.0.0.0 is a valid bind address ("listen on every
+// interface") but as a destination it makes Go's net/http server
+// reject the request with `Forbidden: invalid Host header
+// "0.0.0.0:17777"`. The CLI inherits $OUTPOST_ADMIN_ADDR from
+// whatever launched the daemon (commonly a launchd plist that
+// LAN-binds the admin UI), so this rewrite makes the local-loopback
+// dial path "just work" without the operator having to know about
+// the Host-header gotcha.
 func normalizeMCPEndpoint(addr string) string {
 	a := strings.TrimSpace(addr)
 	a = strings.TrimRight(a, "/")
+	a = rewriteWildcardHost(a)
 	if !strings.HasPrefix(a, "http://") && !strings.HasPrefix(a, "https://") {
 		a = "http://" + a
 	}
@@ -183,6 +194,22 @@ func normalizeMCPEndpoint(addr string) string {
 		a += "/mcp"
 	}
 	return a
+}
+
+// rewriteWildcardHost swaps the "any-interface" sentinel for loopback
+// in the host portion of addr. Handles bare "0.0.0.0:port",
+// "http://0.0.0.0:port", and the IPv6 form "[::]:port" — all three
+// land in Go's http server as malformed Host headers.
+func rewriteWildcardHost(addr string) string {
+	for _, prefix := range []string{"http://", "https://", ""} {
+		switch {
+		case strings.HasPrefix(addr, prefix+"0.0.0.0:"):
+			return prefix + "127.0.0.1:" + strings.TrimPrefix(addr, prefix+"0.0.0.0:")
+		case strings.HasPrefix(addr, prefix+"[::]:"):
+			return prefix + "[::1]:" + strings.TrimPrefix(addr, prefix+"[::]:")
+		}
+	}
+	return addr
 }
 
 // callTool runs a single tool by name with typed args, decoding the
