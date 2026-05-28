@@ -39,7 +39,7 @@ spec:
       tolerations: [{key: virtual-kubelet.io/provider, operator: Exists}]
       containers:
       - name: weed
-        image: localhost/cluster/seaweedfs:v3.97
+        image: localhost/cluster/seaweedfs:4.29
         imagePullPolicy: IfNotPresent
         ports:
         # 8333 is the S3 gateway. Other ports stay container-internal
