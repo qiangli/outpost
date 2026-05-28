@@ -300,6 +300,14 @@ func (p *Provider) Reconcile(ctx context.Context) error {
 			},
 		}
 		p.pods[podKey(ns, name)] = skeleton
+		// Republish the transient AppRegistry entry from the labels
+		// stamped at original-create time. Without this, there's a
+		// window after daemon restart where libpod containers are
+		// running but cloudbox /api/cluster/svc/* responds with
+		// "unknown app" until PodController's first UpdatePod fires
+		// (seconds-to-minutes depending on apiserver responsiveness).
+		// Idempotent — Register overwrites entries.
+		publishPod(p.apps, skeleton)
 	}
 	slog.Info("vkpodman: reconcile complete", "containers", len(items), "pods_cached", len(p.pods))
 	return nil
