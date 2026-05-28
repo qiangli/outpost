@@ -75,7 +75,7 @@ func main() {
 		startCmd(), registerCmd(), stopCmd(),
 		sshProxyCmd(), sshConfigCmd(), connectCmd(),
 		outboundCmd(), jobsCmd(), fgCmd(), bgCmd(), killCmd(), runCmd(),
-		clusterCmd(), poolCmd(),
+		clusterCmd(), departCmd(), poolCmd(),
 		// MCP-client CLI parity (Phase 1.5):
 		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), unpairCmd(), restartCmd(), mcpCmd(),
 		remoteCmd(),
