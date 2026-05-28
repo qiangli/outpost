@@ -22,7 +22,8 @@ func clusterCmd() *cobra.Command {
 		Use:   "cluster",
 		Short: "Interact with the cloudbox virtual-podman cluster",
 	}
-	cmd.AddCommand(clusterKubeconfigCmd(), clusterUserKubeconfigCmd(), clusterClearCmd())
+	cmd.AddCommand(clusterKubeconfigCmd(), clusterUserKubeconfigCmd(),
+		clusterInitCmd(), clusterClearCmd())
 	return cmd
 }
 
