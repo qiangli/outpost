@@ -2,6 +2,7 @@ package vkpodman
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -194,6 +195,25 @@ func buildMounts(pod *corev1.Pod, vms []corev1.VolumeMount) ([]Mount, error) {
 			if !filepath.IsAbs(src) {
 				return nil, fmt.Errorf("vkpodman: hostPath %q must be absolute", src)
 			}
+			// Honor hostPath.type semantics — DirectoryOrCreate /
+			// FileOrCreate cause the path to be materialized if
+			// missing, instead of the bind failing with ENOENT.
+			// Empty type matches k8s's "unset" default which is "no
+			// check"; here we mkdir-p as a pragmatic default for
+			// single-tenant outposts (no security boundary lost —
+			// the namespace gate already restricts which workloads
+			// land here). Existing-but-wrong-shape (file vs dir
+			// mismatch) is left to libpod's bind layer to error on.
+			t := v.HostPath.Type
+			wantDir := t == nil || *t == "" ||
+				*t == corev1.HostPathDirectory ||
+				*t == corev1.HostPathDirectoryOrCreate ||
+				*t == corev1.HostPathUnset
+			if wantDir {
+				if err := os.MkdirAll(src, 0o755); err != nil {
+					return nil, fmt.Errorf("vkpodman: ensure hostPath %q: %w", src, err)
+				}
+			}
 			m := Mount{
 				Type:        "bind",
 				Source:      src,
@@ -204,13 +224,32 @@ func buildMounts(pod *corev1.Pod, vms []corev1.VolumeMount) ([]Mount, error) {
 			}
 			out = append(out, m)
 		case v.EmptyDir != nil:
-			m := Mount{Type: "tmpfs", Destination: vm.MountPath}
-			if v.EmptyDir.Medium != corev1.StorageMediumMemory {
-				// Disk-backed emptyDir is also rendered as tmpfs in v1
-				// — outposts are personal machines; tmpfs is closer to
-				// the "scratch space" semantic users expect than a
-				// dangling anonymous volume that survives container
-				// removal. Revisit if a real use case wants persistence.
+			// EmptyDir with Medium=Memory stays tmpfs (k8s spec
+			// guarantees that). Default medium (disk-backed) now
+			// renders as a per-pod bind-mount under the outpost's
+			// cache dir so the data actually survives container
+			// restart within the pod's lifetime — the k8s contract
+			// EmptyDir promises. Lifetime is bounded by DeletePod
+			// which removes the dir tree.
+			if v.EmptyDir.Medium == corev1.StorageMediumMemory {
+				m := Mount{Type: "tmpfs", Destination: vm.MountPath}
+				if vm.ReadOnly {
+					m.Options = append(m.Options, "ro")
+				}
+				out = append(out, m)
+				break
+			}
+			dir, err := emptyDirHostPath(string(pod.UID), vm.Name)
+			if err != nil {
+				return nil, err
+			}
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return nil, fmt.Errorf("vkpodman: ensure emptyDir %q: %w", dir, err)
+			}
+			m := Mount{
+				Type:        "bind",
+				Source:      dir,
+				Destination: vm.MountPath,
 			}
 			if vm.ReadOnly {
 				m.Options = append(m.Options, "ro")

@@ -222,6 +222,12 @@ func (p *Provider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 	}
 	unpublishPod(p.apps, pod)
+	// Reap per-pod EmptyDir tree. Best-effort — a leftover dir is
+	// disk-junk on the operator's machine, not a correctness issue.
+	if err := RemoveEmptyDirsForPod(string(pod.UID)); err != nil {
+		slog.Warn("vkpodman: remove emptyDir tree",
+			"pod", podKey(pod.Namespace, pod.Name), "err", err)
+	}
 	p.forgetPod(pod.Namespace, pod.Name)
 	slog.Info("vkpodman: deleted pod",
 		"pod", podKey(pod.Namespace, pod.Name), "container", cid)

@@ -37,6 +37,18 @@ spec:
         outpost.dhnt.io/build-context: "examples/seaweedfs"
     spec:
       tolerations: [{key: virtual-kubelet.io/provider, operator: Exists}]
+      # Persistent storage via HostPath: vkpodman bind-mounts the
+      # host directory below into /data inside the container. The
+      # hostPath.type: DirectoryOrCreate causes vkpodman to mkdir
+      # the source if it doesn't exist, so first-run works without
+      # pre-provisioning. Without this, the SeaweedFS index +
+      # volume files would live in the container's overlay and
+      # vanish on every pod recreation.
+      volumes:
+      - name: data
+        hostPath:
+          path: /var/outpost/volumes/seaweedfs-data
+          type: DirectoryOrCreate
       containers:
       - name: weed
         image: localhost/cluster/seaweedfs:4.29
@@ -45,6 +57,9 @@ spec:
         # 8333 is the S3 gateway. Other ports stay container-internal
         # for now; expose more if we want direct master/volume access.
         - containerPort: 8333
+        volumeMounts:
+        - name: data
+          mountPath: /data
         readinessProbe:
           tcpSocket: {port: 8333}
           initialDelaySeconds: 10
