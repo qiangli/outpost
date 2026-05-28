@@ -101,6 +101,15 @@ func (p *Provider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	if err != nil {
 		return err
 	}
+	// Source-canonical build: if the pod carries build-source
+	// annotations and the target image isn't already in podman's
+	// local store, clone + build before the container-create call
+	// below. EnsureImageBuilt is a no-op when the annotation is
+	// absent or the image already exists.
+	builtLocally, err := p.EnsureImageBuilt(ctx, pod)
+	if err != nil {
+		return fmt.Errorf("vkpodman: build for pod %s: %w", podKey(pod.Namespace, pod.Name), err)
+	}
 
 	// Look for an existing container that already belongs to this Pod
 	// UID. If found, we own it from a prior incarnation — just make sure
@@ -135,9 +144,13 @@ func (p *Provider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 
 	// First time we've seen this pod (or libpod lost the container).
 	// Pull the image opportunistically — failures here are fatal because
-	// the next create will just fail with "no such image".
-	if err := p.client.PullImage(ctx, spec.Image); err != nil {
-		return fmt.Errorf("vkpodman: pull image %q: %w", spec.Image, err)
+	// the next create will just fail with "no such image". Skipped when
+	// EnsureImageBuilt just produced the image locally (no registry to
+	// pull from for build-source workloads).
+	if !builtLocally {
+		if err := p.client.PullImage(ctx, spec.Image); err != nil {
+			return fmt.Errorf("vkpodman: pull image %q: %w", spec.Image, err)
+		}
 	}
 
 	created, err := p.client.CreateContainer(ctx, spec)
