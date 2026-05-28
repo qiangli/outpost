@@ -240,7 +240,7 @@ func (p *Provider) GetPodStatus(ctx context.Context, namespace, name string) (*c
 	if err != nil {
 		return nil, err
 	}
-	return inspectToPodStatus(pod, inspect), nil
+	return inspectToPodStatus(ctx, pod, inspect), nil
 }
 
 // GetPods returns every Pod we currently know about. Used by the
@@ -380,7 +380,7 @@ var ErrNotFound = errNotFound{}
 // inspectToPodStatus translates a libpod InspectContainer to a
 // corev1.PodStatus. We model the single container as
 // pod.Status.ContainerStatuses[0] and derive PodPhase from its state.
-func inspectToPodStatus(pod *corev1.Pod, ins *InspectContainer) *corev1.PodStatus {
+func inspectToPodStatus(ctx context.Context, pod *corev1.Pod, ins *InspectContainer) *corev1.PodStatus {
 	cs := corev1.ContainerStatus{
 		Name:        pod.Spec.Containers[0].Name,
 		Image:       ins.ImageName,
@@ -419,21 +419,38 @@ func inspectToPodStatus(pod *corev1.Pod, ins *InspectContainer) *corev1.PodStatu
 		t := metav1.NewTime(ins.State.StartedAt)
 		status.StartTime = &t
 	}
-	// Conditions[Ready] tracks libpod's running state directly.
-	// Strict semantics (reflect a readiness probe) would be the v2
-	// upgrade — here, "container is running and not stopping" is the
-	// only signal we can derive without an HTTP probe machinery, and
-	// it's what cloudbox /api/cluster/svc/* already uses as the
-	// proxy gate so the two layers agree.
+	// Conditions[Ready] reflects libpod state PLUS the container's
+	// readinessProbe when one is declared. Without a probe, "running
+	// and not stopping" is the signal. With one, the probe's pass/
+	// fail overrides — a container that's Running but failing its
+	// HTTP /healthz is correctly reported as NotReady, and
+	// cluster-svc's PodReady != False filter routes around it.
 	readyState := corev1.ConditionFalse
 	readyReason := ""
+	libpodReady := ins.State.Running && !ins.State.Restarting && !ins.State.Paused
 	switch {
-	case ins.State.Running && !ins.State.Restarting && !ins.State.Paused:
+	case libpodReady:
 		readyState = corev1.ConditionTrue
 	case ins.State.Status == "exited" || ins.State.Status == "stopped" || ins.State.Dead:
 		readyReason = "ContainersNotReady"
 	default:
 		readyReason = "ContainersNotReady"
+	}
+	if libpodReady && len(pod.Spec.Containers) > 0 {
+		// First container's readinessProbe applies — vkpodman is a
+		// one-container-per-pod provider today (BuildSpec rejects
+		// multi-container specs); when that changes the probe loop
+		// here should iterate all containers and AND their results.
+		c := pod.Spec.Containers[0]
+		fallbackPort := firstContainerHostPortFromSpec(&c)
+		if err := runReadinessProbe(ctx, c, fallbackPort, ins.State.StartedAt); err != nil {
+			readyState = corev1.ConditionFalse
+			readyReason = "ReadinessProbeFailed"
+			// cs.Ready mirrors the pod-level Ready so kubectl get pods
+			// and the apiserver's endpoint controller see the same
+			// truth.
+			cs.Ready = false
+		}
 	}
 	now := metav1.Now()
 	status.Conditions = append(status.Conditions,
