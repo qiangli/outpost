@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -59,14 +60,44 @@ func (c *Counter) Snapshot() CapacityReport {
 // We instrument at the path level rather than wrapping the response
 // body because httputil.ReverseProxy already handles body lifecycle
 // for streamed SSE responses — we'd race with its own close hooks.
-// Decrementing on handler return is correct because ServeHTTP blocks
-// until the upstream response has fully streamed.
+//
+// Decrement strategy is "first of two events": whichever of these
+// fires first releases the slot —
+//   1. handler return (the normal path; ServeHTTP returns once the
+//      upstream response has fully streamed),
+//   2. the inbound request context being cancelled (cloudbox detects
+//      a client disconnect, closes the outbound conn to this outpost,
+//      our HTTP server cancels r.Context()).
+//
+// Going context-driven matters for the leak case: when Ollama is
+// hung (OOM, stuck generation, network blip), httputil.ReverseProxy's
+// Transport.RoundTrip can block much longer than the inbound
+// disconnect — the cloudbox-side capacity reading would then show
+// the slot occupied for minutes after the client has moved on, and
+// the LLM pool router would dutifully avoid this outpost. The
+// sync.Once gates the decrement so the two paths don't double-count.
 func (c *Counter) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isGenerationPath(r.URL.Path) {
-			c.inFlight.Add(1)
-			defer c.inFlight.Add(-1)
+		if !isGenerationPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
 		}
+		c.inFlight.Add(1)
+		var once sync.Once
+		release := func() { once.Do(func() { c.inFlight.Add(-1) }) }
+
+		// Listener goroutine: decrement on inbound cancel even if
+		// ServeHTTP is still grinding on a stuck Ollama. Capturing
+		// r.Context() once is right — Go's HTTP server cancels it on
+		// client disconnect (read of CloseNotifier-style event +
+		// the conn's own io error), and a fresh context per request
+		// means we don't leak across requests.
+		done := r.Context().Done()
+		go func() {
+			<-done
+			release()
+		}()
+		defer release()
 		next.ServeHTTP(w, r)
 	})
 }

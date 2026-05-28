@@ -1,11 +1,13 @@
 package ollama
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestCounter_Defaults(t *testing.T) {
@@ -97,6 +99,68 @@ func TestCounter_Wrap_NonGenerationPathsSkip(t *testing.T) {
 		if observed.Load() != 0 {
 			t.Errorf("path %q observed InFlight=%d during ServeHTTP, want 0", p, observed.Load())
 		}
+	}
+}
+
+func TestCounter_Wrap_DecrementOnClientCancel(t *testing.T) {
+	// Regression: when Ollama is hung and the client (cloudbox) drops
+	// the connection, the inbound request context is canceled. The
+	// in-flight counter must release the slot promptly via the
+	// context-listener path — even though next.ServeHTTP is still
+	// blocked in the (simulated) hung upstream. Without the
+	// context-tied release, the counter would stay incremented for as
+	// long as Ollama hangs, and cloudbox's pickLeastLoaded would
+	// misroute traffic to avoid this outpost.
+	c := NewCounter()
+	upstreamReleased := make(chan struct{})
+	h := c.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// "Hung Ollama" — wait until the test explicitly releases.
+		// We do NOT honor r.Context().Done() here so the test can
+		// prove the counter drops via the listener, not via ServeHTTP
+		// returning.
+		<-upstreamReleased
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r := httptest.NewRequest(http.MethodPost, "/api/chat", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	servedDone := make(chan struct{})
+	go func() {
+		h.ServeHTTP(w, r)
+		close(servedDone)
+	}()
+
+	// Spin until the handler increment lands. The goroutine scheduler
+	// can delay this by a few ms; the polling loop bounds the wait.
+	deadline := time.Now().Add(time.Second)
+	for c.Snapshot().InFlight == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("counter never observed the increment")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// Client disconnect: cancel the inbound context.
+	cancel()
+	// The listener goroutine should drop the slot within a short
+	// window. Poll because the schedule isn't synchronous.
+	deadline = time.Now().Add(time.Second)
+	for c.Snapshot().InFlight != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("counter did not decrement after client cancel; InFlight=%d", c.Snapshot().InFlight)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// Release the "Ollama" so the test goroutine can exit cleanly.
+	// The defer release() will fire too — sync.Once ensures we don't
+	// double-decrement (counter must stay at 0).
+	close(upstreamReleased)
+	<-servedDone
+	if got := c.Snapshot().InFlight; got != 0 {
+		t.Errorf("post-release InFlight=%d, want 0 (sync.Once should prevent double decrement)", got)
 	}
 }
 
