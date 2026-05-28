@@ -61,9 +61,9 @@ func runReadinessProbe(ctx context.Context, c corev1.Container, hostPort int32, 
 	h := probe.ProbeHandler
 	switch {
 	case h.HTTPGet != nil:
-		return httpReadinessProbe(ctx, h.HTTPGet, hostPort)
+		return httpReadinessProbe(ctx, h.HTTPGet, c, hostPort)
 	case h.TCPSocket != nil:
-		return tcpReadinessProbe(ctx, h.TCPSocket, hostPort)
+		return tcpReadinessProbe(ctx, h.TCPSocket, c, hostPort)
 	case h.Exec != nil:
 		// Documented limitation — see file-header comment.
 		return nil
@@ -72,12 +72,12 @@ func runReadinessProbe(ctx context.Context, c corev1.Container, hostPort int32, 
 	}
 }
 
-func httpReadinessProbe(ctx context.Context, h *corev1.HTTPGetAction, fallbackHostPort int32) error {
+func httpReadinessProbe(ctx context.Context, h *corev1.HTTPGetAction, c corev1.Container, fallbackHostPort int32) error {
 	scheme := strings.ToLower(string(h.Scheme))
 	if scheme == "" {
 		scheme = "http"
 	}
-	port := resolveProbePort(h.Port, fallbackHostPort)
+	port := resolveProbePort(h.Port, c, fallbackHostPort)
 	if port == 0 {
 		return errors.New("probe: no port resolvable for HTTPGet")
 	}
@@ -110,8 +110,8 @@ func httpReadinessProbe(ctx context.Context, h *corev1.HTTPGetAction, fallbackHo
 	return nil
 }
 
-func tcpReadinessProbe(ctx context.Context, h *corev1.TCPSocketAction, fallbackHostPort int32) error {
-	port := resolveProbePort(h.Port, fallbackHostPort)
+func tcpReadinessProbe(ctx context.Context, h *corev1.TCPSocketAction, c corev1.Container, fallbackHostPort int32) error {
+	port := resolveProbePort(h.Port, c, fallbackHostPort)
 	if port == 0 {
 		return errors.New("probe: no port resolvable for TCPSocket")
 	}
@@ -129,16 +129,42 @@ func tcpReadinessProbe(ctx context.Context, h *corev1.TCPSocketAction, fallbackH
 }
 
 // resolveProbePort converts the spec's IntOrString port into a TCP
-// port the dialer can use. Named ports aren't resolved to container
-// ports in vkpodman (we don't have a containerPort.Name → hostPort
-// map that survives daemon restart cleanly), so a named probe falls
-// back to the container's first published hostPort — the assumption
-// being a single-port pod with the named port being the obvious
-// target. Multi-port pods with named-port readinessProbes would
-// need a richer resolution; documented limitation.
-func resolveProbePort(p intstr.IntOrString, fallbackHostPort int32) int32 {
-	if p.Type == intstr.Int && p.IntVal > 0 {
+// port the dialer can actually reach. K8s probe semantics treat the
+// number as a containerPort — but vkpodman pods are reached on
+// the published hostPort (containerPort lives inside libpod's network
+// namespace, unreachable from the host where we run the probe).
+//
+// So when the spec gives us an int that matches a declared
+// containerPort, we return the corresponding hostPort. Named ports
+// follow the same path — match against the container's Ports by
+// Name. Falls back to the container's first hostPort when nothing
+// matches (single-port pods with a probe pointing at "the obvious
+// target").
+func resolveProbePort(p intstr.IntOrString, c corev1.Container, fallbackHostPort int32) int32 {
+	switch p.Type {
+	case intstr.Int:
+		if p.IntVal <= 0 {
+			return fallbackHostPort
+		}
+		// Find the matching containerPort and return its hostPort.
+		for _, cp := range c.Ports {
+			if cp.ContainerPort == p.IntVal && cp.HostPort != 0 {
+				return cp.HostPort
+			}
+		}
+		// No matching containerPort declared → the operator probably
+		// meant the host port directly. Honor that — best-effort.
 		return p.IntVal
+	case intstr.String:
+		name := strings.TrimSpace(p.StrVal)
+		if name == "" {
+			return fallbackHostPort
+		}
+		for _, cp := range c.Ports {
+			if cp.Name == name && cp.HostPort != 0 {
+				return cp.HostPort
+			}
+		}
 	}
 	return fallbackHostPort
 }
