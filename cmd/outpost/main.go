@@ -696,6 +696,23 @@ func startCmd() *cobra.Command {
 			g.Go(func() error {
 				<-gctx.Done()
 				slog.Info("matrix-agent: shutting down")
+				// Phase 2b cooperative-failover hook. Fire-and-forget
+				// ping cloudbox BEFORE tearing down the matrix tunnel
+				// so cluster-svc stops routing new traffic to our pods
+				// in the seconds it'll take us to actually disconnect.
+				// Hard 3s budget — a slow/unresponsive cloudbox can't
+				// hold up our shutdown. Skipped silently when cluster
+				// mode is off or the prerequisites (access_token,
+				// cloudbox URL, agent name) are missing.
+				if fc.ClusterOn() && fc.AccessToken != "" && fc.AgentName != "" {
+					notifyCtx, notifyCancel := context.WithTimeout(context.Background(), 3*time.Second)
+					if err := notifyDeparting(notifyCtx, cloudboxHTTPBase(fc), fc.AccessToken, fc.AgentName); err != nil {
+						slog.Warn("matrix-agent: departure notification failed (continuing shutdown)", "err", err)
+					} else {
+						slog.Info("matrix-agent: departure notified", "agent", fc.AgentName)
+					}
+					notifyCancel()
+				}
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 				_ = localSrv.Shutdown(shutdownCtx)
@@ -718,6 +735,42 @@ func startCmd() *cobra.Command {
 	cmd.Flags().StringVar(&vncAddrFlag, "vnc-addr", "", "VNC server to expose for the desktop tab (overrides $AGENT_VNC_ADDR / FileConfig.VNCAddr; default 127.0.0.1:5900)")
 	cmd.Flags().StringVar(&adminAddrFlag, "admin-addr", "", "Admin UI listen address (overrides $OUTPOST_ADMIN_ADDR; default 127.0.0.1:17777). Use 0.0.0.0:17777 to expose to the LAN; login is then always required.")
 	return cmd
+}
+
+// notifyDeparting POSTs /api/v1/cluster/departing on cloudbox to
+// flag this outpost as about-to-leave. Bearer-authed with the same
+// access_token the outpost already carries for /api/cluster/agent;
+// header X-Outpost-Agent names the host so a compromised SA can't
+// depart a peer. Cloudbox's HostRegistry.Lookup then returns
+// ok=false for the next 30 s, which makes cluster-svc's pre-filter
+// skip pods on this node — graceful failover BEFORE the tunnel
+// actually drops.
+//
+// All errors are non-fatal: shutdown proceeds regardless. The
+// reactive ~40 s NodeNotReady path is still the fallback. This is
+// strictly the "make the common predictable case ~0 s" hook.
+func notifyDeparting(ctx context.Context, cloudboxBase, accessToken, agentName string) error {
+	base := strings.TrimRight(strings.TrimSpace(cloudboxBase), "/")
+	if base == "" {
+		return errors.New("notifyDeparting: empty cloudboxBase")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		base+"/api/v1/cluster/departing", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("X-Outpost-Agent", agentName)
+	req.Header.Set("Accept", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("cloudbox responded %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // startClusterRunner validates fc.Cluster, detects the local podman
