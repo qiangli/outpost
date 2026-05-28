@@ -125,6 +125,15 @@ type Deps struct {
 	// nil → field omitted from the envelope; cloudbox treats absent
 	// as legacy / "auto".
 	UpdateMode UpdateModeProvider
+
+	// SystemInfo is the closure /apps calls to surface this host's
+	// capability snapshot (cpu count, memory, disk, arch, model).
+	// Cloudbox stores the latest reading on HostEntry and renders
+	// it in the cluster view; the data also feeds future LB
+	// heuristics (e.g. prefer hosts with more memory for
+	// memory-heavy workloads). nil → field omitted; cloudbox
+	// shows "—" for unknown.
+	SystemInfo func() any
 }
 
 // RegisterRoutes attaches all matrix-agent routes onto rg. Always mounted
@@ -183,6 +192,15 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 			if m := deps.UpdateMode(); m != "" {
 				payload["update_mode"] = m
 			}
+		}
+		// System info — host capability snapshot for the cloudbox
+		// UI + future LB heuristics (preferentially place
+		// CPU-heavy pods on outposts with more cores, etc.).
+		// Collected per-poll so memory/disk changes propagate
+		// without a daemon restart. Cheap on all platforms
+		// (sysctl + statfs).
+		if deps.SystemInfo != nil {
+			payload["system"] = deps.SystemInfo()
 		}
 		c.JSON(http.StatusOK, payload)
 	})

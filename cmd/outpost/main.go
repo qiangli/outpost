@@ -35,6 +35,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
 	"github.com/qiangli/outpost/internal/agent/portal"
+	"github.com/qiangli/outpost/internal/agent/sysinfo"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
 	"github.com/qiangli/outpost/internal/agent/userkube"
 	"github.com/qiangli/outpost/internal/agent/vkpodman"
@@ -588,6 +589,10 @@ func startCmd() *cobra.Command {
 						cur = fc
 					}
 					return cur.UpdateModeName()
+				},
+				SystemInfo: func() any {
+					dir, _ := conf.DefaultCacheDir()
+					return sysinfo.Collect(dir)
 				},
 			})
 
