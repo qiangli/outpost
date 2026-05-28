@@ -1,8 +1,8 @@
 # Triggered by pushing a vX.Y.Z tag. Builds outpost for the platforms
-# we ship (darwin + linux × arm64 + amd64), sha256s each artifact,
-# uploads them to a GitHub Release, and POSTs a release-manifest
-# webhook to cloudbox so the SPA's Hosts page can flag "update
-# available" without polling.
+# we ship (darwin + linux × arm64 + amd64 + windows × amd64 + arm64),
+# sha256s each artifact, uploads them to a GitHub Release, and POSTs a
+# release-manifest webhook to cloudbox so the SPA's Hosts page can flag
+# "update available" without polling.
 #
 # Secrets required:
 #   CLOUDBOX_RELEASE_WEBHOOK_URL    — https://ai.dhnt.io/api/webhooks/outpost-release
@@ -10,6 +10,14 @@
 #
 # To cut a release:
 #   git tag v0.2.0 && git push origin v0.2.0
+#
+# Post-release manual step (Windows SmartScreen / Defender reputation):
+# until outpost ships with a code-signing cert, Windows users may see
+# Defender / SmartScreen warnings on first run. Submit each Windows
+# release binary (outpost-vX.Y.Z-windows-amd64.exe + .arm64.exe) at
+# https://submit.microsoft.com as a false positive. Repeated good-faith
+# submissions build publisher reputation and reduce the warning rate
+# over time. Tracked in docs/install.md ("Windows Defender" section).
 
 name: release
 

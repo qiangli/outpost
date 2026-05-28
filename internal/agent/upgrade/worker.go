@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/qiangli/outpost/internal/agent"
@@ -138,6 +140,24 @@ func (w *Worker) Apply(ctx context.Context, env Envelope) Result {
 	if st.UpdateMode == "never" {
 		w.mu.Unlock()
 		return Result{Status: StatusDisabled, Detail: "update_mode is 'never'; operator must change it to accept cloudbox-pushed upgrades", ReleaseID: env.ReleaseID}
+	}
+	// installed-via marker: when a package manager owns this binary
+	// (brew, scoop, apt, …) the cloudbox-pushed upgrade would race
+	// the package manager's record of "what version is installed",
+	// and the next `brew upgrade` / `scoop update` could undo us.
+	// Defer to the owning installer. "installer" (from install.sh /
+	// install.ps1) and "manual" (operator hand-placed) are allowed;
+	// no marker is also allowed (backwards-compat for hosts that
+	// pre-date the marker convention). Force=true does NOT bypass
+	// this — same precedent as never mode. Operator override is
+	// removing the marker file.
+	if via, _ := installedVia(st.BinaryPath); via != "" && via != "installer" && via != "manual" {
+		w.mu.Unlock()
+		return Result{
+			Status:    StatusDisabled,
+			Detail:    fmt.Sprintf("installed via %q — use that package manager to upgrade (remove .outpost-installed-via next to the binary to override)", via),
+			ReleaseID: env.ReleaseID,
+		}
 	}
 	if st.CurrentCommit != "" && env.Commit == st.CurrentCommit {
 		w.mu.Unlock()
@@ -328,6 +348,27 @@ func (w *Worker) fail(env Envelope, step, fromSHA string, cause error) {
 		URL:       env.URL,
 		Error:     cause.Error(),
 	})
+}
+
+// installedVia reads the marker file (".outpost-installed-via") next
+// to binaryPath. Returns the trimmed lowercased content, or "" if the
+// file is missing or binaryPath is empty. I/O errors other than
+// not-exist surface to the caller; in Apply() we ignore them (the
+// marker is advisory — a transient read failure shouldn't block an
+// upgrade that's otherwise valid).
+func installedVia(binaryPath string) (string, error) {
+	if binaryPath == "" {
+		return "", nil
+	}
+	p := filepath.Join(filepath.Dir(binaryPath), ".outpost-installed-via")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.ToLower(strings.TrimSpace(string(data))), nil
 }
 
 func (w *Worker) appendLedger(e LedgerEntry) error {

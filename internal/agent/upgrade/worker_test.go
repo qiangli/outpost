@@ -168,6 +168,83 @@ func TestWorker_ManualPersistsAndReturnsPending(t *testing.T) {
 	}
 }
 
+func TestWorker_RefusesWhenInstalledViaPackageManager(t *testing.T) {
+	h := newHarness(t)
+	// Marker says brew owns the binary — Apply must refuse with
+	// StatusDisabled so brew remains the source of truth for version.
+	if err := os.WriteFile(filepath.Join(h.dir, ".outpost-installed-via"), []byte("brew\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := h.worker.Apply(context.Background(), Envelope{
+		ReleaseID: "r-pkg",
+		URL:       "https://example.com/x",
+		SHA256:    "deadbeef",
+		Commit:    "def5678",
+	})
+	if r.Status != StatusDisabled {
+		t.Fatalf("expected disabled, got %v: %s", r.Status, r.Detail)
+	}
+	if !strings.Contains(r.Detail, "brew") {
+		t.Fatalf("detail should name the installer: %q", r.Detail)
+	}
+}
+
+func TestWorker_RefusesPackageManagerEvenWithForce(t *testing.T) {
+	h := newHarness(t)
+	// Force=true is operator-blessed but must NOT override the marker —
+	// drift between cloudbox and the package manager is the failure
+	// mode we're guarding against. Removing the marker is the supported
+	// override path.
+	if err := os.WriteFile(filepath.Join(h.dir, ".outpost-installed-via"), []byte("scoop"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := h.worker.Apply(context.Background(), Envelope{
+		ReleaseID: "r-pkg-force",
+		URL:       "https://example.com/x",
+		SHA256:    "deadbeef",
+		Commit:    "def5678",
+		Force:     true,
+	})
+	if r.Status != StatusDisabled {
+		t.Fatalf("expected disabled even with force, got %v: %s", r.Status, r.Detail)
+	}
+}
+
+func TestWorker_AllowsWhenInstalledViaInstaller(t *testing.T) {
+	h := newHarness(t)
+	if err := os.WriteFile(filepath.Join(h.dir, ".outpost-installed-via"), []byte("installer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Bogus URL → the stage step will fail, but Apply itself should
+	// return Accepted because the marker is the right value.
+	r := h.worker.Apply(context.Background(), Envelope{
+		ReleaseID: "r-installer",
+		URL:       "https://localhost-no-server.invalid/x",
+		SHA256:    "deadbeef",
+		Commit:    "def5678",
+	})
+	if r.Status != StatusAccepted {
+		t.Fatalf("expected accepted (installer marker), got %v: %s", r.Status, r.Detail)
+	}
+	waitForInFlight(t, h.worker, false, time.Second)
+}
+
+func TestWorker_AllowsWhenMarkerMissing(t *testing.T) {
+	h := newHarness(t)
+	// No marker file written — must allow (backwards-compat for hosts
+	// installed before the marker convention).
+	r := h.worker.Apply(context.Background(), Envelope{
+		ReleaseID: "r-nomarker",
+		URL:       "https://localhost-no-server.invalid/x",
+		SHA256:    "deadbeef",
+		Commit:    "def5678",
+	})
+	if r.Status != StatusAccepted {
+		t.Fatalf("expected accepted (no marker), got %v: %s", r.Status, r.Detail)
+	}
+	waitForInFlight(t, h.worker, false, time.Second)
+}
+
 func TestWorker_RejectsSameCommit(t *testing.T) {
 	h := newHarness(t)
 	r := h.worker.Apply(context.Background(), Envelope{

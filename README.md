@@ -10,9 +10,25 @@ clipboard) so that authenticated portal users can reach them through
 
 ## Install
 
+**macOS / Linux** — one-line installer (downloads the matching release binary, verifies sha256, optionally registers launchd / systemd):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/qiangli/outpost/main/scripts/install.sh | sh
+```
+
+**Windows** — PowerShell installer (`Invoke-WebRequest` avoids Mark-of-the-Web, so SmartScreen does not gate first run):
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/qiangli/outpost/main/scripts/install.ps1 | iex
+```
+
+**From source** — if you have Go 1.25+:
+
 ```bash
 go install github.com/qiangli/outpost/cmd/outpost@latest
 ```
+
+See `outpost docs install` (or [`docs/install.md`](docs/install.md)) for the full guide: environment overrides (`INSTALL_DIR`, `OUTPOST_VERSION`, `NO_SERVICE`), Linux PAM auth via `CGO_ENABLED=1`, Windows Defender notes, and uninstall steps.
 
 ## Pair with the portal
 
@@ -55,11 +71,12 @@ MATRIX_APPS="ycode=http://127.0.0.1:8765,jupyter=http://127.0.0.1:8888" \
 All of these are reached only through the portal — outpost binds its
 HTTP server to loopback (`127.0.0.1:<random>`).
 
-## Build
+## Build from source
 
 ```bash
 go build ./cmd/outpost
 ```
 
-Requires Go 1.25+.
-# release notes — see github.com/qiangli/outpost/releases
+Requires Go 1.25+. See [`docs/install.md`](docs/install.md) for the CGO-enabled recipe needed for Linux PAM auth.
+
+Release notes: <https://github.com/qiangli/outpost/releases>.
