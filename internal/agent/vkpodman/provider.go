@@ -178,7 +178,20 @@ func (p *Provider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 // is refresh the cached *corev1.Pod — the running container stays put.
 // (Label-only updates that influence which selector matches a workload
 // are an apiserver concern; the container is unaffected.)
-func (p *Provider) UpdatePod(_ context.Context, pod *corev1.Pod) error {
+func (p *Provider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
+	// The apiserver-side spec never sees our auto-allocated
+	// hostPorts (mutation in CreatePod is local-only). Merge the
+	// allocated values back in from the libpod container labels so
+	// the cached pod's Spec.Containers[*].Ports reflects what the
+	// outpost actually published. Without this, the readinessProbe
+	// resolver would see HostPort=0 on every UpdatePod and fall
+	// back to the wrong port — pods stay PodReady=False forever
+	// even though they're absolutely serving.
+	if cid, lerr := p.findContainerByPodUID(ctx, string(pod.UID)); lerr == nil && cid != "" {
+		if ins, ierr := p.client.InspectContainer(ctx, cid); ierr == nil && ins != nil {
+			HydratePodPortsFromLabels(pod, ins.Config.Labels)
+		}
+	}
 	p.cachePod(pod)
 	// Republish the transient app registration. UpdatePod is the
 	// PodController's first call for each pod on daemon restart
