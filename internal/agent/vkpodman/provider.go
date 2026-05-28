@@ -26,8 +26,8 @@ import (
 // unique).
 type Provider struct {
 	client *Client
-	access *Access        // nil = no namespace check (single-tenant dev)
-	apps   TransientApps  // nil = don't publish pods into the outpost's app router
+	access *Access       // nil = no namespace check (single-tenant dev)
+	apps   TransientApps // nil = don't publish pods into the outpost's app router
 
 	mu   sync.RWMutex
 	pods map[string]*corev1.Pod // namespace/name → cached Pod
