@@ -56,14 +56,22 @@ const (
 
 // EnsureImageBuilt inspects pod for build annotations; when present
 // and the image isn't already in podman's local store, clones the
-// source and posts a build to libpod. Returns (built, err) — built
-// is true when we just produced the image (caller can skip the
-// PullImage step). false + nil err means "no build annotation OR
-// image already cached" — the caller proceeds normally.
+// source and posts a build to libpod.
 //
-// Idempotent: subsequent CreatePods for the same (image-tag,
-// already-cached) are zero-cost beyond the image-exists check.
-func (p *Provider) EnsureImageBuilt(ctx context.Context, pod *corev1.Pod) (built bool, err error) {
+// Return semantics:
+//   - skipPull=true: the image is available locally (either just
+//     built, or was already cached from a previous build). Caller
+//     MUST skip the registry pull — a localhost-tagged image can't
+//     be resolved against any external registry, and trying makes
+//     libpod fail with "pinging registry localhost".
+//   - skipPull=false + nil err: no build annotation; caller proceeds
+//     with the normal pull path.
+//   - err != nil: build attempt failed; caller surfaces the error
+//     as ProviderCreateFailed.
+//
+// Idempotent: subsequent CreatePods for an already-cached image
+// short-circuit on the ImageExists probe without re-cloning.
+func (p *Provider) EnsureImageBuilt(ctx context.Context, pod *corev1.Pod) (skipPull bool, err error) {
 	if pod == nil || pod.Annotations == nil {
 		return false, nil
 	}
@@ -76,11 +84,12 @@ func (p *Provider) EnsureImageBuilt(ctx context.Context, pod *corev1.Pod) (built
 	}
 	image := pod.Spec.Containers[0].Image
 
-	// Image already present? Skip the build.
-	if exists, err := p.client.ImageExists(ctx, image); err != nil {
-		slog.Warn("vkpodman: image-exists probe failed (will attempt build)", "image", image, "err", err)
+	// Image already present? Skip the build AND the pull — a
+	// locally-built tag has no upstream registry to resolve.
+	if exists, eerr := p.client.ImageExists(ctx, image); eerr != nil {
+		slog.Warn("vkpodman: image-exists probe failed (will attempt build)", "image", image, "err", eerr)
 	} else if exists {
-		return false, nil
+		return true, nil
 	}
 
 	cloneURL, ref, err := parseBuildSource(src)
