@@ -1067,6 +1067,47 @@ function buildPodmanSubBlock(parent, cfg, status) {
 // twister: the LLM-pool participation toggle plus (when the pool is
 // running) the live watcher diagnostic. All Ollama-related state in
 // one place — matches the SSH/Podman twister pattern.
+function buildYcodeSubBlock(parent, cfg, status) {
+  const y = cfg.ycode || {};
+  const box = el('div', {style: 'padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;background:#2563eb11;font-size:0.85rem;'});
+  const grid = el('div', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.2rem 0.75rem'});
+  const kv = (k, v) => {
+    grid.append(el('span', {style: 'opacity:0.7'}, k));
+    grid.append(el('span', {style: 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace'}, v || '—'));
+  };
+  const stateLabel = y.running ? 'running'
+                    : y.installed ? 'installed (not running)'
+                    : y.stale_manifest ? 'stale manifest (no live process)'
+                    : !y.platform_supported ? 'not available for this OS/arch'
+                    : 'not installed';
+  kv('State', stateLabel);
+  if (y.platform_supported) {
+    kv('Binary', y.binary_path);
+    if (y.api_endpoint) kv('Endpoint', y.api_endpoint);
+    if (y.version) kv('Version', y.version);
+  }
+  box.append(grid);
+  // Download link: shown when the platform is supported and the
+  // binary isn't found. Always-visible "Get latest" link otherwise
+  // for upgrade discoverability.
+  if (y.download_url) {
+    const linkText = (!y.installed && y.platform_supported) ? 'Download ycode' : 'Latest releases';
+    box.append(
+      el('div', {style: 'margin-top:0.5rem'},
+        el('a', {href: y.download_url, target: '_blank', rel: 'noopener'}, linkText),
+      ),
+    );
+  }
+  if (!y.platform_supported) {
+    box.append(el('div', {class: 'hint', style: 'margin-top:0.4rem'},
+      'ycode hasn\'t shipped a binary for your OS+arch yet. Tracked: darwin/amd64 + windows/amd64 (need podman/buildah refactor upstream).'));
+  } else if (y.enabled && !y.running && y.installed) {
+    box.append(el('div', {class: 'hint', style: 'margin-top:0.4rem'},
+      'ycode is installed but not running. The next outpost restart will start it.'));
+  }
+  parent.append(box);
+}
+
 function buildOllamaSubBlock(parent, cfg, status) {
   const ollamaOn = !!(cfg.ollama && cfg.ollama.enabled);
   const row = el('div', {class: 'item-row' + (!ollamaOn ? ' dim' : '')});
@@ -1468,18 +1509,33 @@ function renderMain(status, cfg) {
      subBlock: buildPodmanSubBlock},
     {key: 'ollama',    fileKey: 'ollama_enabled',    label: 'Ollama',    daemon: cfg.ollama || {},
      subBlock: buildOllamaSubBlock},
+    // ycode is supervised differently from podman/ollama: the row is
+    // toggleable even when ycode isn't running (the toggle turns on
+    // outpost-side supervision; the next outpost restart spawns the
+    // process if installed). The sub-block surfaces install state +
+    // a download link when no binary is found.
+    {key: 'ycode',     fileKey: 'ycode_enabled',     label: 'ycode',     ycode: cfg.ycode || {},
+     subBlock: buildYcodeSubBlock},
   ];
   for (const item of builtinRows) {
     const isDaemon = !!item.daemon;
+    const isYcode  = !!item.ycode;
     // gatedBy: the row mirrors another built-in's enablement (e.g. the
     // Ollama-pool toggle only makes sense when Ollama itself is on).
     // Treated as a daemon-like disabled state so the visual cue is
     // consistent.
     const isGated = !!item.gatedBy;
     const gateOK = !isGated || !!item.gatedBy.enabled;
-    const enabled = isDaemon ? !!item.daemon.enabled : !!item.enabled;
-    const available = isDaemon ? !!item.daemon.available : true;
-    const disabled = (isDaemon && !available) || (isGated && !gateOK);
+    const enabled = isDaemon ? !!item.daemon.enabled
+                  : isYcode  ? !!item.ycode.enabled
+                  : !!item.enabled;
+    // ycode's "availability" is "this platform is supported AND
+    // (running OR installed)". Unsupported platforms render the
+    // toggle disabled (operator can't do anything useful with it).
+    const available = isDaemon ? !!item.daemon.available
+                    : isYcode  ? !!item.ycode.platform_supported
+                    : true;
+    const disabled = ((isDaemon || isYcode) && !available) || (isGated && !gateOK);
     const row = el('div', {class: 'item-row' + (disabled ? ' dim' : '')});
     const sw = switchEl({checked: enabled && gateOK, disabled: disabled});
     sw.input.addEventListener('change', async () => {
@@ -1513,6 +1569,22 @@ function renderMain(status, cfg) {
         row.append(el('span', {class: 'hint'}, '(not available)'));
       } else if (item.daemon.target) {
         row.append(el('span', {class: 'hint'}, item.daemon.target));
+      }
+    }
+    if (isYcode) {
+      // Right-side hint mirrors detect.go's State output. Order
+      // matters: platform check first so unsupported platforms
+      // don't show misleading install advice.
+      if (!item.ycode.platform_supported) {
+        row.append(el('span', {class: 'hint'}, 'ycode not available for this OS/arch'));
+      } else if (item.ycode.running) {
+        row.append(el('span', {class: 'hint'}, item.ycode.api_endpoint || 'running'));
+      } else if (item.ycode.installed) {
+        row.append(el('span', {class: 'hint'}, 'installed; will start on next restart'));
+      } else if (item.ycode.stale_manifest) {
+        row.append(el('span', {class: 'hint'}, 'stale manifest — will clean up on start'));
+      } else {
+        row.append(el('span', {class: 'hint'}, 'not installed'));
       }
     }
     if (isGated && !gateOK) {

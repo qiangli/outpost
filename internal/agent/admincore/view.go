@@ -6,6 +6,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
+	"github.com/qiangli/outpost/internal/agent/ycode"
 )
 
 // BuiltinView is the wire shape for one optional local-daemon proxy
@@ -40,6 +41,48 @@ type ClusterView struct {
 	NodeName string `json:"node_name,omitempty"`
 	HasToken bool   `json:"has_token"`
 	HasCA    bool   `json:"has_ca"`
+}
+
+// YcodeView is the redacted-and-flattened ycode supervisor status the
+// admin UI / MCP API consume. Mirrors ycode.Info but flattens the
+// State enum into named bools so the JS doesn't have to know the
+// State vocabulary.
+type YcodeView struct {
+	Enabled           bool   `json:"enabled"`
+	Running           bool   `json:"running"`
+	Installed         bool   `json:"installed"`
+	StaleManifest     bool   `json:"stale_manifest"`
+	PlatformSupported bool   `json:"platform_supported"`
+	BinaryPath        string `json:"binary_path,omitempty"`
+	APIEndpoint       string `json:"api_endpoint,omitempty"`
+	Version           string `json:"version,omitempty"`
+	DownloadURL       string `json:"download_url"`
+}
+
+func toYcodeView(enabled bool, info ycode.Info) YcodeView {
+	v := YcodeView{
+		Enabled:           enabled,
+		PlatformSupported: info.PlatformSupported,
+		BinaryPath:        info.BinaryPath,
+		APIEndpoint:       info.APIEndpoint,
+		Version:           info.Version,
+		DownloadURL:       info.DownloadURL,
+	}
+	switch info.State {
+	case ycode.StateRunning:
+		v.Running = true
+		v.Installed = true
+	case ycode.StateInstalled:
+		v.Installed = true
+	case ycode.StateStaleManifest:
+		v.StaleManifest = true
+		// The binary may also be installed (locateBinary still ran);
+		// the test for that lives on BinaryPath != "".
+		if info.BinaryPath != "" {
+			v.Installed = true
+		}
+	}
+	return v
 }
 
 func toClusterView(fc *conf.FileConfig) ClusterView {
@@ -84,6 +127,7 @@ type SafeView struct {
 	Podman                BuiltinView          `json:"podman"`
 	Ollama                BuiltinView          `json:"ollama"`
 	OllamaPoolEnabled     bool                 `json:"ollama_pool_enabled"`
+	Ycode                 YcodeView            `json:"ycode"`
 	UpdateMode            string               `json:"update_mode"`
 	LLMPool               LLMPoolStatusView    `json:"llm_pool"`
 	Cluster               ClusterView          `json:"cluster"`
@@ -149,6 +193,7 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		Podman:                toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
 		Ollama:                toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
 		OllamaPoolEnabled:     fc.OllamaPoolOn(),
+		Ycode:                 toYcodeView(fc.YcodeOn(), ycode.Detect()),
 		UpdateMode:            fc.UpdateModeName(),
 		LLMPool:               s.llmPoolStatusView(fc),
 		Cluster:               toClusterView(fc),

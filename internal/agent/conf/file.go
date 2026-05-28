@@ -154,6 +154,23 @@ type FileConfig struct {
 	// the most useful behavior for the typical operator.
 	OllamaPoolEnabled *bool `json:"ollama_pool_enabled,omitempty"`
 
+	// YcodeEnabled gates outpost's lifecycle management of `ycode
+	// serve`. When on, outpost detects a running ycode at boot and,
+	// if one isn't running and a binary is installed, spawns one
+	// detached. When off, ycode is left entirely alone — outpost
+	// neither starts nor stops it.
+	//
+	// ycode is the under-the-hood agentic engine outpost delegates
+	// to for inference / podman / Gitea; one `ycode serve` per OS
+	// user account. Distributed as a separate binary; the admin UI
+	// surfaces a download link when no binary is found, mirroring
+	// ycode's own TUI install flow.
+	//
+	// Plain bool because ycode is opt-in, not a "follow OllamaEnabled
+	// by default" situation. Operators who don't run ycode shouldn't
+	// have outpost trying to spawn anything.
+	YcodeEnabled bool `json:"ycode_enabled,omitempty"`
+
 	// UpdateMode is the per-host policy for cloudbox-pushed
 	// self-upgrades at POST /admin/upgrade. Three values:
 	//
@@ -544,6 +561,11 @@ func (fc *FileConfig) PodmanOn() bool { return fc != nil && fc.PodmanEnabled }
 
 // OllamaOn reports whether the built-in Ollama proxy is enabled.
 func (fc *FileConfig) OllamaOn() bool { return fc != nil && fc.OllamaEnabled }
+
+// YcodeOn reports whether outpost should lifecycle-manage `ycode
+// serve` (detect at boot, start if installed-but-not-running). Plain
+// bool — no implicit default. See YcodeEnabled in the struct doc.
+func (fc *FileConfig) YcodeOn() bool { return fc != nil && fc.YcodeEnabled }
 
 // ClusterOn reports whether this outpost should join the cloudbox
 // virtual-podman cluster on boot. Missing field or Enabled=false ⇒ false.

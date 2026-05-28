@@ -25,6 +25,7 @@ type BuiltinsParams struct {
 	Podman                *bool    `json:"podman,omitempty"`
 	Ollama                *bool    `json:"ollama,omitempty"`
 	OllamaPool            *bool    `json:"ollama_pool,omitempty"`
+	Ycode                 *bool    `json:"ycode,omitempty"`
 	Cluster               *bool    `json:"cluster,omitempty"`
 	// UpdateMode is one of "auto" / "manual" / "never" (see
 	// conf.UpdateMode* constants). Pointer-string so nil = "leave
@@ -88,6 +89,9 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	if p.OllamaPool != nil {
 		fc.OllamaPoolEnabled = p.OllamaPool
 	}
+	if p.Ycode != nil {
+		fc.YcodeEnabled = *p.Ycode
+	}
 	if p.Cluster != nil {
 		if fc.Cluster == nil {
 			fc.Cluster = &conf.ClusterConfig{}
@@ -98,7 +102,7 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Podman == nil && p.Ollama == nil && p.OllamaPool == nil && p.Cluster == nil
+	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Podman == nil && p.Ollama == nil && p.OllamaPool == nil && p.Ycode == nil && p.Cluster == nil
 	if p.UpdateMode != nil {
 		if !conf.ValidUpdateMode(*p.UpdateMode) {
 			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")

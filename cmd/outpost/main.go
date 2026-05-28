@@ -37,6 +37,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/portal"
 	"github.com/qiangli/outpost/internal/agent/sysinfo"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
+	"github.com/qiangli/outpost/internal/agent/ycode"
 	"github.com/qiangli/outpost/internal/agent/userkube"
 	"github.com/qiangli/outpost/internal/agent/vkpodman"
 )
@@ -294,6 +295,28 @@ func startCmd() *cobra.Command {
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+
+			// ycode supervisor: when YcodeEnabled is on, detect a
+			// running `ycode serve` and start one if a binary is
+			// installed but no daemon is up. Fire-and-forget in a
+			// goroutine so a slow ycode boot (up to 30 s for the
+			// readiness wait) doesn't block outpost startup — outpost
+			// stays useful even if ycode is misconfigured.
+			if fc.YcodeOn() {
+				go func() {
+					info, err := ycode.Start(ctx)
+					switch {
+					case err != nil:
+						slog.Warn("ycode supervisor: start", "err", err, "state", info.State)
+					case info.State == ycode.StateRunning:
+						slog.Info("ycode supervisor: running",
+							"endpoint", info.APIEndpoint, "version", info.Version)
+					default:
+						slog.Info("ycode supervisor: nothing to start",
+							"state", info.State, "binary", info.BinaryPath)
+					}
+				}()
+			}
 
 			// restartFn is what the admin UI calls after a save that
 			// requires the tunnel or built-in routes to reload (pairing,
