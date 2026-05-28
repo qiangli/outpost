@@ -1,0 +1,67 @@
+# SeaweedFS single-node deployment via outpost's source-canonical
+# pipeline. The Dockerfile next to this file builds the `weed` binary
+# from upstream tag v3.97; that image is built locally on whichever
+# outpost the pod lands on. No image registry involved.
+#
+# Operationally this is v1: master + volume + S3 gateway all live in
+# one pod, the storage is ephemeral (vkpodman doesn't wire PVCs yet),
+# and there's one replica pinned to one node. Once cross-outpost pod
+# networking lands we'll split into a master Deployment + per-node
+# volume DaemonSet with replication factor 010.
+#
+# Apply with:
+#   kubectl apply -f seaweedfs.yaml
+# Then browse to:
+#   https://ai.dhnt.io/api/cluster/svc/s3/
+# (Probably want an actual S3 client to do anything useful with it.)
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seaweedfs
+  labels: {app: seaweedfs}
+  annotations:
+    outpost.dhnt.io/build-source: "git+https://github.com/qiangli/outpost@main"
+    outpost.dhnt.io/build-dockerfile: "Dockerfile"
+    outpost.dhnt.io/build-context: "examples/seaweedfs"
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: seaweedfs}
+  template:
+    metadata:
+      labels: {app: seaweedfs}
+      annotations:
+        outpost.dhnt.io/build-source: "git+https://github.com/qiangli/outpost@main"
+        outpost.dhnt.io/build-dockerfile: "Dockerfile"
+        outpost.dhnt.io/build-context: "examples/seaweedfs"
+    spec:
+      tolerations: [{key: virtual-kubelet.io/provider, operator: Exists}]
+      containers:
+      - name: weed
+        image: localhost/cluster/seaweedfs:v3.97
+        imagePullPolicy: IfNotPresent
+        ports:
+        # 8333 is the S3 gateway. Other ports stay container-internal
+        # for now; expose more if we want direct master/volume access.
+        - containerPort: 8333
+        readinessProbe:
+          tcpSocket: {port: 8333}
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        # TCP probe rather than HTTPGet because the S3 gateway briefly
+        # 4xxs while the master is still bootstrapping. The listener
+        # being up is the right "vkpodman can route traffic here"
+        # signal; per-API health checks belong to the client.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: s3
+  annotations:
+    # Object stores are usually fine with plain round-robin — S3
+    # clients keep state in cookies / signature, not in connection
+    # affinity. Stick with the default (no annotation).
+spec:
+  selector: {app: seaweedfs}
+  ports: [{port: 80, targetPort: 8333}]
