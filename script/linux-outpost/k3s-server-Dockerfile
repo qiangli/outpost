@@ -1,0 +1,27 @@
+# Sibling image of outpost-runtime that runs k3s SERVER (single-node)
+# instead of k3s AGENT. Used to validate the kubelet-in-container
+# architecture end-to-end without needing a separate cloudbox cluster
+# mode toggle.
+FROM outpost-runtime:dev
+# fuse-overlayfs needed because the podman VM's xfs doesn't support
+# nested overlay mounts (the default containerd snapshotter).
+# kmod for modprobe (br_netfilter, see entrypoint).
+RUN apt-get update && apt-get install -y --no-install-recommends fuse-overlayfs kmod \
+    && rm -rf /var/lib/apt/lists/*
+
+# Standalone-k3s-server entrypoint (vs. the runtime's k3s-agent
+# entrypoint). Loads br_netfilter so kube-proxy's ClusterIP iptables
+# NAT works for cross-namespace traffic (argo-cd needs this), then
+# starts k3s with the in-container escape hatches:
+#   --kubelet-arg=feature-gates=KubeletInUserNamespace=true
+#       skip /dev/kmsg + oom watcher (kubelet-in-userns)
+#   --kubelet-arg=cgroups-per-qos=false
+#       don't try to create kubepods.* cgroup tree (cgroup v2 in
+#       systemd-user can't delegate domain controllers)
+#   --kubelet-arg=enforce-node-allocatable=""
+#       skip node-allocatable enforcement (also requires kubepods)
+#   --snapshotter=fuse-overlayfs
+#       containerd snapshotter that works on nested xfs
+COPY k3s-server-entrypoint.sh /k3s-server-entrypoint.sh
+RUN chmod +x /k3s-server-entrypoint.sh
+ENTRYPOINT ["/k3s-server-entrypoint.sh"]
