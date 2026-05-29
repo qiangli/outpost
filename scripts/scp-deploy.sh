@@ -93,9 +93,14 @@ deploy_one() {
     local host="$1"
     log "→ ${bold}${host}${reset}"
 
-    # Probe the remote OS so we know whether to re-sign.
+    # Probe the remote OS so we know whether to re-sign. Note:
+    # BatchMode=yes refuses any interactive auth (passwords, host-key
+    # prompts) — too strict for mdns hosts where a one-time host-key
+    # accept may be needed. Use accept-new instead so first contact
+    # works; subsequent runs skip the prompt.
     local remote_os
-    remote_os=$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$host" 'uname -s' 2>/dev/null || true)
+    remote_os=$(ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+        "$host" 'uname -s' 2>/dev/null || true)
     if [ -z "$remote_os" ]; then
         err "  ${host}: cannot ssh (check ~/.ssh/config and host reachability); skipping"
         return 1
@@ -117,7 +122,7 @@ deploy_one() {
         *)      resign="" ;;
     esac
 
-    ssh -o BatchMode=yes "$host" "
+    ssh -o StrictHostKeyChecking=accept-new "$host" "
         set -eu
         mkdir -p ~/${REMOTE_BIN_DIR}
         if [ -f ~/${REMOTE_BIN_DIR}/outpost ]; then
@@ -130,7 +135,8 @@ deploy_one() {
 
     if [ "$RESTART" = "1" ]; then
         log "  outpost restart"
-        ssh -o BatchMode=yes "$host" "~/${REMOTE_BIN_DIR}/outpost restart" || \
+        ssh -o StrictHostKeyChecking=accept-new "$host" \
+            "~/${REMOTE_BIN_DIR}/outpost restart" || \
             warn "  ${host}: restart failed (daemon may need manual start)"
     fi
 
