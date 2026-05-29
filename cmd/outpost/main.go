@@ -33,6 +33,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"github.com/qiangli/outpost/internal/agent/k3sagent"
 	"github.com/qiangli/outpost/internal/agent/mcpapi"
+	"github.com/qiangli/outpost/internal/agent/overlay"
 	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
 	"github.com/qiangli/outpost/internal/agent/portal"
@@ -888,6 +889,45 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 		return errors.New("cluster mode=agent: NodeName empty (agent_name unset?)")
 	}
 
+	// Phase 3: when overlay credentials are present, start tailscaled
+	// + install the CNI conflist before k3s agent so kubelet finds a
+	// working CNI on its first pod-create attempt. Overlay failures
+	// are non-fatal — k3s agent still joins; pods just can't network
+	// until overlay+CNI come up.
+	if cc.OverlayLoginServer != "" && cc.OverlayAuthKey != "" {
+		var routes []string
+		if cc.OverlayPodCIDR != "" {
+			routes = []string{cc.OverlayPodCIDR}
+		}
+		g.Go(func() error {
+			slog.Info("cluster mode=agent: starting tailscaled (overlay)",
+				"login_server", cc.OverlayLoginServer, "advertise_routes", routes)
+			err := overlay.Run(ctx, overlay.Options{
+				LoginServer:     cc.OverlayLoginServer,
+				AuthKey:         cc.OverlayAuthKey,
+				AdvertiseRoutes: routes,
+			})
+			switch {
+			case err == nil || errors.Is(err, context.Canceled):
+				return nil
+			case errors.Is(err, overlay.ErrUnsupported):
+				slog.Warn("overlay: not supported on this platform; pods will have no networking")
+				return nil
+			default:
+				slog.Warn("overlay: supervisor exited", "err", err)
+				return nil
+			}
+		})
+		if cc.OverlayPodCIDR != "" {
+			if err := writeCNIConflist(cc.OverlayPodCIDR); err != nil {
+				slog.Warn("cluster mode=agent: CNI conflist write failed; kubelet will fall back to no-network mode",
+					"err", err)
+			} else {
+				slog.Info("cluster mode=agent: CNI conflist installed", "pod_cidr", cc.OverlayPodCIDR)
+			}
+		}
+	}
+
 	g.Go(func() error {
 		slog.Info("cluster mode=agent: starting k3s agent",
 			"node", nodeName, "apiserver", fmt.Sprintf("https://127.0.0.1:%d", apiPort))
@@ -915,6 +955,28 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 		}
 	})
 	return nil
+}
+
+// writeCNIConflist installs /etc/cni/net.d/10-outpost.conflist
+// pointing at the outpost-cni binary. Idempotent; called every time
+// the daemon starts so a stale conflist doesn't survive an outpost
+// upgrade with a changed pod CIDR.
+func writeCNIConflist(podCIDR string) error {
+	const path = "/etc/cni/net.d/10-outpost.conflist"
+	if err := os.MkdirAll("/etc/cni/net.d", 0o755); err != nil {
+		return err
+	}
+	body := fmt.Sprintf(`{
+  "cniVersion": "0.4.0",
+  "name": "outpost",
+  "plugins": [{
+    "type": "outpost-cni",
+    "pod_cidr": %q,
+    "bridge_name": "cbox0"
+  }]
+}
+`, podCIDR)
+	return os.WriteFile(path, []byte(body), 0o644)
 }
 
 // startClusterRunner validates fc.Cluster, detects the local podman

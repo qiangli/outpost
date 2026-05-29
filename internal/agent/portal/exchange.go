@@ -108,6 +108,9 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		ClusterSTCPSecret  string `json:"cluster_stcp_secret"`
 		ClusterAPIPort     int    `json:"cluster_api_port"`
 		ClusterKubeletPort int    `json:"cluster_kubelet_port"`
+		OverlayLoginServer string `json:"overlay_login_server"`
+		OverlayAuthKey     string `json:"overlay_auth_key"`
+		OverlayPodCIDR     string `json:"overlay_pod_cidr"`
 	}
 	if err := json.Unmarshal(respBody, &ex); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
@@ -129,7 +132,9 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 	// operator opts into Mode="agent" via the builtins toggle, which
 	// preserves backward compat for outposts that flip --cluster=on
 	// expecting vkpodman.
-	if ex.ClusterNodeToken != "" || ex.ClusterSTCPSecret != "" || ex.ClusterAPIPort != 0 || ex.ClusterKubeletPort != 0 {
+	if ex.ClusterNodeToken != "" || ex.ClusterSTCPSecret != "" ||
+		ex.ClusterAPIPort != 0 || ex.ClusterKubeletPort != 0 ||
+		ex.OverlayLoginServer != "" || ex.OverlayAuthKey != "" || ex.OverlayPodCIDR != "" {
 		if fc.Cluster == nil {
 			fc.Cluster = &conf.ClusterConfig{}
 		}
@@ -137,6 +142,9 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		fc.Cluster.STCPSecret = ex.ClusterSTCPSecret
 		fc.Cluster.K8sAPIPort = ex.ClusterAPIPort
 		fc.Cluster.KubeletProxyPort = ex.ClusterKubeletPort
+		fc.Cluster.OverlayLoginServer = ex.OverlayLoginServer
+		fc.Cluster.OverlayAuthKey = ex.OverlayAuthKey
+		fc.Cluster.OverlayPodCIDR = ex.OverlayPodCIDR
 	}
 	return fc, nil
 }

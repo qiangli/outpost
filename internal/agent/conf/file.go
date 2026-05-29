@@ -300,6 +300,25 @@ type ClusterConfig struct {
 	// Exchange time — in which case the outpost just doesn't publish
 	// the proxy (the rest of cluster-agent mode still works).
 	KubeletProxyPort int `json:"kubelet_proxy_port,omitempty"`
+
+	// OverlayLoginServer is the URL the outpost's tailscaled connects
+	// to (--login-server) for coordination. In production this is
+	// cloudbox's public URL + /overlay/headscale. Empty when the
+	// cloudbox-side overlay is off — outpost then doesn't start
+	// tailscaled and no overlay/CNI plumbing is set up. Phase 3.
+	OverlayLoginServer string `json:"overlay_login_server,omitempty"`
+
+	// OverlayAuthKey is the one-shot pre-auth key the outpost passes
+	// as `tailscale up --authkey=<key>`. Minted by cloudbox at
+	// Exchange time. Phase 3.
+	OverlayAuthKey string `json:"overlay_auth_key,omitempty"`
+
+	// OverlayPodCIDR is the /24 cloudbox allocated to this outpost
+	// from CLUSTER_POD_CIDR. The outpost passes it as
+	// `tailscale up --advertise-routes=<cidr>` so other outposts can
+	// route to this node's pods, AND the (Phase 3b) CNI plugin uses
+	// it as the per-pod IP pool. Phase 3.
+	OverlayPodCIDR string `json:"overlay_pod_cidr,omitempty"`
 }
 
 // ClusterModeAgent reports whether the outpost should run the real
