@@ -36,8 +36,8 @@ const DefaultFilename = "outpost.yaml"
 // Path returns the canonical place to write the kubectl-ready
 // kubeconfig:
 //
-//   1. $OUTPOST_KUBECONFIG_PATH override (operator-set)
-//   2. $HOME/.kube/<DefaultFilename>
+//  1. $OUTPOST_KUBECONFIG_PATH override (operator-set)
+//  2. $HOME/.kube/<DefaultFilename>
 //
 // Returns "" only on systems with no resolvable HOME — caller
 // should surface a useful error to the operator in that case.
@@ -56,12 +56,12 @@ func Path() string {
 // UI's Cluster section renders this to show "kubectl is ready" +
 // a useful error when it isn't.
 type Status struct {
-	Path         string    `json:"path"`
-	Exists       bool      `json:"exists"`
-	LastRefresh  time.Time `json:"last_refresh,omitzero"`
-	LastError    string    `json:"last_error,omitempty"`
-	NodeName     string    `json:"node_name,omitempty"`
-	APIURL       string    `json:"api_url,omitempty"`
+	Path        string    `json:"path"`
+	Exists      bool      `json:"exists"`
+	LastRefresh time.Time `json:"last_refresh,omitzero"`
+	LastError   string    `json:"last_error,omitempty"`
+	NodeName    string    `json:"node_name,omitempty"`
+	APIURL      string    `json:"api_url,omitempty"`
 }
 
 var (

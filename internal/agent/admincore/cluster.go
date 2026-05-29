@@ -44,7 +44,6 @@ func (s *Server) RefreshUserKubeconfig(ctx context.Context) (userkube.Status, er
 	return userkube.LastStatus(), nil
 }
 
-
 // KubeconfigResult reports the cluster view after a mutation plus
 // whether the daemon will restart to apply it. Returned from
 // ClearKubeconfig today; previously also from SetKubeconfig (the

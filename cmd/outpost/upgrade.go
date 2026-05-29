@@ -41,12 +41,12 @@ import (
 // can add when there's a real Windows user. Mac/Linux are the targets.
 func upgradeCmd() *cobra.Command {
 	var (
-		fromURL    string
-		localPath  string
-		sha256Hex  string
-		force      bool
-		noRestart  bool
-		waitFor    time.Duration
+		fromURL   string
+		localPath string
+		sha256Hex string
+		force     bool
+		noRestart bool
+		waitFor   time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "upgrade",

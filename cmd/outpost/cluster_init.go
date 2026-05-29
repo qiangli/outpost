@@ -22,22 +22,22 @@ import (
 //
 // What the template bakes in by default:
 //
-//  - podAntiAffinity (preferred, by hostname) — replicas spread
-//    across outposts; single-node clusters still schedule but
-//    multi-node clusters get HA for free.
-//  - Tolerations for the virtual-kubelet provider taint — without
-//    these, k8s refuses to schedule onto vkpodman nodes.
-//  - containerPort declared but hostPort left to vkpodman auto-
-//    allocate (a7fa651).
-//  - readinessProbe (HTTPGet on /, configurable via --probe-path)
-//    so cluster-svc only routes to actually-serving pods (56b117c).
-//  - Service with outpost.dhnt.io/affinity: user annotation
-//    (3532c82) — opt OUT by passing --no-sticky if your app is
-//    fully stateless.
-//  - Resource requests + limits at sane small defaults; operators
-//    can `kubectl edit` higher when they need it.
-//  - imagePullPolicy: IfNotPresent — saves bandwidth across pod
-//    restarts when the image is unchanged.
+//   - podAntiAffinity (preferred, by hostname) — replicas spread
+//     across outposts; single-node clusters still schedule but
+//     multi-node clusters get HA for free.
+//   - Tolerations for the virtual-kubelet provider taint — without
+//     these, k8s refuses to schedule onto vkpodman nodes.
+//   - containerPort declared but hostPort left to vkpodman auto-
+//     allocate (a7fa651).
+//   - readinessProbe (HTTPGet on /, configurable via --probe-path)
+//     so cluster-svc only routes to actually-serving pods (56b117c).
+//   - Service with outpost.dhnt.io/affinity: user annotation
+//     (3532c82) — opt OUT by passing --no-sticky if your app is
+//     fully stateless.
+//   - Resource requests + limits at sane small defaults; operators
+//     can `kubectl edit` higher when they need it.
+//   - imagePullPolicy: IfNotPresent — saves bandwidth across pod
+//     restarts when the image is unchanged.
 func clusterInitCmd() *cobra.Command {
 	var (
 		name      string

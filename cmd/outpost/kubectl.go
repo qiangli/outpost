@@ -26,10 +26,10 @@ import (
 //
 // Token refresh policy:
 //
-//	* Re-fetch when the cached file is missing, unreadable, or
-//	  older than kubeconfigStaleAfter (50 min, half the cloudbox-
-//	  side 1 h token TTL plus a buffer).
-//	* Re-fetch on demand via `outpost kubectl --refresh ...`.
+//   - Re-fetch when the cached file is missing, unreadable, or
+//     older than kubeconfigStaleAfter (50 min, half the cloudbox-
+//     side 1 h token TTL plus a buffer).
+//   - Re-fetch on demand via `outpost kubectl --refresh ...`.
 //
 // The cached file lives at <cacheDir>/cluster-kubeconfig.yaml with
 // 0600 perms (carries a bearer token).

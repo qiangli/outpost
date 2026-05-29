@@ -15,8 +15,8 @@ import (
 // swap_done entry; nil when no swap has ever run on this host (the
 // binary is whatever the operator manually installed).
 type UpgradeSource struct {
-	Kind      string    `json:"kind"`            // "cloudbox" / "cli-url" / "cli-local" / "unknown"
-	URL       string    `json:"url,omitempty"`   // GitHub release URL for cloudbox / cli-url paths
+	Kind      string    `json:"kind"`          // "cloudbox" / "cli-url" / "cli-local" / "unknown"
+	URL       string    `json:"url,omitempty"` // GitHub release URL for cloudbox / cli-url paths
 	ReleaseID string    `json:"release_id,omitempty"`
 	At        time.Time `json:"at,omitzero"`
 }

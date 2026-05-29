@@ -20,29 +20,29 @@ import (
 // Wire it to platform-specific sleep events to make laptop mobility
 // truly transparent:
 //
-//   macOS launchd (~/Library/LaunchAgents/outpost.depart-on-sleep.plist
-//   with `WatchPaths` on /var/log/system.log isn't reliable; use
-//   sleepwatcher or a launchd com.apple.sleep listener):
+//	macOS launchd (~/Library/LaunchAgents/outpost.depart-on-sleep.plist
+//	with `WatchPaths` on /var/log/system.log isn't reliable; use
+//	sleepwatcher or a launchd com.apple.sleep listener):
 //
-//     # /usr/local/etc/sleepwatcher/rc.sleep
-//     #!/bin/sh
-//     /usr/local/bin/outpost depart
+//	  # /usr/local/etc/sleepwatcher/rc.sleep
+//	  #!/bin/sh
+//	  /usr/local/bin/outpost depart
 //
-//   systemd-logind (Linux):
+//	systemd-logind (Linux):
 //
-//     # /etc/systemd/system/outpost-depart-on-sleep.service
-//     [Unit]
-//     Description=Notify cloudbox before suspend
-//     Before=sleep.target
-//     StopWhenUnneeded=yes
+//	  # /etc/systemd/system/outpost-depart-on-sleep.service
+//	  [Unit]
+//	  Description=Notify cloudbox before suspend
+//	  Before=sleep.target
+//	  StopWhenUnneeded=yes
 //
-//     [Service]
-//     Type=oneshot
-//     User=qiangli
-//     ExecStart=/usr/local/bin/outpost depart
+//	  [Service]
+//	  Type=oneshot
+//	  User=qiangli
+//	  ExecStart=/usr/local/bin/outpost depart
 //
-//     [Install]
-//     WantedBy=sleep.target
+//	  [Install]
+//	  WantedBy=sleep.target
 //
 // Idempotent — running multiple times in a row only refreshes the
 // 30 s departingTTL on cloudbox. Returns 0 on success (signal

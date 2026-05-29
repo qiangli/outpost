@@ -32,12 +32,12 @@ type BuiltinsParams struct {
 	// "agent" → real `k3s agent` subprocess (Linux only). Pointer-string
 	// so nil = "leave unchanged"; non-nil with an unknown value is
 	// rejected by SetBuiltins with a 400-class APIError.
-	ClusterMode           *string  `json:"cluster_mode,omitempty"`
+	ClusterMode *string `json:"cluster_mode,omitempty"`
 	// UpdateMode is one of "auto" / "manual" / "never" (see
 	// conf.UpdateMode* constants). Pointer-string so nil = "leave
 	// unchanged"; non-nil with an invalid value is rejected by
 	// SetBuiltins with a 400-class APIError.
-	UpdateMode            *string  `json:"update_mode,omitempty"`
+	UpdateMode *string `json:"update_mode,omitempty"`
 }
 
 // BuiltinsResult reports what happened. RestartPending is true when

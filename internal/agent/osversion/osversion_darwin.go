@@ -13,7 +13,7 @@ import (
 // since OS X 10. Three queries (-productName / -productVersion /
 // -buildVersion) combined into one line:
 //
-//   "macOS 15.1.0 (24B83)"
+//	"macOS 15.1.0 (24B83)"
 //
 // sw_vers is always available + fast (subprocess returns in <5ms on a
 // typical Mac); no need to parse plists or read /System/Library.

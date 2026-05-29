@@ -12,7 +12,7 @@ import (
 // detect on windows shells out to `cmd /c ver`, which prints something
 // like:
 //
-//   Microsoft Windows [Version 10.0.26100.2034]
+//	Microsoft Windows [Version 10.0.26100.2034]
 //
 // Cleaner alternatives (registry: SOFTWARE\Microsoft\Windows NT\
 // CurrentVersion or RtlGetVersion) involve more LazyDLL ceremony for

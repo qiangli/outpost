@@ -63,11 +63,11 @@ func (c *Counter) Snapshot() CapacityReport {
 //
 // Decrement strategy is "first of two events": whichever of these
 // fires first releases the slot —
-//   1. handler return (the normal path; ServeHTTP returns once the
-//      upstream response has fully streamed),
-//   2. the inbound request context being cancelled (cloudbox detects
-//      a client disconnect, closes the outbound conn to this outpost,
-//      our HTTP server cancels r.Context()).
+//  1. handler return (the normal path; ServeHTTP returns once the
+//     upstream response has fully streamed),
+//  2. the inbound request context being cancelled (cloudbox detects
+//     a client disconnect, closes the outbound conn to this outpost,
+//     our HTTP server cancels r.Context()).
 //
 // Going context-driven matters for the leak case: when Ollama is
 // hung (OOM, stuck generation, network blip), httputil.ReverseProxy's

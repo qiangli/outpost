@@ -3,12 +3,12 @@
 // LTS" / "Windows 11 Pro 26100". Distinct from the compile-time
 // runtime.GOOS ("darwin" / "linux" / "windows") in two important ways:
 //
-//   1. It reflects the actual host OS at runtime, not the binary's
-//      build target. A darwin binary scp'd to a linux box would still
-//      report runtime.GOOS=="darwin" but couldn't actually start there;
-//      this package gives cloudbox the real story.
-//   2. It includes the version/distribution, useful for the SPA's
-//      "running where" display ("macOS 15.1" beats "darwin").
+//  1. It reflects the actual host OS at runtime, not the binary's
+//     build target. A darwin binary scp'd to a linux box would still
+//     report runtime.GOOS=="darwin" but couldn't actually start there;
+//     this package gives cloudbox the real story.
+//  2. It includes the version/distribution, useful for the SPA's
+//     "running where" display ("macOS 15.1" beats "darwin").
 //
 // Cached on first call — host OS version doesn't change at process
 // lifetime, and the underlying calls (sw_vers / /etc/os-release / ver)

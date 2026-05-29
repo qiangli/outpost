@@ -15,10 +15,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func jobsCmd() *cobra.Command  { return notSupportedCmd("jobs") }
-func fgCmd() *cobra.Command    { return notSupportedCmd("fg") }
-func bgCmd() *cobra.Command    { return notSupportedCmd("bg") }
-func killCmd() *cobra.Command  { return notSupportedCmd("kill") }
+func jobsCmd() *cobra.Command { return notSupportedCmd("jobs") }
+func fgCmd() *cobra.Command   { return notSupportedCmd("fg") }
+func bgCmd() *cobra.Command   { return notSupportedCmd("bg") }
+func killCmd() *cobra.Command { return notSupportedCmd("kill") }
 
 func notSupportedCmd(name string) *cobra.Command {
 	return &cobra.Command{

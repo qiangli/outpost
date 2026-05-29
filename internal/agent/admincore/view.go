@@ -36,15 +36,15 @@ func toBuiltinView(enabled bool, bt agent.BuiltinTarget) BuiltinView {
 // Token + CA bytes never leave the agent; presence is reported via
 // has_token / has_ca.
 type ClusterView struct {
-	Enabled        bool   `json:"enabled"`
-	Mode           string `json:"mode,omitempty"`
-	APIURL         string `json:"api_url,omitempty"`
-	NodeName       string `json:"node_name,omitempty"`
-	HasToken       bool   `json:"has_token"`
-	HasCA          bool   `json:"has_ca"`
-	HasNodeToken   bool   `json:"has_node_token,omitempty"`
-	HasSTCPSecret  bool   `json:"has_stcp_secret,omitempty"`
-	K8sAPIPort     int    `json:"k8s_api_port,omitempty"`
+	Enabled       bool   `json:"enabled"`
+	Mode          string `json:"mode,omitempty"`
+	APIURL        string `json:"api_url,omitempty"`
+	NodeName      string `json:"node_name,omitempty"`
+	HasToken      bool   `json:"has_token"`
+	HasCA         bool   `json:"has_ca"`
+	HasNodeToken  bool   `json:"has_node_token,omitempty"`
+	HasSTCPSecret bool   `json:"has_stcp_secret,omitempty"`
+	K8sAPIPort    int    `json:"k8s_api_port,omitempty"`
 }
 
 // YcodeView is the redacted-and-flattened ycode supervisor status the
@@ -247,13 +247,13 @@ func (s *Server) outboundList() []agent.OutboundView {
 // cloudbox's fleet view) can see the running daemon's provenance and
 // the path of the binary to swap on disk.
 type StatusView struct {
-	Configured    bool             `json:"configured"`
-	AgentName     string           `json:"agent_name,omitempty"`
-	ServerAddr    string           `json:"server_addr,omitempty"`
-	CloudboxURL   string           `json:"cloudbox_url,omitempty"`
-	CurrentOSUser string           `json:"current_os_user,omitempty"`
-	Build         agent.BuildInfo  `json:"build"`
-	BinaryPath    string           `json:"binary_path,omitempty"`
+	Configured    bool            `json:"configured"`
+	AgentName     string          `json:"agent_name,omitempty"`
+	ServerAddr    string          `json:"server_addr,omitempty"`
+	CloudboxURL   string          `json:"cloudbox_url,omitempty"`
+	CurrentOSUser string          `json:"current_os_user,omitempty"`
+	Build         agent.BuildInfo `json:"build"`
+	BinaryPath    string          `json:"binary_path,omitempty"`
 }
 
 // Status returns the lightweight paired-yet payload.

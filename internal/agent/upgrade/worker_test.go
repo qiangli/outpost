@@ -23,15 +23,15 @@ import (
 // in-memory state controlled by `setState`, a restart counter, and a
 // ledger written to a tempdir file.
 type harness struct {
-	t          *testing.T
-	dir        string
-	binary     string
-	ledger     *Ledger
-	worker     *Worker
-	restarts   int32
-	state      StateSnapshot
-	stateMu    sync.Mutex
-	srvClient  *http.Client
+	t         *testing.T
+	dir       string
+	binary    string
+	ledger    *Ledger
+	worker    *Worker
+	restarts  int32
+	state     StateSnapshot
+	stateMu   sync.Mutex
+	srvClient *http.Client
 }
 
 func newHarness(t *testing.T) *harness {

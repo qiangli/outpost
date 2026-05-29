@@ -381,4 +381,3 @@ func (w *Worker) appendLedger(e LedgerEntry) error {
 	}
 	return nil
 }
-
