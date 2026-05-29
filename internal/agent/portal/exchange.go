@@ -104,9 +104,10 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		// Outpost persists into ClusterConfig.{NodeToken,STCPSecret,
 		// K8sAPIPort} so the daemon can spin up the k3s-agent path on
 		// next boot (operator still has to flip --cluster-mode=agent).
-		ClusterNodeToken  string `json:"cluster_node_token"`
-		ClusterSTCPSecret string `json:"cluster_stcp_secret"`
-		ClusterAPIPort    int    `json:"cluster_api_port"`
+		ClusterNodeToken   string `json:"cluster_node_token"`
+		ClusterSTCPSecret  string `json:"cluster_stcp_secret"`
+		ClusterAPIPort     int    `json:"cluster_api_port"`
+		ClusterKubeletPort int    `json:"cluster_kubelet_port"`
 	}
 	if err := json.Unmarshal(respBody, &ex); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
@@ -128,13 +129,14 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 	// operator opts into Mode="agent" via the builtins toggle, which
 	// preserves backward compat for outposts that flip --cluster=on
 	// expecting vkpodman.
-	if ex.ClusterNodeToken != "" || ex.ClusterSTCPSecret != "" || ex.ClusterAPIPort != 0 {
+	if ex.ClusterNodeToken != "" || ex.ClusterSTCPSecret != "" || ex.ClusterAPIPort != 0 || ex.ClusterKubeletPort != 0 {
 		if fc.Cluster == nil {
 			fc.Cluster = &conf.ClusterConfig{}
 		}
 		fc.Cluster.NodeToken = ex.ClusterNodeToken
 		fc.Cluster.STCPSecret = ex.ClusterSTCPSecret
 		fc.Cluster.K8sAPIPort = ex.ClusterAPIPort
+		fc.Cluster.KubeletProxyPort = ex.ClusterKubeletPort
 	}
 	return fc, nil
 }

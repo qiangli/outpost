@@ -661,18 +661,38 @@ func startCmd() *cobra.Command {
 				}
 			}
 
+			proxies := []agent.TCPProxy{{
+				Name:       cfg.AgentName + "-http",
+				LocalIP:    "127.0.0.1",
+				LocalPort:  localPort,
+				RemotePort: cfg.RemotePort,
+			}}
+			// Phase 2: publish kubelet :10250 so cloudbox's embedded
+			// apiserver can dial through 127.0.0.1:<KubeletProxyPort>
+			// for `kubectl logs/exec`. Only registered in Mode=agent —
+			// vkpodman doesn't have a local kubelet to proxy. A
+			// KubeletProxyPort==0 means cloudbox didn't allocate one
+			// (pool exhausted, or running an older cloudbox); the
+			// outpost just doesn't publish the proxy and the apiserver
+			// keeps using whatever address kubelet self-reports (which
+			// won't resolve from cloudbox — `kubectl logs` will fail,
+			// but the rest of cluster-agent mode works).
+			if fc.ClusterOn() && fc.Cluster.ClusterModeAgent() && fc.Cluster.KubeletProxyPort > 0 {
+				proxies = append(proxies, agent.TCPProxy{
+					Name:       cfg.AgentName + "-kubelet",
+					LocalIP:    "127.0.0.1",
+					LocalPort:  10250,
+					RemotePort: fc.Cluster.KubeletProxyPort,
+				})
+			}
+
 			tunnel, err := agent.NewTunnel(agent.TunnelConfig{
 				ServerAddr: cfg.ServerAddr,
 				ServerPort: cfg.ServerPort,
 				Protocol:   cfg.Protocol,
 				Token:      cfg.Token,
 				User:       cfg.AgentName,
-			}, []agent.TCPProxy{{
-				Name:       cfg.AgentName + "-http",
-				LocalIP:    "127.0.0.1",
-				LocalPort:  localPort,
-				RemotePort: cfg.RemotePort,
-			}}, visitors)
+			}, proxies, visitors)
 			if err != nil {
 				return err
 			}
@@ -875,6 +895,13 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 			Server:   fmt.Sprintf("https://127.0.0.1:%d", apiPort),
 			Token:    cc.NodeToken,
 			NodeName: nodeName,
+			// Phase 2: bind kubelet to loopback only. The matrix tunnel's
+			// outpost-side TCPProxy publishes :10250 onto cloudbox's
+			// per-host loopback port (KubeletProxyPort); nothing else
+			// should be reaching kubelet. Default kubelet binds 0.0.0.0
+			// which would expose unauthenticated stats/metrics endpoints
+			// to the LAN.
+			ExtraArgs: []string{"--kubelet-arg=address=127.0.0.1"},
 		})
 		switch {
 		case err == nil || errors.Is(err, context.Canceled):

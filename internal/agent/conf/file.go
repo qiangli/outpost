@@ -289,6 +289,17 @@ type ClusterConfig struct {
 	// ClusterAPIServerPort so kubeconfigs round-trip cleanly. Default
 	// 6443 when empty.
 	K8sAPIPort int `json:"k8s_api_port,omitempty"`
+
+	// KubeletProxyPort is the per-host loopback port ON CLOUDBOX where
+	// the matrix tunnel exposes this outpost's kubelet (Phase 2). The
+	// outpost's matrix-tunnel client registers a TCPProxy with
+	// LocalPort=10250, RemotePort=KubeletProxyPort so cloudbox's
+	// embedded apiserver can dial through 127.0.0.1:<KubeletProxyPort>
+	// to reach `kubectl logs/exec` targets. Empty when cloudbox has
+	// cluster mode off OR when the kubelet port pool was exhausted at
+	// Exchange time — in which case the outpost just doesn't publish
+	// the proxy (the rest of cluster-agent mode still works).
+	KubeletProxyPort int `json:"kubelet_proxy_port,omitempty"`
 }
 
 // ClusterModeAgent reports whether the outpost should run the real
