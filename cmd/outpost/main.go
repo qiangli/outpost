@@ -32,15 +32,15 @@ import (
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"github.com/qiangli/outpost/internal/agent/mcpapi"
-	"github.com/qiangli/outpost/internal/agent/runtime"
 	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
 	"github.com/qiangli/outpost/internal/agent/portal"
+	"github.com/qiangli/outpost/internal/agent/runtime"
 	"github.com/qiangli/outpost/internal/agent/sysinfo"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
-	"github.com/qiangli/outpost/internal/agent/ycode"
 	"github.com/qiangli/outpost/internal/agent/userkube"
 	"github.com/qiangli/outpost/internal/agent/vkpodman"
+	"github.com/qiangli/outpost/internal/agent/ycode"
 )
 
 // defaultPortal is the public ai.dhnt.io address used when the user
@@ -898,6 +898,11 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 		AgentName:          nodeName,
 		NodeToken:          cc.NodeToken,
 		APIServer:          fmt.Sprintf("https://127.0.0.1:%d", apiPort),
+		APIPort:            apiPort,
+		CloudboxHost:       fc.ServerAddr,
+		CloudboxPort:       fc.ServerPort,
+		STCPSecret:         cc.STCPSecret,
+		MatrixToken:        fc.Token,
 		PodCIDR:            cc.OverlayPodCIDR,
 		OverlayLoginServer: cc.OverlayLoginServer,
 		OverlayAuthKey:     cc.OverlayAuthKey,

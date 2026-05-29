@@ -26,7 +26,7 @@ FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         iproute2 iptables nftables conntrack ethtool ca-certificates \
-        curl util-linux kmod procps jq \
+        curl util-linux kmod procps jq bash fuse-overlayfs \
     && rm -rf /var/lib/apt/lists/*
 
 # Tailscale install — official script puts tailscale + tailscaled on PATH.
@@ -41,6 +41,18 @@ RUN K3S_BIN=k3s$([ "$TARGETARCH" = "arm64" ] && echo -arm64 || true) && \
         "https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION}/${K3S_BIN}" && \
     chmod +x /usr/local/bin/k3s && \
     /usr/local/bin/k3s --version | head -2
+
+# frp client (matrix-tunnel client) — establishes the WSS tunnel to
+# cloudbox + the STCP visitor that exposes cloudbox's embedded
+# apiserver as 127.0.0.1:6443 inside the container. Pinned to the
+# version cloudbox's serverdial publisher uses.
+ARG FRP_VERSION=0.68.1
+RUN FRP_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo amd64) && \
+    curl -fsSL -o /tmp/frp.tgz \
+        "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${FRP_ARCH}.tar.gz" && \
+    tar -xzf /tmp/frp.tgz -C /tmp && \
+    install /tmp/frp_${FRP_VERSION}_linux_${FRP_ARCH}/frpc /usr/local/bin/frpc && \
+    rm -rf /tmp/frp.tgz /tmp/frp_*
 
 # Cloudbox CNI plugin — kubelet inside the container shells out to this
 # on every pod ADD/DEL.

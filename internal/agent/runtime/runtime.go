@@ -61,6 +61,28 @@ type Options struct {
 	// "https://127.0.0.1:6443".
 	APIServer string
 
+	// CloudboxHost / CloudboxPort are where the container-side frpc
+	// dials to establish the matrix-tunnel + STCP visitor. Required
+	// for the kubelet-in-container model — entrypoint.sh runs frpc
+	// to open 127.0.0.1:APIPort inside the container, tunneling to
+	// cloudbox's embedded apiserver. e.g. "ai.dhnt.io" + 443.
+	CloudboxHost string
+	CloudboxPort int
+
+	// STCPSecret authenticates the STCP visitor on the cloudbox side
+	// (cluster.k3s-apiserver publisher). Cluster-wide secret minted
+	// at pairing time; passed in via env.
+	STCPSecret string
+
+	// MatrixToken is the shared frp auth token (same value cloudbox
+	// holds in MATRIX_TOKEN). Empty disables [auth] in frpc.toml.
+	MatrixToken string
+
+	// APIPort is the loopback port the STCP visitor binds inside the
+	// container (must match cloudbox's ClusterAPIServerPort). Empty
+	// defaults to 6443.
+	APIPort int
+
 	// PodCIDR is the per-outpost /24 carved by cloudbox at Exchange
 	// time. Empty disables the outpost-cni conflist; k3s falls back
 	// to its own defaults (--flannel-backend=none means no pod
@@ -110,19 +132,33 @@ func Up(ctx context.Context, opts Options) error {
 	// Stop + remove any prior instance so the new env takes effect.
 	// Errors swallowed — rm of a non-existent container is normal on
 	// first boot.
-	_ = exec.CommandContext(ctx, bin, "stop", "--time=10", containerName).Run()
+	_ = exec.CommandContext(ctx, bin, "stop", containerName).Run()
 	_ = exec.CommandContext(ctx, bin, "rm", "-f", containerName).Run()
 
 	args := []string{
 		"run", "-d",
 		"--name", containerName,
 		"--privileged",
-		"--restart=unless-stopped",
 		"-e", "OUTPOST_AGENT_NAME=" + opts.AgentName,
 		"-e", "OUTPOST_NODE_TOKEN=" + opts.NodeToken,
 	}
 	if opts.APIServer != "" {
 		args = append(args, "-e", "OUTPOST_API_SERVER="+opts.APIServer)
+	}
+	if opts.CloudboxHost != "" {
+		args = append(args, "-e", "OUTPOST_CLOUDBOX_HOST="+opts.CloudboxHost)
+	}
+	if opts.CloudboxPort != 0 {
+		args = append(args, "-e", fmt.Sprintf("OUTPOST_CLOUDBOX_PORT=%d", opts.CloudboxPort))
+	}
+	if opts.STCPSecret != "" {
+		args = append(args, "-e", "OUTPOST_STCP_SECRET="+opts.STCPSecret)
+	}
+	if opts.MatrixToken != "" {
+		args = append(args, "-e", "OUTPOST_MATRIX_TOKEN="+opts.MatrixToken)
+	}
+	if opts.APIPort != 0 {
+		args = append(args, "-e", fmt.Sprintf("OUTPOST_API_PORT=%d", opts.APIPort))
 	}
 	if opts.PodCIDR != "" {
 		args = append(args, "-e", "OUTPOST_POD_CIDR="+opts.PodCIDR)
@@ -157,7 +193,7 @@ func Down(ctx context.Context, opts Options) error {
 		return err
 	}
 	containerName := opts.AgentName + "-runtime"
-	_ = exec.CommandContext(ctx, bin, "stop", "--time=10", containerName).Run()
+	_ = exec.CommandContext(ctx, bin, "stop", containerName).Run()
 	_ = exec.CommandContext(ctx, bin, "rm", "-f", containerName).Run()
 	return nil
 }
