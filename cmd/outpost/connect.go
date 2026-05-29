@@ -264,7 +264,35 @@ func runKeepAlive(ctx context.Context, fc *conf.FileConfig, bearer, host, cookie
 		if err != nil {
 			var fp fatalPingError
 			if errors.As(err, &fp) {
-				return fmt.Errorf("keep-alive ping (fatal): %w", err)
+				// Self-heal: another process (interactive ssh's slide-
+				// refresh, a manual `outpost connect`, a second keepalive
+				// elsewhere) may have rewritten the disk cookie since we
+				// last read it. If so, retry once with the disk value
+				// before declaring fatal — otherwise we die with a valid
+				// cookie sitting right there and require launchd to
+				// restart us, which leaves a ~10 s window where new ssh
+				// attempts that race the restart fail. Observed 2026-05-28
+				// when keepalive jobs flapped repeatedly on a 403 even
+				// though the cookie file on disk had been refreshed.
+				if disk, derr := readCookie(host); derr == nil && disk != "" && disk != current {
+					fmt.Fprintf(os.Stderr, "Keep-alive: ping 403 with in-memory cookie; retrying with refreshed disk cookie.\n")
+					current = disk
+					next, err = pingElevate(ctx, client, pingURL, bearer, current)
+					if err == nil {
+						// Disk cookie worked. Treat as transient hiccup,
+						// fall through to the success path below.
+						goto pingSucceeded
+					}
+					// Disk cookie also rejected — surface the original
+					// fatal error; the on-disk cookie is also dead.
+					if errors.As(err, &fp) {
+						return fmt.Errorf("keep-alive ping (fatal, disk cookie also rejected): %w", err)
+					}
+					// Disk-retry hit a transient — fall through to the
+					// regular transient handling below.
+				} else {
+					return fmt.Errorf("keep-alive ping (fatal): %w", err)
+				}
 			}
 			// Transient: retry-with-backoff inside this tick window
 			// rather than waiting a full 30 min. Each attempt waits
@@ -289,6 +317,7 @@ func runKeepAlive(ctx context.Context, fc *conf.FileConfig, bearer, host, cookie
 			// below. If it fails again, we count up.
 			continue
 		}
+	pingSucceeded:
 		consecutiveFailures = 0
 		if next != "" && next != current {
 			if werr := writeCookie(host, next); werr != nil {
