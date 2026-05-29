@@ -78,10 +78,11 @@ else
     log "using prebuilt ${BIN}"
 fi
 
-# Stamp an ad-hoc signature on the build artifact too. Idempotent;
-# costs nothing on Linux (`codesign` is macOS-only — skip there).
+# Stamp an ad-hoc signature on the build artifact too. -f because Go
+# already signs its arm64 builds; without it codesign exits 1 with
+# "is already signed". Idempotent and a no-op on Linux.
 if [ "$(uname -s)" = "Darwin" ]; then
-    codesign -s - "$BIN" 2>/dev/null || true
+    codesign -f -s - "$BIN" 2>/dev/null || true
 fi
 
 LOCAL_VERSION="$("$BIN" version 2>/dev/null || echo unknown)"
@@ -112,7 +113,7 @@ deploy_one() {
     log "  install → ~/${REMOTE_BIN_DIR}/outpost (backup → outpost.prev)"
     local resign=""
     case "$remote_os" in
-        Darwin) resign="codesign -s - ~/${REMOTE_BIN_DIR}/outpost && " ;;
+        Darwin) resign="codesign -f -s - ~/${REMOTE_BIN_DIR}/outpost && " ;;
         *)      resign="" ;;
     esac
 
