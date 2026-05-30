@@ -322,10 +322,29 @@ type ClusterConfig struct {
 }
 
 // ClusterModeAgent reports whether the outpost should run the real
-// `k3s agent` path (Mode="agent") rather than vkpodman. Centralized so
-// future modes can be added without touching every call site.
+// `k3s agent` path rather than the v1 vkpodman virtual-kubelet.
+// Centralized so future modes can be added without touching every
+// call site.
+//
+// Semantics:
+//
+//   - Mode == "agent" → agent
+//   - Mode == "vkpodman" → vkpodman (explicit opt-out)
+//   - Mode == "" → agent (the default; the real k3s-agent path is
+//     canonical for 100% K8s compliance on every supported OS — agent
+//     mode runs k3s-agent inside the `outpost-runtime` container via
+//     podman, which works on Linux, macOS, and Windows hosts wherever
+//     podman is available).
 func (c *ClusterConfig) ClusterModeAgent() bool {
-	return c != nil && c.Mode == "agent"
+	if c == nil {
+		return false
+	}
+	switch c.Mode {
+	case "vkpodman":
+		return false
+	default: // "agent" or empty
+		return true
+	}
 }
 
 // OutboundConfig is one local mount that proxies to a remote outpost.
