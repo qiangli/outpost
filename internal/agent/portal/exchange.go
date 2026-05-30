@@ -13,12 +13,19 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 )
+
+// exchangeMaxAttempts caps the number of POST tries before giving up.
+// With the 1s/2s/4s backoff below this is ~7 s of total wait — enough
+// to ride out a portal-replica restart on App Platform without
+// blocking the CLI for too long.
+const exchangeMaxAttempts = 4
 
 // ExchangeRequest is the input to a pairing exchange.
 //
@@ -70,23 +77,68 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		"client_only":     req.ClientOnly,
 	}
 	body, _ := json.Marshal(payload)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(req.ServerURL, "/")+"/api/register/exchange",
-		bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
+	url := strings.TrimRight(req.ServerURL, "/") + "/api/register/exchange"
 
+	// Retry the POST on transient failures (network errors + 5xx) so
+	// pairing survives a cloud portal-replica restart. Cloudbox's split
+	// deploy can return 503 with Retry-After during the brief window
+	// when portal replicas are rolling — without retry, a single 503
+	// kills `outpost register`. Stops on 2xx (success), 4xx (caller
+	// error, won't fix itself), or attempt exhaustion.
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("exchange: %w", err)
+	var respBody []byte
+	var lastErr error
+	for attempt := 1; attempt <= exchangeMaxAttempts; attempt++ {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			lastErr = fmt.Errorf("exchange: %w", err)
+		} else {
+			respBody, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				lastErr = nil
+				break
+			}
+			lastErr = fmt.Errorf("exchange failed (%d): %s", resp.StatusCode, bytes.TrimSpace(respBody))
+			// 4xx — caller's problem (bad code, name collision, etc.).
+			// Retrying won't help; surface the error immediately.
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+				return nil, lastErr
+			}
+			// 5xx — honor Retry-After if present, else exp backoff.
+			if attempt < exchangeMaxAttempts {
+				delay := time.Duration(1<<(attempt-1)) * time.Second // 1s, 2s, 4s
+				if ra := resp.Header.Get("Retry-After"); ra != "" {
+					if secs, err := strconv.Atoi(ra); err == nil && secs >= 0 {
+						delay = time.Duration(secs) * time.Second
+					}
+				}
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(delay):
+				}
+				continue
+			}
+		}
+		// Network error path — same backoff, but no Retry-After to read.
+		if attempt < exchangeMaxAttempts {
+			delay := time.Duration(1<<(attempt-1)) * time.Second
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
 	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("exchange failed (%d): %s", resp.StatusCode, bytes.TrimSpace(respBody))
+	if lastErr != nil {
+		return nil, lastErr
 	}
 
 	var ex struct {

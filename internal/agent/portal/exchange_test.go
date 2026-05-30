@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TestExchangeRoundTrip covers the happy path: the portal returns a
@@ -71,6 +73,71 @@ func TestExchangeNon200(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "code expired") {
 		t.Errorf("error = %v, want it to surface the portal's body", err)
+	}
+}
+
+// TestExchangeRetriesOn5xx covers the cloudbox-split rollout scenario:
+// portal replicas return 503 briefly while the cluster service is
+// rolling. The first two attempts get 503 + Retry-After, the third
+// succeeds. The CLI should not surface the transient failure to the
+// user.
+func TestExchangeRetriesOn5xx(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n <= 2 {
+			// Retry-After: 0 keeps the test fast — production uses
+			// 1s/2s/4s backoff per exchangeMaxAttempts.
+			w.Header().Set("Retry-After", "0")
+			http.Error(w, "rolling restart", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"agent_name":"ok","server_addr":"e","server_port":1,"protocol":"wss","token":"t","remote_port":1}`)
+	}))
+	defer server.Close()
+
+	start := time.Now()
+	fc, err := Exchange(context.Background(), ExchangeRequest{
+		ServerURL: server.URL,
+		Code:      "c",
+		Name:      "n",
+	})
+	if err != nil {
+		t.Fatalf("Exchange after retries: %v", err)
+	}
+	if calls.Load() != 3 {
+		t.Errorf("expected 3 attempts, got %d", calls.Load())
+	}
+	if fc.AgentName != "ok" {
+		t.Errorf("fc.AgentName = %q, want ok", fc.AgentName)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("test took %s; Retry-After:0 should have made it fast", elapsed)
+	}
+}
+
+// TestExchangeDoesNotRetryOn4xx: 4xx errors are caller bugs (bad code,
+// missing fields). Retrying would just waste cycles and produce
+// duplicate-looking server logs. Fail fast.
+func TestExchangeDoesNotRetryOn4xx(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, "bad code", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	_, err := Exchange(context.Background(), ExchangeRequest{
+		ServerURL: server.URL,
+		Code:      "bad",
+		Name:      "n",
+	})
+	if err == nil {
+		t.Fatal("expected error on 4xx")
+	}
+	if calls.Load() != 1 {
+		t.Errorf("expected 1 attempt on 4xx, got %d (regression: should fail fast)", calls.Load())
 	}
 }
 
