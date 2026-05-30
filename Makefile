@@ -34,6 +34,5 @@ tidy: ## go mod tidy + go fmt + go vet
 	go fmt ./...
 	go vet ./...
 
-update-sh: ## Bump external/sh to upstream master HEAD
-	git submodule update --remote external/sh
-	@echo "Now: git add external/sh && git commit"
+bootstrap: ## Materialize sibling-path replace targets (../sh) from .sibling-pins
+	./scripts/bootstrap-siblings.sh

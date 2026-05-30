@@ -1,0 +1,13 @@
+# Pinned commit SHAs for sibling-path replace targets in go.mod (../sh).
+# scripts/bootstrap-siblings.sh reads this file and clones each missing
+# sibling at the listed SHA, so standalone clones of outpost build
+# without external setup.
+#
+# Inside the dhnt umbrella the siblings already exist as submodules
+# (dhnt/sh) — the bootstrap script detects them and leaves them alone,
+# so there is still exactly one copy of each.
+#
+# Format: <name>=<sha>. When bumping a sibling in the umbrella's
+# script/sync.sh, the SHA here must be bumped to match — sync.sh
+# automates this.
+sh=37fe820ab83e34dcfa05684b26a414d418384e52

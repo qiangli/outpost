@@ -1,4 +1,0 @@
-[submodule "external/sh"]
-	path = external/sh
-	url = https://github.com/qiangli/sh.git
-	branch = master

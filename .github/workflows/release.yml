@@ -51,8 +51,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true # external/sh fork is a submodule
           fetch-depth: 0   # full history so vcs.revision stamps correctly
+
+      - name: Bootstrap sibling deps (../sh)
+        run: ./scripts/bootstrap-siblings.sh
 
       - uses: actions/setup-go@v5
         with:
