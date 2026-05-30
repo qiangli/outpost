@@ -54,8 +54,20 @@ RUN FRP_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo amd64) && \
     install /tmp/frp_${FRP_VERSION}_linux_${FRP_ARCH}/frpc /usr/local/bin/frpc && \
     rm -rf /tmp/frp.tgz /tmp/frp_*
 
+# Standard CNI reference plugins (bridge, host-local, loopback, portmap, …).
+# Single-node mode uses bridge+host-local for pod IPs; multi-outpost mode
+# overlays via outpost-cni on top. Without these the kubelet stays NotReady
+# with "cni plugin not initialized" until something writes /etc/cni/net.d.
+ARG CNI_PLUGINS_VERSION=v1.5.1
+RUN CNI_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo amd64) && \
+    mkdir -p /opt/cni/bin && \
+    curl -fsSL \
+        "https://github.com/containernetworking/plugins/releases/download/${CNI_PLUGINS_VERSION}/cni-plugins-linux-${CNI_ARCH}-${CNI_PLUGINS_VERSION}.tgz" \
+        | tar -xz -C /opt/cni/bin
+
 # Cloudbox CNI plugin — kubelet inside the container shells out to this
-# on every pod ADD/DEL.
+# on every pod ADD/DEL (multi-outpost overlay mode only; single-node falls
+# back to the standard bridge plugin above).
 COPY outpost-cni /opt/cni/bin/outpost-cni
 RUN chmod +x /opt/cni/bin/outpost-cni && mkdir -p /etc/cni/net.d
 

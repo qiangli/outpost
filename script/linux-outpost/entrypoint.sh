@@ -28,8 +28,13 @@ modprobe br_netfilter 2>/dev/null || true
 # Pre-create /etc/machine-id so kubelet doesn't log noisy errors.
 [ -f /etc/machine-id ] || cat /proc/sys/kernel/random/uuid | tr -d - > /etc/machine-id 2>/dev/null || true
 
-# Optional CNI conflist (Phase 3 cross-outpost pod networking).
-# Skipped for single-node setups where pods all schedule locally.
+# CNI conflist. Two shapes:
+#   1) Multi-outpost overlay (OUTPOST_POD_CIDR set + tailscaled below)
+#      → outpost-cni plugin advertises this node's /24 via Tailscale.
+#   2) Single-node / no overlay → standard bridge + host-local IPAM so
+#      kubelet leaves NotReady and pods get IPs out of CNI_LOCAL_POD_CIDR
+#      (default 10.43.42.0/24, well outside the host-side k3s cluster-cidr
+#      so loopback routing doesn't collide).
 if [ -n "${OUTPOST_POD_CIDR}" ]; then
     log "writing /etc/cni/net.d/10-outpost.conflist pod_cidr=${OUTPOST_POD_CIDR}"
     cat > /etc/cni/net.d/10-outpost.conflist <<EOF
@@ -41,6 +46,33 @@ if [ -n "${OUTPOST_POD_CIDR}" ]; then
     "pod_cidr": "${OUTPOST_POD_CIDR}",
     "bridge_name": "cbox0"
   }]
+}
+EOF
+else
+    CNI_LOCAL_POD_CIDR="${CNI_LOCAL_POD_CIDR:-10.43.42.0/24}"
+    log "writing /etc/cni/net.d/10-bridge.conflist (single-node, pod_cidr=${CNI_LOCAL_POD_CIDR})"
+    cat > /etc/cni/net.d/10-bridge.conflist <<EOF
+{
+  "cniVersion": "0.4.0",
+  "name": "cbr0",
+  "plugins": [
+    {
+      "type": "bridge",
+      "bridge": "cbr0",
+      "isDefaultGateway": true,
+      "forceAddress": false,
+      "ipMasq": true,
+      "hairpinMode": true,
+      "ipam": {
+        "type": "host-local",
+        "ranges": [[{ "subnet": "${CNI_LOCAL_POD_CIDR}" }]]
+      }
+    },
+    {
+      "type": "portmap",
+      "capabilities": { "portMappings": true }
+    }
+  ]
 }
 EOF
 fi
@@ -104,6 +136,48 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
     fi
     sleep 1
 done
+
+# Workload pods reach kube-apiserver via the kubernetes Service ClusterIP
+# (10.43.0.1:443). kube-proxy DNATs that to the apiserver's address from
+# the kubernetes Endpoints object — which kube-apiserver auto-populates
+# with its own container IP (e.g. DO App Platform's 100.127.x.y), not
+# reachable from this agent. Pre-empt kube-proxy by inserting our own
+# DNAT at PREROUTING/OUTPOST position 1 that targets the local STCP
+# visitor on loopback. route_localnet=1 is required so forwarded packets
+# (pod → bridge → here) can be DNAT'd to a loopback address.
+APISERVER_SVC_IP="${APISERVER_SVC_IP:-10.43.0.1}"
+APISERVER_SVC_PORT="${APISERVER_SVC_PORT:-443}"
+log "installing apiserver service DNAT: ${APISERVER_SVC_IP}:${APISERVER_SVC_PORT} -> 127.0.0.1:${OUTPOST_API_PORT}"
+sysctl -w net.ipv4.conf.all.route_localnet=1 >/dev/null
+for iface in lo eth0 default cbr0; do
+    sysctl -w net.ipv4.conf.${iface}.route_localnet=1 2>/dev/null >/dev/null || true
+done
+# Watchdog: kube-proxy reconciles iptables every ~30s and re-inserts its
+# KUBE-SERVICES jump at PREROUTING position 1, displacing ours. Without
+# this loop, the kube-proxy DNAT for the kubernetes Service (10.43.0.1)
+# fires first and sends pod traffic to cloudbox's unreachable mesh IP.
+# Re-arm position 1 every 3s so our DNAT consistently wins.
+(
+    while true; do
+        if ! iptables -t nat -L PREROUTING --line-numbers -n 2>/dev/null | head -3 | grep -q "^1 .*${APISERVER_SVC_IP}.*to:127.0.0.1:${OUTPOST_API_PORT}"; then
+            iptables -t nat -D PREROUTING -d "${APISERVER_SVC_IP}/32" -p tcp --dport "${APISERVER_SVC_PORT}" \
+                -j DNAT --to-destination "127.0.0.1:${OUTPOST_API_PORT}" 2>/dev/null || true
+            iptables -t nat -I PREROUTING 1 -d "${APISERVER_SVC_IP}/32" -p tcp --dport "${APISERVER_SVC_PORT}" \
+                -j DNAT --to-destination "127.0.0.1:${OUTPOST_API_PORT}" 2>/dev/null || true
+        fi
+        sleep 3
+    done
+) &
+# OUTPUT chain isn't touched by kube-proxy, so one shot is enough.
+iptables -t nat -I OUTPUT 1 -d "${APISERVER_SVC_IP}/32" -p tcp --dport "${APISERVER_SVC_PORT}" \
+    -j DNAT --to-destination "127.0.0.1:${OUTPOST_API_PORT}"
+# Arm cbr0.route_localnet=1 once the CNI bridge appears (kubelet creates
+# it lazily on first pod).
+(
+    while ! ip link show cbr0 >/dev/null 2>&1; do sleep 2; done
+    sysctl -w net.ipv4.conf.cbr0.route_localnet=1 >/dev/null 2>&1
+    log "armed cbr0.route_localnet=1 after bridge creation"
+) &
 
 log "exec k3s agent --server=https://127.0.0.1:${OUTPOST_API_PORT} --node-name=${OUTPOST_AGENT_NAME}"
 exec /usr/local/bin/k3s agent \
