@@ -46,9 +46,21 @@ go run ./cmd/outpost apps {list,add,rm,rotate-token,suggest}
 go run ./cmd/outpost builtins {show,set --ssh=on/off …}
 go run ./cmd/outpost config {show,set --admin-addr 0.0.0.0:17777 …}
 go run ./cmd/outpost outbound {list,add,connect,disconnect,rm,suggest}
-go run ./cmd/outpost cluster {kubeconfig,set,clear}
+go run ./cmd/outpost cluster {kubeconfig,userkubeconfig,set,clear,init}
 go run ./cmd/outpost mcp {endpoint,rotate-token}
+go run ./cmd/outpost pool status           # local LLM-pool participation snapshot
+go run ./cmd/outpost depart                # tell cloudbox we're going offline (clean shutdown)
+go run ./cmd/outpost kubectl -- get nodes  # auto-fetches a per-user kubeconfig, then execs kubectl
+go run ./cmd/outpost upgrade [--local PATH | --from URL]   # operator-driven self-upgrade
+go run ./cmd/outpost rollback              # swap <binary>.previous back over the live binary
+go run ./cmd/outpost remote {login,logout,list} <name>     # cached creds for LAN deploy targets
+go run ./cmd/outpost {jobs,fg <pid>,bg <pid>,kill <pid> [SIG]}  # manage matrix-shell detached jobs
+go run ./cmd/outpost run -- <cmd> [args...]                # submit as per-user launchd agent (macOS)
 go run ./cmd/outpost {restart,unpair}
+
+# Companion binaries (separate build targets, separate concerns):
+go run ./cmd/outpost-vk -kubeconfig ~/.kube/config -node <name>  # standalone virtual-kubelet PoC (vkpodman)
+go build ./cmd/outpost-cni                                       # Phase-3 CNI plugin (kubelet exec, not a daemon)
 
 # Client-side helpers (unchanged):
 go run ./cmd/outpost connect <host>        # mirrors the web "Connect" button
@@ -320,6 +332,25 @@ The daemon-side half of the "press button, fleet rolls" flow. Cloudbox initiates
 Trust model: HTTPS-to-cloudbox + sha256-in-envelope + cloudbox-as-artifact-owner. An `ArtifactVerifier` hook is reserved for future signed-manifest validation but defaults to the no-op probe — the daemon will refuse a candidate that doesn't self-report the envelope's commit, which is the load-bearing check today.
 
 CLI surfaces: `outpost upgrade` (local-driven, --local PATH | --from URL), `outpost upgrade history`, `outpost rollback`, `outpost builtins set --auto-upgrade=on/off`. MCP tools: `outpost_rollback`, `outpost_upgrade_history`, plus `auto_upgrade` slot on `outpost_set_builtins`. MCP resource: `outpost://upgrade-history`. The upgrade surface only mounts on paired hosts — the worker construction in main.go is guarded by `fc.AccessToken != ""`, and the MCP tools check `s.upgrader != nil` before registering.
+
+### Cluster join — k3s-agent + virtual-kubelet (`internal/agent/{runtime,vkpodman,userkube}`, `cmd/outpost-{vk,cni}`)
+
+The cluster story is the newest and most cross-cutting subsystem; it has three independent halves that share a `FileConfig.Cluster.{enabled, api_url, token, ca, node_name}` config block.
+
+- **Half A — k3s-agent in a podman container (`internal/agent/runtime/`).** `runtime.Up(ctx, opts)` supervises a podman/docker container that hosts this outpost's kubelet + containerd. From the cluster's POV there's one `Node` per outpost; the container itself is invisible. The container's identity *is* this outpost's identity (`NodeToken`, `AgentName`). Idempotent — repeated `Up` with the same name reattaches. `ErrPodmanNotFound` surfaces a clear "install Docker Desktop / Rancher Desktop / podman to enable --cluster-mode=agent" message on macOS where this is the expected gating. `--cluster-mode=agent` is the default (see commit 20d3d14). Image is built once via `outpost cluster init` / `build-runtime` or pulled from a registry. See `docs/cluster-gpu.md` for the NVIDIA driver + container-toolkit prereqs needed on Linux GPU hosts.
+- **Half B — virtual-kubelet provider (`internal/agent/vkpodman/`).** Alternative path: instead of running a real kubelet in a container, register as a *virtual node* whose pods land as plain podman containers on the host. Three layers — Layer 1: hand-rolled HTTP-over-unix client for the local libpod REST API (deliberately avoids `containers/podman/v5/pkg/bindings` because it pulls in `containers/storage` (cgo) and would break cross-compile); Layer 2: `translate.go` converts `corev1.Pod` → libpod `SpecGenerator`, stamping `outpost.io/managed=true` + namespace/name/uid labels for reconciliation and `podman ps` legibility; Layer 3: `provider.go` / `node.go` implement virtual-kubelet's `PodLifecycleHandler` and `NodeProvider`. `cmd/outpost-vk/` is a standalone PoC runner — kept separate from `cmd/outpost` so we can iterate against a real k3s server without touching the daemon's start path. `userkube` consumes vkpodman's kubeconfig fetcher for the operator-facing rendering.
+- **Half C — CNI plugin (`cmd/outpost-cni/`).** Phase-3 minimal CNI 0.4.0 plugin (~300 LOC) that kubelet execs per pod ADD/DEL. Builds a veth pair into a per-node Linux bridge (`cbox0`); cross-node pod reachability comes from `tailscaled --advertise-routes` installing peer pod CIDRs as kernel routes via `tailscale0`. IPAM state at `/var/lib/cloudbox/cni/ipam/<container-id>.ip`. Deliberately not a full Calico/Cilium replacement — NetworkPolicy is out of scope for Phase 3 MVP.
+
+Supporting packages:
+- **`internal/agent/userkube/`** — materializes a kubectl-ready kubeconfig from cloudbox to disk. Three callers: daemon-at-startup (when `fc.Cluster.Enabled`), admin UI "Refresh" button, and `outpost cluster kubeconfig` CLI (now defaults to writing the file, was stdout). Path resolution + `LastStatus` for the UI live here so all three stay in sync. Default target: `$OUTPOST_KUBECONFIG_PATH` → `$HOME/.kube/outpost.yaml`.
+- **`internal/agent/peerhosts/`** — TTL-cached snapshot of paired hostnames from cloudbox's `/api/v1/ssh/hosts`. Consumed by the SSH server's `direct-tcpip` allowlist so `ssh -J peerA peerB` works between paired hosts without widening trust to arbitrary destinations. Falls back to "last good snapshot" on cloudbox failure rather than denying — the inner SSH OS-password handshake is still the load-bearing gate.
+
+### Smaller standalone packages
+
+- **`internal/agent/sshagent.go`** — per-session `ssh -A` (auth-agent forwarding) support. Creates a 0700 tempdir + Unix socket, pushes accepted connections back via `auth-agent@openssh.com` channels, stamps `SSH_AUTH_SOCK` into the runner env. Gated by `FileConfig.SSHAllowAgentForward`. Tempdir is torn down on session-channel end.
+- **`internal/agent/provision.go`** — `/_periscope/*` per-app provisioning relay. App-side caller authenticates with its per-app `ProvisioningToken`; outpost re-signs with `fc.AccessToken` and forwards to cloudbox at `/api/hosts/<host>/apps/<name>/grants`. 503s when unpaired (no `CloudboxBase` or `AccessToken`).
+- **`internal/agent/sysinfo/`** + **`internal/agent/osversion/`** — host capability + OS-version probes (pure stdlib, no `gopsutil`). Shipped in the `/apps` poll loop under `system` so cloudbox can render host details and (future) make placement decisions for CPU-heavy pods. Per-platform behind build tags. Includes GPU probes (NVIDIA VRAM).
+- **`internal/agent/ycode/`** — discovers and lifecycle-manages a side-by-side `ycode serve` (the agentic engine outpost delegates to for inference, podman, OTel, etc.). Detection follows ycode's own TUI convention: a running instance publishes `$HOME/.agents/ycode/manifest.json` + `server.token`. Outpost reads + health-checks; admin UI shows "Running" / "Install ycode" / "Start ycode" based on `State`. One ycode-serve per OS user — never spawns a second.
 
 ## Conventions worth knowing
 

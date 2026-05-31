@@ -2,11 +2,12 @@
 
 ## Project Structure & Module Organization
 
-This is a Go 1.25 module for the `outpost` host agent. CLI entry points live in `cmd/outpost/`; `cmd/outpost-vk/` contains the virtual-kubelet variant. Core agent code is under `internal/agent/`, with focused subpackages such as `admincore`, `adminui`, `mcpapi`, `shell`, `upgrade`, and `vkpodman`. Operator docs are in `docs/`; embedded copies for `outpost docs` live in `cmd/outpost/embedded_docs/` and must stay synced. `external/sh/` is a tracked shell fork used through the `replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 ...` directive in `go.mod`.
+This is a Go 1.25 module for the `outpost` host agent. CLI entry points live in `cmd/outpost/`; `cmd/outpost-vk/` is a standalone virtual-kubelet PoC runner and `cmd/outpost-cni/` is the Phase-3 CNI plugin kubelet execs per pod ADD/DEL. Core agent code is under `internal/agent/`, with focused subpackages including `admincore`, `adminui`, `mcpapi`, `shell`, `upgrade`, `vkpodman`, `runtime`, `userkube`, `peerhosts`, `ollama`, `sysinfo`, `osversion`, and `ycode`. Operator docs are in `docs/`; embedded copies for `outpost docs` live in `cmd/outpost/embedded_docs/` and must stay synced. The shell runner depends on a fork of `mvdan.cc/sh/v3` resolved via the sibling-path directive `replace mvdan.cc/sh/v3 => ../sh` in `go.mod`. Inside the dhnt umbrella `../sh` points at the `dhnt/sh` submodule; standalone clones run `make bootstrap` (or `./scripts/bootstrap-siblings.sh`) to clone it into `../sh` at the SHA pinned in `.sibling-pins`.
 
 ## Build, Test, and Development Commands
 
 - `make help` lists available Make targets.
+- `make bootstrap` materializes sibling-path replace targets (`../sh`) from `.sibling-pins`; run once on a fresh standalone clone before `make build`. No-op inside the dhnt umbrella.
 - `make build` builds `./cmd/outpost` into `./bin/outpost`; set `RELEASE_TAG=vX.Y.Z` to stamp release metadata.
 - `make install` installs the built binary to `$(INSTALL_DIR)`, defaulting to `~/bin`.
 - `make tidy` runs `go mod tidy`, `go fmt ./...`, and `go vet ./...`.
