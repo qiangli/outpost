@@ -135,6 +135,14 @@ func Up(ctx context.Context, opts Options) error {
 	_ = exec.CommandContext(ctx, bin, "stop", containerName).Run()
 	_ = exec.CommandContext(ctx, bin, "rm", "-f", containerName).Run()
 
+	// Persist k3s state (node-id, kubelet certs, helper scripts) in a
+	// named volume keyed off the agent name. Without this the container
+	// regenerates a fresh node-id every restart (when running with
+	// --with-node-id in entrypoint.sh) — each restart leaves a stale
+	// dragon-<id> NotReady entry in `kubectl get nodes`, and the
+	// kubelet-cert exchange repeats from scratch. The named volume name
+	// is deterministic so the same outpost identity always reattaches.
+	k3sStateVol := "outpost-" + opts.AgentName + "-k3s-state"
 	args := []string{
 		"run", "-d",
 		"--name", containerName,
@@ -147,6 +155,7 @@ func Up(ctx context.Context, opts Options) error {
 		// is supported by both upstream podman and ycode podman
 		// (the latter since the --cgroupns flag was added).
 		"--cgroupns=host",
+		"-v", k3sStateVol + ":/var/lib/rancher/k3s",
 		"-e", "OUTPOST_AGENT_NAME=" + opts.AgentName,
 		"-e", "OUTPOST_NODE_TOKEN=" + opts.NodeToken,
 	}
