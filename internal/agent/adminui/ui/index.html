@@ -1324,7 +1324,9 @@ function buildYcodeSubBlock(parent, cfg, status) {
       'ycode hasn\'t shipped a binary for your OS+arch yet. Tracked: darwin/amd64 + windows/amd64 (need podman/buildah refactor upstream).'));
   } else if (y.enabled && !y.running && y.installed) {
     box.append(el('div', {class: 'hint', style: 'margin-top:0.4rem'},
-      'ycode is installed but not running. The next outpost restart will start it.'));
+      'ycode is installed but not running. Run ',
+      el('code', {class: 'key-hint'}, 'ycode serve'),
+      ' to start it — outpost will not start it for you.'));
   }
   parent.append(box);
 }
@@ -1763,7 +1765,7 @@ function daemonSourceLabel(target) {
 // "Agentic platform" fieldsets. Each item is one of:
 //   - core toggle: {key, fileKey, label, enabled, subBlock?}
 //   - daemon proxy: {key, fileKey, label, daemon: BuiltinView, subBlock?}
-//   - ycode supervisor: {key, fileKey, label, ycode: YcodeView, subBlock?}
+//   - ycode status: {key, fileKey, label, ycode: YcodeView, subBlock?}
 //   - placeholder: {placeholder: true, label, hint} — renders permanently
 //     dim with a disabled switch; no POST fires when clicked. Used for
 //     the OTel "coming soon" slot.

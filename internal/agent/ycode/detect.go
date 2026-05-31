@@ -9,11 +9,12 @@
 // publishes a manifest at $HOME/.agents/ycode/manifest.json + a
 // matching server.token. Outpost reads the manifest, health-checks
 // the api endpoint, and reports the result so the admin UI can
-// decide whether to show "Running", "Install ycode", or "Start
-// ycode" controls.
+// decide whether to show "Running", "Install ycode", or
+// "installed (not running)" hints.
 //
-// One ycode serve per OS user — this package never spawns a second
-// instance if it sees one already running.
+// Detection-only — outpost never spawns or restarts `ycode serve`.
+// The operator owns ycode's lifecycle (it may carry flags outpost
+// has no way to reproduce); we just report what we see.
 package ycode
 
 import (
@@ -45,8 +46,8 @@ const (
 	StateStaleManifest State = "stale_manifest"
 
 	// StateInstalled: no manifest, but a `ycode` binary is on PATH or
-	// in a known install location. The admin UI offers "Start
-	// ycode" — outpost can spawn it via Start().
+	// in a known install location. Admin UI tells the operator to
+	// run `ycode serve` themselves — outpost does not spawn.
 	StateInstalled State = "installed"
 
 	// StateNotInstalled: no manifest, no `ycode` binary anywhere we
@@ -141,8 +142,8 @@ func Detect() Info {
 			return info
 		}
 		// Manifest exists but endpoint is dead — process crashed,
-		// rebooted, or never cleaned up after stop. Caller may opt
-		// to delete the file before Start().
+		// rebooted, or never cleaned up after stop. The operator can
+		// remove the file (or rerun `ycode serve`, which rewrites it).
 		info.State = StateStaleManifest
 	}
 

@@ -56,10 +56,11 @@ type ClusterView struct {
 	TracesRemoteURL  string `json:"traces_remote_url,omitempty"`
 }
 
-// YcodeView is the redacted-and-flattened ycode supervisor status the
-// admin UI / MCP API consume. Mirrors ycode.Info but flattens the
-// State enum into named bools so the JS doesn't have to know the
-// State vocabulary.
+// YcodeView is the redacted-and-flattened ycode status the admin
+// UI / MCP API consume. Mirrors ycode.Info but flattens the State
+// enum into named bools so the JS doesn't have to know the State
+// vocabulary. Detection-only — outpost never spawns or restarts
+// ycode itself.
 type YcodeView struct {
 	Enabled           bool   `json:"enabled"`
 	Running           bool   `json:"running"`
