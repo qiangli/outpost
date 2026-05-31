@@ -395,7 +395,15 @@ async function api(method, path, body) {
     // work" without revealing the actual cause. Force the login
     // overlay instead so the operator re-auths and the cached state
     // gets refreshed.
-    if (resp.status === 401) {
+    //
+    // Two guards avoid breaking the login flow itself:
+    //   - skip when the operator is mid-POST to /api/login (a bad
+    //     password should surface as an error message on the existing
+    //     form, NOT re-render and clear what they just typed)
+    //   - skip when the login form is already mounted (the form's
+    //     own /api/status prefill triggers this path on a stale
+    //     session; re-rendering mid-mount would steal focus)
+    if (resp.status === 401 && !path.startsWith('/api/login') && !document.querySelector('#app form.login-form')) {
       renderLogin();
     }
     const err = new Error(data.error || resp.statusText);
