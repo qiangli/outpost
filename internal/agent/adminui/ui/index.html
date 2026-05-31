@@ -979,9 +979,10 @@ function buildSSHSubBlock(parent, cfg, status) {
         const res = await api('POST', '/api/config/builtins', {[item.key]: newVal});
         msg('ok', `${item.label} ${newVal ? 'on' : 'off'}.`);
         noteRestartPending(res);
+        sw.input.disabled = !sshOn;
       } catch (e) {
         sw.input.checked = !newVal;
-        sw.input.disabled = false;
+        sw.input.disabled = !sshOn;
         msg('err', e.message || 'Save failed');
       }
     });
@@ -1094,9 +1095,10 @@ function buildPodmanSubBlock(parent, cfg, status) {
       const res = await api('POST', '/api/config/builtins', {cluster: newVal});
       msg('ok', `Cluster ${newVal ? 'on' : 'off'}.`);
       noteRestartPending(res);
+      csw.input.disabled = !clusterGateOK;
     } catch (e) {
       csw.input.checked = !newVal;
-      csw.input.disabled = false;
+      csw.input.disabled = !clusterGateOK;
       msg('err', e.message || 'Save failed');
     }
   });
@@ -1338,9 +1340,10 @@ function buildOllamaSubBlock(parent, cfg, status) {
       const res = await api('POST', '/api/config/builtins', {ollama_pool: newVal});
       msg('ok', `Ollama pool ${newVal ? 'on' : 'off'}.`);
       noteRestartPending(res);
+      sw.input.disabled = !ollamaOn;
     } catch (e) {
       sw.input.checked = !newVal;
-      sw.input.disabled = false;
+      sw.input.disabled = !ollamaOn;
       msg('err', e.message || 'Save failed');
     }
   });
@@ -1410,9 +1413,10 @@ function buildOtelSubBlock(parent, cfg, status) {
       const res = await api('POST', '/api/config/builtins', {otel_pool: newVal});
       msg('ok', `OTel pool ${newVal ? 'on' : 'off'}.`);
       noteRestartPending(res);
+      sw.input.disabled = !otelOn;
     } catch (e) {
       sw.input.checked = !newVal;
-      sw.input.disabled = false;
+      sw.input.disabled = !otelOn;
       msg('err', e.message || 'Save failed');
     }
   });
@@ -1809,9 +1813,10 @@ function renderBuiltinRows(parent, items, cfg, status) {
         const res = await api('POST', '/api/config/builtins', {[item.key]: newVal});
         msg('ok', `${item.label} ${newVal ? 'on' : 'off'}.`);
         noteRestartPending(res);
+        sw.input.disabled = disabled;
       } catch (e) {
         sw.input.checked = !newVal;
-        sw.input.disabled = false;
+        sw.input.disabled = disabled;
         msg('err', e.message || 'Save failed');
       }
     });
