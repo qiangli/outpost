@@ -25,6 +25,21 @@ var daemonStartedAt = time.Now()
 // available" without having to decode opaque commit shas.
 var releaseTag string
 
+// ldCommit and ldDirty are also populated at link time via -ldflags.
+// They override the values that runtime/debug.ReadBuildInfo would
+// auto-detect from the working tree's git state. Necessary because
+// the dhnt umbrella mounts outpost as a submodule, and Go's vcs probe
+// walks UP the directory tree until it finds a .git — landing on the
+// umbrella's HEAD, not the outpost submodule's. The Makefile injects
+// the right values; release builds via the GH Action are auto-correct
+// because the action checks out only the outpost repo. ldDirty is a
+// string so the empty case ("no injection") falls through to the
+// auto-detect path for `go run` / bare `go build` invocations.
+var (
+	ldCommit string
+	ldDirty  string
+)
+
 // BuildInfo describes the provenance of this outpost binary. Sourced
 // from runtime/debug.ReadBuildInfo() (commit, vcs_time, dirty,
 // go_version are stamped automatically by `go build` in a VCS
@@ -125,6 +140,14 @@ func ReadBuildInfo() BuildInfo {
 		case "vcs.modified":
 			b.Dirty = strings.EqualFold(s.Value, "true")
 		}
+	}
+	// ldflags overrides take precedence over auto-detected values.
+	// See the ldCommit / ldDirty doc comments above for why.
+	if ldCommit != "" {
+		b.Commit = ldCommit
+	}
+	if ldDirty != "" {
+		b.Dirty = strings.EqualFold(ldDirty, "true")
 	}
 	return b
 }
