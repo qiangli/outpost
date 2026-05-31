@@ -179,41 +179,32 @@ iptables -t nat -I OUTPUT 1 -d "${APISERVER_SVC_IP}/32" -p tcp --dport "${APISER
     log "armed cbr0.route_localnet=1 after bridge creation"
 ) &
 
-# Snapshotter selection: native `overlayfs` is the default when the
-# container has CAP_SYS_ADMIN + a kernel that supports overlay mounts
-# (the rootful-podman path). The legacy `fuse-overlayfs` workaround is
-# needed only for rootless setups, and it fails with "operation not
-# permitted" on extract when running under rootful because the FUSE
-# mount-callback isn't supplied. Auto-pick:
-#   - if /dev/fuse exists AND we lack CAP_SYS_ADMIN → fuse-overlayfs
-#   - otherwise (privileged + rootful) → native overlayfs (k3s default)
-# KubeletInUserNamespace + cgroups-per-qos=false are still needed for
-# the in-container kubelet to come up cleanly regardless of snapshotter.
-SNAPSHOTTER_ARGS=""
-if [ ! -w /sys/fs/cgroup ] && [ -e /dev/fuse ]; then
-    SNAPSHOTTER_ARGS="--snapshotter=fuse-overlayfs"
-    log "snapshotter=fuse-overlayfs (rootless container fallback)"
-else
-    log "snapshotter=overlayfs (rootful, default)"
-fi
+# Snapshotter selection: native `overlayfs` is preferred when the
+# container's rootfs storage supports stacked overlay mounts AND we
+# have CAP_SYS_ADMIN. Some podman storage backends (e.g. fuse-
+# overlayfs-on-the-podman-side) break native overlay inside the
+# container because the inner overlay can't stack on top of an outer
+# overlay. The native path also occasionally hits "read-only file
+# system" on /proc mounts inside the pod sandbox when the underlying
+# rootfs comes from a podman named volume.
+#
+# fuse-overlayfs is the portable fallback — it adds a FUSE layer that
+# survives any host rootfs config. Slightly slower but reliable across
+# the matrix of podman storage configurations we see in the wild.
+#
+# Operators can override by exporting SNAPSHOTTER (e.g. SNAPSHOTTER=
+# overlayfs) when launching the container if they know their host
+# supports native overlay.
+SNAPSHOTTER="${SNAPSHOTTER:-fuse-overlayfs}"
+SNAPSHOTTER_ARGS="--snapshotter=${SNAPSHOTTER}"
+log "snapshotter=${SNAPSHOTTER}"
 
-# Pin the k3s-agent load-balancer to the STCP visitor on 127.0.0.1.
-# The supervisor's /v1-k3s/apiservers handler is supposed to return
-# only K3S_APISERVER_ADVERTISE when cloudbox sets it (k3s fork patch
-# a7daa544) — but the cloudbox build / env wiring of that var has been
-# flaky across deploys, and a single stale 100.127.x.y mesh IP in the
-# returned list makes the agent's load-balancer try the unreachable
-# direct dial before falling back. Pre-write the JSON before exec'ing
-# the agent so the load-balancer starts with the right ServerAddresses
-# and refuses to learn the mesh IP regardless of what the supervisor
-# returns.
-mkdir -p /var/lib/rancher/k3s/agent/etc
-cat > /var/lib/rancher/k3s/agent/etc/k3s-agent-load-balancer.json <<EOF
-{
-  "ServerURL": "https://127.0.0.1:${OUTPOST_API_PORT}",
-  "ServerAddresses": ["127.0.0.1:${OUTPOST_API_PORT}"]
-}
-EOF
+# /etc/rancher/node is the node-identity directory (--with-node-id
+# writes node-id + node-password.k3s here). The outpost daemon mounts
+# this from a named volume keyed off the agent name so the identity
+# persists across container restarts. Make sure the directory exists
+# inside the container's filesystem; the volume mount overlays it.
+mkdir -p /etc/rancher/node
 
 log "exec k3s agent --server=https://127.0.0.1:${OUTPOST_API_PORT} --node-name=${OUTPOST_AGENT_NAME} --with-node-id ${SNAPSHOTTER_ARGS}"
 exec /usr/local/bin/k3s agent \

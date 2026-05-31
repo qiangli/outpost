@@ -135,14 +135,15 @@ func Up(ctx context.Context, opts Options) error {
 	_ = exec.CommandContext(ctx, bin, "stop", containerName).Run()
 	_ = exec.CommandContext(ctx, bin, "rm", "-f", containerName).Run()
 
-	// Persist k3s state (node-id, kubelet certs, helper scripts) in a
-	// named volume keyed off the agent name. Without this the container
-	// regenerates a fresh node-id every restart (when running with
-	// --with-node-id in entrypoint.sh) — each restart leaves a stale
-	// dragon-<id> NotReady entry in `kubectl get nodes`, and the
-	// kubelet-cert exchange repeats from scratch. The named volume name
-	// is deterministic so the same outpost identity always reattaches.
-	k3sStateVol := "outpost-" + opts.AgentName + "-k3s-state"
+	// Persist only the node-identity directory (/etc/rancher/node) — the
+	// agent's `--with-node-id` flag writes node-id + node-password into
+	// /etc/rancher/node/node-id and /etc/rancher/node/node-password.k3s.
+	// Persisting just that subtree (not the whole /var/lib/rancher/k3s
+	// tree) lets the same outpost identity reattach across container
+	// restarts without piping containerd's storage layer through a
+	// podman named volume (which broke nested FUSE mounts + the
+	// kubelet's eviction-manager stats provider).
+	nodeIDVol := "outpost-" + opts.AgentName + "-node-id"
 	args := []string{
 		"run", "-d",
 		"--name", containerName,
@@ -155,7 +156,7 @@ func Up(ctx context.Context, opts Options) error {
 		// is supported by both upstream podman and ycode podman
 		// (the latter since the --cgroupns flag was added).
 		"--cgroupns=host",
-		"-v", k3sStateVol + ":/var/lib/rancher/k3s",
+		"-v", nodeIDVol + ":/etc/rancher/node",
 		"-e", "OUTPOST_AGENT_NAME=" + opts.AgentName,
 		"-e", "OUTPOST_NODE_TOKEN=" + opts.NodeToken,
 	}
