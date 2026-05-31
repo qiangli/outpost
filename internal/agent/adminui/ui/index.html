@@ -1800,9 +1800,20 @@ function renderBuiltinRows(parent, items, cfg, status) {
     // un-toggleable cases are: (a) ycode on an OS/arch ycode doesn't
     // build for, and (b) a child toggle whose parent is off
     // (Ollama-pool when Ollama is off). Everything else stays operable.
-    const available = isDaemon ? !!item.daemon.available
+    // ycode bundles both podman + ollama internally; when ycode is
+    // running (i.e. operator enabled it AND the supervisor reports
+    // it up), treat its child daemons as "available" even if the
+    // direct DetectPodman / DetectOllama probes haven't seen the
+    // socket / port yet (ycode binds lazily). Without this the
+    // podman + ollama rows render dim with "(not detected)" the
+    // moment ycode is the engine source — confusing because the
+    // operator just enabled ycode precisely to provide them.
+    const ycodeUp = !!(cfg.ycode && cfg.ycode.enabled && cfg.ycode.running);
+    const providedByYcode = isDaemon && ycodeUp && (item.key === 'podman' || item.key === 'ollama');
+    const directlyAvailable = isDaemon ? !!item.daemon.available
                     : isYcode  ? !!item.ycode.platform_supported
                     : true;
+    const available = directlyAvailable || providedByYcode;
     const disabled = (isYcode && !available) || (isGated && !gateOK);
     const row = el('div', {class: 'item-row' + (disabled || (isDaemon && !available) ? ' dim' : '')});
     const sw = switchEl({checked: enabled && gateOK, disabled: disabled});
@@ -1814,6 +1825,15 @@ function renderBuiltinRows(parent, items, cfg, status) {
         msg('ok', `${item.label} ${newVal ? 'on' : 'off'}.`);
         noteRestartPending(res);
         sw.input.disabled = disabled;
+        // Re-render after toggles that gate other rows. The Cluster
+        // "Join" switch depends on podman being on, and Ollama-pool
+        // depends on Ollama; without a re-render the disabled state
+        // of those downstream switches stays stale until the next
+        // manual refresh. Cheap to do (a single GET /api/config) and
+        // keeps the UI honest about what's currently allowed.
+        if (item.key === 'podman' || item.key === 'ollama' || item.key === 'ycode') {
+          render();
+        }
       } catch (e) {
         sw.input.checked = !newVal;
         sw.input.disabled = disabled;
@@ -1834,7 +1854,12 @@ function renderBuiltinRows(parent, items, cfg, status) {
       ),
     );
     if (isDaemon) {
-      if (!available) {
+      if (providedByYcode && !directlyAvailable) {
+        // Direct probe didn't see the daemon's socket / port, but
+        // ycode is up and bundles this daemon. Show "via ycode" so
+        // the operator understands the daemon is in fact reachable.
+        row.append(el('span', {class: 'hint'}, 'via ycode'));
+      } else if (!available) {
         // Probe didn't find a daemon at boot. The toggle is still
         // operable so the operator can pre-enable; the hint spells
         // out that nothing's proxied until the daemon comes up.
