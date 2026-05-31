@@ -33,6 +33,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"github.com/qiangli/outpost/internal/agent/mcpapi"
 	"github.com/qiangli/outpost/internal/agent/ollama"
+	"github.com/qiangli/outpost/internal/agent/otel"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
 	"github.com/qiangli/outpost/internal/agent/portal"
 	"github.com/qiangli/outpost/internal/agent/runtime"
@@ -291,6 +292,41 @@ func startCmd() *cobra.Command {
 					}
 				} else {
 					slog.Warn("ollama builtin enabled but daemon not detected — skipping")
+				}
+			}
+
+			// OTel surfaces. ycode's bearer-authed proxy at 127.0.0.1:31415
+			// fronts an embedded Prometheus / Alertmanager / VictoriaLogs /
+			// Jaeger / Perses stack. We expose each as its own built-in app
+			// — reusing the per-host matrix_elev cookie machinery — with
+			// the ycode bearer injected by a SetProxyWrap so cloudbox-side
+			// callers don't need to learn ycode credentials. The local
+			// surfaces are also what DKS-deployed observability apps
+			// scrape via the matrix tunnel when they need per-host drill-
+			// down (the fleet-wide story is push-based remote_write
+			// directly to cluster services — see FileConfig.Cluster.*).
+			// Skips silently when ycode isn't running, mirroring the
+			// podman/ollama "enabled but daemon absent" handling above.
+			if fc.OtelOn() {
+				if t := otel.Detect(); t.Available {
+					wrap := otel.BearerInjector(t.Token)
+					for _, surface := range otel.Surfaces() {
+						target := t.ProxyURL + otel.SubPath(surface)
+						if err := apps.RegisterWithMeta(
+							surface, target,
+							agent.AppMeta{
+								RequireLogin: true,
+								Capabilities: &agent.AppCapabilities{Type: surface},
+							},
+						); err != nil {
+							slog.Warn("otel builtin: register", "surface", surface, "err", err)
+							continue
+						}
+						slog.Info("otel builtin: registered", "surface", surface, "target", target)
+						apps.SetProxyWrap(surface, wrap)
+					}
+				} else {
+					slog.Warn("otel builtin enabled but ycode proxy not detected — skipping", "manifest", t.ManifestPath)
 				}
 			}
 

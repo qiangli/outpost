@@ -154,6 +154,23 @@ type FileConfig struct {
 	// the most useful behavior for the typical operator.
 	OllamaPoolEnabled *bool `json:"ollama_pool_enabled,omitempty"`
 
+	// OtelEnabled gates the observability built-in apps that proxy
+	// ycode's embedded Prometheus / Alertmanager / VictoriaLogs /
+	// Jaeger / Perses stack through the matrix tunnel. Off by default
+	// — this is a substantial surface increase (each ycode sub-path
+	// becomes reachable through /h/<host>/app/otel-*) and it only
+	// makes sense when ycode-serve is running.
+	OtelEnabled bool `json:"otel_enabled,omitempty"`
+
+	// OtelPoolEnabled controls whether cloudbox is allowed to federate
+	// queries across this outpost. Distinct from OtelEnabled the same
+	// way OllamaPoolEnabled is from OllamaEnabled: an operator can
+	// expose the surfaces privately (per-host access only) without
+	// contributing to the fleet-wide dashboard. Pointer-bool with
+	// OtelPoolOn() so existing configs default to on whenever
+	// OtelEnabled is on.
+	OtelPoolEnabled *bool `json:"otel_pool_enabled,omitempty"`
+
 	// YcodeEnabled gates outpost's lifecycle management of `ycode
 	// serve`. When on, outpost detects a running ycode at boot and,
 	// if one isn't running and a binary is installed, spawns one
@@ -170,6 +187,16 @@ type FileConfig struct {
 	// by default" situation. Operators who don't run ycode shouldn't
 	// have outpost trying to spawn anything.
 	YcodeEnabled bool `json:"ycode_enabled,omitempty"`
+
+	// YcodeShareEnabled gates whether ycode's home/landing page (the
+	// SPA served at /ycode/ on ycode's bearer-authed proxy) is exposed
+	// through the matrix tunnel as a regular `ycode` built-in app.
+	// When on, cloudbox renders a tile and users can open the ycode UI
+	// from the portal; when off, ycode stays purely-local and unreachable
+	// through cloudbox. Pointer-bool with YcodeShareOn() helper so the
+	// default is on whenever ycode itself is on — the typical operator
+	// who turned ycode on probably wants to reach it remotely too.
+	YcodeShareEnabled *bool `json:"ycode_share_enabled,omitempty"`
 
 	// UpdateMode is the per-host policy for cloudbox-pushed
 	// self-upgrades at POST /admin/upgrade. Three values:
@@ -319,6 +346,29 @@ type ClusterConfig struct {
 	// route to this node's pods, AND the (Phase 3b) CNI plugin uses
 	// it as the per-pod IP pool. Phase 3.
 	OverlayPodCIDR string `json:"overlay_pod_cidr,omitempty"`
+
+	// MetricsRemoteURL / LogsRemoteURL / TracesRemoteURL are the
+	// observability fleet-aggregation endpoints cloudbox has
+	// provisioned in the cluster (typically backed by VictoriaMetrics /
+	// VictoriaLogs / Jaeger Apache 2.0 stacks deployed via the
+	// AppStore). When non-empty, ycode's collector is expected to
+	// remote_write metrics / push logs / OTLP-export traces to these
+	// URLs through the tailscale overlay — the symmetric "push" side
+	// of the per-host /app/otel-* reverse-proxy surfaces, supplying
+	// fleet-wide dashboards without cloudbox itself storing anything.
+	//
+	// Resolution path: cluster Service DNS reachable on the overlay
+	// (e.g. http://vmsingle.observability.svc.cluster.local:8428/api/v1/write).
+	// Empty values mean "no fleet aggregation configured" — the local
+	// per-outpost stack is still queryable through the matrix tunnel.
+	//
+	// Persisted at register time from the Exchange response; cloudbox
+	// is the source of truth. Outpost doesn't synthesize defaults
+	// because the cluster service names depend on operator naming
+	// choices at AppStore install time.
+	MetricsRemoteURL string `json:"metrics_remote_url,omitempty"`
+	LogsRemoteURL    string `json:"logs_remote_url,omitempty"`
+	TracesRemoteURL  string `json:"traces_remote_url,omitempty"`
 }
 
 // ClusterModeAgent reports whether the outpost should run the real
@@ -655,6 +705,22 @@ func (fc *FileConfig) OllamaOn() bool { return fc != nil && fc.OllamaEnabled }
 // bool — no implicit default. See YcodeEnabled in the struct doc.
 func (fc *FileConfig) YcodeOn() bool { return fc != nil && fc.YcodeEnabled }
 
+// YcodeShareOn reports whether ycode's home/landing page should be
+// exposed through the matrix tunnel as a `ycode` built-in app. Returns
+// false when ycode itself is off (the share is a strict extension of
+// the per-host proxy). When YcodeShareEnabled is nil, the default is
+// to follow YcodeOn — operators who turned ycode on probably want it
+// reachable. Explicit false (operator turned it off) is honored.
+func (fc *FileConfig) YcodeShareOn() bool {
+	if !fc.YcodeOn() {
+		return false
+	}
+	if fc.YcodeShareEnabled == nil {
+		return true
+	}
+	return *fc.YcodeShareEnabled
+}
+
 // ClusterOn reports whether this outpost should join the cloudbox
 // virtual-podman cluster on boot. Missing field or Enabled=false ⇒ false.
 func (fc *FileConfig) ClusterOn() bool {
@@ -730,6 +796,22 @@ func (fc *FileConfig) OllamaPoolOn() bool {
 		return true
 	}
 	return *fc.OllamaPoolEnabled
+}
+
+// OtelOn reports whether the built-in observability proxies are enabled.
+func (fc *FileConfig) OtelOn() bool { return fc != nil && fc.OtelEnabled }
+
+// OtelPoolOn reports whether this outpost participates in cloudbox's
+// federated dashboard / alert fan-out. Mirrors OllamaPoolOn: false when
+// OtelOn() is false; defaults to on when OtelPoolEnabled is nil.
+func (fc *FileConfig) OtelPoolOn() bool {
+	if !fc.OtelOn() {
+		return false
+	}
+	if fc.OtelPoolEnabled == nil {
+		return true
+	}
+	return *fc.OtelPoolEnabled
 }
 
 // SaveFile writes fc atomically (write+rename) to path, creating parents.

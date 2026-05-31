@@ -1256,6 +1256,104 @@ function buildOllamaSubBlock(parent, cfg, status) {
   }
 }
 
+// buildOtelSubBlock populates the children behind the OTel twister:
+// the fleet-federation toggle plus a static list of the surfaces this
+// outpost exposes when enabled. The surfaces are a thin reverse-proxy
+// over ycode's embedded Prometheus / Alertmanager / VictoriaLogs /
+// Jaeger / Perses stack — each becomes /h/<host>/app/otel-<surface>/
+// through cloudbox, gated by the standard per-app matrix_elev cookie.
+// The pool toggle mirrors ollama_pool semantics: opt-in to allow
+// fleet-wide consumers (e.g. a dashboard deployed on the DKS cluster)
+// to reach this host's data plane.
+function buildOtelSubBlock(parent, cfg, status) {
+  const otelOn = !!cfg.otel_enabled;
+  const row = el('div', {class: 'item-row' + (!otelOn ? ' dim' : '')});
+  const sw = switchEl({checked: !!cfg.otel_pool_enabled && otelOn, disabled: !otelOn});
+  sw.input.addEventListener('change', async () => {
+    const newVal = sw.input.checked;
+    sw.input.disabled = true;
+    try {
+      const res = await api('POST', '/api/config/builtins', {otel_pool: newVal});
+      msg('ok', `OTel pool ${newVal ? 'on' : 'off'}.`);
+      noteRestartPending(res);
+    } catch (e) {
+      sw.input.checked = !newVal;
+      sw.input.disabled = false;
+      msg('err', e.message || 'Save failed');
+    }
+  });
+  row.append(
+    sw.wrap,
+    el('span', {class: 'label'}, 'Share with fleet observability ', el('code', {class: 'key-hint'}, 'otel_pool_enabled')),
+  );
+  if (!otelOn) row.append(el('span', {class: 'hint'}, '(enable OTel first)'));
+  parent.append(row);
+
+  // Static surface list. Each row is one of the five sub-paths the
+  // outpost exposes when OTel is on and ycode is running. Cloudbox URL
+  // is templated only when the host is paired — pre-pairing the operator
+  // sees the local path so they know what's being exposed.
+  const cloudboxURL = (cfg.cloudbox_url || '').replace(/\/+$/, '');
+  const agentName = cfg.agent_name || (status && status.agent_name) || '';
+  const surfaces = [
+    {name: 'otel-prometheus', desc: 'PromQL + remote_read + /federate'},
+    {name: 'otel-logs',       desc: 'VictoriaLogs select + ingest'},
+    {name: 'otel-alerts',     desc: 'Alertmanager API v2 + UI'},
+    {name: 'otel-traces',     desc: 'Jaeger query'},
+    {name: 'otel-dashboard',  desc: 'Perses dashboards'},
+  ];
+  const surfaceBox = el('div', {style: 'margin-top:0.6rem;padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;background:#2563eb11;font-size:0.85rem;'});
+  surfaceBox.append(el('div', {style: 'font-weight:600;margin-bottom:0.3rem'}, 'Exposed surfaces'));
+  const sg = el('div', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.2rem 0.75rem'});
+  for (const s of surfaces) {
+    const target = (cloudboxURL && agentName)
+      ? `${cloudboxURL}/h/${agentName}/app/${s.name}/`
+      : `/app/${s.name}/`;
+    sg.append(el('span', {style: 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace'}, s.name));
+    sg.append(el('span', {style: 'opacity:0.7'}, s.desc));
+    sg.append(el('span', {}));
+    sg.append(el('span', {style: 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;opacity:0.7;font-size:0.8rem'}, target));
+  }
+  surfaceBox.append(sg);
+  surfaceBox.append(el('div', {class: 'hint', style: 'margin-top:0.4rem'},
+    'Each surface is a reverse proxy onto ycode\'s embedded observability stack. ' +
+    'Data plane lights up only when ycode is running.'));
+  parent.append(surfaceBox);
+
+  // Fleet observability — show the cluster-side push URLs cloudbox
+  // provisioned for this outpost (populated at register time from the
+  // Exchange response). When present, ycode's collector is expected to
+  // remote_write metrics / push logs / OTLP-export traces to these URLs
+  // through the tailscale overlay. Empty URLs mean the cluster
+  // observability bundle isn't installed yet — render a hint pointing
+  // at the AppStore.
+  if (otelOn) {
+    const cv = cfg.cluster || {};
+    const remotes = [
+      {key: 'metrics_remote_url', label: 'Metrics → VictoriaMetrics', url: cv.metrics_remote_url},
+      {key: 'logs_remote_url',    label: 'Logs → VictoriaLogs',       url: cv.logs_remote_url},
+      {key: 'traces_remote_url',  label: 'Traces → Jaeger',           url: cv.traces_remote_url},
+    ];
+    const anyConfigured = remotes.some(r => !!r.url);
+    const remoteBox = el('div', {style: 'margin-top:0.6rem;padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;background:#2563eb11;font-size:0.85rem;'});
+    remoteBox.append(el('div', {style: 'font-weight:600;margin-bottom:0.3rem'}, 'Fleet aggregation (cluster push targets)'));
+    if (anyConfigured) {
+      const rg = el('div', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.2rem 0.75rem'});
+      for (const r of remotes) {
+        rg.append(el('span', {style: 'opacity:0.7'}, r.label));
+        rg.append(el('span', {style: 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.8rem'}, r.url || '—'));
+      }
+      remoteBox.append(rg);
+      remoteBox.append(el('div', {class: 'hint', style: 'margin-top:0.4rem'},
+        'ycode\'s collector remote_writes here through the tailscale overlay. Perses on the cluster reads from the same store.'));
+    } else {
+      remoteBox.append(el('div', {class: 'hint'},
+        'No cluster observability stack registered yet. Install the observability bundle from cloudbox\'s AppStore and re-pair this outpost to receive push URLs.'));
+    }
+    parent.append(remoteBox);
+  }
+}
+
 // fmtDuration renders ms-since as a tight human label
 // ("2h13m", "47s", "3d4h"). Used by the Update tab's
 // "installed ... ago" + "running ... ago" lines.
@@ -1510,6 +1608,153 @@ function buildRowInto(parent, label, value) {
   parent.append(row);
 }
 
+// daemonSourceLabel — for the agentic-platform card. Returns "via ycode"
+// when the detected daemon target resolves under ycode's per-user tree
+// (~/.agents/ycode/...) and "standalone" otherwise. ycode publishes its
+// embedded podman socket under that prefix (see
+// internal/agent/builtin_apps.go:46-48); the same heuristic will catch
+// a future ycode-managed Ollama if/when ycode advertises one in its
+// manifest. Returns "" when the daemon isn't reachable so the row can
+// keep its existing "(not available)" hint instead.
+function daemonSourceLabel(target) {
+  if (!target) return '';
+  return target.includes('/.agents/ycode/') ? 'via ycode' : 'standalone';
+}
+
+// renderBuiltinRows — shared loop for the "Built-in apps" and
+// "Agentic platform" fieldsets. Each item is one of:
+//   - core toggle: {key, fileKey, label, enabled, subBlock?}
+//   - daemon proxy: {key, fileKey, label, daemon: BuiltinView, subBlock?}
+//   - ycode supervisor: {key, fileKey, label, ycode: YcodeView, subBlock?}
+//   - placeholder: {placeholder: true, label, hint} — renders permanently
+//     dim with a disabled switch; no POST fires when clicked. Used for
+//     the OTel "coming soon" slot.
+function renderBuiltinRows(parent, items, cfg, status) {
+  for (const item of items) {
+    if (item.placeholder) {
+      const row = el('div', {class: 'item-row dim'});
+      const sw = switchEl({checked: false, disabled: true});
+      row.append(
+        sw.wrap,
+        el('span', {class: 'label'}, item.label),
+        el('span', {class: 'hint'}, item.hint || ''),
+      );
+      parent.append(row);
+      continue;
+    }
+    const isDaemon = !!item.daemon;
+    const isYcode  = !!item.ycode;
+    // gatedBy: the row mirrors another built-in's enablement (e.g. the
+    // Ollama-pool toggle only makes sense when Ollama itself is on).
+    // Treated as a daemon-like disabled state so the visual cue is
+    // consistent.
+    const isGated = !!item.gatedBy;
+    const gateOK = !isGated || !!item.gatedBy.enabled;
+    const enabled = isDaemon ? !!item.daemon.enabled
+                  : isYcode  ? !!item.ycode.enabled
+                  : !!item.enabled;
+    // available is informational (drives the dim styling + status hint),
+    // NOT a gate on the toggle. Pre-enabling a daemon proxy whose socket
+    // isn't reachable yet is a legitimate workflow: outpost's boot path
+    // (buildAppRegistry) silently skips unavailable daemons, so flipping
+    // the toggle on persists the intent and the next restart picks the
+    // daemon up once the operator starts it. The only genuinely
+    // un-toggleable cases are: (a) ycode on an OS/arch ycode doesn't
+    // build for, and (b) a child toggle whose parent is off
+    // (Ollama-pool when Ollama is off). Everything else stays operable.
+    const available = isDaemon ? !!item.daemon.available
+                    : isYcode  ? !!item.ycode.platform_supported
+                    : true;
+    const disabled = (isYcode && !available) || (isGated && !gateOK);
+    const row = el('div', {class: 'item-row' + (disabled || (isDaemon && !available) ? ' dim' : '')});
+    const sw = switchEl({checked: enabled && gateOK, disabled: disabled});
+    sw.input.addEventListener('change', async () => {
+      const newVal = sw.input.checked;
+      sw.input.disabled = true;
+      try {
+        const res = await api('POST', '/api/config/builtins', {[item.key]: newVal});
+        msg('ok', `${item.label} ${newVal ? 'on' : 'off'}.`);
+        noteRestartPending(res);
+      } catch (e) {
+        sw.input.checked = !newVal;
+        sw.input.disabled = false;
+        msg('err', e.message || 'Save failed');
+      }
+    });
+    // Label + canonical key subtext. The key subtext is what an
+    // operator searches for in agent.json or types as a --<key> CLI
+    // flag (after dropping `_enabled`), so surfacing it visibly here
+    // keeps the SPA/CLI/MCP vocabulary aligned without forcing the
+    // human-facing label to be ugly.
+    row.append(
+      sw.wrap,
+      el('span', {class: 'label'},
+        item.label,
+        ' ',
+        el('code', {class: 'key-hint'}, item.fileKey),
+      ),
+    );
+    if (isDaemon) {
+      if (!available) {
+        // Probe didn't find a daemon at boot. The toggle is still
+        // operable so the operator can pre-enable; the hint spells
+        // out that nothing's proxied until the daemon comes up.
+        const tried = item.daemon.target ? ` (tried ${item.daemon.target})` : '';
+        row.append(el('span', {class: 'hint'}, 'not detected' + tried));
+      } else if (item.daemon.target) {
+        row.append(el('span', {class: 'hint'}, item.daemon.target));
+        const src = daemonSourceLabel(item.daemon.target);
+        if (src) row.append(el('span', {class: 'hint'}, src));
+      }
+    }
+    if (isYcode) {
+      // Right-side hint mirrors detect.go's State output. Order
+      // matters: platform check first so unsupported platforms
+      // don't show misleading install advice.
+      if (!item.ycode.platform_supported) {
+        row.append(el('span', {class: 'hint'}, 'ycode not available for this OS/arch'));
+      } else if (item.ycode.running) {
+        row.append(el('span', {class: 'hint'}, item.ycode.api_endpoint || 'running'));
+      } else if (item.ycode.installed) {
+        row.append(el('span', {class: 'hint'}, 'installed; will start on next restart'));
+      } else if (item.ycode.stale_manifest) {
+        row.append(el('span', {class: 'hint'}, 'stale manifest — will clean up on start'));
+      } else {
+        row.append(el('span', {class: 'hint'}, 'not installed'));
+      }
+    }
+    if (isGated && !gateOK) {
+      // gateHint is row-specific; falls back to the Ollama-pool hint for
+      // back-compat with rows that don't set one.
+      row.append(el('span', {class: 'hint'}, item.gateHint || '(enable Ollama first)'));
+    }
+    // If this row has nested settings, append a chevron + a collapsed
+    // sub-block container. The sub-block is built lazily on first
+    // expand so we never pay for DOM that the operator hasn't asked
+    // to see; once built, expand/collapse is just toggling .hidden.
+    let subContainer = null;
+    if (item.subBlock) {
+      const chev = el('button', {
+        type: 'button', class: 'chevron',
+        'aria-expanded': 'false',
+        title: 'Show nested settings',
+      }, '▶');
+      subContainer = el('div', {class: 'item-subblock hidden'});
+      let built = false;
+      chev.addEventListener('click', () => {
+        if (!built) { item.subBlock(subContainer, cfg, status); built = true; }
+        const open = subContainer.classList.contains('hidden');
+        subContainer.classList.toggle('hidden', !open);
+        chev.setAttribute('aria-expanded', open ? 'true' : 'false');
+        chev.title = open ? 'Hide nested settings' : 'Show nested settings';
+      });
+      row.append(chev);
+    }
+    parent.append(row);
+    if (subContainer) parent.append(subContainer);
+  }
+}
+
 function renderMain(status, cfg) {
   const app = $('#app');
   app.innerHTML = '';
@@ -1568,13 +1813,17 @@ function renderMain(status, cfg) {
   panelPair.append(buildMCPCredentialsSection());
   panelPair.append(buildAdvancedSettingsSection(cfg));
 
-  // Built-in apps section — one per line, toggle switches, auto-save on
-  // change (no separate Save button). Each flip POSTs the single changed
-  // field; the server's debounced restart collapses rapid flips into one
-  // restart.
-  const built = el('fieldset', {});
-  built.append(el('legend', {}, 'Built-in apps'));
-  const builtList = el('div', {class: 'item-list'});
+  // Built-in apps section — two fieldsets, one per logical cluster:
+  //   1. "Built-in apps" — shell / desktop / clipboard / ssh
+  //      (the always-there outpost-native services)
+  //   2. "Agentic platform" — ycode / podman / ollama / OTel
+  //      (the bring-your-own-engine cluster — each can run as a
+  //      standalone daemon OR be supplied by ycode; outpost detects
+  //      whichever is live)
+  // Both fieldsets render via renderBuiltinRows() so the row markup,
+  // auto-save POST, restart-pending banner, sub-block chevron, and
+  // dim/available logic stay byte-for-byte identical to today's
+  // single-fieldset layout.
 
   // Each row carries:
   //   key     — JSON field on POST /api/config/builtins (REST/MCP arg)
@@ -1587,133 +1836,56 @@ function renderMain(status, cfg) {
   // The fileKey is rendered as a small subtext so an operator switching
   // between the SPA, the CLI (--<fileKey> minus _enabled), and the MCP
   // tool args / agent.json can match concepts up at a glance.
-  const builtinRows = [
+  const coreRows = [
     {key: 'shell',     fileKey: 'shell_enabled',     label: 'Shell',     enabled: cfg.shell_enabled},
     {key: 'desktop',   fileKey: 'desktop_enabled',   label: 'Desktop',   enabled: cfg.desktop_enabled},
     {key: 'clipboard', fileKey: 'clipboard_enabled', label: 'Clipboard', enabled: cfg.clipboard_enabled},
     {key: 'ssh',       fileKey: 'ssh_enabled',       label: 'SSH',       enabled: cfg.ssh_enabled,
      subBlock: buildSSHSubBlock},
-    {key: 'podman',    fileKey: 'podman_enabled',    label: 'Podman',    daemon: cfg.podman || {},
-     subBlock: buildPodmanSubBlock},
-    {key: 'ollama',    fileKey: 'ollama_enabled',    label: 'Ollama',    daemon: cfg.ollama || {},
-     subBlock: buildOllamaSubBlock},
+  ];
+  const agenticRows = [
     // ycode is supervised differently from podman/ollama: the row is
     // toggleable even when ycode isn't running (the toggle turns on
     // outpost-side supervision; the next outpost restart spawns the
     // process if installed). The sub-block surfaces install state +
-    // a download link when no binary is found.
+    // a download link when no binary is found. Listed first so the
+    // operator reads top-to-bottom as "engine, then what it provides".
     {key: 'ycode',     fileKey: 'ycode_enabled',     label: 'ycode',     ycode: cfg.ycode || {},
      subBlock: buildYcodeSubBlock},
+    {key: 'podman',    fileKey: 'podman_enabled',    label: 'Podman',    daemon: cfg.podman || {},
+     subBlock: buildPodmanSubBlock},
+    {key: 'ollama',    fileKey: 'ollama_enabled',    label: 'Ollama',    daemon: cfg.ollama || {},
+     subBlock: buildOllamaSubBlock},
+    // OTel row intentionally hidden from the SPA while fleet aggregation
+    // is deferred — kubernetes-native observability covers the typical
+    // use case, and per-host views are reachable via custom viewer apps
+    // hitting /h/<host>/app/otel-<surface>/ directly. The backend wiring
+    // (FileConfig.OtelEnabled, the five otel-* built-in apps, the
+    // BearerInjector, buildOtelSubBlock below) is intact; CLI/MCP can
+    // still flip the toggle for operators who specifically need it.
+    // Re-expose by inserting the same `{key: 'otel', ...}` entry here.
   ];
-  for (const item of builtinRows) {
-    const isDaemon = !!item.daemon;
-    const isYcode  = !!item.ycode;
-    // gatedBy: the row mirrors another built-in's enablement (e.g. the
-    // Ollama-pool toggle only makes sense when Ollama itself is on).
-    // Treated as a daemon-like disabled state so the visual cue is
-    // consistent.
-    const isGated = !!item.gatedBy;
-    const gateOK = !isGated || !!item.gatedBy.enabled;
-    const enabled = isDaemon ? !!item.daemon.enabled
-                  : isYcode  ? !!item.ycode.enabled
-                  : !!item.enabled;
-    // ycode's "availability" is "this platform is supported AND
-    // (running OR installed)". Unsupported platforms render the
-    // toggle disabled (operator can't do anything useful with it).
-    const available = isDaemon ? !!item.daemon.available
-                    : isYcode  ? !!item.ycode.platform_supported
-                    : true;
-    const disabled = ((isDaemon || isYcode) && !available) || (isGated && !gateOK);
-    const row = el('div', {class: 'item-row' + (disabled ? ' dim' : '')});
-    const sw = switchEl({checked: enabled && gateOK, disabled: disabled});
-    sw.input.addEventListener('change', async () => {
-      const newVal = sw.input.checked;
-      sw.input.disabled = true;
-      try {
-        const res = await api('POST', '/api/config/builtins', {[item.key]: newVal});
-        msg('ok', `${item.label} ${newVal ? 'on' : 'off'}.`);
-        noteRestartPending(res);
-      } catch (e) {
-        sw.input.checked = !newVal;
-        sw.input.disabled = false;
-        msg('err', e.message || 'Save failed');
-      }
-    });
-    // Label + canonical key subtext. The key subtext is what an
-    // operator searches for in agent.json or types as a --<key> CLI
-    // flag (after dropping `_enabled`), so surfacing it visibly here
-    // keeps the SPA/CLI/MCP vocabulary aligned without forcing the
-    // human-facing label to be ugly.
-    row.append(
-      sw.wrap,
-      el('span', {class: 'label'},
-        item.label,
-        ' ',
-        el('code', {class: 'key-hint'}, item.fileKey),
-      ),
-    );
-    if (isDaemon) {
-      if (!available) {
-        row.append(el('span', {class: 'hint'}, '(not available)'));
-      } else if (item.daemon.target) {
-        row.append(el('span', {class: 'hint'}, item.daemon.target));
-      }
-    }
-    if (isYcode) {
-      // Right-side hint mirrors detect.go's State output. Order
-      // matters: platform check first so unsupported platforms
-      // don't show misleading install advice.
-      if (!item.ycode.platform_supported) {
-        row.append(el('span', {class: 'hint'}, 'ycode not available for this OS/arch'));
-      } else if (item.ycode.running) {
-        row.append(el('span', {class: 'hint'}, item.ycode.api_endpoint || 'running'));
-      } else if (item.ycode.installed) {
-        row.append(el('span', {class: 'hint'}, 'installed; will start on next restart'));
-      } else if (item.ycode.stale_manifest) {
-        row.append(el('span', {class: 'hint'}, 'stale manifest — will clean up on start'));
-      } else {
-        row.append(el('span', {class: 'hint'}, 'not installed'));
-      }
-    }
-    if (isGated && !gateOK) {
-      // gateHint is row-specific; falls back to the Ollama-pool hint for
-      // back-compat with rows that don't set one.
-      row.append(el('span', {class: 'hint'}, item.gateHint || '(enable Ollama first)'));
-    }
-    // If this row has nested settings, append a chevron + a collapsed
-    // sub-block container. The sub-block is built lazily on first
-    // expand so we never pay for DOM that the operator hasn't asked
-    // to see; once built, expand/collapse is just toggling .hidden.
-    let subContainer = null;
-    if (item.subBlock) {
-      const chev = el('button', {
-        type: 'button', class: 'chevron',
-        'aria-expanded': 'false',
-        title: 'Show nested settings',
-      }, '▶');
-      subContainer = el('div', {class: 'item-subblock hidden'});
-      let built = false;
-      chev.addEventListener('click', () => {
-        if (!built) { item.subBlock(subContainer, cfg, status); built = true; }
-        const open = subContainer.classList.contains('hidden');
-        subContainer.classList.toggle('hidden', !open);
-        chev.setAttribute('aria-expanded', open ? 'true' : 'false');
-        chev.title = open ? 'Hide nested settings' : 'Show nested settings';
-      });
-      row.append(chev);
-    }
-    builtList.append(row);
-    if (subContainer) builtList.append(subContainer);
-  }
+
+  const built = el('fieldset', {});
+  built.append(el('legend', {}, 'Built-in apps'));
+  const builtList = el('div', {class: 'item-list'});
+  renderBuiltinRows(builtList, coreRows, cfg, status);
   built.append(builtList);
+  built.append(el('p', {style: 'font-size:0.8rem;opacity:0.7;margin-top:0.8rem'},
+    'Changes save automatically. Toggling a built-in restarts the outpost.'));
+  panelInbound.append(built);
+
+  const agentic = el('fieldset', {});
+  agentic.append(el('legend', {}, 'Agentic platform'));
+  const agenticList = el('div', {class: 'item-list'});
+  renderBuiltinRows(agenticList, agenticRows, cfg, status);
+  agentic.append(agenticList);
+  agentic.append(el('p', {style: 'font-size:0.8rem;opacity:0.7;margin-top:0.8rem'},
+    'Podman and Ollama can run as your own standalone daemons OR be managed by ycode — outpost detects whichever is live and shows the source next to each row.'));
+  panelInbound.append(agentic);
 
   // (update_mode selector lives on the dedicated Update tab; this
   // panel stays focused on routes + daemon-proxy toggles.)
-
-  built.append(el('p', {style: 'font-size:0.8rem;opacity:0.7;margin-top:0.8rem'},
-    'Changes save automatically. Toggling a built-in restarts the outpost. Podman/Ollama require the matching daemon to be running on this host.'));
-
-  panelInbound.append(built);
   // (LLM pool diagnostic was folded into the Ollama twister above —
   // all Ollama-related state in one place.)
 

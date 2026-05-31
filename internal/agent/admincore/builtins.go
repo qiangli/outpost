@@ -25,6 +25,8 @@ type BuiltinsParams struct {
 	Podman                *bool    `json:"podman,omitempty"`
 	Ollama                *bool    `json:"ollama,omitempty"`
 	OllamaPool            *bool    `json:"ollama_pool,omitempty"`
+	Otel                  *bool    `json:"otel,omitempty"`
+	OtelPool              *bool    `json:"otel_pool,omitempty"`
 	Ycode                 *bool    `json:"ycode,omitempty"`
 	Cluster               *bool    `json:"cluster,omitempty"`
 	// ClusterMode selects which runtime joins the cluster:
@@ -95,6 +97,12 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	if p.OllamaPool != nil {
 		fc.OllamaPoolEnabled = p.OllamaPool
 	}
+	if p.Otel != nil {
+		fc.OtelEnabled = *p.Otel
+	}
+	if p.OtelPool != nil {
+		fc.OtelPoolEnabled = p.OtelPool
+	}
 	if p.Ycode != nil {
 		fc.YcodeEnabled = *p.Ycode
 	}
@@ -120,7 +128,7 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Podman == nil && p.Ollama == nil && p.OllamaPool == nil && p.Ycode == nil && p.Cluster == nil && p.ClusterMode == nil
+	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Podman == nil && p.Ollama == nil && p.OllamaPool == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.Cluster == nil && p.ClusterMode == nil
 	if p.UpdateMode != nil {
 		if !conf.ValidUpdateMode(*p.UpdateMode) {
 			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")

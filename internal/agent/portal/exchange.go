@@ -163,6 +163,15 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		OverlayLoginServer string `json:"overlay_login_server"`
 		OverlayAuthKey     string `json:"overlay_auth_key"`
 		OverlayPodCIDR     string `json:"overlay_pod_cidr"`
+
+		// Observability fleet-aggregation endpoints, supplied by
+		// cloudbox when the operator has installed the cluster
+		// observability bundle (VictoriaMetrics / VictoriaLogs / Jaeger).
+		// Resolve via cluster Service DNS on the tailscale overlay; empty
+		// when the AppStore bundle hasn't been installed.
+		MetricsRemoteURL string `json:"metrics_remote_url"`
+		LogsRemoteURL    string `json:"logs_remote_url"`
+		TracesRemoteURL  string `json:"traces_remote_url"`
 	}
 	if err := json.Unmarshal(respBody, &ex); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
@@ -186,7 +195,8 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 	// expecting vkpodman.
 	if ex.ClusterNodeToken != "" || ex.ClusterSTCPSecret != "" ||
 		ex.ClusterAPIPort != 0 || ex.ClusterKubeletPort != 0 ||
-		ex.OverlayLoginServer != "" || ex.OverlayAuthKey != "" || ex.OverlayPodCIDR != "" {
+		ex.OverlayLoginServer != "" || ex.OverlayAuthKey != "" || ex.OverlayPodCIDR != "" ||
+		ex.MetricsRemoteURL != "" || ex.LogsRemoteURL != "" || ex.TracesRemoteURL != "" {
 		if fc.Cluster == nil {
 			fc.Cluster = &conf.ClusterConfig{}
 		}
@@ -197,6 +207,9 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		fc.Cluster.OverlayLoginServer = ex.OverlayLoginServer
 		fc.Cluster.OverlayAuthKey = ex.OverlayAuthKey
 		fc.Cluster.OverlayPodCIDR = ex.OverlayPodCIDR
+		fc.Cluster.MetricsRemoteURL = ex.MetricsRemoteURL
+		fc.Cluster.LogsRemoteURL = ex.LogsRemoteURL
+		fc.Cluster.TracesRemoteURL = ex.TracesRemoteURL
 	}
 	return fc, nil
 }

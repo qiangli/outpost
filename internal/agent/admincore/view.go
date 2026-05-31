@@ -45,6 +45,14 @@ type ClusterView struct {
 	HasNodeToken  bool   `json:"has_node_token,omitempty"`
 	HasSTCPSecret bool   `json:"has_stcp_secret,omitempty"`
 	K8sAPIPort    int    `json:"k8s_api_port,omitempty"`
+	// Observability fleet-aggregation URLs cloudbox provisioned for
+	// this outpost. Empty when the AppStore observability bundle
+	// isn't installed; non-empty means ycode is expected to
+	// remote_write metrics / push logs / OTLP-export traces here
+	// through the tailscale overlay.
+	MetricsRemoteURL string `json:"metrics_remote_url,omitempty"`
+	LogsRemoteURL    string `json:"logs_remote_url,omitempty"`
+	TracesRemoteURL  string `json:"traces_remote_url,omitempty"`
 }
 
 // YcodeView is the redacted-and-flattened ycode supervisor status the
@@ -94,15 +102,18 @@ func toClusterView(fc *conf.FileConfig) ClusterView {
 		return ClusterView{}
 	}
 	return ClusterView{
-		Enabled:       fc.Cluster.Enabled,
-		Mode:          fc.Cluster.Mode,
-		APIURL:        fc.Cluster.APIURL,
-		NodeName:      fc.ClusterNodeName(),
-		HasToken:      fc.Cluster.Token != "",
-		HasCA:         len(fc.Cluster.CA) > 0,
-		HasNodeToken:  fc.Cluster.NodeToken != "",
-		HasSTCPSecret: fc.Cluster.STCPSecret != "",
-		K8sAPIPort:    fc.Cluster.K8sAPIPort,
+		Enabled:          fc.Cluster.Enabled,
+		Mode:             fc.Cluster.Mode,
+		APIURL:           fc.Cluster.APIURL,
+		NodeName:         fc.ClusterNodeName(),
+		HasToken:         fc.Cluster.Token != "",
+		HasCA:            len(fc.Cluster.CA) > 0,
+		HasNodeToken:     fc.Cluster.NodeToken != "",
+		HasSTCPSecret:    fc.Cluster.STCPSecret != "",
+		K8sAPIPort:       fc.Cluster.K8sAPIPort,
+		MetricsRemoteURL: fc.Cluster.MetricsRemoteURL,
+		LogsRemoteURL:    fc.Cluster.LogsRemoteURL,
+		TracesRemoteURL:  fc.Cluster.TracesRemoteURL,
 	}
 }
 
@@ -135,6 +146,8 @@ type SafeView struct {
 	Podman                BuiltinView          `json:"podman"`
 	Ollama                BuiltinView          `json:"ollama"`
 	OllamaPoolEnabled     bool                 `json:"ollama_pool_enabled"`
+	OtelEnabled           bool                 `json:"otel_enabled"`
+	OtelPoolEnabled       bool                 `json:"otel_pool_enabled"`
 	Ycode                 YcodeView            `json:"ycode"`
 	UpdateMode            string               `json:"update_mode"`
 	LLMPool               LLMPoolStatusView    `json:"llm_pool"`
@@ -201,6 +214,8 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		Podman:                toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
 		Ollama:                toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
 		OllamaPoolEnabled:     fc.OllamaPoolOn(),
+		OtelEnabled:           fc.OtelOn(),
+		OtelPoolEnabled:       fc.OtelPoolOn(),
 		Ycode:                 toYcodeView(fc.YcodeOn(), ycode.Detect()),
 		UpdateMode:            fc.UpdateModeName(),
 		LLMPool:               s.llmPoolStatusView(fc),

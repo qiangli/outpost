@@ -1,0 +1,108 @@
+// Package otel discovers the local `ycode serve` observability stack
+// (Prometheus + Alertmanager + VictoriaLogs + Jaeger + Perses, all
+// reverse-proxied under one bearer-authed HTTP server) and lets outpost
+// expose each surface through the matrix tunnel as a built-in app.
+//
+// The data plane stays on the outpost: cloudbox federates by fanning
+// out queries to each paired host's /app/otel-* surface; nothing is
+// shipped or stored centrally. Symmetric with the LLM-pool and k3s-
+// agent legs, where cloudbox owns the control plane and outposts own
+// the data.
+//
+// Discovery mirrors internal/agent/ycode/: a running `ycode serve`
+// publishes $HOME/.agents/ycode/manifest.json. The manifest carries the
+// proxy base URL (endpoints.proxy) and the path to the bearer token
+// file (auth.tokenFile). One ycode-serve per OS user — no scanning,
+// no probing beyond a single file read.
+package otel
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// Target describes a discovered ycode observability proxy. ProxyURL is
+// the base URL with no trailing slash (e.g. "http://127.0.0.1:31415");
+// callers append the per-surface sub-path (e.g. "/prometheus/").
+// Token is the raw bearer string read from auth.tokenFile, or "" when
+// the manifest didn't advertise one (auth disabled).
+//
+// Available reports whether a probe of ProxyURL returned any HTTP
+// response. False means either no manifest, no ycode process, or a
+// dead process (stale manifest); the caller skips registration.
+type Target struct {
+	ProxyURL  string
+	Token     string
+	Available bool
+	// ManifestPath is the file we read (or tried to read). Exposed for
+	// admin-UI grey-out text ("tried <path>").
+	ManifestPath string
+}
+
+const probeTimeout = 500 * time.Millisecond
+
+// Detect reads the ycode manifest, extracts the proxy URL + bearer
+// token, and verifies the proxy is alive. Safe to call concurrently;
+// no state mutated. Returns a zero-value Target with Available=false
+// when ycode isn't running.
+func Detect() Target {
+	t := Target{ManifestPath: defaultManifestPath()}
+	if t.ManifestPath == "" {
+		return t
+	}
+	b, err := os.ReadFile(t.ManifestPath)
+	if err != nil {
+		return t
+	}
+	var m struct {
+		Auth struct {
+			TokenFile string `json:"tokenFile"`
+		} `json:"auth"`
+		Endpoints struct {
+			Proxy string `json:"proxy"`
+		} `json:"endpoints"`
+	}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return t
+	}
+	t.ProxyURL = strings.TrimRight(strings.TrimSpace(m.Endpoints.Proxy), "/")
+	if t.ProxyURL == "" {
+		return t
+	}
+	if tf := strings.TrimSpace(m.Auth.TokenFile); tf != "" {
+		if tok, err := os.ReadFile(tf); err == nil {
+			t.Token = strings.TrimSpace(string(tok))
+		}
+	}
+	t.Available = httpAlive(t.ProxyURL)
+	return t
+}
+
+func defaultManifestPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".agents", "ycode", "manifest.json")
+}
+
+func httpAlive(url string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
+	client := &http.Client{Timeout: probeTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode > 0
+}
