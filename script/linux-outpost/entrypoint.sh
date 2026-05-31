@@ -179,11 +179,12 @@ iptables -t nat -I OUTPUT 1 -d "${APISERVER_SVC_IP}/32" -p tcp --dport "${APISER
     log "armed cbr0.route_localnet=1 after bridge creation"
 ) &
 
-log "exec k3s agent --server=https://127.0.0.1:${OUTPOST_API_PORT} --node-name=${OUTPOST_AGENT_NAME}"
+log "exec k3s agent --server=https://127.0.0.1:${OUTPOST_API_PORT} --node-name=${OUTPOST_AGENT_NAME} --with-node-id"
 exec /usr/local/bin/k3s agent \
     --server="https://127.0.0.1:${OUTPOST_API_PORT}" \
     --token="${OUTPOST_NODE_TOKEN}" \
     --node-name="${OUTPOST_AGENT_NAME}" \
+    --with-node-id \
     --snapshotter=fuse-overlayfs \
     --kubelet-arg=address=127.0.0.1 \
     --kubelet-arg=feature-gates=KubeletInUserNamespace=true \
