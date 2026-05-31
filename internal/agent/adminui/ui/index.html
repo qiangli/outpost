@@ -1168,9 +1168,10 @@ function buildYcodeSubBlock(parent, cfg, status) {
       const res = await api('POST', '/api/config/builtins', {ycode_share: newVal});
       msg('ok', `ycode share ${newVal ? 'on' : 'off'}.`);
       noteRestartPending(res);
+      sw.input.disabled = !y.enabled;
     } catch (e) {
       sw.input.checked = !newVal;
-      sw.input.disabled = false;
+      sw.input.disabled = !y.enabled;
       msg('err', e.message || 'Save failed');
     }
   });
@@ -1196,9 +1197,10 @@ function buildYcodeSubBlock(parent, cfg, status) {
       const res = await api('POST', '/api/config/builtins', {ycode_share_require_login: newVal});
       msg('ok', `ycode require-login ${newVal ? 'on' : 'off'}.`);
       noteRestartPending(res);
+      lsw.input.disabled = !shareOn;
     } catch (e) {
       lsw.input.checked = !newVal;
-      lsw.input.disabled = false;
+      lsw.input.disabled = !shareOn;
       msg('err', e.message || 'Save failed');
     }
   });
@@ -1228,9 +1230,10 @@ function buildYcodeSubBlock(parent, cfg, status) {
           const res = await api('POST', '/api/config/builtins', {ycode_share_surfaces: {[surf.name]: newVal}});
           msg('ok', `${surf.label} ${newVal ? 'on' : 'off'}.`);
           noteRestartPending(res);
+          ssw.input.disabled = !shareOn;
         } catch (e) {
           ssw.input.checked = !newVal;
-          ssw.input.disabled = false;
+          ssw.input.disabled = !shareOn;
           msg('err', e.message || 'Save failed');
         }
       });

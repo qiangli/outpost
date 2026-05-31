@@ -36,22 +36,33 @@ type YcodeSurface struct {
 // YcodeSurfaces returns the catalog of ycode-backed UI surfaces in
 // stable order. main.go iterates and registers each one whose
 // EnabledIn(fc) returns true; the SPA renders one toggle row per
-// entry. Add new surfaces here when ycode publishes new ones in its
-// componentPathMap (ycode/internal/observability/stack.go).
+// entry.
 //
-// `ycode-ollama` (the ycode-bundled ollama management UI) is distinct
-// from the existing `ollama` built-in app, which proxies the ollama
-// daemon's raw API at :11434 — operators should treat them as two
-// different things, the API for programmatic use and the UI for
-// pulling/listing/inspecting models.
+// Phase-scoped to chat-style entry points for now:
+//   - ycode         → /chat/         the polished chat ycode itself
+//                                     advertises as the canonical
+//                                     entry (default-on)
+//   - ycode-canvas  → /ycode/canvas/ canvas/a2ui interaction surface
+//   - ycode-classic → /ycode/        the minimal chat at the legacy
+//                                     /ycode/ path
+//
+// Non-chat surfaces (ollama UI, git, memos, graph) live in ycode's
+// componentPathMap and are still reachable via outpost-add custom
+// apps; they were briefly included in this catalog and pulled back
+// out so operators get a focused list of "ways to chat with ycode."
+// Re-introduce here once we have UI affordances to keep them visually
+// grouped separately from chats.
+//
+// Forward direction: canvas + chat are converging toward the unified
+// agentic interaction surface, with the other paths potentially
+// subsumed in a future ycode release. Keeping this list small now
+// matches the trajectory and avoids surfacing options that will
+// disappear later.
 func YcodeSurfaces() []YcodeSurface {
 	return []YcodeSurface{
 		{Name: "ycode", Path: "/chat/", Label: "ycode Chat", DefaultOn: true},
 		{Name: "ycode-canvas", Path: "/ycode/canvas/", Label: "ycode Canvas (a2ui)"},
-		{Name: "ycode-ollama", Path: "/ollama/", Label: "Ollama UI (model pull/list)"},
-		{Name: "ycode-git", Path: "/git/", Label: "Embedded Gitea (git)"},
-		{Name: "ycode-memos", Path: "/memos/", Label: "Embedded Memos"},
-		{Name: "ycode-graph", Path: "/graph/", Label: "Bonsai graph (kg's DB)"},
+		{Name: "ycode-classic", Path: "/ycode/", Label: "ycode (classic SPA)"},
 	}
 }
 
