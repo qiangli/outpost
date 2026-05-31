@@ -333,19 +333,25 @@ func startCmd() *cobra.Command {
 			// ycode UI share. When YcodeShareOn (default on whenever ycode
 			// is enabled), expose ycode's home/landing SPA at /ycode/ on the
 			// bearer-authed proxy as a `ycode` built-in app. Cloudbox's
-			// DefaultApps already lists `ycode` with RequireLogin=true, so
-			// the portal renders a tile and the matrix_elev cookie covers
-			// the auth gate the same way it does for any other app. The
-			// ycode bearer is auto-injected per request (same SetProxyWrap
-			// trick as the OTel surfaces above) — cloudbox callers don't
-			// see the ycode credential.
+			// DefaultApps already lists `ycode` and renders a tile; the
+			// ycode bearer is auto-injected per request via SetProxyWrap
+			// so cloudbox callers don't see the ycode credential.
+			//
+			// RequireLogin=false intentionally: ycode is a per-user agentic
+			// engine where owner == user. Forcing OS-password elevation
+			// for the owner to reach their own ycode is UX friction with
+			// no real security gain — outpost already authenticates
+			// upstream via the ycode bearer. Cloudbox's hostAuthGate
+			// still gates non-owners (sharees go through the standard
+			// HostShare path), so the public surface is unchanged from a
+			// trust perspective.
 			if fc.YcodeOn() && fc.YcodeShareOn() {
 				if t := otel.Detect(); t.Available {
 					target := t.ProxyURL + "/ycode/"
 					if err := apps.RegisterWithMeta(
 						"ycode", target,
 						agent.AppMeta{
-							RequireLogin: true,
+							RequireLogin: fc.YcodeShareRequireLoginOn(),
 							Capabilities: &agent.AppCapabilities{Type: "ycode"},
 						},
 					); err != nil {

@@ -1181,6 +1181,34 @@ function buildYcodeSubBlock(parent, cfg, status) {
   if (!y.enabled) shareRow.append(el('span', {class: 'hint'}, '(enable ycode first)'));
   parent.append(shareRow);
 
+  // Require-login toggle for the `ycode` app — mirrors the per-app
+  // "require login" flag custom apps have. Default off (owner walks
+  // in via cookie auth); flip on to make cloudbox demand OS-password
+  // elevation the way /shell and /desktop do. Disabled when the share
+  // itself is off because there'd be nothing to gate.
+  const shareOn = !!cfg.ycode_share_enabled && !!y.enabled;
+  const loginRow = el('div', {class: 'item-row' + (!shareOn ? ' dim' : '')});
+  const lsw = switchEl({checked: !!cfg.ycode_share_require_login && shareOn, disabled: !shareOn});
+  lsw.input.addEventListener('change', async () => {
+    const newVal = lsw.input.checked;
+    lsw.input.disabled = true;
+    try {
+      const res = await api('POST', '/api/config/builtins', {ycode_share_require_login: newVal});
+      msg('ok', `ycode require-login ${newVal ? 'on' : 'off'}.`);
+      noteRestartPending(res);
+    } catch (e) {
+      lsw.input.checked = !newVal;
+      lsw.input.disabled = false;
+      msg('err', e.message || 'Save failed');
+    }
+  });
+  loginRow.append(
+    lsw.wrap,
+    el('span', {class: 'label'}, 'Require OS-password elevation ', el('code', {class: 'key-hint'}, 'ycode_share_require_login')),
+  );
+  if (!shareOn) loginRow.append(el('span', {class: 'hint'}, '(turn on Share ycode UI first)'));
+  parent.append(loginRow);
+
   const box = el('div', {style: 'margin-top:0.5rem;padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;background:#2563eb11;font-size:0.85rem;'});
   const grid = el('div', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.2rem 0.75rem'});
   const kv = (k, v) => {

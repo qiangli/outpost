@@ -27,8 +27,9 @@ type BuiltinsParams struct {
 	OllamaPool            *bool    `json:"ollama_pool,omitempty"`
 	Otel                  *bool    `json:"otel,omitempty"`
 	OtelPool              *bool    `json:"otel_pool,omitempty"`
-	Ycode                 *bool    `json:"ycode,omitempty"`
-	YcodeShare            *bool    `json:"ycode_share,omitempty"`
+	Ycode                  *bool    `json:"ycode,omitempty"`
+	YcodeShare             *bool    `json:"ycode_share,omitempty"`
+	YcodeShareRequireLogin *bool    `json:"ycode_share_require_login,omitempty"`
 	Cluster               *bool    `json:"cluster,omitempty"`
 	// ClusterMode selects which runtime joins the cluster:
 	// "" / "vkpodman" → legacy virtual-kubelet path (default).
@@ -110,6 +111,9 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	if p.YcodeShare != nil {
 		fc.YcodeShareEnabled = p.YcodeShare
 	}
+	if p.YcodeShareRequireLogin != nil {
+		fc.YcodeShareRequireLogin = p.YcodeShareRequireLogin
+	}
 	if p.Cluster != nil {
 		if fc.Cluster == nil {
 			fc.Cluster = &conf.ClusterConfig{}
@@ -132,7 +136,7 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Podman == nil && p.Ollama == nil && p.OllamaPool == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.Cluster == nil && p.ClusterMode == nil
+	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Podman == nil && p.Ollama == nil && p.OllamaPool == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.Cluster == nil && p.ClusterMode == nil
 	if p.UpdateMode != nil {
 		if !conf.ValidUpdateMode(*p.UpdateMode) {
 			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")

@@ -198,6 +198,16 @@ type FileConfig struct {
 	// who turned ycode on probably wants to reach it remotely too.
 	YcodeShareEnabled *bool `json:"ycode_share_enabled,omitempty"`
 
+	// YcodeShareRequireLogin controls the cloudbox-side OS-password
+	// elevation gate for the `ycode` built-in app. Default false
+	// (matches custom-app conventions): owners of the host reach their
+	// own ycode in one click. Flip to true to require an OS-password
+	// elevation hop the way /shell and /desktop do — useful when the
+	// host is shared with non-trivially-trusted users. Pointer-bool so
+	// the absent-key case folds to the safer default ("no extra dance
+	// for owners"); explicit true is honored.
+	YcodeShareRequireLogin *bool `json:"ycode_share_require_login,omitempty"`
+
 	// UpdateMode is the per-host policy for cloudbox-pushed
 	// self-upgrades at POST /admin/upgrade. Three values:
 	//
@@ -719,6 +729,17 @@ func (fc *FileConfig) YcodeShareOn() bool {
 		return true
 	}
 	return *fc.YcodeShareEnabled
+}
+
+// YcodeShareRequireLoginOn reports whether the cloudbox-side OS-password
+// elevation gate should fire for the `ycode` built-in app. Default false
+// — owners reach their own ycode without the OS-password popup; flipping
+// to true makes cloudbox treat ycode like /shell or /desktop.
+func (fc *FileConfig) YcodeShareRequireLoginOn() bool {
+	if fc == nil || fc.YcodeShareRequireLogin == nil {
+		return false
+	}
+	return *fc.YcodeShareRequireLogin
 }
 
 // ClusterOn reports whether this outpost should join the cloudbox

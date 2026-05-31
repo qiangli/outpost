@@ -57,6 +57,7 @@ func builtinsShowCmd() *cobra.Command {
 			row("otel", view.OtelEnabled)
 			row("otel_pool", view.OtelPoolEnabled)
 			row("ycode_share", view.YcodeShareEnabled)
+			row("ycode_share_require_login", view.YcodeShareRequireLogin)
 			row("cluster", view.Cluster.Enabled)
 			mode := view.Cluster.Mode
 			if mode == "" {
@@ -72,7 +73,7 @@ func builtinsShowCmd() *cobra.Command {
 
 func builtinsSetCmd() *cobra.Command {
 	var (
-		shell, desktop, clipboard, ssh, sshLocalFwd, sshRemoteFwd, sshAgentFwd, sftp, podman, ollama, ollamaPool, otel, otelPool, ycodeShare, cluster string
+		shell, desktop, clipboard, ssh, sshLocalFwd, sshRemoteFwd, sshAgentFwd, sftp, podman, ollama, ollamaPool, otel, otelPool, ycodeShare, ycodeShareRequireLogin, cluster string
 		clusterMode                                                                                                       string
 		updateMode, autoUpgradeLegacy                                                                                     string
 		sshForwardSockets                                                                                                 []string
@@ -129,6 +130,9 @@ func builtinsSetCmd() *cobra.Command {
 				return err
 			}
 			if params.YcodeShare, err = parseToggle("ycode-share", ycodeShare); err != nil {
+				return err
+			}
+			if params.YcodeShareRequireLogin, err = parseToggle("ycode-share-require-login", ycodeShareRequireLogin); err != nil {
 				return err
 			}
 			if params.Cluster, err = parseToggle("cluster", cluster); err != nil {
@@ -193,6 +197,7 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&otel, "otel", "", "on|off — expose ycode's embedded Prom/Alertmanager/VLogs/Jaeger as built-in apps")
 	cmd.Flags().StringVar(&otelPool, "otel-pool", "", "on|off — allow cloudbox to federate queries across this host's observability stack")
 	cmd.Flags().StringVar(&ycodeShare, "ycode-share", "", "on|off — expose ycode's home/landing page through the matrix tunnel (default on when ycode is on)")
+	cmd.Flags().StringVar(&ycodeShareRequireLogin, "ycode-share-require-login", "", "on|off — require cloudbox OS-password elevation for the 'ycode' app (default off; on = OS password popup like /shell)")
 	cmd.Flags().StringVar(&cluster, "cluster", "", "on|off — join cloudbox virtual-podman cluster")
 	cmd.Flags().StringVar(&clusterMode, "cluster-mode", "", "vkpodman|agent — agent (default; real k3s-agent in the outpost-runtime container, conformance-track) or vkpodman (v1 virtual-kubelet shim, kept for outposts that integrate with host-side podman tooling outside K8s)")
 	cmd.Flags().StringVar(&updateMode, "update", "", "auto|manual|never — policy for cloudbox-pushed self-upgrades")
