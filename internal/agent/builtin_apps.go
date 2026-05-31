@@ -59,8 +59,20 @@ func DetectPodman() BuiltinTarget {
 	}
 	cands := podmanCandidates()
 	for _, p := range cands {
-		if probeSocket(p, 200*time.Millisecond) {
-			bt.Socket = p
+		// Each candidate may be a literal path OR a shell-style glob.
+		// Globs let us track sockets whose filename embeds a process
+		// ID that rotates — notably ycode's per-pid sockets at
+		// ~/.agents/ycode/podman-<pid>.sock. newest-by-mtime wins
+		// when multiple match.
+		sock := p
+		if strings.ContainsAny(p, "*?[") {
+			sock = newestGlobMatch(p)
+			if sock == "" {
+				continue
+			}
+		}
+		if probeSocket(sock, 200*time.Millisecond) {
+			bt.Socket = sock
 			bt.Available = true
 			return bt
 		}
@@ -95,6 +107,15 @@ func newestGlobMatch(pattern string) string {
 func podmanCandidates() []string {
 	var paths []string
 	uid := os.Getuid()
+	home, _ := os.UserHomeDir()
+	// ycode-managed sockets are first-class on every platform we
+	// support — when the operator runs ycode, this is the socket
+	// outpost should prefer because it lines up with ycode's
+	// container management. The PID changes per ycode restart, so
+	// the path is a glob expanded via newest-mtime in DetectPodman.
+	if home != "" {
+		paths = append(paths, filepath.Join(home, ".agents", "ycode", "podman-*.sock"))
+	}
 	switch runtime.GOOS {
 	case "linux":
 		// Rootless socket first — that's what most modern desktop installs
@@ -105,7 +126,6 @@ func podmanCandidates() []string {
 		// podman machine writes the socket somewhere under the user's data
 		// dir; the exact subdir varies by machine name. Try the canonical
 		// path first, then a couple common alternatives.
-		home, _ := os.UserHomeDir()
 		if home != "" {
 			paths = append(paths,
 				filepath.Join(home, ".local/share/containers/podman/machine/podman.sock"),
