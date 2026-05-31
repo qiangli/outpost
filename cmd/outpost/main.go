@@ -330,6 +330,35 @@ func startCmd() *cobra.Command {
 				}
 			}
 
+			// ycode UI share. When YcodeShareOn (default on whenever ycode
+			// is enabled), expose ycode's home/landing SPA at /ycode/ on the
+			// bearer-authed proxy as a `ycode` built-in app. Cloudbox's
+			// DefaultApps already lists `ycode` with RequireLogin=true, so
+			// the portal renders a tile and the matrix_elev cookie covers
+			// the auth gate the same way it does for any other app. The
+			// ycode bearer is auto-injected per request (same SetProxyWrap
+			// trick as the OTel surfaces above) — cloudbox callers don't
+			// see the ycode credential.
+			if fc.YcodeOn() && fc.YcodeShareOn() {
+				if t := otel.Detect(); t.Available {
+					target := t.ProxyURL + "/ycode/"
+					if err := apps.RegisterWithMeta(
+						"ycode", target,
+						agent.AppMeta{
+							RequireLogin: true,
+							Capabilities: &agent.AppCapabilities{Type: "ycode"},
+						},
+					); err != nil {
+						slog.Warn("ycode builtin: register", "err", err)
+					} else {
+						slog.Info("ycode builtin: registered", "target", target)
+						apps.SetProxyWrap("ycode", otel.BearerInjector(t.Token))
+					}
+				} else {
+					slog.Warn("ycode share enabled but ycode proxy not detected — skipping", "manifest", t.ManifestPath)
+				}
+			}
+
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 

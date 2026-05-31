@@ -149,6 +149,7 @@ type SafeView struct {
 	OtelEnabled           bool                 `json:"otel_enabled"`
 	OtelPoolEnabled       bool                 `json:"otel_pool_enabled"`
 	Ycode                 YcodeView            `json:"ycode"`
+	YcodeShareEnabled     bool                 `json:"ycode_share_enabled"`
 	UpdateMode            string               `json:"update_mode"`
 	LLMPool               LLMPoolStatusView    `json:"llm_pool"`
 	Cluster               ClusterView          `json:"cluster"`
@@ -217,6 +218,7 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		OtelEnabled:           fc.OtelOn(),
 		OtelPoolEnabled:       fc.OtelPoolOn(),
 		Ycode:                 toYcodeView(fc.YcodeOn(), ycode.Detect()),
+		YcodeShareEnabled:     fc.YcodeShareOn(),
 		UpdateMode:            fc.UpdateModeName(),
 		LLMPool:               s.llmPoolStatusView(fc),
 		Cluster:               toClusterView(fc),

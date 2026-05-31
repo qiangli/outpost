@@ -26,6 +26,7 @@ type builtinsIn struct {
 	OllamaPool            *bool    `json:"ollama_pool,omitempty" jsonschema:"Participate in cloudbox's multi-host LLM pool (requires Ollama on)"`
 	Otel                  *bool    `json:"otel,omitempty" jsonschema:"Expose ycode's embedded observability stack (Prom/Alertmanager/VictoriaLogs/Jaeger/Perses) as built-in apps"`
 	OtelPool              *bool    `json:"otel_pool,omitempty" jsonschema:"Allow cloudbox to federate queries / fan-out alert rules across this host's observability stack (requires Otel on)"`
+	YcodeShare            *bool    `json:"ycode_share,omitempty" jsonschema:"Expose ycode's home/landing page through the matrix tunnel as a 'ycode' built-in app (requires Ycode on; default on)"`
 	Cluster               *bool    `json:"cluster,omitempty" jsonschema:"Join the cloudbox virtual-podman cluster as a node"`
 	UpdateMode            *string  `json:"update_mode,omitempty" jsonschema:"Per-host policy for cloudbox-pushed self-upgrades — one of 'auto' (default; stage+swap+restart on push), 'manual' (persist envelope, operator applies), 'never' (refuse)"`
 }
@@ -55,6 +56,7 @@ func (s *Server) registerBuiltinsTools() {
 			OllamaPool:            in.OllamaPool,
 			Otel:                  in.Otel,
 			OtelPool:              in.OtelPool,
+			YcodeShare:            in.YcodeShare,
 			Cluster:               in.Cluster,
 			UpdateMode:            in.UpdateMode,
 		})

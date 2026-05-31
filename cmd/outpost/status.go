@@ -87,6 +87,7 @@ func statusCmd() *cobra.Command {
 			row("ollama_pool", cfg.OllamaPoolEnabled)
 			row("otel", cfg.OtelEnabled)
 			row("otel_pool", cfg.OtelPoolEnabled)
+			row("ycode_share", cfg.YcodeShareEnabled)
 			row("cluster", cfg.Cluster.Enabled)
 			fmt.Printf("  %-22s  %s\n", "update_mode", cfg.UpdateMode)
 			fmt.Println()

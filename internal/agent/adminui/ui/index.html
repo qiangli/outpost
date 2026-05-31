@@ -1154,7 +1154,34 @@ function buildPodmanSubBlock(parent, cfg, status) {
 // one place — matches the SSH/Podman twister pattern.
 function buildYcodeSubBlock(parent, cfg, status) {
   const y = cfg.ycode || {};
-  const box = el('div', {style: 'padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;background:#2563eb11;font-size:0.85rem;'});
+
+  // Share toggle — mirrors the ollama_pool pattern. Default on when
+  // ycode itself is on (server returns ycode_share_enabled folding the
+  // pointer-bool nil case to YcodeOn). Disabled when ycode is off
+  // because the share is a strict extension of the per-host proxy.
+  const shareRow = el('div', {class: 'item-row' + (!y.enabled ? ' dim' : '')});
+  const sw = switchEl({checked: !!cfg.ycode_share_enabled && !!y.enabled, disabled: !y.enabled});
+  sw.input.addEventListener('change', async () => {
+    const newVal = sw.input.checked;
+    sw.input.disabled = true;
+    try {
+      const res = await api('POST', '/api/config/builtins', {ycode_share: newVal});
+      msg('ok', `ycode share ${newVal ? 'on' : 'off'}.`);
+      noteRestartPending(res);
+    } catch (e) {
+      sw.input.checked = !newVal;
+      sw.input.disabled = false;
+      msg('err', e.message || 'Save failed');
+    }
+  });
+  shareRow.append(
+    sw.wrap,
+    el('span', {class: 'label'}, 'Share ycode UI via cloudbox ', el('code', {class: 'key-hint'}, 'ycode_share_enabled')),
+  );
+  if (!y.enabled) shareRow.append(el('span', {class: 'hint'}, '(enable ycode first)'));
+  parent.append(shareRow);
+
+  const box = el('div', {style: 'margin-top:0.5rem;padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;background:#2563eb11;font-size:0.85rem;'});
   const grid = el('div', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.2rem 0.75rem'});
   const kv = (k, v) => {
     grid.append(el('span', {style: 'opacity:0.7'}, k));
