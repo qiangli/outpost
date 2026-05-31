@@ -73,9 +73,9 @@ func (s *Server) ClearKubeconfig() (KubeconfigResult, error) {
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		return KubeconfigResult{}, internalErr("%s", err.Error())
 	}
+	// Persist-then-defer (see SetBuiltins comment): tearing down a
+	// joined cluster requires a restart, but we let the operator pull
+	// the trigger so it can be batched with other settings changes.
 	restart := wasEnabled && fc.AgentName != ""
-	if restart {
-		s.ScheduleRestart()
-	}
 	return KubeconfigResult{OK: true, RestartPending: restart}, nil
 }

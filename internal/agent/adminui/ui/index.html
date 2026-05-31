@@ -395,17 +395,49 @@ async function api(method, path, body) {
   return data;
 }
 
+// restartNeeded: sticky banner state. A save that returned
+// restart_pending sets this to true; it persists across re-renders
+// until the operator clicks "Restart now" in the banner. The header
+// "Restart outpost" button always restarts regardless. We keep this
+// in JS state (not on the server) because the server's only ground
+// truth is whether the live process's mounted-at-boot state diverges
+// from on-disk FileConfig — and we already know the answer here
+// because we're the one who just made the save call.
+let restartNeeded = false;
+
+// Network-error transient retries: render() may be called immediately
+// after a restart was triggered elsewhere (e.g. the user clicked the
+// header Restart button in another tab); a couple of fetches will
+// fail before the new process binds. Retry briefly before falling
+// back to the fatal screen.
+async function fetchWithRetry(method, path, body, opts) {
+  const tries = (opts && opts.tries) || 1;
+  const delayMs = (opts && opts.delayMs) || 0;
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try { return await api(method, path, body); }
+    catch (e) {
+      lastErr = e;
+      // Only retry pure network failures — HTTP errors with a status
+      // (4xx/5xx) are not transient and shouldn't be papered over.
+      if (e.status) throw e;
+      if (i < tries - 1) await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
 async function render() {
   let status;
   try {
-    status = await api('GET', '/api/status');
+    status = await fetchWithRetry('GET', '/api/status', undefined, {tries: 6, delayMs: 500});
   } catch (e) {
     if (e.status === 401) return renderLogin();
     return renderFatal(e);
   }
   let cfg;
   try {
-    cfg = await api('GET', '/api/config');
+    cfg = await fetchWithRetry('GET', '/api/config', undefined, {tries: 6, delayMs: 500});
   } catch (e) {
     if (e.status === 401) return renderLogin();
     return renderFatal(e);
@@ -416,6 +448,59 @@ async function render() {
 function renderFatal(e) {
   $('#app').innerHTML = '';
   $('#app').append(el('div', {class: 'msg err'}, 'Failed to load: ' + (e.message || e)));
+}
+
+// noteRestartPending: call after any save whose response carries the
+// `restarting: true` flag. Sets the banner state and re-renders the
+// banner so the operator sees a sticky "Restart to apply" cue. We
+// intentionally do NOT trigger pollUntilUp here — letting the operator
+// batch several changes before restarting is the whole point.
+function noteRestartPending(res) {
+  if (res && res.restarting && !restartNeeded) {
+    restartNeeded = true;
+    renderRestartBanner();
+  }
+}
+
+// renderRestartBanner mounts (or removes) the sticky "Restart required"
+// banner under the header. Idempotent — safe to call from anywhere.
+function renderRestartBanner() {
+  const existing = document.getElementById('restart-banner');
+  if (!restartNeeded) {
+    if (existing) existing.remove();
+    return;
+  }
+  if (existing) return; // already showing
+  const banner = el('div', {
+    id: 'restart-banner',
+    style: 'background:#fef3c7;border:1px solid #f59e0b;color:#78350f;' +
+           'padding:0.55rem 0.9rem;border-radius:6px;margin:0 0 1rem;' +
+           'display:flex;align-items:center;gap:0.8rem',
+  });
+  banner.append(
+    el('span', {style: 'flex:1'},
+      el('strong', {}, 'Restart required'),
+      ' — some changes won\'t take effect until outpost restarts.'),
+    el('button', {
+      type: 'button',
+      style: 'background:#b45309;color:white;border:0;padding:0.35rem 0.8rem;border-radius:4px;cursor:pointer',
+      onclick: async (ev) => {
+        ev.target.disabled = true;
+        ev.target.textContent = 'Restarting…';
+        try {
+          await api('POST', '/api/restart');
+          restartNeeded = false;
+          await pollUntilUp();
+        } catch (e) {
+          msg('err', e.message || 'Restart failed');
+          ev.target.disabled = false;
+          ev.target.textContent = 'Restart now';
+        }
+      },
+    }, 'Restart now'),
+  );
+  const app = $('#app');
+  app.insertBefore(banner, app.firstChild);
 }
 
 function renderLogin() {
@@ -688,8 +773,8 @@ function buildAdvancedSettingsSection(cfg) {
     netBtn.disabled = true;
     try {
       const res = await api('POST', '/api/config/networking', payload);
-      msg('ok', res.restarting ? 'Networking saved — restarting…' : 'Networking saved.');
-      if (res.restarting) pollUntilUp();
+      msg('ok', 'Networking saved.');
+      noteRestartPending(res);
     } catch (e) {
       msg('err', e.message || 'Save failed');
     } finally {
@@ -706,8 +791,8 @@ function buildAdvancedSettingsSection(cfg) {
     adminUsersBtn.disabled = true;
     try {
       const res = await api('POST', '/api/config/networking', {set_admin_users: true, admin_users: users});
-      msg('ok', res.restarting ? 'Admin users saved — restarting…' : 'Admin users saved.');
-      if (res.restarting) pollUntilUp();
+      msg('ok', 'Admin users saved.');
+      noteRestartPending(res);
     } catch (e) {
       msg('err', e.message || 'Save failed');
     } finally {
@@ -853,9 +938,9 @@ function buildSSHSubBlock(parent, cfg, status) {
       const newVal = sw.input.checked;
       sw.input.disabled = true;
       try {
-        await api('POST', '/api/config/builtins', {[item.key]: newVal});
-        msg('ok', `${item.label} ${newVal ? 'on' : 'off'} — restarting…`);
-        if (status && status.configured) pollUntilUp();
+        const res = await api('POST', '/api/config/builtins', {[item.key]: newVal});
+        msg('ok', `${item.label} ${newVal ? 'on' : 'off'}.`);
+        noteRestartPending(res);
       } catch (e) {
         sw.input.checked = !newVal;
         sw.input.disabled = false;
@@ -887,9 +972,9 @@ function buildSSHSubBlock(parent, cfg, status) {
     const sockets = sockInput.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
     sockBtn.disabled = true;
     try {
-      await api('POST', '/api/config/builtins', {ssh_forward_sockets: sockets});
-      msg('ok', 'Forward-sockets saved — restarting…');
-      if (status && status.configured) pollUntilUp();
+      const res = await api('POST', '/api/config/builtins', {ssh_forward_sockets: sockets});
+      msg('ok', 'Forward-sockets saved.');
+      noteRestartPending(res);
     } catch (e) {
       msg('err', e.message || 'Save failed');
     } finally {
@@ -931,9 +1016,9 @@ function buildPodmanSubBlock(parent, cfg, status) {
       if (!ok) return;
       leave.disabled = true;
       try {
-        await api('DELETE', '/api/cluster/kubeconfig');
-        msg('ok', 'Cluster credentials cleared — restarting…');
-        if (status && status.configured && cv.enabled) pollUntilUp();
+        const res = await api('DELETE', '/api/cluster/kubeconfig');
+        msg('ok', 'Cluster credentials cleared.');
+        noteRestartPending(res);
       } catch (e) {
         leave.disabled = false;
         msg('err', e.message || 'Clear failed');
@@ -968,9 +1053,9 @@ function buildPodmanSubBlock(parent, cfg, status) {
     const newVal = csw.input.checked;
     csw.input.disabled = true;
     try {
-      await api('POST', '/api/config/builtins', {cluster: newVal});
-      msg('ok', `Cluster ${newVal ? 'on' : 'off'} — restarting…`);
-      if (paired) pollUntilUp();
+      const res = await api('POST', '/api/config/builtins', {cluster: newVal});
+      msg('ok', `Cluster ${newVal ? 'on' : 'off'}.`);
+      noteRestartPending(res);
     } catch (e) {
       csw.input.checked = !newVal;
       csw.input.disabled = false;
@@ -1116,9 +1201,9 @@ function buildOllamaSubBlock(parent, cfg, status) {
     const newVal = sw.input.checked;
     sw.input.disabled = true;
     try {
-      await api('POST', '/api/config/builtins', {ollama_pool: newVal});
-      msg('ok', `Ollama pool ${newVal ? 'on' : 'off'} — restarting…`);
-      if (status && status.configured) pollUntilUp();
+      const res = await api('POST', '/api/config/builtins', {ollama_pool: newVal});
+      msg('ok', `Ollama pool ${newVal ? 'on' : 'off'}.`);
+      noteRestartPending(res);
     } catch (e) {
       sw.input.checked = !newVal;
       sw.input.disabled = false;
@@ -1428,6 +1513,9 @@ function buildRowInto(parent, label, value) {
 function renderMain(status, cfg) {
   const app = $('#app');
   app.innerHTML = '';
+  // Banner is re-mounted on every render; renderRestartBanner is a
+  // no-op when restartNeeded is false.
+  renderRestartBanner();
 
   // Tab bar + four panels: Pair host, Inbound, Outbound, Update.
   // Update consolidates everything cloudbox-pushed-upgrade-related —
@@ -1542,9 +1630,9 @@ function renderMain(status, cfg) {
       const newVal = sw.input.checked;
       sw.input.disabled = true;
       try {
-        await api('POST', '/api/config/builtins', {[item.key]: newVal});
-        msg('ok', status.configured ? `${item.label} ${newVal ? 'on' : 'off'} — restarting…` : `${item.label} saved.`);
-        if (status.configured) pollUntilUp();
+        const res = await api('POST', '/api/config/builtins', {[item.key]: newVal});
+        msg('ok', `${item.label} ${newVal ? 'on' : 'off'}.`);
+        noteRestartPending(res);
       } catch (e) {
         sw.input.checked = !newVal;
         sw.input.disabled = false;
@@ -2196,7 +2284,7 @@ function renderMain(status, cfg) {
   ha.innerHTML = '';
   ha.append(
     el('button', {onclick: async () => {
-      try { await api('POST', '/api/restart'); msg('ok', 'Restarting…'); pollUntilUp(); }
+      try { await api('POST', '/api/restart'); restartNeeded = false; msg('ok', 'Restarting…'); pollUntilUp(); }
       catch (e) { msg('err', e.message); }
     }}, 'Restart outpost'),
     el('button', {onclick: async () => {
@@ -2207,14 +2295,31 @@ function renderMain(status, cfg) {
 }
 
 async function pollUntilUp() {
-  for (let i = 0; i < 40; i++) {
+  // The restart is debounced ~1s on the server side, so the very
+  // first /healthz hit after a save will catch the OLD process and
+  // wrongly declare "up". We instead wait for /healthz to FAIL at
+  // least once (process re-execing, listener torn down) and only then
+  // start treating successful hits as the new process being ready.
+  // Falls back to a fixed delay if the old process never appears to
+  // go down within ~3s (e.g. very fast re-exec on a quiet box).
+  let sawDown = false;
+  for (let i = 0; i < 8 && !sawDown; i++) {
+    await new Promise(r => setTimeout(r, 250));
+    try {
+      const r = await fetch('/healthz', { cache: 'no-store' });
+      if (!r.ok) sawDown = true;
+    } catch (_) { sawDown = true; }
+  }
+  // Now poll for the new process to bind.
+  for (let i = 0; i < 60; i++) {
     await new Promise(r => setTimeout(r, 500));
     try {
-      await fetch('/healthz', { cache: 'no-store' });
-      // Healthz comes up immediately on the new process; give the API
-      // routes a beat to bind too, then reload.
-      setTimeout(() => render(), 250);
-      return;
+      const r = await fetch('/healthz', { cache: 'no-store' });
+      if (r.ok) {
+        // Give the API routes a beat to bind too, then reload.
+        setTimeout(() => render(), 250);
+        return;
+      }
     } catch (_) {}
   }
   msg('err', 'Outpost did not come back. Check the logs.');

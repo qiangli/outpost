@@ -271,10 +271,13 @@ func TestAppValidation(t *testing.T) {
 	}
 }
 
-// TestBuiltinsToggleSchedulesRestart — flipping a built-in writes the
-// new value to disk and (because routes mount at boot) schedules a
-// restart. On first-run (no AgentName) no restart should fire.
-func TestBuiltinsToggleSchedulesRestart(t *testing.T) {
+// TestBuiltinsToggleReportsRestartPending — flipping a built-in writes
+// the new value to disk and (because routes mount at boot) reports
+// restart_pending=true so the SPA shows its sticky banner. The save
+// itself does NOT auto-restart — the operator pulls the trigger from
+// the banner when their batch is done. On first-run (no AgentName)
+// no restart-pending should be reported.
+func TestBuiltinsToggleReportsRestartPending(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "agent.json")
 	if err := conf.SaveFile(configPath, &conf.FileConfig{AgentName: "configured", Token: "t"}); err != nil {
 		t.Fatal(err)
@@ -288,12 +291,28 @@ func TestBuiltinsToggleSchedulesRestart(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d. Body: %s", w.Code, w.Body.String())
 	}
-	// scheduleRestart sleeps ~250ms; wait a bit longer than that.
-	waitFor(t, 2*time.Second, func() bool { return restartCount.Load() == 1 })
+	var body struct {
+		OK         bool `json:"ok"`
+		Restarting bool `json:"restarting"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !body.OK || !body.Restarting {
+		t.Fatalf("want ok+restarting, got %+v. Body: %s", body, w.Body.String())
+	}
 
+	// Persistence: the new value is durable even without a restart.
 	fc, _ := conf.LoadFile(configPath)
 	if fc.ShellOn() {
 		t.Error("shell should be persisted off")
+	}
+
+	// And — the save itself must NOT auto-restart (the old behavior
+	// that yanked the admin UI mid-click).
+	time.Sleep(1500 * time.Millisecond)
+	if got := restartCount.Load(); got != 0 {
+		t.Errorf("save should not auto-restart; got %d Restart() calls", got)
 	}
 }
 

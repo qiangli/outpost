@@ -71,10 +71,11 @@ func (s *Server) SetNetworking(p NetworkingParams) (NetworkingResult, error) {
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		return NetworkingResult{}, internalErr("%s", err.Error())
 	}
+	// Persist-then-defer (see SetBuiltins comment): the new listener
+	// bind / admin_users allowlist is read once at boot. RestartPending
+	// tells the SPA to surface its sticky banner so a batch of save
+	// clicks doesn't trigger N re-execs and lose the open admin page.
 	restart := fc.AgentName != ""
-	if restart {
-		s.ScheduleRestart()
-	}
 	return NetworkingResult{OK: true, RestartPending: restart}, nil
 }
 

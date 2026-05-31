@@ -365,10 +365,13 @@ func TestSessionSurvivesRestart(t *testing.T) {
 	}
 }
 
-// TestScheduleRestartDebounces — rapid back-to-back toggle saves (now
-// fired one-per-switch by the new auto-saving UI) must collapse into a
-// single Restart() call, not four.
-func TestScheduleRestartDebounces(t *testing.T) {
+// TestBuiltinsBatchDoesNotAutoRestart — flipping four built-ins in
+// quick succession used to auto-restart (debounced to one Restart()
+// call). The new defer-restart model means zero auto-restarts: the
+// SPA shows a sticky "Restart required" banner instead, and the
+// operator picks the moment. Each save still reports restart_pending
+// so the banner appears.
+func TestBuiltinsBatchDoesNotAutoRestart(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "agent.json")
 	if err := conf.SaveFile(configPath, &conf.FileConfig{AgentName: "h"}); err != nil {
@@ -395,10 +398,10 @@ func TestScheduleRestartDebounces(t *testing.T) {
 			t.Fatalf("toggle %s: %d %s", key, w.Code, w.Body.String())
 		}
 	}
-	// Wait long enough for the debounce window to expire.
+	// Wait long enough that any (stray) ScheduleRestart debounce
+	// would have fired.
 	time.Sleep(1500 * time.Millisecond)
-	got := restarts.Load()
-	if got != 1 {
-		t.Fatalf("expected 1 restart for 4 rapid saves, got %d", got)
+	if got := restarts.Load(); got != 0 {
+		t.Fatalf("builtin saves must not auto-restart; got %d Restart() calls", got)
 	}
 }

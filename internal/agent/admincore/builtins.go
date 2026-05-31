@@ -133,9 +133,12 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		return BuiltinsResult{}, internalErr("%s", err.Error())
 	}
+	// Persist-then-defer: the new toggle is durable on disk, but the
+	// route mount / built-in app registration only happens at boot.
+	// Rather than auto-restart (which yanks the admin UI mid-click and
+	// breaks batches of operator toggles), advertise RestartPending so
+	// the SPA can surface a sticky "Restart to apply" banner and let
+	// the operator pull the trigger when their batch is done.
 	restart := fc.AgentName != "" && !updateModeOnly
-	if restart {
-		s.ScheduleRestart()
-	}
 	return BuiltinsResult{OK: true, RestartPending: restart}, nil
 }
