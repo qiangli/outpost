@@ -139,6 +139,14 @@ func Up(ctx context.Context, opts Options) error {
 		"run", "-d",
 		"--name", containerName,
 		"--privileged",
+		// Share the VM root's cgroup namespace. The container hosts
+		// k3s-agent + kubelet which need cpuset and other v2
+		// controllers; a private cgroup namespace doesn't propagate
+		// cpuset from the VM root, and the kubelet aborts with
+		// "fatal: failed to find cpuset cgroup (v2)". --cgroupns=host
+		// is supported by both upstream podman and ycode podman
+		// (the latter since the --cgroupns flag was added).
+		"--cgroupns=host",
 		"-e", "OUTPOST_AGENT_NAME=" + opts.AgentName,
 		"-e", "OUTPOST_NODE_TOKEN=" + opts.NodeToken,
 	}
