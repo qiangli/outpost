@@ -450,16 +450,29 @@ async function render() {
   try {
     status = await fetchWithRetry('GET', '/api/status', undefined, {tries: 6, delayMs: 500});
   } catch (e) {
-    if (e.status === 401) return renderLogin();
+    // api() already triggered renderLogin() on 401 (and guards against
+    // re-rendering the form on top of itself). Just bail out — calling
+    // renderLogin() here too would cause an extra /api/status prefill
+    // request, which surfaces as the second/third 401 in dev tools on
+    // every refresh of an expired session.
+    if (e.status === 401) return;
     return renderFatal(e);
   }
   let cfg;
   try {
     cfg = await fetchWithRetry('GET', '/api/config', undefined, {tries: 6, delayMs: 500});
   } catch (e) {
-    if (e.status === 401) return renderLogin();
+    if (e.status === 401) return;
     return renderFatal(e);
   }
+  // Cache OS user for the login form's username prefill on the next
+  // expired-session refresh — avoids firing a /api/status from the
+  // login screen, which would 401 and look noisy in dev tools.
+  try {
+    if (status && status.current_os_user) {
+      sessionStorage.setItem('outpost.lastOSUser', status.current_os_user);
+    }
+  } catch (_) { /* sessionStorage disabled is fine */ }
   renderMain(status, cfg);
 }
 
@@ -548,10 +561,17 @@ function renderLogin() {
     }
   });
   app.append(form);
-  // Prefill the username with the running OS user if we can guess.
-  api('GET', '/api/status').then(s => {
-    if (s.current_os_user) form.querySelector('input[name=user]').value = s.current_os_user;
-  }).catch(() => {});
+  // Prefill the username from the last successful /api/status if we
+  // cached one — that way we don't fire a /api/status that will 401
+  // and show up as a noisy extra request in dev tools. First-load
+  // (no cache) just shows an empty Username field; the operator
+  // types it once and we cache for next time.
+  try {
+    const cached = sessionStorage.getItem('outpost.lastOSUser');
+    if (cached) form.querySelector('input[name=user]').value = cached;
+  } catch (_) { /* sessionStorage disabled is fine */ }
+  // Focus username on first paint so the operator can type immediately.
+  setTimeout(() => form.querySelector('input[name=user]')?.focus(), 0);
 }
 
 // activeTab is persisted across renders so a save-triggered re-render
