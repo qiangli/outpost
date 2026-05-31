@@ -388,6 +388,16 @@ async function api(method, path, body) {
   let data = {};
   try { data = await resp.json(); } catch (_) {}
   if (!resp.ok) {
+    // Session expired between page load and now: the SPA still has
+    // cached cfg from the prior session and is rendering stale state,
+    // but every save attempts a 401 and the catch blocks (in toggles,
+    // forms, etc.) revert the visual. That looks like "toggles don't
+    // work" without revealing the actual cause. Force the login
+    // overlay instead so the operator re-auths and the cached state
+    // gets refreshed.
+    if (resp.status === 401) {
+      renderLogin();
+    }
     const err = new Error(data.error || resp.statusText);
     err.status = resp.status;
     throw err;
@@ -1952,14 +1962,13 @@ function renderMain(status, cfg) {
      subBlock: buildPodmanSubBlock},
     {key: 'ollama',    fileKey: 'ollama_enabled',    label: 'Ollama',    daemon: cfg.ollama || {},
      subBlock: buildOllamaSubBlock},
-    // OTel surfaces ycode's embedded Prometheus / Alertmanager /
-    // VictoriaLogs / Jaeger / Perses as five reverse-proxy apps
-    // (otel-{prometheus,logs,alerts,traces,dashboard}). Toggle on to
-    // expose them through cloudbox; data plane lights up only when
-    // ycode is up. Lets operators view logs/traces/alerts via the
-    // web UIs without dropping to the shell.
-    {key: 'otel',      fileKey: 'otel_enabled',      label: 'OTel',      enabled: !!cfg.otel_enabled,
-     subBlock: buildOtelSubBlock},
+    // OTel row hidden from the SPA again — the per-host views work
+    // (otel-prometheus, otel-logs, otel-alerts, otel-traces,
+    // otel-dashboard tiles publish when otel_enabled is on) but the
+    // SPA-level toggle invites UX confusion until the OTel story has
+    // a proper home. CLI/MCP can still flip the toggle for operators
+    // who specifically need the per-host views.
+    // Re-expose by inserting the same `{key: 'otel', ...}` entry here.
   ];
 
   const built = el('fieldset', {});
