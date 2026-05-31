@@ -58,6 +58,9 @@ func builtinsShowCmd() *cobra.Command {
 			row("otel_pool", view.OtelPoolEnabled)
 			row("ycode_share", view.YcodeShareEnabled)
 			row("ycode_share_require_login", view.YcodeShareRequireLogin)
+			for _, s := range view.YcodeShareSurfaces {
+				row("  "+s.Name, s.Enabled)
+			}
 			row("cluster", view.Cluster.Enabled)
 			mode := view.Cluster.Mode
 			if mode == "" {
@@ -78,6 +81,7 @@ func builtinsSetCmd() *cobra.Command {
 		updateMode, autoUpgradeLegacy                                                                                     string
 		sshForwardSockets                                                                                                 []string
 		clearSSHForwardSockets                                                                                            bool
+		ycodeShareSurfaces                                                                                                map[string]string
 	)
 	cmd := &cobra.Command{
 		Use:   "set",
@@ -134,6 +138,18 @@ func builtinsSetCmd() *cobra.Command {
 			}
 			if params.YcodeShareRequireLogin, err = parseToggle("ycode-share-require-login", ycodeShareRequireLogin); err != nil {
 				return err
+			}
+			if len(ycodeShareSurfaces) > 0 {
+				params.YcodeShareSurfaces = map[string]bool{}
+				for k, v := range ycodeShareSurfaces {
+					b, perr := parseToggle("ycode-share-surface "+k, v)
+					if perr != nil {
+						return perr
+					}
+					if b != nil {
+						params.YcodeShareSurfaces[k] = *b
+					}
+				}
 			}
 			if params.Cluster, err = parseToggle("cluster", cluster); err != nil {
 				return err
@@ -198,6 +214,7 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&otelPool, "otel-pool", "", "on|off — allow cloudbox to federate queries across this host's observability stack")
 	cmd.Flags().StringVar(&ycodeShare, "ycode-share", "", "on|off — expose ycode's home/landing page through the matrix tunnel (default on when ycode is on)")
 	cmd.Flags().StringVar(&ycodeShareRequireLogin, "ycode-share-require-login", "", "on|off — require cloudbox OS-password elevation for the 'ycode' app (default off; on = OS password popup like /shell)")
+	cmd.Flags().StringToStringVar(&ycodeShareSurfaces, "ycode-share-surface", nil, "Toggle a ycode-share surface, repeatable: --ycode-share-surface ycode-canvas=on --ycode-share-surface ycode-git=on")
 	cmd.Flags().StringVar(&cluster, "cluster", "", "on|off — join cloudbox virtual-podman cluster")
 	cmd.Flags().StringVar(&clusterMode, "cluster-mode", "", "vkpodman|agent — agent (default; real k3s-agent in the outpost-runtime container, conformance-track) or vkpodman (v1 virtual-kubelet shim, kept for outposts that integrate with host-side podman tooling outside K8s)")
 	cmd.Flags().StringVar(&updateMode, "update", "", "auto|manual|never — policy for cloudbox-pushed self-upgrades")

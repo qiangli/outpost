@@ -6,6 +6,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
+	"github.com/qiangli/outpost/internal/agent/otel"
 	"github.com/qiangli/outpost/internal/agent/ycode"
 )
 
@@ -69,6 +70,36 @@ type YcodeView struct {
 	APIEndpoint       string `json:"api_endpoint,omitempty"`
 	Version           string `json:"version,omitempty"`
 	DownloadURL       string `json:"download_url"`
+}
+
+// YcodeShareSurfaceView is one row in the SPA's ycode-share toggle
+// list — the catalog entry's metadata plus the effective on/off
+// state (after applying per-surface overlay against catalog default).
+type YcodeShareSurfaceView struct {
+	Name      string `json:"name"`
+	Path      string `json:"path"`
+	Label     string `json:"label"`
+	Enabled   bool   `json:"enabled"`
+	DefaultOn bool   `json:"default_on"`
+}
+
+// toYcodeShareSurfacesView walks the catalog and folds the per-surface
+// overlay against each entry's DefaultOn, producing the effective
+// state the SPA renders. Always returns the full catalog so the UI
+// can show every available toggle, including disabled ones.
+func toYcodeShareSurfacesView(overlay map[string]bool) []YcodeShareSurfaceView {
+	cat := otel.YcodeSurfaces()
+	out := make([]YcodeShareSurfaceView, 0, len(cat))
+	for _, s := range cat {
+		out = append(out, YcodeShareSurfaceView{
+			Name:      s.Name,
+			Path:      s.Path,
+			Label:     s.Label,
+			Enabled:   otel.YcodeSurfaceEnabled(overlay, s.Name),
+			DefaultOn: s.DefaultOn,
+		})
+	}
+	return out
 }
 
 func toYcodeView(enabled bool, info ycode.Info) YcodeView {
@@ -151,6 +182,11 @@ type SafeView struct {
 	Ycode                  YcodeView            `json:"ycode"`
 	YcodeShareEnabled      bool                 `json:"ycode_share_enabled"`
 	YcodeShareRequireLogin bool                 `json:"ycode_share_require_login"`
+	// YcodeShareSurfaces is the catalog rendered as effective state:
+	// every entry the SPA might offer, with the boolean folding the
+	// per-surface overlay against the catalog's DefaultOn. The SPA
+	// renders one toggle row per entry; the value drives the switch.
+	YcodeShareSurfaces []YcodeShareSurfaceView `json:"ycode_share_surfaces"`
 	UpdateMode            string               `json:"update_mode"`
 	LLMPool               LLMPoolStatusView    `json:"llm_pool"`
 	Cluster               ClusterView          `json:"cluster"`
@@ -221,6 +257,7 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		Ycode:                  toYcodeView(fc.YcodeOn(), ycode.Detect()),
 		YcodeShareEnabled:      fc.YcodeShareOn(),
 		YcodeShareRequireLogin: fc.YcodeShareRequireLoginOn(),
+		YcodeShareSurfaces:     toYcodeShareSurfacesView(fc.YcodeShareSurfaces),
 		UpdateMode:            fc.UpdateModeName(),
 		LLMPool:               s.llmPoolStatusView(fc),
 		Cluster:               toClusterView(fc),

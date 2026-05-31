@@ -208,6 +208,16 @@ type FileConfig struct {
 	// for owners"); explicit true is honored.
 	YcodeShareRequireLogin *bool `json:"ycode_share_require_login,omitempty"`
 
+	// YcodeShareSurfaces is the per-surface opt-in overlay for the
+	// ycode-share catalog (see internal/agent/otel/ycode_surfaces.go).
+	// Map keys are tile names (`ycode`, `ycode-canvas`, `ycode-ollama`,
+	// `ycode-git`, `ycode-memos`, `ycode-graph`); values are explicit
+	// on/off. Absent keys fall back to the catalog's DefaultOn — today
+	// only `ycode` (the chat) is default-on, so an operator who just
+	// flips ycode_share_enabled gets the chat tile and nothing else
+	// until they opt in to additional surfaces from the SPA.
+	YcodeShareSurfaces map[string]bool `json:"ycode_share_surfaces,omitempty"`
+
 	// UpdateMode is the per-host policy for cloudbox-pushed
 	// self-upgrades at POST /admin/upgrade. Three values:
 	//

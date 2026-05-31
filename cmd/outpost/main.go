@@ -331,34 +331,40 @@ func startCmd() *cobra.Command {
 			}
 
 			// ycode UI share. When YcodeShareOn (default on whenever ycode
-			// is enabled), expose ycode's home/landing SPA at /ycode/ on the
-			// bearer-authed proxy as a `ycode` built-in app. Cloudbox's
-			// DefaultApps already lists `ycode` and renders a tile; the
-			// ycode bearer is auto-injected per request via SetProxyWrap
-			// so cloudbox callers don't see the ycode credential.
+			// is enabled), iterate the ycode surfaces catalog and register
+			// each opted-in surface as its own per-tile built-in app
+			// (`ycode` for chat, `ycode-canvas`, `ycode-ollama`, etc.).
+			// The per-surface overlay is FileConfig.YcodeShareSurfaces;
+			// catalog defaults supply the rest. Cloudbox's DefaultApps
+			// lists `ycode` so the chat tile renders automatically; the
+			// other tiles appear once the operator opts in from the SPA.
 			//
-			// RequireLogin=false intentionally: ycode is a per-user agentic
-			// engine where owner == user. Forcing OS-password elevation
-			// for the owner to reach their own ycode is UX friction with
-			// no real security gain — outpost already authenticates
-			// upstream via the ycode bearer. Cloudbox's hostAuthGate
-			// still gates non-owners (sharees go through the standard
-			// HostShare path), so the public surface is unchanged from a
-			// trust perspective.
+			// RequireLogin=false by default for these owner-targeted
+			// agentic surfaces (matches custom-app conventions; cloudbox's
+			// hostAuthGate still gates non-owners via HostShare). Operators
+			// who want OS-password elevation flip ycode_share_require_login
+			// — it applies to ALL ycode surfaces uniformly.
 			if fc.YcodeOn() && fc.YcodeShareOn() {
 				if t := otel.Detect(); t.Available {
-					target := t.ProxyURL + "/ycode/"
-					if err := apps.RegisterWithMeta(
-						"ycode", target,
-						agent.AppMeta{
-							RequireLogin: fc.YcodeShareRequireLoginOn(),
-							Capabilities: &agent.AppCapabilities{Type: "ycode"},
-						},
-					); err != nil {
-						slog.Warn("ycode builtin: register", "err", err)
-					} else {
-						slog.Info("ycode builtin: registered", "target", target)
-						apps.SetProxyWrap("ycode", otel.BearerInjector(t.Token))
+					wrap := otel.BearerInjector(t.Token)
+					requireLogin := fc.YcodeShareRequireLoginOn()
+					for _, s := range otel.YcodeSurfaces() {
+						if !otel.YcodeSurfaceEnabled(fc.YcodeShareSurfaces, s.Name) {
+							continue
+						}
+						target := t.ProxyURL + s.Path
+						if err := apps.RegisterWithMeta(
+							s.Name, target,
+							agent.AppMeta{
+								RequireLogin: requireLogin,
+								Capabilities: &agent.AppCapabilities{Type: s.Name},
+							},
+						); err != nil {
+							slog.Warn("ycode builtin: register", "surface", s.Name, "err", err)
+							continue
+						}
+						slog.Info("ycode builtin: registered", "surface", s.Name, "target", target)
+						apps.SetProxyWrap(s.Name, wrap)
 					}
 				} else {
 					slog.Warn("ycode share enabled but ycode proxy not detected — skipping", "manifest", t.ManifestPath)

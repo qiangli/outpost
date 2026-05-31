@@ -1209,6 +1209,44 @@ function buildYcodeSubBlock(parent, cfg, status) {
   if (!shareOn) loginRow.append(el('span', {class: 'hint'}, '(turn on Share ycode UI first)'));
   parent.append(loginRow);
 
+  // Per-surface toggle checklist. The server hands us the catalog +
+  // effective state as cfg.ycode_share_surfaces; we render one switch
+  // row per entry. Operators flip canvas/ollama/git/memos/graph here.
+  // The map_partial-merge admincore semantics mean each toggle POSTs
+  // just its own key — other surfaces stay where they were.
+  const surfaces = Array.isArray(cfg.ycode_share_surfaces) ? cfg.ycode_share_surfaces : [];
+  if (surfaces.length > 0) {
+    const surfBox = el('div', {style: 'margin-top:0.5rem;padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;background:#2563eb11;font-size:0.85rem;'});
+    surfBox.append(el('div', {style: 'font-weight:600;margin-bottom:0.3rem'}, 'Surfaces'));
+    for (const surf of surfaces) {
+      const r = el('div', {class: 'item-row' + (!shareOn ? ' dim' : '')});
+      const ssw = switchEl({checked: !!surf.enabled && shareOn, disabled: !shareOn});
+      ssw.input.addEventListener('change', async () => {
+        const newVal = ssw.input.checked;
+        ssw.input.disabled = true;
+        try {
+          const res = await api('POST', '/api/config/builtins', {ycode_share_surfaces: {[surf.name]: newVal}});
+          msg('ok', `${surf.label} ${newVal ? 'on' : 'off'}.`);
+          noteRestartPending(res);
+        } catch (e) {
+          ssw.input.checked = !newVal;
+          ssw.input.disabled = false;
+          msg('err', e.message || 'Save failed');
+        }
+      });
+      r.append(
+        ssw.wrap,
+        el('span', {class: 'label'}, surf.label, ' ', el('code', {class: 'key-hint'}, surf.name)),
+      );
+      surfBox.append(r);
+    }
+    surfBox.append(el('div', {class: 'hint', style: 'margin-top:0.4rem'},
+      'Each surface becomes a tile at ',
+      el('code', {class: 'key-hint'}, '/h/<host>/app/<name>/'),
+      '. Operators pick which ones to expose.'));
+    parent.append(surfBox);
+  }
+
   const box = el('div', {style: 'margin-top:0.5rem;padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;background:#2563eb11;font-size:0.85rem;'});
   const grid = el('div', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.2rem 0.75rem'});
   const kv = (k, v) => {
@@ -1911,14 +1949,14 @@ function renderMain(status, cfg) {
      subBlock: buildPodmanSubBlock},
     {key: 'ollama',    fileKey: 'ollama_enabled',    label: 'Ollama',    daemon: cfg.ollama || {},
      subBlock: buildOllamaSubBlock},
-    // OTel row intentionally hidden from the SPA while fleet aggregation
-    // is deferred — kubernetes-native observability covers the typical
-    // use case, and per-host views are reachable via custom viewer apps
-    // hitting /h/<host>/app/otel-<surface>/ directly. The backend wiring
-    // (FileConfig.OtelEnabled, the five otel-* built-in apps, the
-    // BearerInjector, buildOtelSubBlock below) is intact; CLI/MCP can
-    // still flip the toggle for operators who specifically need it.
-    // Re-expose by inserting the same `{key: 'otel', ...}` entry here.
+    // OTel surfaces ycode's embedded Prometheus / Alertmanager /
+    // VictoriaLogs / Jaeger / Perses as five reverse-proxy apps
+    // (otel-{prometheus,logs,alerts,traces,dashboard}). Toggle on to
+    // expose them through cloudbox; data plane lights up only when
+    // ycode is up. Lets operators view logs/traces/alerts via the
+    // web UIs without dropping to the shell.
+    {key: 'otel',      fileKey: 'otel_enabled',      label: 'OTel',      enabled: !!cfg.otel_enabled,
+     subBlock: buildOtelSubBlock},
   ];
 
   const built = el('fieldset', {});
