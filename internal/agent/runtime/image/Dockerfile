@@ -8,20 +8,44 @@
 # daemon passes in via env vars. The image carries no outpost-specific
 # state; identity comes from runtime env.
 #
-# Build (cross-compile outpost-cni first; outpost daemon doesn't go in):
-#   GOOS=linux GOARCH=arm64 go build -o script/linux-outpost/outpost-cni ./cmd/outpost-cni
-#   ycode podman build -t outpost-runtime:dev script/linux-outpost
+# Build (host-side, via the outpost binary):
+#   outpost cluster build-runtime
+#
+# Behind the scenes that command materializes this directory tree
+# (Dockerfile + entrypoint.sh + cni/ source) from `//go:embed` to a
+# tempdir and runs `podman build -t outpost-runtime:dev .` against it.
+# Layers are cached locally by podman so subsequent rebuilds reuse the
+# base images + apt/curl steps — only the small bits that change
+# (entrypoint, CNI source) re-execute. The host needs network the
+# first time for the public-registry pulls; cached runs are offline-OK.
 #
 # Run (the outpost daemon does this; manual for testing):
-#   ycode podman run -d --name <agent-name>-runtime --privileged \
+#   podman run -d --name <agent-name>-runtime --privileged \
 #       -e OUTPOST_AGENT_NAME=<agent-name> \
 #       -e OUTPOST_NODE_TOKEN=K10...::node:... \
 #       -e OUTPOST_API_PORT=6443 \
+#       -e OUTPOST_KUBELET_PORT=17050 \
 #       -e OUTPOST_OVERLAY_LOGIN=https://cb/overlay/headscale \
 #       -e OUTPOST_OVERLAY_AUTHKEY=tskey-... \
-#       -e OUTPOST_OVERLAY_POD_CIDR=10.42.5.0/24 \
+#       -e OUTPOST_POD_CIDR=10.42.5.0/24 \
 #       outpost-runtime:dev
 
+# ---------- Stage 1: outpost-cni builder ----------
+# Compiles the per-node CNI plugin from its embedded source. Stdlib
+# only — no module proxy needed at image-build time. Pinned to the
+# same Go minor we use on the host so the runtime binary is consistent.
+FROM golang:1.25-alpine AS cni-builder
+WORKDIR /src
+# Copy go.mod first so the (currently no-op) `go mod download` layer
+# stays cached when only .go source changes. Mirrors the canonical Go
+# Dockerfile pattern; future-proofs against the day outpost-cni grows
+# a third-party dep.
+COPY cni/go.mod ./
+RUN go mod download
+COPY cni/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /outpost-cni .
+
+# ---------- Stage 2: runtime ----------
 FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -66,9 +90,11 @@ RUN CNI_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo amd64) && \
         | tar -xz -C /opt/cni/bin
 
 # Cloudbox CNI plugin — kubelet inside the container shells out to this
-# on every pod ADD/DEL (multi-outpost overlay mode only; single-node falls
-# back to the standard bridge plugin above).
-COPY outpost-cni /opt/cni/bin/outpost-cni
+# on every pod ADD/DEL (multi-outpost overlay mode only; single-node
+# falls back to the standard bridge plugin above). Built from the
+# embedded source in stage 1 so we don't have to ship a pre-compiled
+# binary in the repo.
+COPY --from=cni-builder /outpost-cni /opt/cni/bin/outpost-cni
 RUN chmod +x /opt/cni/bin/outpost-cni && mkdir -p /etc/cni/net.d
 
 # Entrypoint reads OUTPOST_* env, writes the CNI conflist, starts

@@ -28,7 +28,7 @@ import (
 	"net"
 	"os"
 
-	"github.com/qiangli/outpost/cmd/outpost-cni/internal/plugin"
+	"github.com/qiangli/outpost/internal/agent/runtime/image/cni/internal/plugin"
 )
 
 const supportedCNIVersion = "0.4.0"

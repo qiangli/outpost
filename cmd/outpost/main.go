@@ -722,11 +722,12 @@ func startCmd() *cobra.Command {
 				RemotePort: cfg.RemotePort,
 			}}
 			// Kubelet routing is published from inside the k3s-agent
-			// runtime container (see script/linux-outpost/entrypoint.sh,
-			// which adds a [[proxies]] block to /tmp/frpc.toml when
-			// OUTPOST_KUBELET_PORT is non-zero). The host-side daemon
-			// can't reach the kubelet's 127.0.0.1 — different netns —
-			// so this publish lives where the kubelet does.
+			// runtime container (see internal/agent/runtime/image/
+			// entrypoint.sh, which adds a [[proxies]] block to
+			// /tmp/frpc.toml when OUTPOST_KUBELET_PORT is non-zero).
+			// The host-side daemon can't reach the kubelet's 127.0.0.1
+			// — different netns — so this publish lives where the
+			// kubelet does.
 
 			tunnel, err := agent.NewTunnel(agent.TunnelConfig{
 				ServerAddr: cfg.ServerAddr,

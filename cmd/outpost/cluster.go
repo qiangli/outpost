@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/agent/runtime"
 	"github.com/qiangli/outpost/internal/agent/userkube"
 	"github.com/qiangli/outpost/internal/agent/vkpodman"
 )
@@ -23,7 +24,67 @@ func clusterCmd() *cobra.Command {
 		Short: "Interact with the cloudbox virtual-podman cluster",
 	}
 	cmd.AddCommand(clusterKubeconfigCmd(), clusterUserKubeconfigCmd(),
-		clusterInitCmd(), clusterClearCmd())
+		clusterInitCmd(), clusterClearCmd(), clusterBuildRuntimeCmd())
+	return cmd
+}
+
+// clusterBuildRuntimeCmd builds the outpost-runtime container image
+// from the source embedded in this binary. The build context
+// (Dockerfile, entrypoint, outpost-cni source) ships with the outpost
+// binary itself — no source checkout or external download required.
+// Layers are cached by podman so reruns reuse the apt + curl + base
+// image steps and only re-execute the lines whose inputs changed.
+//
+// Run this once after upgrading the outpost binary so the runtime
+// container picks up entrypoint or CNI source changes (e.g. the
+// apiserver→kubelet routing wiring landed in v0.1.2). Restart the
+// runtime container afterwards: easiest path is `outpost restart`,
+// which causes the daemon to tear down and re-launch its supervised
+// container with the new image.
+func clusterBuildRuntimeCmd() *cobra.Command {
+	var (
+		tag  string
+		arch string
+	)
+	cmd := &cobra.Command{
+		Use:   "build-runtime",
+		Short: "Build the outpost-runtime container image from embedded sources",
+		Long: `Materialize the embedded Dockerfile + entrypoint + outpost-cni
+source to a tempdir and drive ` + "`podman build`" + ` to produce the
+local outpost-runtime image the cluster-mode supervisor expects.
+
+Caching: base images (` + "`golang:1.25-alpine`, `debian:trixie-slim`" + `)
+are cached in podman's local image store — important because Docker
+Hub rate-limits anonymous pulls. Intermediate RUN layers are NOT
+cached by ycode podman (the engine doesn't surface buildah's
+` + "`--layers`" + ` flag), so every rebuild re-executes the apt +
+curl steps. That's ~130 MB of network from non-rate-limited sources
+(GitHub releases, Tailscale CDN, Debian mirrors) — annoying but not
+blocking. Time to first-good-image is ~25 s on a fresh host.
+
+To force a clean rebuild including base images, remove them first
+(` + "`podman image rm outpost-runtime:dev golang:1.25-alpine debian:trixie-slim`" + `)
+then re-run.
+
+Examples:
+  outpost cluster build-runtime
+  outpost cluster build-runtime --tag outpost-runtime:next
+  outpost cluster build-runtime --arch amd64        # cross-build for an amd64 host
+`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ref, err := runtime.BuildImage(cmd.Context(), runtime.BuildOptions{
+				Tag:        tag,
+				TargetArch: arch,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stdout, "built %s — restart the runtime container (e.g. `outpost restart`) so the supervisor picks it up.\n", ref)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&tag, "tag", "", `image reference to produce (default: outpost-runtime:dev)`)
+	cmd.Flags().StringVar(&arch, "arch", "", `linux/* target arch ("amd64"|"arm64"); empty = host arch`)
 	return cmd
 }
 
