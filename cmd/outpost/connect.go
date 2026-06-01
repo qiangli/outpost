@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -640,65 +639,10 @@ func buildElevateURL(server string, port int, protocol, host string) (string, er
 	return u.String(), nil
 }
 
-// sessionCookiePath returns the on-disk cache path for a given host.
-func sessionCookiePath(host string) (string, error) {
-	base, err := conf.DefaultCacheDir()
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(base, "sessions")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	// Sanitize: hostname can be anything cloudbox accepts; restrict the
-	// filename to a known charset so a hostile name can't escape the
-	// cache dir via path traversal.
-	safe := strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z':
-			return r
-		case r >= 'A' && r <= 'Z':
-			return r
-		case r >= '0' && r <= '9':
-			return r
-		case r == '-' || r == '_' || r == '.':
-			return r
-		default:
-			return '_'
-		}
-	}, host)
-	return filepath.Join(dir, safe+".cookie"), nil
-}
-
-func writeCookie(host, cookie string) error {
-	path, err := sessionCookiePath(host)
-	if err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := f.WriteString(cookie); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
-func readCookie(host string) (string, error) {
-	path, err := sessionCookiePath(host)
-	if err != nil {
-		return "", err
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(b)), nil
-}
+// writeCookie / readCookie are thin wrappers around the exported
+// helpers in `internal/agent/conf/sessions.go`. The concrete
+// implementation moved into the conf package so admincore-driven MCP
+// tools (e.g. outpost_ssh_exec) can read the same cache without
+// re-importing cmd/outpost.
+func writeCookie(host, cookie string) error  { return conf.WriteSessionCookie(host, cookie) }
+func readCookie(host string) (string, error) { return conf.ReadSessionCookie(host) }

@@ -76,7 +76,7 @@ func main() {
 		"Use a cached remote (~/.config/outpost/remotes/<name>.json). Set up with 'outpost remote login <name>'.")
 	root.AddCommand(
 		startCmd(), registerCmd(), stopCmd(),
-		sshProxyCmd(), sshConfigCmd(), connectCmd(),
+		sshProxyCmd(), sshConfigCmd(), sshTreeCmd(), connectCmd(),
 		outboundCmd(), jobsCmd(), fgCmd(), bgCmd(), killCmd(), runCmd(),
 		clusterCmd(), departCmd(), poolCmd(), kubectlCmd(),
 		// MCP-client CLI parity (Phase 1.5):

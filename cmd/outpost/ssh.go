@@ -23,6 +23,7 @@ import (
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
+	"github.com/qiangli/outpost/internal/agent/sshclient"
 )
 
 func sshProxyCmd() *cobra.Command {
@@ -76,7 +77,7 @@ func runSSHProxy(ctx context.Context, host string) error {
 		return errors.New("no auth credential: re-pair with `outpost register` against a cloudbox that returns access_token, or set OUTPOST_SESSION_JWT to a user session JWT")
 	}
 
-	wsURL, err := buildSSHWSURL(fc.ServerAddr, fc.ServerPort, fc.Protocol, host)
+	wsURL, err := sshclient.BuildWSURL(fc.ServerAddr, fc.ServerPort, fc.Protocol, host)
 	if err != nil {
 		return err
 	}
@@ -142,54 +143,37 @@ func pipeSSHProxy(ctx context.Context, conn *websocket.Conn, netConn net.Conn, s
 	}
 }
 
-// dialSSHWS opens the WebSocket to cloudbox's /h/<host>/ssh endpoint,
-// attaching both the Bearer access token (which authenticates the
-// caller as the cloudbox-issued service principal) and any cached
-// matrix_elev cookie (which proves a recent OS-password elevation).
-// When elevation is missing or stale cloudbox replies 401/403 — we
-// transparently re-elevate via /dev/tty if interactive, otherwise
-// surface a structured EAUTHREQUIRED error so agents can prompt the
-// human through their own UI.
+// dialSSHWS is the cmd/outpost-side façade over sshclient.DialWS — it
+// adds the interactive recovery callback that re-elevates by prompting
+// the human at /dev/tty (calling runConnect). The transport mechanics
+// (bearer header, cookie attach, 401/403 retry) live in the shared
+// sshclient package so the in-process SSH client (`outpost ssh exec`,
+// MCP `outpost_ssh_exec`) reuses the same dial.
 func dialSSHWS(ctx context.Context, wsURL, bearer, host string) (*websocket.Conn, error) {
-	dialOpts := func(cookie string) *websocket.DialOptions {
-		h := http.Header{"Authorization": []string{"Bearer " + bearer}}
-		if cookie != "" {
-			h.Set("Cookie", "matrix_elev="+cookie)
-		}
-		return &websocket.DialOptions{HTTPHeader: h}
-	}
-
 	cookie, _ := readCookie(host)
-	for attempt := 0; attempt < 2; attempt++ {
-		dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		conn, resp, err := websocket.Dial(dialCtx, wsURL, dialOpts(cookie))
-		cancel()
-		if err == nil {
-			conn.SetReadLimit(-1)
-			return conn, nil
+	onElevate := func(ctx context.Context, h string) (string, error) {
+		// Agents call `outpost connect` themselves; only prompt when
+		// there's a real human at the keyboard.
+		if !haveTTY() {
+			return "", errors.New("no TTY for password prompt")
 		}
-		// Only the elevation gate's 401/403 path is worth retrying. Any
-		// other failure (DNS, refused, TLS, …) bubbles up immediately.
-		if resp == nil || (resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden) {
-			return nil, fmt.Errorf("dial %s: %w", wsURL, err)
+		fmt.Fprintf(os.Stderr, "outpost: %s requires Connect; prompting for OS password…\n", h)
+		// Interactive recovery uses cloudbox's default TTL — the
+		// operator just wants the session back. Pass --ttl on the
+		// outer `outpost connect` for a long-lived override.
+		if err := runConnect(ctx, h, "", false, false, 0); err != nil {
+			return "", err
 		}
-		// Cloudbox said "elevation needed". Try once to recover by
-		// prompting locally — but only if we have a TTY (human at the
-		// keyboard). Agents must call `outpost elevate` themselves.
-		if attempt > 0 || !haveTTY() {
-			return nil, eauthRequiredError(host, err)
-		}
-		fmt.Fprintf(os.Stderr, "outpost: %s requires Connect; prompting for OS password…\n", host)
-		// Interactive recovery from EAUTHREQUIRED uses cloudbox's
-		// default TTL — the operator just wants the session back, not
-		// a long-lived override. Pass --ttl on the outer
-		// `outpost connect` if they want something different.
-		if eerr := runConnect(ctx, host, "", false, false, 0); eerr != nil {
-			return nil, fmt.Errorf("connect %s: %w", host, eerr)
-		}
-		cookie, _ = readCookie(host)
+		fresh, _ := readCookie(h)
+		return fresh, nil
 	}
-	return nil, eauthRequiredError(host, errors.New("retry budget exhausted"))
+	return sshclient.DialWS(ctx, sshclient.DialOptions{
+		WSURL:     wsURL,
+		Bearer:    bearer,
+		Cookie:    cookie,
+		Host:      host,
+		OnElevate: onElevate,
+	})
 }
 
 func haveTTY() bool {
@@ -199,48 +183,6 @@ func haveTTY() bool {
 	}
 	_ = f.Close()
 	return true
-}
-
-// eauthRequiredError is the well-known stderr message agents grep for
-// when their cached cookie is gone. The exit code (4 by convention,
-// matching `sshpass`'s "host authentication failed") plus this prefix
-// gives agent harnesses a stable contract.
-func eauthRequiredError(host string, cause error) error {
-	return fmt.Errorf("outpost: EAUTHREQUIRED for host %q — run `outpost connect %s` (or pipe a password to `outpost connect --stdin %s`) and retry (%v)", host, host, host, cause)
-}
-
-// buildSSHWSURL constructs the wss/ws URL for cloudbox's
-// /h/<host>/ssh endpoint, given the server-addr fields the outpost
-// already has cached in agent.json. server may be a bare hostname
-// ("ai.dhnt.io"), host:port ("172.16.25.23:18080"), or a full URL
-// ("https://example.com"). protocol is the matrix-tunnel transport
-// returned by /api/register/exchange — "wss" → wss://, anything else
-// → ws://.
-func buildSSHWSURL(server string, port int, protocol, host string) (string, error) {
-	s := strings.TrimSpace(server)
-	// If there's no scheme, treat the input as "host[:port]" and inject
-	// one so url.Parse can split host/port for us.
-	if !strings.Contains(s, "://") {
-		s = "http://" + s
-	}
-	u, err := url.Parse(s)
-	if err != nil {
-		return "", fmt.Errorf("parse server url %q: %w", server, err)
-	}
-	// Default to ws://; flip to wss:// only for the explicit wss case.
-	scheme := "ws"
-	if strings.EqualFold(strings.TrimSpace(protocol), "wss") {
-		scheme = "wss"
-	} else if strings.EqualFold(u.Scheme, "https") || strings.EqualFold(u.Scheme, "wss") {
-		scheme = "wss"
-	}
-	u.Scheme = scheme
-	// Apply port from agent.json only when the URL form didn't carry one.
-	if u.Port() == "" && port > 0 {
-		u.Host = u.Hostname() + ":" + strconv.Itoa(port)
-	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/h/" + url.PathEscape(host) + "/ssh"
-	return u.String(), nil
 }
 
 func sshConfigCmd() *cobra.Command {
