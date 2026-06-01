@@ -49,6 +49,20 @@ func (s *Server) registerReadOnlyResources() {
 			return map[string]any{"outbound": s.core.ListOutbound()}, nil
 		})
 
+	// outpost://peers — Wave 3B.2. The daemon's live discovery cache
+	// (mDNS browse hits, HTTP probe results, NAT hints, gossip in
+	// 3B.3). Always registered: returns an empty list when discovery
+	// is off so MCP clients don't have to feature-detect.
+	s.addJSONResource("outpost://peers",
+		"Discovered peers (LAN cache)",
+		"Snapshot of the local outpost's discovery cache: peers we've seen via mDNS, HTTP probe, cloudbox NAT hints, or gossip. Each entry includes PeerID, agent name, assigned hostname, endpoints, OAuth2 owner, paired flag, and trust level. Empty list when discovery_enabled is off.",
+		func(ctx context.Context) (any, error) {
+			if s.peersFn == nil {
+				return map[string]any{"peers": []any{}}, nil
+			}
+			return s.peersFn(), nil
+		})
+
 	if s.ledger != nil {
 		s.addJSONResource("outpost://upgrade-history",
 			"Upgrade ledger",

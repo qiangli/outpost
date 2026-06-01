@@ -56,6 +56,11 @@ type Server struct {
 	// by main.go alongside core.
 	upgrader *upgrade.Worker
 	ledger   *upgrade.Ledger
+
+	// peersFn returns the daemon's current discovery cache snapshot.
+	// Wired by main.go when discovery is on; nil otherwise (then the
+	// outpost://peers resource just returns an empty list).
+	peersFn func() any
 }
 
 // Deps is what main.go threads in. Core is the shared admincore.Server
@@ -73,6 +78,10 @@ type Deps struct {
 	RotateFn func() (string, error)
 	Upgrader *upgrade.Worker
 	Ledger   *upgrade.Ledger
+	// PeersFn returns the daemon's current discovery cache snapshot
+	// (typically discovery.Cache.Snapshot()). Nil when discovery is
+	// off; the outpost://peers resource then returns an empty list.
+	PeersFn func() any
 }
 
 // New constructs the MCP server and registers every parity tool. Call
@@ -95,6 +104,7 @@ func New(deps Deps) (*Server, error) {
 		rotateFn: deps.RotateFn,
 		upgrader: deps.Upgrader,
 		ledger:   deps.Ledger,
+		peersFn:  deps.PeersFn,
 	}
 	s.mcp = mcp.NewServer(&mcp.Implementation{
 		Name:    "outpost",

@@ -533,6 +533,16 @@ func startCmd() *cobra.Command {
 				},
 				Upgrader: upgradeWorker,
 				Ledger:   upgradeLedger,
+				// Wave 3B.2: pluggable discovery-cache snapshot. The
+				// closure reads `daemonCache` lazily; it's nil-safe
+				// because the var is package-scoped and stays nil
+				// when discovery is off.
+				PeersFn: func() any {
+					if daemonCache == nil {
+						return map[string]any{"peers": []any{}}
+					}
+					return daemonCache.Snapshot()
+				},
 			})
 			if err != nil {
 				return fmt.Errorf("mcp api: %w", err)

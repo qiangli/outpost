@@ -30,9 +30,138 @@ import (
 func peersCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "peers",
-		Short: "Inspect reachability history and temporal-presence predictions",
+		Short: "Inspect the discovery cache, reachability history, and temporal predictions",
 	}
-	cmd.AddCommand(peersHistoryCmd(), peersPredictedCmd())
+	cmd.AddCommand(peersListCmd(), peersHistoryCmd(), peersPredictedCmd(), peersRouteToCmd())
+	return cmd
+}
+
+// peersListCmd surfaces the daemon's live discovery cache via MCP
+// resource `outpost://peers`. Combines mDNS browse hits, HTTP probe
+// pins, and (Wave 3A.2) cloudbox NAT-hint entries.
+func peersListCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "Show the daemon's current discovery cache (mDNS + HTTP probes + hints)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			session, err := dialMCP(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer session.close()
+			var peers []discovery.Peer
+			if err := session.readResource(cmd.Context(), "outpost://peers", &peers); err != nil {
+				return err
+			}
+			if jsonOut {
+				b, _ := json.MarshalIndent(peers, "", "  ")
+				fmt.Println(string(b))
+				return nil
+			}
+			if len(peers) == 0 {
+				fmt.Println("Discovery cache is empty. Confirm discovery_enabled=on and peers are reachable on the LAN.")
+				return nil
+			}
+			fmt.Printf("%-22s  %-18s  %-26s  %-10s  %-8s  %s\n",
+				"AGENT", "ASSIGNED.local", "PEER-ID", "TRUST", "PAIRED", "ENDPOINTS")
+			for _, p := range peers {
+				paired := "no"
+				if p.Paired {
+					paired = "yes"
+				}
+				fmt.Printf("%-22s  %-18s  %-26s  %-10s  %-8s  %s\n",
+					truncStr(p.AgentName, 22),
+					truncStr(p.AssignedHostname, 18),
+					truncStr(string(p.ID), 26),
+					string(p.Trust),
+					paired,
+					summarizeEndpoints(p.Endpoints),
+				)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit JSON instead of a table")
+	return cmd
+}
+
+// peersRouteToCmd surfaces the PRoPHET-lite transitive hint: when we
+// want to reach peer C but can't directly, list any peer B such that
+// (B → C) appears in the local reachability ledger. Output is
+// "candidate hops, by recency" — operator decides whether to act.
+func peersRouteToCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "route-to <peer-name-or-id>",
+		Short: "List candidate ProxyJump hops to a peer based on the reachability ledger",
+		Long: `route-to scans the reachability ledger for any peer that has
+successfully dialed the named destination. Useful as a hint when
+direct dial fails — operator can then try
+'outpost ssh exec <dest> --jump <candidate>' to route through.
+
+Phase 1: surfaces hints only; the daemon does NOT auto-route through
+unverified peers. Phase 2 (alongside Memberlist gossip) widens the
+search to include observations gossiped from other peers.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target := args[0]
+			path, err := discovery.DefaultLedgerPath()
+			if err != nil {
+				return err
+			}
+			l, err := discovery.OpenLedger(path)
+			if err != nil {
+				return err
+			}
+			edges, err := l.Tail(0)
+			if err != nil {
+				return err
+			}
+			// Group successful dials by (peer destination, source self).
+			type hop struct {
+				ViaSelf   discovery.PeerID `json:"via_self"`
+				Endpoint  string           `json:"endpoint"`
+				LatencyMs int64            `json:"latency_ms"`
+				At        time.Time        `json:"at"`
+			}
+			matches := []hop{}
+			for _, e := range edges {
+				if e.PeerName == target || string(e.Peer) == target {
+					matches = append(matches, hop{
+						ViaSelf:   e.Self,
+						Endpoint:  e.Endpoint.HostPort(),
+						LatencyMs: e.LatencyMs,
+						At:        e.At,
+					})
+				}
+			}
+			if jsonOut {
+				b, _ := json.MarshalIndent(matches, "", "  ")
+				fmt.Println(string(b))
+				return nil
+			}
+			if len(matches) == 0 {
+				fmt.Printf("No ledger entries for %q. Try dialing once via 'outpost ssh exec %s -- echo ok'.\n", target, target)
+				return nil
+			}
+			fmt.Printf("Candidate routes to %q (most-recent first):\n\n", target)
+			fmt.Printf("%-22s  %-22s  %8s  %s\n",
+				"VIA (self-fingerprint)", "ENDPOINT", "LATENCY", "WHEN")
+			// Newest first.
+			for i := len(matches) - 1; i >= 0; i-- {
+				m := matches[i]
+				fmt.Printf("%-22s  %-22s  %5dms  %s\n",
+					truncStr(string(m.ViaSelf), 22),
+					truncStr(m.Endpoint, 22),
+					m.LatencyMs,
+					m.At.Local().Format("2006-01-02 15:04:05"),
+				)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit JSON instead of a table")
 	return cmd
 }
 

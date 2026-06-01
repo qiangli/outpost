@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sync/errgroup"
@@ -92,14 +93,28 @@ func startLANSSHListener(
 	})
 }
 
-// startDiscovery wires up the two LAN discovery surfaces when
+// daemonCache is the process-wide discovery cache populated by the
+// browse loop and consumed by the observation ticker, outpost peers
+// list, and the outpost://peers MCP resource. Lazy-initialized so
+// CLI invocations don't pay the cost.
+var daemonCache *discovery.Cache
+
+// daemonObservations is the per-peer EWMA model the observation
+// ticker writes into. Lazy-initialized; loaded from disk if a
+// prior daemon left a snapshot.
+var daemonObservations *discovery.Observations
+
+// startDiscovery wires up the LAN discovery surfaces when
 // fc.DiscoveryOn():
 //
 //	1. mDNS advertisement (`<assigned_hostname>._outpost._tcp`)
 //	2. HTTP /api/v1/discover/* listener (when DiscoveryHTTPListenAddr set)
+//	3. Background mDNS browse loop that populates daemonCache
+//	4. Observation ticker that feeds daemonObservations
 //
-// One gate (DiscoveryEnabled) covers both — operators decide once
-// "discovery on / off" rather than juggling two flags. Default off.
+// One gate (DiscoveryEnabled) covers all four — operators decide
+// once "discovery on / off" rather than juggling per-feature flags.
+// Default off.
 func startDiscovery(
 	gctx context.Context,
 	g *errgroup.Group,
@@ -142,9 +157,28 @@ func startDiscovery(
 		self.Endpoints = append(self.Endpoints, discovery.Endpoint{Kind: discovery.EndpointLANHTTPDiscover, Host: h, Port: p})
 	}
 
-	// Wave 3A.1 keeps the discovery cache out-of-band: /peers returns
-	// an empty list. Wave 3B wires the active-view cache here.
-	peersFn := func() []discovery.Peer { return nil }
+	// Wave 3B.2: wire the live discovery cache here so /peers returns
+	// what the browse loop has accumulated.
+	daemonCache = discovery.NewCache(0)
+	if obs, oerr := loadDaemonObservations(); oerr == nil {
+		daemonObservations = obs
+	}
+	peersFn := func() []discovery.Peer { return daemonCache.Snapshot() }
+
+	// Background mDNS browse: refresh the cache every browseInterval.
+	g.Go(func() error {
+		runDiscoveryBrowseLoop(gctx, daemonCache, peerID)
+		return nil
+	})
+
+	// Observation ticker: every ObsTickInterval, snapshot the
+	// cache's PeerIDs and feed them into the EWMA model.
+	if daemonObservations != nil {
+		g.Go(func() error {
+			runObservationTicker(gctx, daemonCache, daemonObservations)
+			return nil
+		})
+	}
 
 	if addr := strings.TrimSpace(fc.DiscoveryHTTPListenAddr); addr != "" {
 		discoSrv := discovery.NewServer(discovery.ServerOptions{
@@ -270,4 +304,72 @@ func portFromListenSpec(s string) int {
 		}
 	}
 	return port
+}
+
+// runDiscoveryBrowseLoop is the daemon-side mDNS browse poller. Every
+// browseInterval it does a one-shot LAN query, merges results into
+// the cache, and filters out our own announcement.
+const browseInterval = 30 * time.Second
+
+func runDiscoveryBrowseLoop(ctx context.Context, cache *discovery.Cache, selfID discovery.PeerID) {
+	// First browse immediately so `outpost peers list` shows
+	// something within ~3 seconds of startup, not 30.
+	browseAndMerge(ctx, cache, selfID)
+	tick := time.NewTicker(browseInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			browseAndMerge(ctx, cache, selfID)
+		}
+	}
+}
+
+func browseAndMerge(ctx context.Context, cache *discovery.Cache, selfID discovery.PeerID) {
+	browseCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	peers, err := discovery.Browse(browseCtx, discovery.BrowseOptions{
+		Timeout:    3 * time.Second,
+		SelfPeerID: selfID,
+	})
+	if err != nil && len(peers) == 0 {
+		slog.Debug("discovery browse: failed", "err", err)
+		return
+	}
+	for _, p := range peers {
+		cache.Upsert(p)
+	}
+}
+
+// runObservationTicker snapshots the cache every ObsTickInterval and
+// feeds the present PeerIDs into the EWMA. Each tick also persists
+// the model so a crash doesn't lose a week of observations.
+func runObservationTicker(ctx context.Context, cache *discovery.Cache, obs *discovery.Observations) {
+	tick := time.NewTicker(discovery.ObsTickInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-tick.C:
+			ids := cache.SnapshotIDs()
+			obs.Record(now, ids)
+			if err := obs.Save(); err != nil {
+				slog.Debug("observations: save failed", "err", err)
+			}
+		}
+	}
+}
+
+// loadDaemonObservations opens the persistent EWMA model at the
+// default path. Missing-file returns an empty model; we still
+// proceed.
+func loadDaemonObservations() (*discovery.Observations, error) {
+	path, err := discovery.DefaultObservationsPath()
+	if err != nil {
+		return nil, err
+	}
+	return discovery.OpenObservations(path)
 }
