@@ -130,11 +130,15 @@ func startDiscovery(
 		CloudboxBase:     cloudboxHTTPBase(fc),
 		Paired:           fc.AccessToken != "",
 	}
-	if h := strings.TrimSpace(fc.SSHListenAddr); h != "" {
-		self.Endpoints = append(self.Endpoints, discovery.Endpoint{Kind: discovery.EndpointLANSSH, Host: h})
+	// Split the listen-spec into Host + Port so receivers can dial
+	// without re-parsing. Bind-to-all addresses (0.0.0.0, ::) fall
+	// back to the assigned hostname so `<host>.local` resolution
+	// carries the dial forward.
+	if h, p := splitListenSpec(fc.SSHListenAddr, assignedHostname); p > 0 {
+		self.Endpoints = append(self.Endpoints, discovery.Endpoint{Kind: discovery.EndpointLANSSH, Host: h, Port: p})
 	}
-	if h := strings.TrimSpace(fc.DiscoveryHTTPListenAddr); h != "" {
-		self.Endpoints = append(self.Endpoints, discovery.Endpoint{Kind: discovery.EndpointLANHTTPDiscover, Host: h})
+	if h, p := splitListenSpec(fc.DiscoveryHTTPListenAddr, assignedHostname); p > 0 {
+		self.Endpoints = append(self.Endpoints, discovery.Endpoint{Kind: discovery.EndpointLANHTTPDiscover, Host: h, Port: p})
 	}
 
 	// Wave 3A.1 keeps the discovery cache out-of-band: /peers returns
@@ -219,6 +223,29 @@ func pickAdvertisedPort(fc *conf.FileConfig) int {
 		return p
 	}
 	return 0
+}
+
+// splitListenSpec splits a `host:port`, `:port`, or `port` listen-
+// spec into (host, port). Bind-to-all hosts (`0.0.0.0`, `::`, `""`)
+// fall back to the `<assigned-hostname>.local` form so the published
+// endpoint is dialable from peers; mDNS resolves the .local to the
+// caller's first non-loopback interface IP. Returns ("", 0) on
+// parse failure.
+func splitListenSpec(s, assignedHostname string) (string, int) {
+	port := portFromListenSpec(s)
+	if port == 0 {
+		return "", 0
+	}
+	host := ""
+	if i := strings.LastIndex(strings.TrimSpace(s), ":"); i >= 0 {
+		host = strings.TrimSpace(s)[:i]
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		if assignedHostname != "" {
+			host = assignedHostname + ".local"
+		}
+	}
+	return host, port
 }
 
 // portFromListenSpec extracts the port from a `host:port`, `:port`,

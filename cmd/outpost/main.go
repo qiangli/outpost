@@ -611,12 +611,14 @@ func startCmd() *cobra.Command {
 
 			admins := agent.NewAdminSet(cfg.AdminUsers)
 
-			// Load the SSH host key lazily — only when the SSH builtin is
-			// on. The key file is generated on first use (ed25519) and
+			// Load the SSH host key when either the SSH builtin or
+			// discovery is on — the key file doubles as the discovery
+			// PeerID anchor (fingerprint published in mDNS TXT and the
+			// HTTP /hello payload). Generated on first use (ed25519);
 			// persists across re-pairings so clients' known_hosts entries
 			// stay valid.
 			var sshHostKey ssh.Signer
-			if fc.SSHOn() {
+			if fc.SSHOn() || fc.DiscoveryOn() {
 				k, kerr := agent.LoadOrCreateHostKey()
 				if kerr != nil {
 					return fmt.Errorf("ssh host key: %w", kerr)
