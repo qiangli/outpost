@@ -186,14 +186,19 @@ func (p *Peer) AddSource(s Source) {
 // ReachabilityEdge is one observation from the reachability ledger:
 // "I (Self) successfully reached Peer via Endpoint at Time."
 // Used by Component 6 (edge gossip, Wave 3B) and Component 7
-// (temporal observations). Wave 3A.1 doesn't write these yet; the
-// type lives here so the storage shape is stable when 3B lands.
+// (temporal observations).
 type ReachabilityEdge struct {
-	Self      PeerID       `json:"self"`
-	Peer      PeerID       `json:"peer"`
-	Endpoint  Endpoint     `json:"endpoint"`
-	Transport string       `json:"transport"` // "ssh", "http-probe", "cloudbox-ssh"
-	LatencyMs int64        `json:"latency_ms"`
-	At        time.Time    `json:"at"`
-	Source    Source       `json:"source,omitempty"` // "" when locally observed; SourceGossip when received from a peer
+	Self PeerID `json:"self"`
+	// Peer is the destination's fingerprint when we have one (set
+	// for cert-verified or TOFU-pinned peers). For Wave 3B.1 cloudbox-
+	// reached hosts dialed by alias we don't yet know the fingerprint
+	// at dial time; PeerName carries the alias for those rows and
+	// Peer stays empty until fingerprint discovery lands in 3B.2.
+	Peer      PeerID    `json:"peer,omitempty"`
+	PeerName  string    `json:"peer_name,omitempty"`
+	Endpoint  Endpoint  `json:"endpoint"`
+	Transport string    `json:"transport"` // "ssh", "http-probe", "cloudbox-ssh", "lan-direct-ssh"
+	LatencyMs int64     `json:"latency_ms"`
+	At        time.Time `json:"at,omitzero"`
+	Source    Source    `json:"source,omitempty"` // "" when locally observed; SourceGossip when received from a peer
 }

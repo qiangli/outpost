@@ -289,6 +289,7 @@ func (s *Server) dialSSHChain(ctx context.Context, name, jumpOverride string) (*
 		_ = outerTransport.Close()
 		return nil, nil, internalErr("known_hosts callback: %s", err.Error())
 	}
+	outerHandshakeStart := time.Now()
 	cli, err := sshclient.Dial(ctx, sshclient.Config{
 		Transport:       outerTransport,
 		HostAlias:       sshclient.HostAliasForHost(outer.Host),
@@ -298,6 +299,7 @@ func (s *Server) dialSSHChain(ctx context.Context, name, jumpOverride string) (*
 	if err != nil {
 		return nil, nil, upstream("ssh handshake (outer %s): %s", outer.Host, err.Error())
 	}
+	recordEdge(outer, outerHandshakeStart)
 	clients = append(clients, cli)
 
 	// Hops 1..N: open direct-tcpip through the prior client, then
@@ -320,6 +322,7 @@ func (s *Server) dialSSHChain(ctx context.Context, name, jumpOverride string) (*
 			closeAll()
 			return nil, nil, internalErr("known_hosts callback: %s", err.Error())
 		}
+		hopHandshakeStart := time.Now()
 		hopCli, err := sshclient.Dial(ctx, sshclient.Config{
 			Transport:       hopConn,
 			HostAlias:       sshclient.HostAliasForHost(hop.Host),
@@ -330,6 +333,7 @@ func (s *Server) dialSSHChain(ctx context.Context, name, jumpOverride string) (*
 			closeAll()
 			return nil, nil, upstream("ssh handshake (hop %s): %s", hop.Host, err.Error())
 		}
+		recordEdge(hop, hopHandshakeStart)
 		clients = append(clients, hopCli)
 	}
 

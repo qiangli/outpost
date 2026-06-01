@@ -16,12 +16,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
+	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/agent/discovery"
 	"github.com/qiangli/outpost/internal/agent/sshclient"
 )
 
@@ -126,6 +131,7 @@ func dialSSHTargetChain(ctx context.Context, name, jumpOverride string) (*sshcli
 		_ = outerTransport.Close()
 		return nil, nil, err
 	}
+	outerHandshakeStart := time.Now()
 	outerCli, err := sshclient.Dial(ctx, sshclient.Config{
 		Transport:       outerTransport,
 		HostAlias:       sshclient.HostAliasForHost(outer.Host),
@@ -135,6 +141,7 @@ func dialSSHTargetChain(ctx context.Context, name, jumpOverride string) (*sshcli
 	if err != nil {
 		return nil, nil, fmt.Errorf("ssh handshake to %s: %w", outer.Host, err)
 	}
+	recordReachabilityEdge(outer, outerHandshakeStart)
 	clients = append(clients, outerCli)
 
 	// Hops 1..N: direct-tcpip → SSH layer.
@@ -155,6 +162,7 @@ func dialSSHTargetChain(ctx context.Context, name, jumpOverride string) (*sshcli
 			closeAll()
 			return nil, nil, herr
 		}
+		hopHandshakeStart := time.Now()
 		hopCli, err := sshclient.Dial(ctx, sshclient.Config{
 			Transport:       hopConn,
 			HostAlias:       sshclient.HostAliasForHost(hop.Host),
@@ -165,7 +173,44 @@ func dialSSHTargetChain(ctx context.Context, name, jumpOverride string) (*sshcli
 			closeAll()
 			return nil, nil, fmt.Errorf("ssh handshake to hop %s: %w", hop.Host, err)
 		}
+		recordReachabilityEdge(hop, hopHandshakeStart)
 		clients = append(clients, hopCli)
 	}
 	return clients[len(clients)-1], closeAll, nil
+}
+
+// recordReachabilityEdge appends a ReachabilityEdge to the default
+// reachability ledger after a successful SSH dial. Best-effort:
+// failure to write is logged, never fatal. Self-PeerID derives from
+// the local outpost's host key. Peer-PeerID stays empty until
+// fingerprint-discovery wiring lands in Wave 3B.2; until then
+// PeerName carries the target alias.
+func recordReachabilityEdge(t conf.SSHTarget, started time.Time) {
+	latency := time.Since(started).Milliseconds()
+	var self discovery.PeerID
+	if signer, err := agent.LoadOrCreateHostKey(); err == nil && signer != nil {
+		self = discovery.PeerID(ssh.FingerprintSHA256(signer.PublicKey()))
+	}
+	transport := "cloudbox-ssh"
+	if t.Direct {
+		transport = "lan-direct-ssh"
+	}
+	port := t.Port
+	if port <= 0 {
+		port = conf.DefaultSSHPort
+	}
+	edge := discovery.ReachabilityEdge{
+		Self:      self,
+		PeerName:  t.Name,
+		Endpoint:  discovery.Endpoint{Kind: discovery.EndpointLANSSH, Host: t.Host, Port: port},
+		Transport: transport,
+		LatencyMs: latency,
+		At:        time.Now(),
+	}
+	if !t.Direct {
+		edge.Endpoint.Kind = discovery.EndpointCloudboxSSH
+	}
+	if _, err := discovery.AppendLedgerEntry(edge); err != nil {
+		slog.Debug("reachability ledger: append failed", "err", err, "peer_name", t.Name)
+	}
 }

@@ -36,6 +36,7 @@ func registerDiscoveryCommands(root *cobra.Command) {
 		scanCmd(),
 		discoverCmd(),
 		repairCmd(),
+		peersCmd(),
 	)
 }
 
