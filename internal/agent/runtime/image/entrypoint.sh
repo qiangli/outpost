@@ -253,12 +253,25 @@ if [ "${OUTPOST_KUBELET_PORT}" != "0" ]; then
     KUBELET_ROUTING_ARGS="--kubelet-arg=port=${OUTPOST_KUBELET_PORT}"
 fi
 
-log "exec k3s agent --server=https://127.0.0.1:${OUTPOST_API_PORT} --node-name=${OUTPOST_AGENT_NAME} --with-node-id ${SNAPSHOTTER_ARGS} ${KUBELET_ROUTING_ARGS}"
+log "exec k3s agent --server=https://127.0.0.1:${OUTPOST_API_PORT} --node-name=${OUTPOST_AGENT_NAME} --with-node-id --disable-apiserver-lb ${SNAPSHOTTER_ARGS} ${KUBELET_ROUTING_ARGS}"
+# --disable-apiserver-lb pins the agent to --server (the STCP visitor
+# at 127.0.0.1:${OUTPOST_API_PORT}). Without it k3s's client-side
+# load-balancer learns the apiserver's mesh-IP advertise address
+# from /v1-k3s/server (DO App Platform's 100.127.x.y rotates per
+# deploy), swaps to that, and every Remotedialer reconnect after a
+# cloudbox restart fails with "connection refused" — the agent's
+# /v1-k3s/connect tunnel session never registers, and the embedded
+# apiserver's `kubectl exec` proxy 502s "failed to find Session for
+# client <node>". The cloudbox-side env-var override
+# (K3S_APISERVER_ADVERTISE) referenced in embed.go relies on a
+# vendored k3s patch that isn't actually present in the build — so
+# we close the gap on the agent side instead.
 exec /usr/local/bin/k3s agent \
     --server="https://127.0.0.1:${OUTPOST_API_PORT}" \
     --token="${OUTPOST_NODE_TOKEN}" \
     --node-name="${OUTPOST_AGENT_NAME}" \
     --with-node-id \
+    --disable-apiserver-lb \
     ${SNAPSHOTTER_ARGS} \
     ${KUBELET_ROUTING_ARGS} \
     --kubelet-arg=address=127.0.0.1 \
