@@ -163,6 +163,13 @@ type SafeView struct {
 	LocalAddr             string               `json:"local_addr,omitempty"`
 	VNCAddr               string               `json:"vnc_addr,omitempty"`
 	AdminAddr             string               `json:"admin_addr,omitempty"`
+	// Wave 3A discovery + LAN-direct knobs (all default off).
+	DiscoveryEnabled        bool   `json:"discovery_enabled"`
+	SSHListenAddr           string `json:"ssh_listen_addr,omitempty"`
+	DiscoveryHTTPListenAddr string `json:"discovery_http_listen_addr,omitempty"`
+	PeerTrustPolicy         string `json:"peer_trust_policy,omitempty"`
+	AssignedHostname        string `json:"assigned_hostname,omitempty"`
+	OAuth2Email             string `json:"oauth2_email,omitempty"`
 	AdminUsers            []string             `json:"admin_users"`
 	Apps                  []conf.AppConfig     `json:"apps"`
 	ShellEnabled          bool                 `json:"shell_enabled"`
@@ -239,6 +246,13 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		VNCAddr:               fc.VNCAddr,
 		AdminAddr:             fc.AdminAddr,
 		AdminUsers:            admins,
+		// Wave 3A discovery + LAN-direct view.
+		DiscoveryEnabled:        fc.DiscoveryOn(),
+		SSHListenAddr:           fc.SSHListenAddr,
+		DiscoveryHTTPListenAddr: fc.DiscoveryHTTPListenAddr,
+		PeerTrustPolicy:         fc.EffectivePeerTrustPolicy(),
+		AssignedHostname:        fc.AssignedHostname,
+		OAuth2Email:             fc.OAuth2Email,
 		Apps:                  apps,
 		ShellEnabled:          fc.ShellOn(),
 		DesktopEnabled:        fc.DesktopOn(),

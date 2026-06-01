@@ -53,7 +53,7 @@ func configShowCmd() *cobra.Command {
 				if eff == "" {
 					eff = def + " (default)"
 				}
-				fmt.Printf("  %-12s  %s\n", name, eff)
+				fmt.Printf("  %-26s  %s\n", name, eff)
 			}
 			row("local_addr", view.LocalAddr, view.Defaults["local_addr"])
 			row("vnc_addr", view.VNCAddr, view.Defaults["vnc_addr"])
@@ -66,6 +66,22 @@ func configShowCmd() *cobra.Command {
 				for _, e := range view.AdminUsers {
 					fmt.Printf("  %s\n", e)
 				}
+			}
+			fmt.Println()
+			fmt.Println("LAN peer discovery (Wave 3A)")
+			discOnOff := "off"
+			if view.DiscoveryEnabled {
+				discOnOff = "on"
+			}
+			fmt.Printf("  %-26s  %s\n", "discovery_enabled", discOnOff)
+			row("ssh_listen_addr", view.SSHListenAddr, "(off — matrix tunnel only)")
+			row("discovery_http_listen_addr", view.DiscoveryHTTPListenAddr, "(off)")
+			fmt.Printf("  %-26s  %s\n", "peer_trust_policy", view.PeerTrustPolicy)
+			if view.AssignedHostname != "" {
+				fmt.Printf("  %-26s  %s\n", "assigned_hostname", view.AssignedHostname)
+			}
+			if view.OAuth2Email != "" {
+				fmt.Printf("  %-26s  %s\n", "oauth2_email", view.OAuth2Email)
 			}
 			return nil
 		},
