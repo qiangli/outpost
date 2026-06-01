@@ -148,6 +148,14 @@ type Peer struct {
 	Sources    []Source   `json:"sources"`
 	Trust      TrustLevel `json:"trust"`
 	LastSeenAt time.Time  `json:"last_seen_at"`
+
+	// Active marks a peer as part of the HyParView "active view" —
+	// the bounded set of peers we maintain hot connections to and
+	// preferentially gossip with. Roadmap item #16. Default false
+	// (= passive view); promotion happens in Cache.markActiveLocked
+	// when there's headroom (activeMax) and the peer has freshly
+	// been observed via a transport we trust.
+	Active bool `json:"active,omitempty"`
 }
 
 // HasEndpoint reports whether the peer advertises a reachable

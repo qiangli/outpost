@@ -61,6 +61,10 @@ type Server struct {
 	// Wired by main.go when discovery is on; nil otherwise (then the
 	// outpost://peers resource just returns an empty list).
 	peersFn func() any
+
+	// gossipMembersFn returns the SWIM gossip member list. Wired by
+	// main.go when gossip is up; nil otherwise.
+	gossipMembersFn func() any
 }
 
 // Deps is what main.go threads in. Core is the shared admincore.Server
@@ -82,6 +86,11 @@ type Deps struct {
 	// (typically discovery.Cache.Snapshot()). Nil when discovery is
 	// off; the outpost://peers resource then returns an empty list.
 	PeersFn func() any
+
+	// GossipMembersFn returns the SWIM gossip member list (roadmap
+	// item #17). Backs the outpost_gossip_edges MCP tool. Nil when
+	// gossip is off.
+	GossipMembersFn func() any
 }
 
 // New constructs the MCP server and registers every parity tool. Call
@@ -99,12 +108,13 @@ func New(deps Deps) (*Server, error) {
 		version = "dev"
 	}
 	s := &Server{
-		core:     deps.Core,
-		token:    deps.Token,
-		rotateFn: deps.RotateFn,
-		upgrader: deps.Upgrader,
-		ledger:   deps.Ledger,
-		peersFn:  deps.PeersFn,
+		core:            deps.Core,
+		token:           deps.Token,
+		rotateFn:        deps.RotateFn,
+		upgrader:        deps.Upgrader,
+		ledger:          deps.Ledger,
+		peersFn:         deps.PeersFn,
+		gossipMembersFn: deps.GossipMembersFn,
 	}
 	s.mcp = mcp.NewServer(&mcp.Implementation{
 		Name:    "outpost",

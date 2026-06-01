@@ -42,6 +42,8 @@ func repairCmd() *cobra.Command {
 	cmd.AddCommand(
 		repairCloudboxURLCmd(),
 		repairBinaryCmd(),
+		repairRemoteBinaryCmd(),
+		repairRegisterCmd(),
 	)
 	return cmd
 }

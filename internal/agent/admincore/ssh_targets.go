@@ -16,6 +16,7 @@ package admincore
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -113,6 +114,13 @@ type ExecSSHParams struct {
 	// MaxStdout / MaxStderr cap captured output. Default 1 MiB / 256 KiB.
 	MaxStdout int64
 	MaxStderr int64
+
+	// Stdin, when non-nil, is fed to the remote process. The MCP
+	// surface accepts base64-encoded bytes and constructs an
+	// io.Reader here; CLI callers (outpost repair remote-binary,
+	// etc.) can pass any io.Reader directly. Closed when copy
+	// completes (sshclient does this).
+	Stdin io.Reader
 }
 
 // ExecSSHResult is the output shape.
@@ -179,6 +187,7 @@ func (s *Server) ExecSSH(ctx context.Context, p ExecSSHParams) (*ExecSSHResult, 
 		Timeout:   timeout,
 		MaxStdout: maxStdout,
 		MaxStderr: maxStderr,
+		Stdin:     p.Stdin,
 	})
 	if runErr != nil && res == nil {
 		return nil, upstream("exec: %s", runErr.Error())

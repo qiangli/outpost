@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -441,6 +442,23 @@ type ClusterConfig struct {
 	MetricsRemoteURL string `json:"metrics_remote_url,omitempty"`
 	LogsRemoteURL    string `json:"logs_remote_url,omitempty"`
 	TracesRemoteURL  string `json:"traces_remote_url,omitempty"`
+
+	// HostCert is the cloudbox-CA-signed SSH host certificate
+	// (roadmap item #11). Refreshed by internal/agent/certs/
+	// every CertRefreshInterval (default 7 days) via the
+	// /api/v1/ca/sign-host-cert endpoint. Presented in the
+	// PeerHello during /api/v1/discover/hello + /probe so peers
+	// can verify same-cloudbox-fleet membership without a TOFU
+	// roundtrip. Empty when this outpost hasn't successfully
+	// fetched a cert yet (e.g. cluster mode off, or first boot
+	// before the boot fetch ran).
+	HostCert string `json:"host_cert,omitempty"`
+
+	// CAPubkey is the cloudbox CA pubkey pinned at first fetch
+	// (OpenSSH wire format). Used by /probe verifiers to check
+	// peer cert signatures locally without per-handshake
+	// cloudbox roundtrips. Refreshed alongside HostCert.
+	CAPubkey string `json:"ca_pubkey,omitempty"`
 }
 
 // ClusterModeAgent reports whether the outpost should run the real
@@ -974,10 +992,20 @@ func (fc *FileConfig) OtelPoolOn() bool {
 }
 
 // SaveFile writes fc atomically (write+rename) to path, creating parents.
+// Layer-2 defense: before overwriting an existing agent.json, snapshot
+// the prior version into a journal (agent.json.1..agent.json.N, newest
+// at .1). Keeps the last journalRingSize snapshots so a corrupted save
+// (truncated mid-write, accidental SaveFile of empty struct, etc.) can
+// be recovered by RestoreLatestValid at boot.
 func SaveFile(path string, fc *FileConfig) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+	// Best-effort snapshot of the existing file BEFORE we overwrite.
+	// Errors here don't fail SaveFile — journal is a defense, not a
+	// dependency.
+	_ = rotateJournal(path)
+
 	tmp := path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -992,6 +1020,81 @@ func SaveFile(path string, fc *FileConfig) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// journalRingSize is how many prior agent.json snapshots we keep.
+// 3 is enough to ride out a corrupted-save bug followed by an
+// (also-corrupted) attempted manual recovery before the operator
+// notices.
+const journalRingSize = 3
+
+// rotateJournal moves <path>.{1..N-1} to <path>.{2..N} and the live
+// <path> into <path>.1. Best-effort: missing files are fine, but
+// any actual error is returned so the caller can log.
+func rotateJournal(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return nil // nothing to snapshot
+	}
+	// Drop the oldest, shift the rest up.
+	oldest := fmt.Sprintf("%s.%d", path, journalRingSize)
+	_ = os.Remove(oldest)
+	for i := journalRingSize - 1; i >= 1; i-- {
+		src := fmt.Sprintf("%s.%d", path, i)
+		dst := fmt.Sprintf("%s.%d", path, i+1)
+		if _, err := os.Stat(src); err == nil {
+			if err := os.Rename(src, dst); err != nil {
+				return err
+			}
+		}
+	}
+	// Copy live file to .1 (not rename — we want the live one to
+	// survive in case Rename in SaveFile races).
+	return copyFile(path, path+".1")
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// RestoreLatestValid scans the journal (newest-first) for a snapshot
+// that round-trips through LoadFile. If found, copies it over `path`
+// and returns the index restored (1..N) + nil. Returns (0, nil) if
+// the live file already loads cleanly OR no valid snapshot exists.
+// Used by Layer-2 selfcheck at boot when the primary agent.json
+// fails to parse.
+func RestoreLatestValid(path string) (int, error) {
+	// Live file already good?
+	if _, err := LoadFile(path); err == nil {
+		return 0, nil
+	}
+	for i := 1; i <= journalRingSize; i++ {
+		candidate := fmt.Sprintf("%s.%d", path, i)
+		if _, err := os.Stat(candidate); err != nil {
+			continue
+		}
+		if _, err := LoadFile(candidate); err != nil {
+			continue
+		}
+		// Found a valid snapshot — copy onto live path.
+		if err := copyFile(candidate, path); err != nil {
+			return 0, err
+		}
+		return i, nil
+	}
+	return 0, nil
 }
 
 // EnsureAdminSessionKey returns fc.AdminSessionKey, generating a fresh

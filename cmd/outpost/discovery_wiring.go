@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -98,6 +99,7 @@ func startLANSSHListener(
 // list, and the outpost://peers MCP resource. Lazy-initialized so
 // CLI invocations don't pay the cost.
 var daemonCache *discovery.Cache
+var daemonGossip *discovery.Gossip
 
 // daemonObservations is the per-peer EWMA model the observation
 // ticker writes into. Lazy-initialized; loaded from disk if a
@@ -176,6 +178,68 @@ func startDiscovery(
 	if daemonObservations != nil {
 		g.Go(func() error {
 			runObservationTicker(gctx, daemonCache, daemonObservations)
+			return nil
+		})
+	}
+
+	// Roadmap #12: cloudbox NAT-locality hints. Polls cloudbox
+	// every 5 min and merges hints into the same daemonCache so
+	// `outpost peers list` + the route-to surface see them
+	// alongside mDNS-discovered peers. Disabled silently when
+	// unpaired (HintsClient.Run checks).
+	if cb := cloudboxHTTPBase(fc); cb != "" && fc.AccessToken != "" {
+		hintsClient := discovery.NewHintsClient(discovery.HintsConfig{
+			CloudboxBase: cb,
+			AccessToken:  fc.AccessToken,
+			Cache:        daemonCache,
+		})
+		g.Go(func() error {
+			return hintsClient.Run(gctx)
+		})
+	}
+
+	// Roadmap #16: HyParView active/passive view compactor. Bounds
+	// the cache (active ≤16, passive ≤256) and promotes recently-seen
+	// passive entries into active when there's headroom.
+	compactor := discovery.NewCompactor(daemonCache, 0)
+	g.Go(func() error {
+		return compactor.Run(gctx)
+	})
+
+	// Roadmap #17: SWIM gossip. Single-process per outpost, sharing
+	// the same daemonCache. Bootstrap addresses are derived from
+	// the cache itself — every peer that advertised a LAN-SSH
+	// endpoint is a plausible gossip target (we just substitute
+	// the gossip port). When the cache is empty we no-op the join
+	// (gossip still accepts pushes from peers that find us first).
+	gossip, gerr := discovery.NewGossip(discovery.GossipConfig{
+		SelfPeerID:    peerID,
+		SelfAgentName: cfg.AgentName,
+		Cache:         daemonCache,
+		Bootstrap: func() []string {
+			var out []string
+			for _, p := range daemonCache.Snapshot() {
+				if p.ID == peerID {
+					continue
+				}
+				for _, e := range p.Endpoints {
+					if e.Kind == discovery.EndpointLANSSH && e.Host != "" {
+						out = append(out, fmt.Sprintf("%s:%d", e.Host, discovery.DefaultGossipBindPort))
+						break
+					}
+				}
+			}
+			return out
+		},
+	})
+	if gerr != nil {
+		slog.Warn("gossip: setup failed (skipping)", "err", gerr)
+	} else {
+		daemonGossip = gossip
+		g.Go(func() error {
+			if err := gossip.Run(gctx); err != nil {
+				slog.Warn("gossip: worker exited", "err", err)
+			}
 			return nil
 		})
 	}

@@ -1,7 +1,11 @@
 package mcpapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"fmt"
+	"io"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -57,6 +61,13 @@ type sshExecIn struct {
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"Cap on remote wall-clock runtime; default 60, max 600"`
 	MaxStdout      int64  `json:"max_stdout,omitempty" jsonschema:"Cap on captured stdout (bytes); default 1 MiB"`
 	MaxStderr      int64  `json:"max_stderr,omitempty" jsonschema:"Cap on captured stderr (bytes); default 256 KiB"`
+	// StdinB64 is base64-encoded bytes piped to the remote process'
+	// stdin. The `outpost repair remote-binary` recipe uses this to
+	// push a fresh binary to a paired peer: the recipe runs
+	// `command="base64 -d > /tmp/cand && chmod +x ..."` with the
+	// local binary streamed in as stdin. Empty (default) means no
+	// stdin (matches the agentic-call expectation).
+	StdinB64 string `json:"stdin_b64,omitempty" jsonschema:"Base64-encoded bytes piped to the remote process' stdin"`
 }
 
 type sshExecOut struct {
@@ -137,6 +148,14 @@ func (s *Server) registerSSHTools() {
 		if in.TimeoutSeconds > 0 {
 			timeout = time.Duration(in.TimeoutSeconds) * time.Second
 		}
+		var stdin io.Reader
+		if in.StdinB64 != "" {
+			raw, derr := base64.StdEncoding.DecodeString(in.StdinB64)
+			if derr != nil {
+				return apiErrResult[sshExecOut](fmt.Errorf("decode stdin_b64: %w", derr))
+			}
+			stdin = bytes.NewReader(raw)
+		}
 		res, err := s.core.ExecSSH(ctx, admincore.ExecSSHParams{
 			Name:         in.Name,
 			Command:      in.Command,
@@ -144,6 +163,7 @@ func (s *Server) registerSSHTools() {
 			Timeout:      timeout,
 			MaxStdout:    in.MaxStdout,
 			MaxStderr:    in.MaxStderr,
+			Stdin:        stdin,
 		})
 		if err != nil {
 			return apiErrResult[sshExecOut](err)

@@ -172,9 +172,39 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		MetricsRemoteURL string `json:"metrics_remote_url"`
 		LogsRemoteURL    string `json:"logs_remote_url"`
 		TracesRemoteURL  string `json:"traces_remote_url"`
+
+		// RecoveryCode is the one-time out-of-band re-pair credential
+		// (Layer-4 defense). Returned ONCE at first Exchange. The
+		// outpost prints it to stdout + writes 0600 to
+		// ~/.config/matrix/recovery_code.txt so the operator can
+		// stash it.
+		RecoveryCode string `json:"recovery_code"`
 	}
 	if err := json.Unmarshal(respBody, &ex); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	// Stash the recovery code OUT-OF-BAND on first appearance.
+	// Cloudbox never re-emits it (the SPA can't display it again
+	// either), so this side-effect at first Exchange is the only
+	// time the plaintext is reachable.
+	if ex.RecoveryCode != "" {
+		if err := stashRecoveryCode(ex.RecoveryCode); err != nil {
+			// Don't fail Exchange — operator can re-pair if the
+			// stash fails. But shout so it shows in scrollback.
+			fmt.Fprintf(os.Stderr, "WARN: failed to stash recovery code: %v\n", err)
+		}
+		fmt.Fprintf(os.Stderr,
+			"\n==============================================================\n"+
+				" Recovery code (Layer-4 out-of-band re-pair credential):\n"+
+				"\n   %s\n\n"+
+				" Stashed at %s (0600).\n"+
+				" Save this in your password manager or print it. It is the\n"+
+				" only way to re-pair if BOTH the agent.json AccessToken AND\n"+
+				" the matrix tunnel are unrecoverable. Cloudbox will not\n"+
+				" re-display it.\n"+
+				"==============================================================\n\n",
+			ex.RecoveryCode, recoveryCodePath())
 	}
 
 	fc := &conf.FileConfig{
@@ -193,6 +223,181 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 	// operator opts into Mode="agent" via the builtins toggle, which
 	// preserves backward compat for outposts that flip --cluster=on
 	// expecting vkpodman.
+	if ex.ClusterNodeToken != "" || ex.ClusterSTCPSecret != "" ||
+		ex.ClusterAPIPort != 0 || ex.ClusterKubeletPort != 0 ||
+		ex.OverlayLoginServer != "" || ex.OverlayAuthKey != "" || ex.OverlayPodCIDR != "" ||
+		ex.MetricsRemoteURL != "" || ex.LogsRemoteURL != "" || ex.TracesRemoteURL != "" {
+		if fc.Cluster == nil {
+			fc.Cluster = &conf.ClusterConfig{}
+		}
+		fc.Cluster.NodeToken = ex.ClusterNodeToken
+		fc.Cluster.STCPSecret = ex.ClusterSTCPSecret
+		fc.Cluster.K8sAPIPort = ex.ClusterAPIPort
+		fc.Cluster.KubeletProxyPort = ex.ClusterKubeletPort
+		fc.Cluster.OverlayLoginServer = ex.OverlayLoginServer
+		fc.Cluster.OverlayAuthKey = ex.OverlayAuthKey
+		fc.Cluster.OverlayPodCIDR = ex.OverlayPodCIDR
+		fc.Cluster.MetricsRemoteURL = ex.MetricsRemoteURL
+		fc.Cluster.LogsRemoteURL = ex.LogsRemoteURL
+		fc.Cluster.TracesRemoteURL = ex.TracesRemoteURL
+	}
+	return fc, nil
+}
+
+// ReattachRequest is the input to a bearer-authed re-pair.
+//
+// Distinct from ExchangeRequest in two ways:
+//
+//  1. No Code — the bearer (AccessToken from a previous Exchange) is
+//     the credential, so the outpost can recover state when the
+//     human invite codes are unavailable (cloudbox host row deleted,
+//     DB restored from a stale backup, etc.).
+//  2. AccessToken is required input, not output — Reattach NEVER
+//     re-mints the per-pair JWT (the outpost already has it).
+//
+// Sent to POST <server>/api/register/reattach, which is the Layer-1
+// defense surface added alongside this client.
+type ReattachRequest struct {
+	ServerURL   string
+	AccessToken string
+	Name        string
+	Title       string
+	AuthURL     string
+	ClientOnly  bool
+}
+
+// Reattach POSTs the bearer to the portal and returns a refreshed
+// FileConfig pinned by the portal's response. The caller is responsible
+// for merging it with locally-managed fields and saving to disk.
+//
+// On success, the returned FileConfig carries the SAME AccessToken
+// that was passed in (the portal returns "" and we copy it through)
+// so callers can `SaveFile` the result without losing identity.
+//
+// 401/403 is fatal: the bearer is invalid, revoked, or doesn't own
+// this name. The caller should fall back to fresh `outpost register`
+// with an invite code. 4xx other than auth (e.g. 400 bad name) is
+// also fatal. 5xx + network errors retry with the same backoff
+// schedule as Exchange.
+func Reattach(ctx context.Context, req ReattachRequest) (*conf.FileConfig, error) {
+	if strings.TrimSpace(req.AccessToken) == "" {
+		return nil, errors.New("reattach: access_token required")
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		return nil, errors.New("reattach: name required")
+	}
+	title := strings.TrimSpace(req.Title)
+	authURL := strings.TrimSpace(req.AuthURL)
+	if authURL != "" && title == "" {
+		return nil, errors.New("title is required when auth_url is set")
+	}
+
+	osUser, _ := hostauth.CurrentUser()
+	osDisplay := hostauth.CurrentDisplayName()
+	osHostname, _ := os.Hostname()
+
+	payload := map[string]any{
+		"name":            req.Name,
+		"title":           title,
+		"os_user":         osUser,
+		"os_display_name": osDisplay,
+		"os_hostname":     osHostname,
+		"has_auth_url":    authURL != "",
+		"client_only":     req.ClientOnly,
+	}
+	body, _ := json.Marshal(payload)
+	url := strings.TrimRight(req.ServerURL, "/") + "/api/register/reattach"
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	var respBody []byte
+	var lastErr error
+	for attempt := 1; attempt <= exchangeMaxAttempts; attempt++ {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+req.AccessToken)
+
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			lastErr = fmt.Errorf("reattach: %w", err)
+		} else {
+			respBody, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				lastErr = nil
+				break
+			}
+			lastErr = fmt.Errorf("reattach failed (%d): %s", resp.StatusCode, bytes.TrimSpace(respBody))
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+				return nil, lastErr
+			}
+			if attempt < exchangeMaxAttempts {
+				delay := time.Duration(1<<(attempt-1)) * time.Second
+				if ra := resp.Header.Get("Retry-After"); ra != "" {
+					if secs, err := strconv.Atoi(ra); err == nil && secs >= 0 {
+						delay = time.Duration(secs) * time.Second
+					}
+				}
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(delay):
+				}
+				continue
+			}
+		}
+		if attempt < exchangeMaxAttempts {
+			delay := time.Duration(1<<(attempt-1)) * time.Second
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+
+	var ex struct {
+		AgentName   string `json:"agent_name"`
+		ServerAddr  string `json:"server_addr"`
+		ServerPort  int    `json:"server_port"`
+		Protocol    string `json:"protocol"`
+		Token       string `json:"token"`
+		RemotePort  int    `json:"remote_port"`
+		AccessToken string `json:"access_token"` // always "" on reattach
+		ClientOnly  bool   `json:"client_only"`
+
+		ClusterNodeToken   string `json:"cluster_node_token"`
+		ClusterSTCPSecret  string `json:"cluster_stcp_secret"`
+		ClusterAPIPort     int    `json:"cluster_api_port"`
+		ClusterKubeletPort int    `json:"cluster_kubelet_port"`
+		OverlayLoginServer string `json:"overlay_login_server"`
+		OverlayAuthKey     string `json:"overlay_auth_key"`
+		OverlayPodCIDR     string `json:"overlay_pod_cidr"`
+
+		MetricsRemoteURL string `json:"metrics_remote_url"`
+		LogsRemoteURL    string `json:"logs_remote_url"`
+		TracesRemoteURL  string `json:"traces_remote_url"`
+	}
+	if err := json.Unmarshal(respBody, &ex); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	fc := &conf.FileConfig{
+		AgentName:   ex.AgentName,
+		ServerAddr:  ex.ServerAddr,
+		ServerPort:  ex.ServerPort,
+		Protocol:    ex.Protocol,
+		Token:       ex.Token,
+		RemotePort:  ex.RemotePort,
+		AuthURL:     authURL,
+		AccessToken: req.AccessToken, // carry the existing bearer through
+		ClientOnly:  ex.ClientOnly,
+	}
 	if ex.ClusterNodeToken != "" || ex.ClusterSTCPSecret != "" ||
 		ex.ClusterAPIPort != 0 || ex.ClusterKubeletPort != 0 ||
 		ex.OverlayLoginServer != "" || ex.OverlayAuthKey != "" || ex.OverlayPodCIDR != "" ||

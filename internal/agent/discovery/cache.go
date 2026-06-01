@@ -26,11 +26,22 @@ import (
 const DefaultCacheTTL = 15 * time.Minute
 
 // Cache holds the live set of known peers, keyed by PeerID.
+//
+// HyParView bounds (roadmap item #16): active / passive view caps
+// set via SetBounds. Enforced by the periodic Compact goroutine —
+// Upsert itself stays O(1) and unaware of partitions, so the hot
+// path doesn't pay any extra cost.
 type Cache struct {
 	ttl time.Duration
 
-	mu      sync.RWMutex
-	byID    map[PeerID]*Peer
+	mu   sync.RWMutex
+	byID map[PeerID]*Peer
+
+	// HyParView active/passive view bounds. 0 = use defaults
+	// (DefaultActiveMax / DefaultPassiveMax). Operator override
+	// via Cache.SetBounds.
+	activeMax  int
+	passiveMax int
 }
 
 // NewCache returns an empty cache. TTL == 0 means use the default.

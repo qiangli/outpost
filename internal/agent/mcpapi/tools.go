@@ -32,6 +32,7 @@ func (s *Server) registerTools() {
 	s.registerLifecycleTools()
 	s.registerUpgradeTools()
 	s.registerSSHTools()
+	s.registerGossipTools()
 }
 
 func (s *Server) registerResources() {

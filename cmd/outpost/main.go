@@ -29,7 +29,9 @@ import (
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/adminui"
+	"github.com/qiangli/outpost/internal/agent/certs"
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/agent/heartbeat"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"github.com/qiangli/outpost/internal/agent/mcpapi"
 	"github.com/qiangli/outpost/internal/agent/ollama"
@@ -37,6 +39,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
 	"github.com/qiangli/outpost/internal/agent/portal"
 	"github.com/qiangli/outpost/internal/agent/runtime"
+	"github.com/qiangli/outpost/internal/agent/selfcheck"
 	"github.com/qiangli/outpost/internal/agent/sysinfo"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
 	"github.com/qiangli/outpost/internal/agent/userkube"
@@ -147,6 +150,19 @@ func startCmd() *cobra.Command {
 			if fc == nil {
 				fc = &conf.FileConfig{}
 			}
+
+			// Layer-1 defense: opportunistically reassert this outpost's
+			// identity with cloudbox before bringing up the tunnel. If
+			// cloudbox lost the host row (deletion accident, stale
+			// backup, migration mishap) the bearer-authed
+			// /api/register/reattach endpoint recreates it from the
+			// AccessToken we already have on disk. Best-effort —
+			// network failures here do NOT block boot; the existing
+			// pairing may still be perfectly intact and we don't want
+			// a transient cloudbox blip to gate the daemon. The call
+			// has its own 30s deadline; we use cmd.Context() here
+			// because the errgroup ctx isn't built yet.
+			fc, _ = tryReattach(cmd.Context(), fc, cfgPath)
 
 			// Layer the on-disk FileConfig under whatever the env supplied,
 			// then apply hardcoded defaults to fields still empty. CLI
@@ -543,6 +559,12 @@ func startCmd() *cobra.Command {
 					}
 					return daemonCache.Snapshot()
 				},
+				GossipMembersFn: func() any {
+					if daemonGossip == nil {
+						return []any{}
+					}
+					return daemonGossip.Members()
+				},
 			})
 			if err != nil {
 				return fmt.Errorf("mcp api: %w", err)
@@ -825,6 +847,82 @@ func startCmd() *cobra.Command {
 					}
 				}
 			}
+			// Roadmap #11: cloudbox-as-CA host cert refresh.
+			// Independent of cluster mode — every paired outpost
+			// benefits from cert-bound peer trust on the discovery
+			// /probe surface. Failures (cloudbox unreachable, CA
+			// endpoint not yet deployed) are non-fatal: we fall
+			// back to TOFU-only trust on peer probes.
+			if fc.AccessToken != "" && fc.AgentName != "" && sshHostKey != nil {
+				if cbBase := cloudboxHTTPBase(fc); cbBase != "" {
+					mgr, mErr := certs.NewManager(certs.Config{
+						CloudboxBase: cbBase,
+						AccessToken:  fc.AccessToken,
+						Principal:    fc.AgentName,
+						HostKey:      sshHostKey,
+						OnRefresh: func(cert, caPubkey string) error {
+							cur, lerr := conf.LoadFile(cfgPath)
+							if lerr != nil || cur == nil {
+								return lerr
+							}
+							if cur.Cluster == nil {
+								cur.Cluster = &conf.ClusterConfig{}
+							}
+							cur.Cluster.HostCert = cert
+							cur.Cluster.CAPubkey = caPubkey
+							return conf.SaveFile(cfgPath, cur)
+						},
+					})
+					if mErr != nil {
+						slog.Warn("certs: setup failed (skipping)", "err", mErr)
+					} else {
+						g.Go(func() error {
+							if err := mgr.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+								slog.Warn("certs: manager exited", "err", err)
+							}
+							return nil
+						})
+					}
+				}
+			}
+
+			// Layer-2 selfcheck — validates agent.json + host key +
+			// daemon secrets at boot and every 5 min. Auto-regenerates
+			// MCP bearer / admin session key when missing; reports
+			// (does NOT auto-rotate) the SSH host key when absent.
+			// Status feeds the Layer-5 heartbeat payload below.
+			scheck := selfcheck.New(cfgPath)
+			g.Go(func() error {
+				if err := scheck.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+					slog.Warn("selfcheck: worker exited", "err", err)
+				}
+				return nil
+			})
+
+			// Layer-5 active-push heartbeat. Independent liveness
+			// signal to cloudbox — runs even when the matrix tunnel
+			// is degraded or restarting. Disabled silently when
+			// unpaired (heartbeat.Worker checks at Run entry).
+			if fc.AccessToken != "" && fc.AgentName != "" {
+				cbBase := cloudboxHTTPBase(fc)
+				if cbBase != "" {
+					hb := heartbeat.New(heartbeat.Config{
+						CloudboxBase:      cbBase,
+						AccessToken:       fc.AccessToken,
+						AgentName:         fc.AgentName,
+						BuildCommit:       agent.ReadBuildInfo().Short(),
+						BuildVersion:      agent.ReadBuildInfo().Short(),
+						SelfcheckStatusFn: scheck.LastStatus,
+					})
+					g.Go(func() error {
+						if err := hb.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+							slog.Warn("heartbeat: worker exited", "err", err)
+						}
+						return nil
+					})
+				}
+			}
+
 			// Cluster mode: join the cloudbox virtual-podman cluster as a
 			// virtual node. Independent of the PodmanEnabled reverse-proxy
 			// app — cluster mode dials the local podman socket directly
@@ -1189,6 +1287,131 @@ func persistClusterCredential(fc *conf.FileConfig, cfgPath string, p *vkpodman.P
 	}
 }
 
+// tryReattach is the boot-time Layer-1 defense call: when we hold a
+// valid AccessToken from a previous Exchange, POST it to
+// /api/register/reattach so cloudbox can recover any host-row state
+// it has lost (deleted row, DB restored from stale backup, schema
+// migration accident). Best-effort — failure must NOT prevent boot,
+// because the existing host row may still be perfectly valid and a
+// transient cloudbox blip shouldn't gate the daemon.
+//
+// On success, merges cloudbox-controlled fields (MatrixToken,
+// RemotePort, cluster join data) into fc and writes the merged
+// config to disk. Locally-managed fields (Apps, builtins, networking,
+// AdminUsers) are left untouched.
+//
+// Returns the (possibly-mutated) fc and the error from the call.
+// Callers that don't need the error can ignore it.
+func tryReattach(ctx context.Context, fc *conf.FileConfig, cfgPath string) (*conf.FileConfig, error) {
+	if fc == nil {
+		return fc, nil
+	}
+	if strings.TrimSpace(fc.AccessToken) == "" || strings.TrimSpace(fc.AgentName) == "" {
+		return fc, nil
+	}
+	base := cloudboxHTTPBase(fc)
+	if base == "" {
+		return fc, nil
+	}
+
+	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	refreshed, err := portal.Reattach(rctx, portal.ReattachRequest{
+		ServerURL:   base,
+		AccessToken: fc.AccessToken,
+		Name:        fc.AgentName,
+		AuthURL:     fc.AuthURL,
+		ClientOnly:  fc.ClientOnly,
+	})
+	if err != nil {
+		slog.Warn("reattach: best-effort recovery failed (continuing boot)",
+			"err", err, "name", fc.AgentName, "cloudbox", base)
+		return fc, err
+	}
+
+	// Cloudbox-controlled fields — overwrite. The rest of fc stays as-is.
+	changed := false
+	if refreshed.Token != "" && refreshed.Token != fc.Token {
+		fc.Token = refreshed.Token
+		changed = true
+	}
+	if refreshed.RemotePort != 0 && refreshed.RemotePort != fc.RemotePort {
+		fc.RemotePort = refreshed.RemotePort
+		changed = true
+	}
+	if refreshed.ServerAddr != "" && refreshed.ServerAddr != fc.ServerAddr {
+		fc.ServerAddr = refreshed.ServerAddr
+		changed = true
+	}
+	if refreshed.ServerPort != 0 && refreshed.ServerPort != fc.ServerPort {
+		fc.ServerPort = refreshed.ServerPort
+		changed = true
+	}
+	if refreshed.Protocol != "" && refreshed.Protocol != fc.Protocol {
+		fc.Protocol = refreshed.Protocol
+		changed = true
+	}
+	if refreshed.Cluster != nil {
+		if fc.Cluster == nil {
+			fc.Cluster = &conf.ClusterConfig{}
+		}
+		if refreshed.Cluster.NodeToken != "" {
+			if fc.Cluster.NodeToken != refreshed.Cluster.NodeToken {
+				changed = true
+			}
+			fc.Cluster.NodeToken = refreshed.Cluster.NodeToken
+		}
+		if refreshed.Cluster.STCPSecret != "" {
+			if fc.Cluster.STCPSecret != refreshed.Cluster.STCPSecret {
+				changed = true
+			}
+			fc.Cluster.STCPSecret = refreshed.Cluster.STCPSecret
+		}
+		if refreshed.Cluster.K8sAPIPort != 0 {
+			if fc.Cluster.K8sAPIPort != refreshed.Cluster.K8sAPIPort {
+				changed = true
+			}
+			fc.Cluster.K8sAPIPort = refreshed.Cluster.K8sAPIPort
+		}
+		if refreshed.Cluster.KubeletProxyPort != 0 {
+			if fc.Cluster.KubeletProxyPort != refreshed.Cluster.KubeletProxyPort {
+				changed = true
+			}
+			fc.Cluster.KubeletProxyPort = refreshed.Cluster.KubeletProxyPort
+		}
+		if refreshed.Cluster.OverlayLoginServer != "" {
+			if fc.Cluster.OverlayLoginServer != refreshed.Cluster.OverlayLoginServer {
+				changed = true
+			}
+			fc.Cluster.OverlayLoginServer = refreshed.Cluster.OverlayLoginServer
+		}
+		if refreshed.Cluster.OverlayAuthKey != "" {
+			fc.Cluster.OverlayAuthKey = refreshed.Cluster.OverlayAuthKey
+			changed = true
+		}
+		if refreshed.Cluster.OverlayPodCIDR != "" {
+			if fc.Cluster.OverlayPodCIDR != refreshed.Cluster.OverlayPodCIDR {
+				changed = true
+			}
+			fc.Cluster.OverlayPodCIDR = refreshed.Cluster.OverlayPodCIDR
+		}
+	}
+
+	if changed && cfgPath != "" {
+		if err := conf.SaveFile(cfgPath, fc); err != nil {
+			slog.Warn("reattach: succeeded but SaveFile failed",
+				"err", err, "path", cfgPath)
+		} else {
+			slog.Info("reattach: refreshed cloudbox-side state",
+				"name", fc.AgentName, "cloudbox", base)
+		}
+	} else {
+		slog.Info("reattach: no-op (cloudbox-side state already in sync)",
+			"name", fc.AgentName, "cloudbox", base)
+	}
+	return fc, nil
+}
+
 // cloudboxHTTPBase derives the HTTP(S) base URL of cloudbox from the
 // matrix-tunnel pairing fields. The same hostname serves both the wss
 // tunnel and the HTTP API — protocols are just paired (wss↔https,
@@ -1278,14 +1501,15 @@ func buildAppRegistry(fc *conf.FileConfig, envSpecs string) (*agent.AppRegistry,
 
 func registerCmd() *cobra.Command {
 	var (
-		serverURL  string
-		code       string
-		name       string
-		out        string
-		authURL    string
-		title      string
-		assumeYes  bool
-		clientOnly bool
+		serverURL    string
+		code         string
+		recoveryCode string
+		name         string
+		out          string
+		authURL      string
+		title        string
+		assumeYes    bool
+		clientOnly   bool
 	)
 	cmd := &cobra.Command{
 		Use:     "register",
@@ -1300,6 +1524,23 @@ portal and --name defaults to this machine's hostname (.local/.lan
 suffix stripped), so a fresh paste from the cloudbox "Generate invite
 code" dialog usually only needs --code.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Recovery branch (Layer-4 defense): when --recovery-code
+			// is set, skip the invite-redemption Exchange path entirely
+			// and call /api/register/recover instead. The recovery
+			// code IS the credential (no invite needed).
+			if recoveryCode != "" {
+				if serverURL == "" {
+					serverURL = defaultPortal
+				}
+				if name == "" {
+					name = defaultHostName()
+				}
+				if name == "" {
+					return errors.New("--recovery-code requires --name (couldn't auto-detect hostname)")
+				}
+				return doRecover(cmd.Context(), serverURL, recoveryCode, name, title, authURL, out, clientOnly)
+			}
+
 			// Scripted mode kicks in the moment --code is set on the CLI:
 			// installer scripts pipe stdin from somewhere unpredictable, so
 			// we can't fall back to "ask the user" without surprising them.
@@ -1374,6 +1615,8 @@ code" dialog usually only needs --code.`,
 	}
 	cmd.Flags().StringVar(&serverURL, "server", "", "Portal URL (default https://ai.dhnt.io)")
 	cmd.Flags().StringVar(&code, "code", "", "One-time pairing code from the portal (skips the interactive prompt when set)")
+	cmd.Flags().StringVar(&recoveryCode, "recovery-code", "",
+		"Out-of-band recovery code minted at first Exchange. When set, hits /api/register/recover instead of the invite path — used when BOTH the agent.json AccessToken AND the matrix tunnel are unrecoverable. Pair with --name (the host name this outpost was originally paired as).")
 	cmd.Flags().StringVar(&name, "name", "", "Host name to display in the portal (default: this machine's hostname)")
 	cmd.Flags().StringVar(&out, "out", "", "Output config path (default: the OS-standard user-config path)")
 	cmd.Flags().StringVar(&authURL, "auth-url", "",
@@ -1429,6 +1672,38 @@ func collectInputs(r *bufio.Reader, serverURL, code, name *string) error {
 		return err
 	}
 	*name = got
+	return nil
+}
+
+// doRecover runs the out-of-band recovery flow and writes the
+// resulting config to disk. Thin wrapper over portal.Recover.
+// Caller side-effect: when successful, the on-disk recovery_code.txt
+// is rotated to the new code cloudbox returned (handled inside
+// portal.Recover so the same stash format applies as Exchange).
+func doRecover(ctx context.Context, serverURL, recoveryCode, name, title, authURL, out string, clientOnly bool) error {
+	fc, err := portal.Recover(ctx, portal.RecoverRequest{
+		ServerURL:    serverURL,
+		Name:         name,
+		RecoveryCode: recoveryCode,
+		Title:        title,
+		AuthURL:      authURL,
+		ClientOnly:   clientOnly,
+	})
+	if err != nil {
+		return err
+	}
+	path := out
+	if path == "" {
+		p, perr := conf.DefaultConfigPath()
+		if perr != nil {
+			return perr
+		}
+		path = p
+	}
+	if err := conf.SaveFile(path, fc); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+	fmt.Printf("Recovered as %q. Config saved to %s\n", fc.AgentName, path)
 	return nil
 }
 
