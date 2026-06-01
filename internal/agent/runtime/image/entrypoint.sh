@@ -232,18 +232,25 @@ log "snapshotter=${SNAPSHOTTER}"
 # inside the container's filesystem; the volume mount overlays it.
 mkdir -p /etc/rancher/node
 
-# Kubelet routing args. node-ip=127.0.0.1 makes the Node advertise an
-# InternalIP that, from cloudbox's apiserver POV, is loopback — which
-# is where the frpc proxy above publishes this kubelet. Without it
-# k3s reports only Hostname=<agent-name>, which the apiserver tries to
-# DNS-resolve from cloudbox's network namespace and fails.
-# kubelet-arg=port=$OUTPOST_KUBELET_PORT both binds the kubelet on the
-# per-outpost loopback proxy port AND makes it report that same port
-# as its daemonEndpoint, so the apiserver dials 127.0.0.1:<port> end
-# to end. Skipped when KUBELET_PORT==0 (old pairing pre-allocation).
+# Kubelet routing arg. --kubelet-arg=port=$OUTPOST_KUBELET_PORT binds
+# the kubelet on the per-outpost loopback proxy port AND makes it
+# report that same port as its daemonEndpoint.
+#
+# We deliberately DON'T pass --node-ip=127.0.0.1: kubelet's status
+# updater rejects loopback addresses ("nodeIP can't be loopback
+# address") in its validate phase, so the Node's InternalIP would
+# stay at the container's eth0 IP regardless and an error log would
+# fire every 10s. Instead, cloudbox runs a Node-addr patcher that
+# writes ExternalIP=127.0.0.1 — a type kubelet doesn't manage, so no
+# race with its 10s status updates — and the apiserver is configured
+# with --kubelet-preferred-address-types=ExternalIP,... so it dials
+# via the loopback proxy address we control. See
+# cloudbox/hub/internal/server/node_addr_patch.go.
+#
+# Skipped when KUBELET_PORT==0 (old pairing pre-allocation).
 KUBELET_ROUTING_ARGS=""
 if [ "${OUTPOST_KUBELET_PORT}" != "0" ]; then
-    KUBELET_ROUTING_ARGS="--node-ip=127.0.0.1 --kubelet-arg=port=${OUTPOST_KUBELET_PORT}"
+    KUBELET_ROUTING_ARGS="--kubelet-arg=port=${OUTPOST_KUBELET_PORT}"
 fi
 
 log "exec k3s agent --server=https://127.0.0.1:${OUTPOST_API_PORT} --node-name=${OUTPOST_AGENT_NAME} --with-node-id ${SNAPSHOTTER_ARGS} ${KUBELET_ROUTING_ARGS}"
