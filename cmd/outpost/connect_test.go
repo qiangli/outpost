@@ -88,7 +88,7 @@ func TestKeepAlivePingsAndUpdatesCookie(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- runKeepAlive(ctx, fc, "test-bearer", host, "initial-cookie")
+		done <- runKeepAlive(ctx, fc, "test-bearer", host, "initial-cookie", "", "", 0)
 	}()
 
 	// Wait until at least 2 pings have landed, then cancel.
@@ -153,7 +153,7 @@ func TestKeepAliveExitsOn401(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	err := runKeepAlive(ctx, fc, "test-bearer", host, "doesnt-matter")
+	err := runKeepAlive(ctx, fc, "test-bearer", host, "doesnt-matter", "", "", 0)
 	if err == nil {
 		t.Fatal("expected runKeepAlive to error on 401")
 	}
@@ -270,7 +270,7 @@ func TestKeepAlive_RetriesTransientThenSucceeds(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- runKeepAlive(ctx, fc, "tk", host, "ck") }()
+	go func() { done <- runKeepAlive(ctx, fc, "tk", host, "ck", "", "", 0) }()
 
 	// Wait until we see at least 4 successful pings worth of activity
 	// (3 503s + at least one 200), then cancel and verify clean exit.
@@ -331,7 +331,7 @@ func TestKeepAlive_GivesUpAfterMaxConsecutive(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	err := runKeepAlive(ctx, fc, "tk", host, "ck")
+	err := runKeepAlive(ctx, fc, "tk", host, "ck", "", "", 0)
 	if err == nil {
 		t.Fatal("expected non-nil error after max consecutive failures")
 	}
@@ -371,7 +371,7 @@ func TestKeepAlive_FatalExitsImmediately(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
-	err := runKeepAlive(ctx, fc, "tk", host, "ck")
+	err := runKeepAlive(ctx, fc, "tk", host, "ck", "", "", 0)
 	if err == nil {
 		t.Fatal("expected error on 403")
 	}
@@ -458,6 +458,186 @@ func TestPostElevate_TTLInPayload(t *testing.T) {
 				t.Errorf("ttl_seconds present in payload but should be omitted: %v", gotPayload)
 			}
 		})
+	}
+}
+
+// TestKeepAlive_SelfHealReElevates is the core test for the sticky-
+// connect work: when the loop holds creds in RAM (non-empty password +
+// user), a fatal ping does NOT exit the process. Instead, the loop
+// waits keepAliveSettleDelay, retries once, then POSTs to /h/<host>/
+// elev/ssh to mint a fresh cookie using the cached password — exactly
+// the path a deploy of cloudbox needs (JWT_SECRET rotated; existing
+// cookies invalidated).
+func TestKeepAlive_SelfHealReElevates(t *testing.T) {
+	savedInt := keepAliveInterval
+	keepAliveInterval = 10 * time.Millisecond
+	t.Cleanup(func() { keepAliveInterval = savedInt })
+	savedDelay := keepAliveSettleDelay
+	keepAliveSettleDelay = 5 * time.Millisecond
+	t.Cleanup(func() { keepAliveSettleDelay = savedDelay })
+
+	tmp := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	host := "rotatedhost"
+	var (
+		pings     atomic.Int32 // count of POSTs to /elev/ssh/ping
+		elevates  atomic.Int32 // count of POSTs to /elev/ssh (re-elevate)
+		expiredKO atomic.Bool  // once the re-elevate has run, accept the new cookie
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/elev/ssh/ping"):
+			n := pings.Add(1)
+			ck, _ := r.Cookie("matrix_elev")
+			cookieValue := ""
+			if ck != nil {
+				cookieValue = ck.Value
+			}
+			// Before re-elevate: every ping returns 401 to simulate
+			// JWT_SECRET rotation. After re-elevate: only the freshly-
+			// minted "rotated-cookie" value is accepted; anything else
+			// keeps 401-ing.
+			if !expiredKO.Load() {
+				http.Error(w, "elevation expired", http.StatusUnauthorized)
+				return
+			}
+			if cookieValue != "rotated-cookie" {
+				http.Error(w, "stale cookie", http.StatusUnauthorized)
+				return
+			}
+			_ = n
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/elev/ssh"):
+			elevates.Add(1)
+			if r.Method != http.MethodPost {
+				http.Error(w, "wrong method", http.StatusMethodNotAllowed)
+				return
+			}
+			// Verify the re-elevate is using the cached creds.
+			var payload map[string]any
+			if err := decodeJSON(r, &payload); err != nil {
+				http.Error(w, "bad json", http.StatusBadRequest)
+				return
+			}
+			if payload["user"] != "noviadmin" || payload["password"] != "secret" {
+				http.Error(w, "wrong creds", http.StatusUnauthorized)
+				return
+			}
+			// Mint a "rotated" cookie that the ping handler will then
+			// accept; flip the expiredKO gate so subsequent pings pass.
+			http.SetCookie(w, &http.Cookie{
+				Name:  "matrix_elev",
+				Value: "rotated-cookie",
+				Path:  "/h/" + host + "/ssh",
+			})
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+			expiredKO.Store(true)
+		default:
+			http.Error(w, "unexpected path "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	u, _ := url.Parse(srv.URL)
+	port, _ := parsePort(u.Port())
+	fc := &conf.FileConfig{
+		ServerAddr: "http://" + u.Hostname(),
+		ServerPort: port,
+		Protocol:   "tcp",
+	}
+	_ = writeCookie(host, "stale-cookie")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		// Non-empty password+user enables self-heal.
+		done <- runKeepAlive(ctx, fc, "test-bearer", host, "stale-cookie",
+			"secret", "noviadmin", 0)
+	}()
+
+	// Wait until re-elevate has happened AND at least one ping after
+	// it has succeeded (so we know recovery is end-to-end, not just
+	// "we POSTed").
+	deadline := time.After(2 * time.Second)
+	for {
+		if elevates.Load() >= 1 && expiredKO.Load() && pings.Load() >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timeout: pings=%d elevates=%d expiredKO=%v",
+				pings.Load(), elevates.Load(), expiredKO.Load())
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runKeepAlive returned error after self-heal: %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("runKeepAlive did not exit within 1s of ctx cancel")
+	}
+
+	// Cookie file should reflect the rotated value, not the stale one.
+	got, err := readCookie(host)
+	if err != nil {
+		t.Fatalf("read cookie: %v", err)
+	}
+	if got != "rotated-cookie" {
+		t.Errorf("cookie not rotated; got %q want rotated-cookie", got)
+	}
+	if elevates.Load() != 1 {
+		t.Errorf("expected exactly 1 re-elevate POST, got %d", elevates.Load())
+	}
+}
+
+// TestKeepAlive_SelfHealExitsOnWrongPassword: if the OS password was
+// genuinely rotated on the host, the re-elevate POST itself returns
+// 401, and the loop must exit non-zero so the operator notices.
+func TestKeepAlive_SelfHealExitsOnWrongPassword(t *testing.T) {
+	savedInt := keepAliveInterval
+	keepAliveInterval = 10 * time.Millisecond
+	t.Cleanup(func() { keepAliveInterval = savedInt })
+	savedDelay := keepAliveSettleDelay
+	keepAliveSettleDelay = 5 * time.Millisecond
+	t.Cleanup(func() { keepAliveSettleDelay = savedDelay })
+
+	tmp := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	host := "rotatedpwhost"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Every request is 401 — both the ping path and the re-elevate
+		// POST. The re-elevate's 401 must surface as fatalElevateError
+		// and exit the loop.
+		http.Error(w, "credentials rejected", http.StatusUnauthorized)
+	}))
+	t.Cleanup(srv.Close)
+
+	u, _ := url.Parse(srv.URL)
+	port, _ := parsePort(u.Port())
+	fc := &conf.FileConfig{
+		ServerAddr: "http://" + u.Hostname(),
+		ServerPort: port,
+		Protocol:   "tcp",
+	}
+	_ = writeCookie(host, "any")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := runKeepAlive(ctx, fc, "tk", host, "any", "wrong-secret", "noviadmin", 0)
+	if err == nil {
+		t.Fatal("expected non-nil error when re-elevate also returns 401")
+	}
+	if !strings.Contains(err.Error(), "OS password") {
+		t.Errorf("error should mention 'OS password' guidance, got: %v", err)
 	}
 }
 

@@ -134,7 +134,11 @@ func runCookieOnlyKeepAlive(ctx context.Context, host string) error {
 		return fmt.Errorf("no cached cookie for %q; run `outpost connect --ttl infinite %s` first to seed one", host, host)
 	}
 	fmt.Fprintf(os.Stderr, "Keep-alive (cookie-only): pinging every 30 min until SIGTERM or absolute expiry.\n")
-	return runKeepAlive(ctx, fc, bearer, host, cookie)
+	// Empty password/user signals the loop has no creds for auto-renew on
+	// fatal auth. The existing fatal-exit behavior is preserved for this
+	// daemon-friendly path: a supervisor (launchd / systemd) is expected
+	// to surface "re-elevation needed" by noticing the non-zero exit.
+	return runKeepAlive(ctx, fc, bearer, host, cookie, "", "", 0)
 }
 
 func runConnect(ctx context.Context, host, userFlag string, fromStdin, keepAlive bool, ttlSeconds int64) error {
@@ -218,7 +222,7 @@ func runConnect(ctx context.Context, host, userFlag string, fromStdin, keepAlive
 		return nil
 	}
 	fmt.Fprintf(os.Stderr, "Keep-alive: pinging every 30 min until SIGTERM or absolute expiry.\n")
-	return runKeepAlive(ctx, fc, bearer, host, cookie)
+	return runKeepAlive(ctx, fc, bearer, host, cookie, password, user, ttlSeconds)
 }
 
 // runKeepAlive holds the process open, hitting /h/<host>/elev/ssh/ping
@@ -227,29 +231,41 @@ func runConnect(ctx context.Context, host, userFlag string, fromStdin, keepAlive
 // (30 min into the 1 h window), so we capture the refreshed value and
 // rewrite the cache file.
 //
-// Error handling distinguishes:
-//   - Fatal (HTTP 401/403, or an explicit fatalPingError): the cookie
-//     is dead (absolute expiry, revocation, JWT secret rotation). We
-//     return non-zero so the supervisor knows to surface re-elevation
-//     to the operator.
-//   - Transient (network errors, 5xx, 408, 429, build/marshal failures
-//     that could resolve themselves): retry with exponential backoff,
-//     starting at 30 s and capping at 5 min between attempts. After
-//     `keepAliveMaxConsecutiveFailures` (10) consecutive failures we
-//     give up — at 5 min each that's ~50 min of total backoff, which
-//     is well past any realistic cloudbox outage that wouldn't already
-//     trigger a human response.
+// When `password` and `user` are non-empty the loop is "self-healing":
+// on a fatalPingError that the disk-cookie self-heal couldn't resolve,
+// the loop sleeps keepAliveSettleDelay (to absorb spurious 401s during
+// a half-rolled-out cloudbox deploy), retries the ping once, and if
+// still fatal POSTs a fresh elevation using the in-RAM credentials. A
+// successful re-elevate rewrites the cookie and the loop continues —
+// the operator sees no interruption. The only conditions that exit
+// the loop in self-heal mode are SIGTERM/SIGINT and a fatalElevateError
+// from postElevate (the OS password was actually rotated).
+//
+// When `password` is empty the loop runs in the original "cookie-only"
+// mode used by `outpost connect --cookie-only`: any fatalPingError that
+// disk-cookie self-heal can't resolve causes a non-zero exit so a
+// supervisor (launchd / systemd) can surface re-elevation to the user.
+// Transient errors still get retried, but the
+// keepAliveMaxConsecutiveFailures (10) budget is enforced so a wedged
+// daemon eventually exits.
 //
 // On any successful ping the failure counter resets to zero, so a
 // brief outage in the middle of a long session doesn't burn through
 // the budget.
-func runKeepAlive(ctx context.Context, fc *conf.FileConfig, bearer, host, cookie string) error {
+func runKeepAlive(ctx context.Context, fc *conf.FileConfig, bearer, host, cookie, password, user string, ttlSeconds int64) error {
 	pingURL, err := buildPingURL(fc.ServerAddr, fc.ServerPort, fc.Protocol, host)
 	if err != nil {
 		return fmt.Errorf("build ping URL: %w", err)
 	}
 	client := &http.Client{Timeout: 30 * time.Second}
 	current := cookie
+	// canSelfHeal == true means the loop holds OS credentials in RAM and
+	// can auto-renew the elevation cookie on fatal auth. This flips two
+	// behaviors at once: (a) fatalPingError after the disk-cookie retry
+	// triggers settle-delay + re-elevate instead of exiting, and (b) the
+	// transient-error budget is uncapped (because we no longer need a
+	// supervisor to restart us — we can wait out arbitrary outages).
+	canSelfHeal := password != "" && user != ""
 	t := time.NewTicker(keepAliveInterval)
 	defer t.Stop()
 	consecutiveFailures := 0
@@ -264,35 +280,78 @@ func runKeepAlive(ctx context.Context, fc *conf.FileConfig, bearer, host, cookie
 		if err != nil {
 			var fp fatalPingError
 			if errors.As(err, &fp) {
-				// Self-heal: another process (interactive ssh's slide-
-				// refresh, a manual `outpost connect`, a second keepalive
-				// elsewhere) may have rewritten the disk cookie since we
-				// last read it. If so, retry once with the disk value
-				// before declaring fatal — otherwise we die with a valid
-				// cookie sitting right there and require launchd to
-				// restart us, which leaves a ~10 s window where new ssh
-				// attempts that race the restart fail. Observed 2026-05-28
-				// when keepalive jobs flapped repeatedly on a 403 even
-				// though the cookie file on disk had been refreshed.
+				// Self-heal step 1: another process (interactive ssh's
+				// slide-refresh, a manual `outpost connect`, a second
+				// keepalive elsewhere) may have rewritten the disk cookie
+				// since we last read it. Retry once with the disk value
+				// before escalating. Observed 2026-05-28 when keepalive
+				// jobs flapped repeatedly on 403 though the cookie file
+				// on disk had been refreshed.
 				if disk, derr := readCookie(host); derr == nil && disk != "" && disk != current {
 					fmt.Fprintf(os.Stderr, "Keep-alive: ping 403 with in-memory cookie; retrying with refreshed disk cookie.\n")
 					current = disk
 					next, err = pingElevate(ctx, client, pingURL, bearer, current)
 					if err == nil {
-						// Disk cookie worked. Treat as transient hiccup,
-						// fall through to the success path below.
 						goto pingSucceeded
 					}
-					// Disk cookie also rejected — surface the original
-					// fatal error; the on-disk cookie is also dead.
-					if errors.As(err, &fp) {
-						return fmt.Errorf("keep-alive ping (fatal, disk cookie also rejected): %w", err)
+					// Either disk cookie also rejected (still fp) or
+					// disk-retry hit a transient. Fall through.
+				}
+				// Self-heal step 2: re-elevate using in-RAM creds.
+				// Only available when `password` and `user` were threaded
+				// in. The settle delay absorbs spurious 401s during a
+				// half-rolled-out cloudbox deploy: if cloudbox is in the
+				// middle of swapping pods, a single ping may have hit the
+				// pod-being-torn-down before the LB caught up. One more
+				// ping after the delay distinguishes a real expired
+				// cookie from a flapping deploy.
+				if canSelfHeal && errors.As(err, &fp) {
+					fmt.Fprintf(os.Stderr, "Keep-alive: fatal ping (%v); waiting %s to absorb deploy churn, then retrying.\n",
+						err, keepAliveSettleDelay)
+					select {
+					case <-ctx.Done():
+						return nil
+					case <-time.After(keepAliveSettleDelay):
 					}
-					// Disk-retry hit a transient — fall through to the
-					// regular transient handling below.
-				} else {
+					next, err = pingElevate(ctx, client, pingURL, bearer, current)
+					if err == nil {
+						goto pingSucceeded
+					}
+					if errors.As(err, &fp) {
+						// Still fatal after the settle. Re-elevate.
+						fmt.Fprintf(os.Stderr, "Keep-alive: re-elevating after fatal ping (cookie expired, revoked, or JWT_SECRET rotated).\n")
+						fresh, perr := postElevate(ctx, fc, bearer, host, user, password, ttlSeconds)
+						if perr != nil {
+							var fe fatalElevateError
+							if errors.As(perr, &fe) {
+								// Credentials genuinely rejected by the
+								// remote /auth gate — OS password rotated.
+								// Stop the loop so the operator notices.
+								return fmt.Errorf("keep-alive: re-elevate rejected (OS password may have changed): %w", perr)
+							}
+							// Transient during re-elevate (5xx, network,
+							// content-type mismatch). Treat as a transient
+							// loop error and let backoff handle it.
+							err = perr
+						} else {
+							if werr := writeCookie(host, fresh); werr != nil {
+								return fmt.Errorf("rewrite cookie after re-elevate: %w", werr)
+							}
+							current = fresh
+							next = ""
+							fmt.Fprintf(os.Stderr, "Keep-alive: re-elevated successfully; cookie refreshed.\n")
+							goto pingSucceeded
+						}
+					}
+					// err is now transient — fall through to backoff.
+				}
+				// Couldn't self-heal. If err is still fatal, exit; the
+				// cookie-only path lands here whenever the disk-cookie
+				// retry didn't recover.
+				if errors.As(err, &fp) {
 					return fmt.Errorf("keep-alive ping (fatal): %w", err)
 				}
+				// err is transient — fall through.
 			}
 			// Transient: retry-with-backoff inside this tick window
 			// rather than waiting a full 30 min. Each attempt waits
@@ -300,7 +359,12 @@ func runKeepAlive(ctx context.Context, fc *conf.FileConfig, bearer, host, cookie
 			// either succeeded (continue main loop) or exhausted
 			// the budget (return).
 			consecutiveFailures++
-			if consecutiveFailures > keepAliveMaxConsecutiveFailures {
+			// Uncap the transient budget when self-healing — there's no
+			// supervisor on the other side to restart us, and a 30-min
+			// cloudbox outage shouldn't terminate a session that can
+			// recover the moment cloudbox returns. Cookie-only mode
+			// keeps the cap so a wedged daemon eventually exits.
+			if !canSelfHeal && consecutiveFailures > keepAliveMaxConsecutiveFailures {
 				return fmt.Errorf("keep-alive: gave up after %d consecutive transient errors (last: %w)",
 					consecutiveFailures, err)
 			}
@@ -360,6 +424,15 @@ func retryBackoff(n int) time.Duration {
 
 var keepAliveBackoffCap = 5 * time.Minute
 
+// keepAliveSettleDelay is how long the auto-renew branch waits before
+// retrying the ping (and then re-elevating) when a fatalPingError comes
+// back and we hold creds in RAM. A half-redeployed cloudbox can emit a
+// spurious 401/403 mid-rolling-deploy; sleeping ~settleDelay lets the
+// fleet stabilize before we burn a fresh OS-password POST. Long enough
+// to outlast a typical k8s rolling-deploy probe window; short enough
+// that a real expired cookie still recovers within a minute.
+var keepAliveSettleDelay = 30 * time.Second
+
 // fatalPingError marks ping errors the keep-alive loop should NOT
 // retry — auth has broken (401/403), the cookie is dead, the only
 // recovery is operator re-elevation. Wrapping the HTTP status in a
@@ -372,6 +445,21 @@ type fatalPingError struct {
 
 func (e fatalPingError) Error() string {
 	return fmt.Sprintf("ping HTTP %d (cookie no longer valid): %s", e.status, e.body)
+}
+
+// fatalElevateError marks a postElevate response that's a credential
+// rejection (HTTP 401 or 403): the OS password no longer works for the
+// remote host's auth gate. Distinct from a 5xx / transport-blip failure
+// from postElevate, which is treated as transient by the keep-alive
+// auto-renew loop. Mirrors fatalPingError so runKeepAlive can use
+// errors.As to discriminate cleanly.
+type fatalElevateError struct {
+	status int
+	body   string
+}
+
+func (e fatalElevateError) Error() string {
+	return fmt.Sprintf("elevate HTTP %d (credentials rejected): %s", e.status, e.body)
 }
 
 // pingElevate POSTs to the ping endpoint with the current cookie and
@@ -484,7 +572,17 @@ func postElevate(ctx context.Context, fc *conf.FileConfig, bearer, host, user, p
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("elevation failed (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		body := strings.TrimSpace(string(respBody))
+		// 401 / 403 = the OS password the caller submitted is no longer
+		// accepted by the remote host's /auth gate. Surface this as a
+		// typed fatal so the keep-alive auto-renew loop can distinguish
+		// it from a transient 5xx / cloudbox blip and stop the loop
+		// instead of looping forever on a bad password.
+		switch resp.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden:
+			return "", fatalElevateError{status: resp.StatusCode, body: body}
+		}
+		return "", fmt.Errorf("elevation failed (HTTP %d): %s", resp.StatusCode, body)
 	}
 	// Defense in depth against URL-shape drift: cloudbox returns
 	// Content-Type=application/json on the real elevate endpoint and
