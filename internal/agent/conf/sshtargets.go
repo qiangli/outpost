@@ -68,6 +68,16 @@ type SSHTarget struct {
 	// can use it uniformly.
 	Via string `json:"via,omitempty"`
 
+	// Direct, when true, dials the target via a plain TCP connection
+	// to Host:Port (defaulting to port 22 when Port is zero), bypassing
+	// the cloudbox WS path. The remote outpost must have its
+	// SSHListenAddr bound to a LAN address (FileConfig.SSHListenAddr).
+	//
+	// Trust on a Direct target is TOFU on the SSH host-key fingerprint
+	// (Wave 3A.1) — same as the cloudbox-WS path. Wave 3A.2 lifts to
+	// cloudbox-CA-signed certs.
+	Direct bool `json:"direct,omitempty"`
+
 	// Description is a freeform note for the operator's benefit
 	// (printed by `outpost ssh list`). Not interpreted.
 	Description string `json:"description,omitempty"`

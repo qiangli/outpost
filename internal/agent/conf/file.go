@@ -270,6 +270,61 @@ type FileConfig struct {
 	// API server as a virtual node and runs scheduled Pods as local
 	// podman containers. See internal/agent/vkpodman. Off by default.
 	Cluster *ClusterConfig `json:"cluster,omitempty"`
+
+	// LAN peer discovery + LAN-direct dial (Wave 3A). All default off
+	// so a default install doesn't leak metadata or expose listeners.
+
+	// AssignedHostname is the cloudbox-issued DNS-safe slug returned at
+	// register/exchange time (e.g. "dragon-7a3b"). Used as the mDNS
+	// service-instance name and as the assumed hostname for
+	// `<assigned_hostname>.local` resolution. Cloudbox-side issuance
+	// lands in Wave 3A.2; until then this falls back to os.Hostname()
+	// in the daemon's startup path.
+	AssignedHostname string `json:"assigned_hostname,omitempty"`
+
+	// OAuth2Email is the cloudbox account-owner identity (the OAuth2
+	// "I am the resource owner" claim). Returned by the
+	// register/exchange flow in Wave 3A.2. Used as the Tier-2 trust
+	// anchor by PeerTrustPolicy="same-owner".
+	OAuth2Email string `json:"oauth2_email,omitempty"`
+
+	// OSUsername is the OS user the outpost daemon runs as
+	// (informational + future SSH user-cert flow). Populated from
+	// hostauth.CurrentUser() at boot when empty.
+	OSUsername string `json:"os_username,omitempty"`
+
+	// DiscoveryEnabled gates mDNS advertisement and the HTTP /discover
+	// surface mount. Default off — flip on with `outpost config set
+	// --discovery=on` once the operator understands the privacy
+	// posture (mDNS broadcasts hostname + fingerprint on the LAN).
+	DiscoveryEnabled *bool `json:"discovery_enabled,omitempty"`
+
+	// SSHListenAddr is the optional LAN TCP bind for the in-process SSH
+	// server (e.g. "0.0.0.0:2222"). Empty disables the LAN listener;
+	// the matrix tunnel /ssh endpoint stays the only path until the
+	// operator explicitly opts into LAN exposure. The same handleSSHConn
+	// services WS and LAN paths; PasswordCallback authentication
+	// applies on LAN-direct (no cloudbox vouching available).
+	SSHListenAddr string `json:"ssh_listen_addr,omitempty"`
+
+	// DiscoveryHTTPListenAddr is the optional LAN bind for the HTTP
+	// /api/v1/discover/* surface (e.g. "0.0.0.0:17778"). Empty disables.
+	// When set, advertised in mDNS TXT and cloudbox peer-hints so
+	// other outposts can probe us directly.
+	DiscoveryHTTPListenAddr string `json:"discovery_http_listen_addr,omitempty"`
+
+	// PeerTrustPolicy controls which discovered peers we'll accept for
+	// Tier-2 operations (ssh exec, jump, sftp, repair). One of:
+	//
+	//   "same-owner"     — default; require oauth2_email match
+	//   "same-cloudbox"  — accept any peer paired with our cloudbox
+	//   "tofu-allow"     — fall back to TOFU on fingerprint when no cert
+	//
+	// The default refuses peers in the same cloudbox but a different
+	// OAuth2 account — strangers shouldn't be able to jump-host or
+	// install-upgrade through my outpost just because we share a
+	// cloudbox tenant.
+	PeerTrustPolicy string `json:"peer_trust_policy,omitempty"`
 }
 
 // ClusterConfig persists the kubeconfig fields cloudbox issues at
@@ -755,6 +810,81 @@ func (fc *FileConfig) YcodeShareRequireLoginOn() bool {
 func (fc *FileConfig) ClusterOn() bool {
 	return fc != nil && fc.Cluster != nil && fc.Cluster.Enabled
 }
+
+// DiscoveryOn reports whether LAN discovery (mDNS + HTTP /discover)
+// should be active. Default off; the *bool gives us an explicit
+// opt-in semantic that survives the absent-key case.
+func (fc *FileConfig) DiscoveryOn() bool {
+	return fc != nil && fc.DiscoveryEnabled != nil && *fc.DiscoveryEnabled
+}
+
+// EffectivePeerTrustPolicy returns the configured policy with a
+// default of "same-owner" when unset or invalid. Centralized so
+// every consumer reaches the same fallback.
+func (fc *FileConfig) EffectivePeerTrustPolicy() string {
+	if fc == nil {
+		return "same-owner"
+	}
+	switch strings.TrimSpace(fc.PeerTrustPolicy) {
+	case "same-owner", "same-cloudbox", "tofu-allow":
+		return strings.TrimSpace(fc.PeerTrustPolicy)
+	}
+	return "same-owner"
+}
+
+// EffectiveAssignedHostname returns AssignedHostname when set,
+// otherwise a DNS-safe form of AgentName, otherwise os.Hostname().
+// The Wave 3A.1 daemon uses this until cloudbox-side issuance lands
+// in 3A.2.
+func (fc *FileConfig) EffectiveAssignedHostname() string {
+	if fc != nil {
+		if h := strings.TrimSpace(fc.AssignedHostname); h != "" {
+			return sanitizeHostname(h)
+		}
+		if h := strings.TrimSpace(fc.AgentName); h != "" {
+			return sanitizeHostname(h)
+		}
+	}
+	hn, _ := osHostname()
+	return sanitizeHostname(hn)
+}
+
+// sanitizeHostname produces a DNS-safe label: lowercase letters,
+// digits, hyphens. Anything else collapses to "-". Truncated to 63
+// chars (DNS label limit).
+func sanitizeHostname(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	out := make([]byte, 0, len(s))
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+			out = append(out, byte(r))
+		case r >= '0' && r <= '9':
+			out = append(out, byte(r))
+		case r == '-' || r == '_':
+			out = append(out, '-')
+		default:
+			if len(out) > 0 && out[len(out)-1] != '-' {
+				out = append(out, '-')
+			}
+		}
+	}
+	// Trim trailing hyphens, cap at 63 chars.
+	for len(out) > 0 && out[len(out)-1] == '-' {
+		out = out[:len(out)-1]
+	}
+	if len(out) > 63 {
+		out = out[:63]
+	}
+	if len(out) == 0 {
+		return "outpost"
+	}
+	return string(out)
+}
+
+// osHostname is a tiny indirection so tests can stub it. Falls back
+// to "outpost" when the OS call fails (rare).
+var osHostname = os.Hostname
 
 // ClusterNodeName returns the node identity to register with — the
 // explicit override when set, otherwise AgentName.

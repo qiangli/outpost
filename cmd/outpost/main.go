@@ -84,6 +84,9 @@ func main() {
 		remoteCmd(),
 		docsCmd(), versionCmd(), upgradeCmd(), rollbackCmd(),
 	)
+	// Wave 3A: LAN peer discovery + peer-assisted repair. Registered
+	// via a helper so main.go's root AddCommand block stays compact.
+	registerDiscoveryCommands(root)
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -765,6 +768,12 @@ func startCmd() *cobra.Command {
 				slog.Info("matrix-agent: dialing matrix tunnel", "server", cfg.ServerAddr, "port", cfg.ServerPort, "remotePort", cfg.RemotePort)
 				return tunnel.Run(gctx)
 			})
+
+			// Wave 3A: optional LAN-direct SSH listener + LAN peer
+			// discovery. Both off by default; see discovery_wiring.go.
+			startLANSSHListener(gctx, g, fc, cfg, sshHostKey, peers, apps)
+			startDiscovery(gctx, g, fc, cfg, sshHostKey)
+
 			// Ollama pool watcher — only spins up when the user opted
 			// into the shared pool AND the local Ollama proxy actually
 			// registered (ollamaSvc != nil). The watcher itself tolerates

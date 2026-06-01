@@ -16,6 +16,7 @@ package admincore
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -240,40 +241,56 @@ func (s *Server) dialSSHChain(ctx context.Context, name, jumpOverride string) (*
 		}
 	}
 
-	// Leg 0: cloudbox WS dial to the outermost target.
+	// Leg 0: cloudbox WS dial to the outermost target, OR a plain TCP
+	// dial when the target is Direct (LAN-direct path).
 	outer := chain[0]
-	wsURL, err := sshclient.BuildWSURL(fc.ServerAddr, fc.ServerPort, fc.Protocol, outer.Host)
-	if err != nil {
-		return nil, nil, internalErr("build ws url: %s", err.Error())
-	}
-	cookie, _ := conf.ReadSessionCookie(outer.Host)
-	dialCtx, dialCancel := context.WithTimeout(ctx, 35*time.Second)
-	wsConn, err := sshclient.DialWS(dialCtx, sshclient.DialOptions{
-		WSURL:  wsURL,
-		Bearer: bearer,
-		Cookie: cookie,
-		Host:   outer.Host,
-	})
-	dialCancel()
-	if err != nil {
-		var eauth sshclient.EAuthRequiredError
-		if asEAuth(err, &eauth) {
-			return nil, nil, &APIError{
-				Status: http.StatusUnauthorized,
-				Msg:    fmt.Sprintf("elevation required for %q — run `outpost connect %s`", outer.Host, outer.Host),
-			}
+	var (
+		outerTransport net.Conn
+		outerDialErr   error
+	)
+	if outer.Direct {
+		port := outer.Port
+		if port <= 0 {
+			port = conf.DefaultSSHPort
 		}
-		return nil, nil, upstream("dial cloudbox: %s", err.Error())
+		outerTransport, outerDialErr = net.DialTimeout("tcp", net.JoinHostPort(outer.Host, fmt.Sprintf("%d", port)), 30*time.Second)
+		if outerDialErr != nil {
+			return nil, nil, upstream("lan-direct dial %s:%d: %s", outer.Host, port, outerDialErr.Error())
+		}
+	} else {
+		wsURL, err := sshclient.BuildWSURL(fc.ServerAddr, fc.ServerPort, fc.Protocol, outer.Host)
+		if err != nil {
+			return nil, nil, internalErr("build ws url: %s", err.Error())
+		}
+		cookie, _ := conf.ReadSessionCookie(outer.Host)
+		dialCtx, dialCancel := context.WithTimeout(ctx, 35*time.Second)
+		wsConn, derr := sshclient.DialWS(dialCtx, sshclient.DialOptions{
+			WSURL:  wsURL,
+			Bearer: bearer,
+			Cookie: cookie,
+			Host:   outer.Host,
+		})
+		dialCancel()
+		if derr != nil {
+			var eauth sshclient.EAuthRequiredError
+			if asEAuth(derr, &eauth) {
+				return nil, nil, &APIError{
+					Status: http.StatusUnauthorized,
+					Msg:    fmt.Sprintf("elevation required for %q — run `outpost connect %s`", outer.Host, outer.Host),
+				}
+			}
+			return nil, nil, upstream("dial cloudbox: %s", derr.Error())
+		}
+		outerTransport = sshclient.AsNetConn(ctx, wsConn)
 	}
-	netConn := sshclient.AsNetConn(ctx, wsConn)
 
 	hostKeyCB, err := sshclient.KnownHostsCallbackTOFU(knownHostsPath, sshclient.HostAliasForHost(outer.Host))
 	if err != nil {
-		_ = netConn.Close()
+		_ = outerTransport.Close()
 		return nil, nil, internalErr("known_hosts callback: %s", err.Error())
 	}
 	cli, err := sshclient.Dial(ctx, sshclient.Config{
-		Transport:       netConn,
+		Transport:       outerTransport,
 		HostAlias:       sshclient.HostAliasForHost(outer.Host),
 		User:            outer.User,
 		HostKeyCallback: hostKeyCB,

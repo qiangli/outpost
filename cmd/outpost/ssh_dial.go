@@ -16,8 +16,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/sshclient"
@@ -74,43 +76,58 @@ func dialSSHTargetChain(ctx context.Context, name, jumpOverride string) (*sshcli
 		}
 	}
 
-	// Leg 0: cloudbox WS dial to the outermost target. This is the
-	// same shape ssh-proxy uses, including the TTY-prompt elev
-	// recovery callback.
+	// Leg 0: cloudbox WS dial to the outermost target, OR a plain TCP
+	// dial when the target is Direct (LAN-direct path; bypasses cloudbox).
 	outer := chain[0]
-	wsURL, err := sshclient.BuildWSURL(fc.ServerAddr, fc.ServerPort, fc.Protocol, outer.Host)
-	if err != nil {
-		return nil, nil, err
+	var (
+		outerTransport net.Conn
+		dialErr        error
+	)
+	if outer.Direct {
+		port := outer.Port
+		if port <= 0 {
+			port = conf.DefaultSSHPort
+		}
+		outerTransport, dialErr = net.DialTimeout("tcp", net.JoinHostPort(outer.Host, fmt.Sprintf("%d", port)), 30*time.Second)
+		if dialErr != nil {
+			return nil, nil, fmt.Errorf("lan-direct dial %s:%d: %w", outer.Host, port, dialErr)
+		}
+	} else {
+		wsURL, err := sshclient.BuildWSURL(fc.ServerAddr, fc.ServerPort, fc.Protocol, outer.Host)
+		if err != nil {
+			return nil, nil, err
+		}
+		cookie, _ := conf.ReadSessionCookie(outer.Host)
+		wsConn, werr := sshclient.DialWS(ctx, sshclient.DialOptions{
+			WSURL:  wsURL,
+			Bearer: bearer,
+			Cookie: cookie,
+			Host:   outer.Host,
+			OnElevate: func(c context.Context, h string) (string, error) {
+				if !haveTTY() {
+					return "", errors.New("no TTY for password prompt")
+				}
+				fmt.Fprintf(os.Stderr, "outpost: %s requires Connect; prompting for OS password…\n", h)
+				if err := runConnect(c, h, "", false, false, 0); err != nil {
+					return "", err
+				}
+				fresh, _ := conf.ReadSessionCookie(h)
+				return fresh, nil
+			},
+		})
+		if werr != nil {
+			return nil, nil, werr
+		}
+		outerTransport = sshclient.AsNetConn(ctx, wsConn)
 	}
-	cookie, _ := conf.ReadSessionCookie(outer.Host)
-	wsConn, err := sshclient.DialWS(ctx, sshclient.DialOptions{
-		WSURL:  wsURL,
-		Bearer: bearer,
-		Cookie: cookie,
-		Host:   outer.Host,
-		OnElevate: func(c context.Context, h string) (string, error) {
-			if !haveTTY() {
-				return "", errors.New("no TTY for password prompt")
-			}
-			fmt.Fprintf(os.Stderr, "outpost: %s requires Connect; prompting for OS password…\n", h)
-			if err := runConnect(c, h, "", false, false, 0); err != nil {
-				return "", err
-			}
-			fresh, _ := conf.ReadSessionCookie(h)
-			return fresh, nil
-		},
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-	netConn := sshclient.AsNetConn(ctx, wsConn)
+
 	hostKeyCB, err := sshclient.KnownHostsCallbackTOFU(knownHostsPath, sshclient.HostAliasForHost(outer.Host))
 	if err != nil {
-		_ = netConn.Close()
+		_ = outerTransport.Close()
 		return nil, nil, err
 	}
 	outerCli, err := sshclient.Dial(ctx, sshclient.Config{
-		Transport:       netConn,
+		Transport:       outerTransport,
 		HostAlias:       sshclient.HostAliasForHost(outer.Host),
 		User:            outer.User,
 		HostKeyCallback: hostKeyCB,

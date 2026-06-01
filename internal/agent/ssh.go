@@ -131,107 +131,202 @@ func sshHandler(deps sshHandlerDeps) gin.HandlerFunc {
 		netConn := websocket.NetConn(ctx, ws, websocket.MessageBinary)
 		defer netConn.Close()
 
-		serverConfig := &ssh.ServerConfig{
-			MaxAuthTries: 3,
-			// When cloudbox already vouched (matrix_elev gate passed),
-			// flip to NoClientAuth so the SSH handshake completes
-			// without a password challenge — fully unattended for
-			// agentic tools that ride on a previously-cached cookie.
-			NoClientAuth: cloudboxVouched,
-			PasswordCallback: func(meta ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
-				user := strings.TrimSpace(meta.User())
+		handleSSHConn(ctx, netConn, c.Request.RemoteAddr, cloudboxVouched, deps, currentUser, authURL, streamlocalAllow)
+	}
+}
 
-				// AuthURL path: delegate fully. The endpoint owns its
-				// user list and the role decision; we just accept/reject.
-				if authURL != "" {
-					if _, _, derr := delegateAuth(authURL, AuthRequest{User: user, Password: string(password)}, ""); derr != nil {
-						return nil, fmt.Errorf("invalid credentials")
-					}
-					return nil, nil
-				}
+// handleSSHConn services one already-established byte stream as an
+// in-process SSH server. Used by both the WS endpoint (`sshHandler`
+// above) and the optional LAN TCP listener (`ServeLANListener` below)
+// so the SSH server config + channel dispatch + global-request handling
+// stay in one place.
+//
+// cloudboxVouched controls whether NoClientAuth is enabled. The WS path
+// flips it to true when cloudbox stamped X-Periscope-Role; LAN-direct
+// always passes false (no upstream vouching available) and the
+// PasswordCallback enforces the OS-password gate.
+//
+// remoteAddr is informational (logging only); pass `""` when not
+// available. currentUser, authURL, and streamlocalAllow are hoisted
+// to the caller so handler-init work (`hostauth.CurrentUser()`,
+// `buildStreamlocalAllowlist(...)`) happens once per handler rather
+// than per-connection.
+func handleSSHConn(
+	ctx context.Context,
+	conn net.Conn,
+	remoteAddr string,
+	cloudboxVouched bool,
+	deps sshHandlerDeps,
+	currentUser, authURL string,
+	streamlocalAllow []string,
+) {
+	serverConfig := &ssh.ServerConfig{
+		MaxAuthTries: 3,
+		// When cloudbox already vouched (matrix_elev gate passed),
+		// flip to NoClientAuth so the SSH handshake completes
+		// without a password challenge — fully unattended for
+		// agentic tools that ride on a previously-cached cookie.
+		NoClientAuth: cloudboxVouched,
+		PasswordCallback: func(meta ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
+			user := strings.TrimSpace(meta.User())
 
-				// OS path: username must equal the running OS user.
-				if currentUser == "" {
-					return nil, fmt.Errorf("cannot determine current user")
-				}
-				if !strings.EqualFold(user, currentUser) {
-					return nil, fmt.Errorf("invalid credentials")
-				}
-				if err := deps.Auth.Authenticate(currentUser, string(password)); err != nil {
+			// AuthURL path: delegate fully. The endpoint owns its
+			// user list and the role decision; we just accept/reject.
+			if authURL != "" {
+				if _, _, derr := delegateAuth(authURL, AuthRequest{User: user, Password: string(password)}, ""); derr != nil {
 					return nil, fmt.Errorf("invalid credentials")
 				}
 				return nil, nil
-			},
-		}
-		serverConfig.AddHostKey(deps.HostKey)
-
-		serverConn, chans, reqs, err := ssh.NewServerConn(netConn, serverConfig)
-		if err != nil {
-			slog.Info("ssh handshake failed", "err", err, "remote", c.Request.RemoteAddr)
-			return
-		}
-		defer serverConn.Close()
-
-		// Route global requests: `tcpip-forward` / `cancel-tcpip-forward`
-		// (the `ssh -R` mechanism) get real handlers; everything else
-		// (keepalive, no-more-sessions@openssh.com, …) is rejected or
-		// silently consumed in the default branch.
-		fwds := newForwardRegistry()
-		defer fwds.closeAll()
-		go func() {
-			for req := range reqs {
-				switch req.Type {
-				case "tcpip-forward":
-					handleTCPIPForward(ctx, serverConn, fwds, deps.AllowRemoteForward, req)
-				case "cancel-tcpip-forward":
-					handleCancelTCPIPForward(fwds, req)
-				default:
-					if req.WantReply {
-						_ = req.Reply(false, nil)
-					}
-				}
 			}
-		}()
 
-		for newCh := range chans {
-			switch newCh.ChannelType() {
-			case "session":
-				ch, chReqs, aerr := newCh.Accept()
-				if aerr != nil {
-					slog.Warn("ssh channel accept", "err", aerr)
-					continue
-				}
-				go handleSSHSession(ctx, serverConn, ch, chReqs, deps.SFTPEnabled, deps.AllowAgentForward)
-			case "direct-tcpip":
-				if !deps.AllowLocalForward {
-					_ = newCh.Reject(ssh.Prohibited,
-						"local port forwarding disabled by agent config")
-					continue
-				}
-				go handleDirectTCPIP(ctx, newCh, deps.Peers, peerDial{
-					cloudboxBase:     deps.CloudboxBase,
-					cloudboxProtocol: deps.CloudboxProtocol,
-					accessToken:      deps.AccessToken,
-					selfName:         deps.SelfName,
-				})
-			case "direct-streamlocal@openssh.com":
-				// Podman's `ssh://` transport opens this channel type to
-				// forward an SSH channel onto a remote unix socket — i.e.
-				// `podman --connection=<host>` against a paired outpost.
-				// Same gate as direct-tcpip (`ssh -L`): both are
-				// client-driven local forwards.
-				if !deps.AllowLocalForward {
-					_ = newCh.Reject(ssh.Prohibited,
-						"local port forwarding disabled by agent config")
-					continue
-				}
-				go handleDirectStreamlocal(ctx, newCh, streamlocalAllow)
+			// OS path: username must equal the running OS user.
+			if currentUser == "" {
+				return nil, fmt.Errorf("cannot determine current user")
+			}
+			if !strings.EqualFold(user, currentUser) {
+				return nil, fmt.Errorf("invalid credentials")
+			}
+			if err := deps.Auth.Authenticate(currentUser, string(password)); err != nil {
+				return nil, fmt.Errorf("invalid credentials")
+			}
+			return nil, nil
+		},
+	}
+	serverConfig.AddHostKey(deps.HostKey)
+
+	serverConn, chans, reqs, err := ssh.NewServerConn(conn, serverConfig)
+	if err != nil {
+		slog.Info("ssh handshake failed", "err", err, "remote", remoteAddr)
+		return
+	}
+	defer serverConn.Close()
+
+	// Route global requests: `tcpip-forward` / `cancel-tcpip-forward`
+	// (the `ssh -R` mechanism) get real handlers; everything else
+	// (keepalive, no-more-sessions@openssh.com, …) is rejected or
+	// silently consumed in the default branch.
+	fwds := newForwardRegistry()
+	defer fwds.closeAll()
+	go func() {
+		for req := range reqs {
+			switch req.Type {
+			case "tcpip-forward":
+				handleTCPIPForward(ctx, serverConn, fwds, deps.AllowRemoteForward, req)
+			case "cancel-tcpip-forward":
+				handleCancelTCPIPForward(fwds, req)
 			default:
-				_ = newCh.Reject(ssh.UnknownChannelType,
-					"only session, direct-tcpip, and direct-streamlocal@openssh.com channels are supported")
+				if req.WantReply {
+					_ = req.Reply(false, nil)
+				}
 			}
+		}
+	}()
+
+	for newCh := range chans {
+		switch newCh.ChannelType() {
+		case "session":
+			ch, chReqs, aerr := newCh.Accept()
+			if aerr != nil {
+				slog.Warn("ssh channel accept", "err", aerr)
+				continue
+			}
+			go handleSSHSession(ctx, serverConn, ch, chReqs, deps.SFTPEnabled, deps.AllowAgentForward)
+		case "direct-tcpip":
+			if !deps.AllowLocalForward {
+				_ = newCh.Reject(ssh.Prohibited,
+					"local port forwarding disabled by agent config")
+				continue
+			}
+			go handleDirectTCPIP(ctx, newCh, deps.Peers, peerDial{
+				cloudboxBase:     deps.CloudboxBase,
+				cloudboxProtocol: deps.CloudboxProtocol,
+				accessToken:      deps.AccessToken,
+				selfName:         deps.SelfName,
+			})
+		case "direct-streamlocal@openssh.com":
+			// Podman's `ssh://` transport opens this channel type to
+			// forward an SSH channel onto a remote unix socket — i.e.
+			// `podman --connection=<host>` against a paired outpost.
+			// Same gate as direct-tcpip (`ssh -L`): both are
+			// client-driven local forwards.
+			if !deps.AllowLocalForward {
+				_ = newCh.Reject(ssh.Prohibited,
+					"local port forwarding disabled by agent config")
+				continue
+			}
+			go handleDirectStreamlocal(ctx, newCh, streamlocalAllow)
+		default:
+			_ = newCh.Reject(ssh.UnknownChannelType,
+				"only session, direct-tcpip, and direct-streamlocal@openssh.com channels are supported")
 		}
 	}
+}
+
+// ServeLANListener accepts plain TCP connections on `ln` and feeds
+// each one to handleSSHConn as a NEW SSH session. Blocks until ln
+// errors or ctx is canceled. Use as `errgroup.Go(func() error {
+// return ServeLANListener(gctx, ln, deps) })`.
+//
+// cloudboxVouched is always false here — LAN-direct callers haven't
+// been vouched for by cloudbox, so the SSH PasswordCallback enforces
+// the OS-password gate the same way it does for direct-loopback WS
+// callers.
+func ServeLANListener(ctx context.Context, ln net.Listener, deps sshHandlerDeps) error {
+	currentUser, _ := hostauth.CurrentUser()
+	authURL := strings.TrimSpace(deps.AuthURL)
+	streamlocalAllow := buildStreamlocalAllowlist(deps.ForwardSockets)
+
+	// Close the listener when ctx cancels so Accept() unblocks.
+	go func() {
+		<-ctx.Done()
+		_ = ln.Close()
+	}()
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			handleSSHConn(ctx, c, c.RemoteAddr().String(), false /* never cloudbox-vouched on LAN */, deps, currentUser, authURL, streamlocalAllow)
+		}(conn)
+	}
+}
+
+// ServeLANSSH is the cmd/outpost-callable wrapper that builds the
+// internal sshHandlerDeps from the public Deps shape and calls
+// ServeLANListener. Lets the daemon main loop attach a LAN-direct SSH
+// listener (FileConfig.SSHListenAddr) without main.go having to know
+// the internal handler-deps fields.
+//
+// Always passes cloudboxVouched=false (inside ServeLANListener): the
+// LAN TCP path has no upstream vouching, so the OS-password gate
+// applies.
+func ServeLANSSH(ctx context.Context, ln net.Listener, deps Deps) error {
+	auth := deps.Auth
+	if auth == nil {
+		auth = hostauth.DefaultAuthenticator()
+	}
+	handlerDeps := sshHandlerDeps{
+		HostKey:            deps.SSHHostKey,
+		Auth:               auth,
+		AuthURL:            deps.AuthURL,
+		AllowLocalForward:  deps.SSHAllowLocalForward,
+		AllowRemoteForward: deps.SSHAllowRemoteForward,
+		AllowAgentForward:  deps.SSHAllowAgentForward,
+		SFTPEnabled:        deps.SFTPEnabled,
+		Peers:              deps.PeerHosts,
+		ForwardSockets:     deps.SSHForwardSockets,
+		CloudboxBase:       deps.CloudboxBase,
+		CloudboxProtocol:   deps.CloudboxProtocol,
+		AccessToken:        deps.AccessToken,
+		SelfName:           deps.SelfName,
+	}
+	return ServeLANListener(ctx, ln, handlerDeps)
 }
 
 // directTCPIPMsg is the channel-data payload SSH clients send when

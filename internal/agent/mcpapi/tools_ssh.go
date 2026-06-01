@@ -37,10 +37,11 @@ type listSSHTargetsOut struct {
 
 type upsertSSHTargetIn struct {
 	Name        string `json:"name" jsonschema:"Alias; letters, digits, -, _, ."`
-	Host        string `json:"host" jsonschema:"Destination: paired host (when via is empty) or hop-side address (when via is set)"`
-	Port        int    `json:"port,omitempty" jsonschema:"SSH port on the hop destination (default 22; ignored when via is empty)"`
+	Host        string `json:"host" jsonschema:"Destination: paired host (default), hop-side address (with via), or LAN IP/hostname (with direct)"`
+	Port        int    `json:"port,omitempty" jsonschema:"SSH port (default 22; meaningful with via or direct)"`
 	User        string `json:"user,omitempty" jsonschema:"OS user on the remote host"`
 	Via         string `json:"via,omitempty" jsonschema:"ProxyJump-style hop alias"`
+	Direct      bool   `json:"direct,omitempty" jsonschema:"LAN-direct dial: bypass cloudbox and connect to host:port over plain TCP"`
 	Description string `json:"description,omitempty"`
 }
 
@@ -99,6 +100,7 @@ func (s *Server) registerSSHTools() {
 			Port:        in.Port,
 			User:        in.User,
 			Via:         in.Via,
+			Direct:      in.Direct,
 			Description: in.Description,
 		})
 		if err != nil {

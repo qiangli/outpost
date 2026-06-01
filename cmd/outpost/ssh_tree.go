@@ -25,7 +25,25 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/agent/discovery"
 )
+
+// lookupDiscoveredPeer scans the LAN for peers and returns the first
+// one matching `name` (against AgentName or AssignedHostname). Used by
+// `outpost ssh add --from-peer`.
+func lookupDiscoveredPeer(ctx context.Context, name string) (*discovery.Peer, error) {
+	name = strings.TrimSpace(strings.ToLower(name))
+	peers, err := discovery.Browse(ctx, discovery.BrowseOptions{Timeout: 3 * time.Second})
+	if err != nil && len(peers) == 0 {
+		return nil, fmt.Errorf("mdns browse: %w", err)
+	}
+	for _, p := range peers {
+		if strings.EqualFold(p.AgentName, name) || strings.EqualFold(p.AssignedHostname, name) {
+			return &p, nil
+		}
+	}
+	return nil, fmt.Errorf("no LAN-discovered peer matching %q (run `outpost scan` to see what's visible)", name)
+}
 
 func sshTreeCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -140,11 +158,13 @@ func runSSHList(ctx context.Context, jsonOut bool) error {
 
 func sshAddCmd() *cobra.Command {
 	var (
-		hostFlag string
-		userFlag string
-		descFlag string
-		viaFlag  string
-		portFlag int
+		hostFlag     string
+		userFlag     string
+		descFlag     string
+		viaFlag      string
+		portFlag     int
+		directFlag   bool
+		fromPeerFlag string
 	)
 	cmd := &cobra.Command{
 		Use:   "add <name>",
@@ -163,30 +183,66 @@ peer destinations the remote outpost's peerhosts allowlist accepts
 the channel automatically; for other LAN destinations the operator
 must have widened SSHAllowLocalForward.
 
---port defaults to 22 and is only meaningful when --via is set
-(direct dials to cloudbox-paired hosts don't carry a port).`,
+--port defaults to 22 and is meaningful for hop targets (--via set) or
+LAN-direct targets (--direct set).
+
+--direct makes the target a LAN-direct dial: cloudbox is bypassed and
+we open a plain TCP connection to <host>:<port> (defaults to 22). The
+remote outpost must have its SSHListenAddr bound to a LAN address.
+TOFU on the SSH host-key fingerprint applies (Wave 3A.2 lifts to
+cloudbox-CA-signed certs).
+
+--from-peer <peer-name> auto-fills --host / --port from a LAN-
+discovered peer (matched by AgentName or AssignedHostname; same
+data 'outpost scan' shows). The first lan-ssh endpoint wins; override
+with explicit --host/--port.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSSHAdd(cmd.Context(), args[0], hostFlag, userFlag, descFlag, viaFlag, portFlag)
+			return runSSHAdd(cmd.Context(), args[0], hostFlag, userFlag, descFlag, viaFlag, portFlag, directFlag, fromPeerFlag)
 		},
 	}
-	cmd.Flags().StringVar(&hostFlag, "host", "", "Destination: paired host name (when --via is empty), or hop-side address (when --via is set). Required.")
+	cmd.Flags().StringVar(&hostFlag, "host", "", "Destination: paired host name (default), hop-side address (with --via), or LAN IP/hostname (with --direct). Required unless --from-peer is set.")
 	cmd.Flags().StringVar(&userFlag, "user", "", "OS user on the remote host (default: reported by /api/v1/ssh/hosts at exec time)")
 	cmd.Flags().StringVar(&descFlag, "description", "", "Freeform note for `outpost ssh list`")
 	cmd.Flags().StringVar(&viaFlag, "via", "", "ProxyJump-style hop: alias of another configured target to dial through first")
-	cmd.Flags().IntVar(&portFlag, "port", 0, "SSH port on the hop destination (default 22; ignored unless --via is set)")
+	cmd.Flags().IntVar(&portFlag, "port", 0, "SSH port (default 22; ignored unless --via or --direct is set)")
+	cmd.Flags().BoolVar(&directFlag, "direct", false, "LAN-direct dial: bypass cloudbox and connect to <host>:<port> over plain TCP")
+	cmd.Flags().StringVar(&fromPeerFlag, "from-peer", "", "Auto-fill from a mDNS-discovered peer (uses the first lan-ssh endpoint). Implies --direct.")
 	return cmd
 }
 
-func runSSHAdd(ctx context.Context, name, host, user, description, via string, port int) error {
+func runSSHAdd(ctx context.Context, name, host, user, description, via string, port int, direct bool, fromPeer string) error {
+	// --from-peer: discover the peer on LAN, pull its endpoint + user
+	// + assigned hostname into the target.
+	if fromPeer = strings.TrimSpace(fromPeer); fromPeer != "" {
+		direct = true
+		discovered, err := lookupDiscoveredPeer(ctx, fromPeer)
+		if err != nil {
+			return err
+		}
+		ep := discovered.FirstEndpoint(discovery.EndpointLANSSH)
+		if ep.Host == "" || ep.Port == 0 {
+			return fmt.Errorf("peer %q has no lan-ssh endpoint advertised; add SSHListenAddr on that outpost", fromPeer)
+		}
+		if host == "" {
+			host = ep.Host
+		}
+		if port == 0 {
+			port = ep.Port
+		}
+		if user == "" {
+			user = discovered.OSUsername
+		}
+	}
+
 	host = strings.TrimSpace(host)
 	if host == "" {
 		return fmt.Errorf("--host is required (the destination's address)")
 	}
 	// --user resolution from cloudbox makes sense only when reaching
-	// a paired outpost directly. Hop targets reach raw hosts; the
-	// operator must supply --user themselves.
-	if strings.TrimSpace(user) == "" && strings.TrimSpace(via) == "" {
+	// a paired outpost directly through cloudbox. Hop and LAN-direct
+	// targets reach raw hosts; the operator must supply --user.
+	if strings.TrimSpace(user) == "" && strings.TrimSpace(via) == "" && !direct {
 		if u, ok, _ := resolveRemoteOSUser(ctx, host); ok {
 			user = u
 		}
@@ -210,6 +266,9 @@ func runSSHAdd(ctx context.Context, name, host, user, description, via string, p
 	}
 	if port > 0 {
 		args["port"] = port
+	}
+	if direct {
+		args["direct"] = true
 	}
 	if err := session.callTool(ctx, "outpost_add_ssh_target", args, &out); err != nil {
 		return err
