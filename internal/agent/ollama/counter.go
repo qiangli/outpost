@@ -35,20 +35,22 @@ type Counter struct {
 	maxParallel  int
 	numLoadedMax int
 	keepAliveS   int
+	maxQueue     int
 }
 
 // NewCounter returns a Counter sized to the local Ollama's parallel
 // capacity. When OLLAMA_NUM_PARALLEL is unset or unparseable we fall
 // back to defaultMaxParallel, matching the daemon's own default.
-// OLLAMA_MAX_LOADED_MODELS and OLLAMA_KEEP_ALIVE are surfaced too;
-// both default to zero ("let ollama decide") when unset or unparseable,
-// which cloudbox must not interpret as "no models can load" / "unload
-// immediately."
+// OLLAMA_MAX_LOADED_MODELS, OLLAMA_KEEP_ALIVE and OLLAMA_MAX_QUEUE
+// are surfaced too; each defaults to zero ("let ollama decide") when
+// unset or unparseable, which cloudbox must not interpret as "no
+// models can load" / "unload immediately" / "zero queue depth."
 func NewCounter() *Counter {
 	return &Counter{
 		maxParallel:  envMaxParallel(),
 		numLoadedMax: envMaxLoadedModels(),
 		keepAliveS:   envKeepAliveSeconds(),
+		maxQueue:     envMaxQueue(),
 	}
 }
 
@@ -74,7 +76,23 @@ func (c *Counter) Snapshot() CapacityReport {
 		Queued:       queued,
 		NumLoadedMax: c.numLoadedMax,
 		KeepAliveS:   c.keepAliveS,
+		MaxQueue:     c.maxQueue,
 	}
+}
+
+// envMaxQueue reads OLLAMA_MAX_QUEUE. Returns 0 on unset/unparseable —
+// cloudbox treats zero as "use ollama's default" (512 at time of
+// writing). Negative values clamp to zero.
+func envMaxQueue() int {
+	v := strings.TrimSpace(os.Getenv("OLLAMA_MAX_QUEUE"))
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 // envMaxParallel reads OLLAMA_NUM_PARALLEL. Falls back to

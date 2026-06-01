@@ -90,7 +90,12 @@ type CapacityReport struct {
 	Swapping     bool     `json:"swapping,omitempty"`
 	NumLoadedMax int      `json:"num_loaded_max,omitempty"`
 	KeepAliveS   int      `json:"keep_alive_s,omitempty"`
-	InstanceID   string   `json:"instance_id,omitempty"`
+	// MaxQueue mirrors OLLAMA_MAX_QUEUE so cloudbox can sanity-check
+	// that the daemon's invisible queue isn't taking up the slack the
+	// cluster-side scheduler is supposed to own (recommended 64; the
+	// daemon's default is 512). Zero ⇒ use the daemon default.
+	MaxQueue   int    `json:"max_queue,omitempty"`
+	InstanceID string `json:"instance_id,omitempty"`
 }
 
 // psResponse is the subset of GET /api/ps the watcher decodes. Ollama
