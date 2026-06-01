@@ -134,6 +134,15 @@ type Deps struct {
 	// memory-heavy workloads). nil → field omitted; cloudbox
 	// shows "—" for unknown.
 	SystemInfo func() any
+
+	// ClusterInfo, when non-nil, contributes a `cluster` block to
+	// the /apps poll response. Cloudbox's host_poller consumes it
+	// to reconcile the per-host kubelet_port in the hosts table
+	// (a desync the outpost is the source of truth for — the port
+	// is what its k3s-agent --kubelet-arg=port + in-container frpc
+	// publish). Returning an empty map is fine; cloudbox treats zero
+	// KubeletProxyPort as "no port allocated."
+	ClusterInfo func() any
 }
 
 // RegisterRoutes attaches all matrix-agent routes onto rg. Always mounted
@@ -201,6 +210,9 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 		// (sysctl + statfs).
 		if deps.SystemInfo != nil {
 			payload["system"] = deps.SystemInfo()
+		}
+		if deps.ClusterInfo != nil {
+			payload["cluster"] = deps.ClusterInfo()
 		}
 		c.JSON(http.StatusOK, payload)
 	})

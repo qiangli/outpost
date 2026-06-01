@@ -672,6 +672,20 @@ func startCmd() *cobra.Command {
 					dir, _ := conf.DefaultCacheDir()
 					return sysinfo.Collect(dir)
 				},
+				ClusterInfo: func() any {
+					// Re-read cluster config on every poll so a
+					// post-pair refresh flows to cloudbox without
+					// a daemon restart.
+					cur, _ := conf.LoadFile(cfgPath)
+					if cur == nil || cur.Cluster == nil {
+						return map[string]any{}
+					}
+					return map[string]any{
+						"mode":               cur.Cluster.Mode,
+						"kubelet_proxy_port": cur.Cluster.KubeletProxyPort,
+						"k8s_api_port":       cur.Cluster.K8sAPIPort,
+					}
+				},
 			})
 
 			// Bind the local listener first so we know its port before
