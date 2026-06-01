@@ -163,10 +163,10 @@ func sshSFTPCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sftp <name>",
 		Short: "File transfer over SFTP to a configured target",
-		Long: `Subcommands:
-  outpost ssh sftp <name> ls <remote-path>
-  outpost ssh sftp <name> get <remote-path> [local-path]
-  outpost ssh sftp <name> put <local-path> [remote-path]
+		Long: `Subcommands (note: the verb comes before the target alias):
+  outpost ssh sftp ls <name> <remote-path>
+  outpost ssh sftp get <name> <remote-path> [local-path]
+  outpost ssh sftp put <name> <local-path> [remote-path]
 
 --jump <alias> overrides the target's persisted Via for this one
 call (analogous to ssh's -J).`,

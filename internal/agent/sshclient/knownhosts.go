@@ -6,13 +6,25 @@
 // A mismatch is a hard failure surfaced as
 // REMOTE HOST IDENTIFICATION HAS CHANGED so the operator notices.
 //
-// The pinning alias is `outpost-<host>` — identical to what
-// `outpost ssh-config`'s emitted stanzas use (line 323 of
-// `cmd/outpost/ssh.go`). Operators who already trust a host via the
-// system-ssh path don't have to re-trust via the in-process path.
+// File format (one entry per line, OpenSSH-known_hosts-compatible
+// for the simple case):
+//
+//	<alias> <key-type> <base64-marshaled-public-key>
+//
+// We don't use `golang.org/x/crypto/ssh/knownhosts` because that
+// package's checker calls SplitHostPort on the dynamic `remote
+// net.Addr` it receives from the SSH layer — and our underlying
+// transport is a websocket-wrapped net.Conn whose RemoteAddr
+// returns a synthetic non-parseable string. The full known_hosts
+// matcher buys us no benefit for our trust model (alias-only, no
+// IP/DNS pinning), so a focused 50-LOC implementation is the right
+// shape.
 package sshclient
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
@@ -22,21 +34,17 @@ import (
 	"sync"
 
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // KnownHostsCallbackTOFU returns an ssh.HostKeyCallback that:
-//   - validates the presented key against `path` (OpenSSH known_hosts
-//     format) using `golang.org/x/crypto/ssh/knownhosts`;
-//   - on "no entry for this alias", pins the key as a new entry
-//     (trust-on-first-use);
-//   - on "entry exists but key mismatches", fails hard.
+//   - on first contact for `hostAlias`, pins the presented key (TOFU);
+//   - on subsequent contact, verifies key bytes match the pinned entry;
+//   - on mismatch, fails hard with REMOTE HOST IDENTIFICATION HAS CHANGED.
 //
-// `path` is created with mode 0600 on first pin. The directory is
-// expected to exist (callers should mkdir the SSH-targets dir first;
-// SaveSSHTarget does this for us in the normal path).
+// `path` is created with mode 0600 on first pin. The parent directory
+// is created if missing.
 //
-// `hostAlias` is the alias used in known_hosts entries — typically
+// `hostAlias` is the alias used in entries — typically
 // `outpost-<host>` for consistency with `outpost ssh-config`.
 func KnownHostsCallbackTOFU(path, hostAlias string) (ssh.HostKeyCallback, error) {
 	if hostAlias == "" {
@@ -45,84 +53,94 @@ func KnownHostsCallbackTOFU(path, hostAlias string) (ssh.HostKeyCallback, error)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("mkdir known_hosts parent: %w", err)
 	}
-	// knownhosts.New requires the file to exist. Touch it so a fresh
-	// install can pin the first connection without a preceding empty-
-	// file create step.
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
-		if err != nil {
-			return nil, fmt.Errorf("create %s: %w", path, err)
-		}
-		_ = f.Close()
-	}
-
-	// Pinning + verifying need to be serialized to avoid the classic
-	// double-pin race: two concurrent connects, both miss the entry,
-	// both append. Cheap mutex; concurrency for SSH dials inside one
-	// outpost process is low.
 	var mu sync.Mutex
-	return func(_ string, remote net.Addr, key ssh.PublicKey) error {
+	return func(_ string, _ net.Addr, key ssh.PublicKey) error {
 		mu.Lock()
 		defer mu.Unlock()
-
-		// Re-read on every call so a freshly-pinned entry from a
-		// previous connection in the same process picks up the new
-		// key. knownhosts.New caches the file at load time.
-		verify, err := knownhosts.New(path)
+		pinned, ok, err := lookupKnownHost(path, hostAlias)
 		if err != nil {
-			return fmt.Errorf("re-load known_hosts %s: %w", path, err)
+			return fmt.Errorf("read known_hosts %s: %w", path, err)
 		}
-		// We always identify the peer by hostAlias, ignoring the
-		// dynamic hostname the SSH layer received (which would be the
-		// WSS URL — not the right thing to pin). knownhosts requires a
-		// `host:port` shape for its address argument; we synthesize
-		// :22 (the openssh default) so the matcher round-trips with
-		// the entries we wrote.
-		err = verify(hostAlias+":22", remote, key)
-		if err == nil {
-			return nil
-		}
-		var keyErr *knownhosts.KeyError
-		if errors.As(err, &keyErr) {
-			if len(keyErr.Want) > 0 {
-				// Mismatch: we have a different key on file for this
-				// alias. Refuse loudly so the operator notices.
-				return fmt.Errorf(
-					"REMOTE HOST IDENTIFICATION HAS CHANGED for %q: "+
-						"presented key %s does not match pinned entry — "+
-						"remove the line for %s from %s if this is expected",
-					hostAlias, ssh.FingerprintSHA256(key), hostAlias, path)
+		presented := key.Marshal()
+		if ok {
+			if bytes.Equal(pinned, presented) {
+				return nil
 			}
-			// No entry at all: TOFU-pin it.
-			if err := appendKnownHost(path, hostAlias, key); err != nil {
-				return fmt.Errorf("pin host key for %q: %w", hostAlias, err)
-			}
-			return nil
+			return fmt.Errorf(
+				"REMOTE HOST IDENTIFICATION HAS CHANGED for %q: "+
+					"presented key %s does not match pinned entry — "+
+					"remove the line for %s from %s if this is expected",
+				hostAlias, ssh.FingerprintSHA256(key), hostAlias, path)
 		}
-		return err
+		// First contact — TOFU pin.
+		if err := appendKnownHost(path, hostAlias, key); err != nil {
+			return fmt.Errorf("pin host key for %q: %w", hostAlias, err)
+		}
+		return nil
 	}, nil
 }
 
-// appendKnownHost appends a fresh OpenSSH-format known_hosts entry for
-// the given alias + key. Uses `knownhosts.Line` so the entry round-trips
-// through the same parser. The synthesized `:22` matches the address
-// shape KnownHostsCallbackTOFU passes to verify, so subsequent
-// lookups land on the entry.
+// lookupKnownHost reads `path` and returns the marshaled key bytes of
+// the first entry whose alias matches. Returns (_, false, nil) when no
+// entry exists for that alias.
+func lookupKnownHost(path, hostAlias string) ([]byte, bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		if fields[0] != hostAlias {
+			continue
+		}
+		// fields[1] = key type (e.g. ssh-ed25519), fields[2] = base64-
+		// encoded marshaled wire form. The marshaled bytes already
+		// embed the key type so we don't need to compare type
+		// separately — bytes.Equal in the caller is sufficient.
+		raw, err := base64.StdEncoding.DecodeString(fields[2])
+		if err != nil {
+			return nil, false, fmt.Errorf("decode pinned key for %s: %w", hostAlias, err)
+		}
+		return raw, true, nil
+	}
+	if err := sc.Err(); err != nil {
+		return nil, false, err
+	}
+	return nil, false, nil
+}
+
+// appendKnownHost writes a fresh entry. We touch the file with mode
+// 0600 first if missing so a hostile umask doesn't widen the bits.
 func appendKnownHost(path, hostAlias string, key ssh.PublicKey) error {
-	line := knownhosts.Line([]string{hostAlias + ":22"}, key)
+	line := fmt.Sprintf("%s %s %s\n",
+		hostAlias,
+		key.Type(),
+		base64.StdEncoding.EncodeToString(key.Marshal()),
+	)
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	// knownhosts.Line returns a line without a trailing newline.
-	if _, err := f.WriteString(line + "\n"); err != nil {
+	if _, err := f.WriteString(line); err != nil {
 		return err
 	}
 	return nil
 }
 
-// hostAliasForHost is the canonical "outpost-<host>" alias used both
+// HostAliasForHost is the canonical "outpost-<host>" alias used both
 // here and in `outpost ssh-config`'s emitted ~/.ssh/config stanzas.
 // Centralized so the two stay in sync.
 func HostAliasForHost(host string) string {

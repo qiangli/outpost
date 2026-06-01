@@ -289,7 +289,15 @@ func sshShowCmd() *cobra.Command {
 					fmt.Printf("name:        %s\n", t.Name)
 					fmt.Printf("host:        %s\n", t.Host)
 					fmt.Printf("user:        %s\n", t.User)
-					fmt.Printf("description: %s\n", t.Description)
+					if t.Via != "" {
+						fmt.Printf("via:         %s\n", t.Via)
+					}
+					if t.Port > 0 {
+						fmt.Printf("port:        %d\n", t.Port)
+					}
+					if t.Description != "" {
+						fmt.Printf("description: %s\n", t.Description)
+					}
 					return nil
 				}
 			}
