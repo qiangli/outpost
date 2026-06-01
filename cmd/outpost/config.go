@@ -79,6 +79,13 @@ func configSetCmd() *cobra.Command {
 		localAddr, vncAddr, adminAddr string
 		adminUsers                    string
 		clearAdminUsers               bool
+
+		// Wave 3A discovery + LAN-direct knobs.
+		discoveryOn             bool
+		discoveryOff            bool
+		sshListenAddr           string
+		discoveryHTTPListenAddr string
+		peerTrustPolicy         string
 	)
 	cmd := &cobra.Command{
 		Use:   "set",
@@ -133,6 +140,43 @@ Examples:
 				params.AdminUsers = &users
 				set = true
 			}
+			// Wave 3A discovery + LAN-direct knobs.
+			if discoveryOn && discoveryOff {
+				return fmt.Errorf("--discovery=on and --no-discovery are mutually exclusive")
+			}
+			if discoveryOn {
+				v := true
+				params.DiscoveryEnabled = &v
+				set = true
+			} else if discoveryOff {
+				v := false
+				params.DiscoveryEnabled = &v
+				set = true
+			}
+			if cmd.Flags().Changed("ssh-listen-addr") {
+				v := sshListenAddr
+				if v == "<clear>" {
+					v = ""
+				}
+				params.SSHListenAddr = &v
+				set = true
+			}
+			if cmd.Flags().Changed("discovery-http-listen-addr") {
+				v := discoveryHTTPListenAddr
+				if v == "<clear>" {
+					v = ""
+				}
+				params.DiscoveryHTTPListenAddr = &v
+				set = true
+			}
+			if cmd.Flags().Changed("peer-trust-policy") {
+				v := peerTrustPolicy
+				if v == "<clear>" {
+					v = ""
+				}
+				params.PeerTrustPolicy = &v
+				set = true
+			}
 			if !set {
 				return fmt.Errorf("nothing to do — pass at least one flag (`outpost config set --help`)")
 			}
@@ -169,6 +213,31 @@ Examples:
 				payload["admin_users"] = *params.AdminUsers
 				payload["set_admin_users"] = true
 			}
+			if params.DiscoveryEnabled != nil {
+				payload["discovery_enabled"] = *params.DiscoveryEnabled
+				payload["set_discovery_enabled"] = true
+			}
+			if params.SSHListenAddr != nil {
+				v := *params.SSHListenAddr
+				if v == "" {
+					v = "<clear>"
+				}
+				payload["ssh_listen_addr"] = v
+			}
+			if params.DiscoveryHTTPListenAddr != nil {
+				v := *params.DiscoveryHTTPListenAddr
+				if v == "" {
+					v = "<clear>"
+				}
+				payload["discovery_http_listen_addr"] = v
+			}
+			if params.PeerTrustPolicy != nil {
+				v := *params.PeerTrustPolicy
+				if v == "" {
+					v = "<clear>"
+				}
+				payload["peer_trust_policy"] = v
+			}
 			var out struct {
 				RestartPending bool `json:"restart_pending"`
 			}
@@ -188,6 +257,12 @@ Examples:
 	cmd.Flags().StringVar(&adminAddr, "admin-addr", "", "Bind for the admin UI + MCP listener (default 127.0.0.1:17777)")
 	cmd.Flags().StringVar(&adminUsers, "admin-users", "", "Comma-separated email allowlist for the OS-auth admin role")
 	cmd.Flags().BoolVar(&clearAdminUsers, "clear-admin-users", false, "Revert to the legacy 'anyone with OS password is admin' mode")
+	// Wave 3A discovery + LAN-direct.
+	cmd.Flags().BoolVar(&discoveryOn, "discovery", false, "Turn LAN peer discovery on (mDNS + HTTP /discover)")
+	cmd.Flags().BoolVar(&discoveryOff, "no-discovery", false, "Turn LAN peer discovery off")
+	cmd.Flags().StringVar(&sshListenAddr, "ssh-listen-addr", "", "LAN TCP bind for the in-process SSH server (e.g. 0.0.0.0:2222). Pass '<clear>' to disable.")
+	cmd.Flags().StringVar(&discoveryHTTPListenAddr, "discovery-http-listen-addr", "", "LAN bind for /api/v1/discover/* (e.g. 0.0.0.0:17778). Pass '<clear>' to disable.")
+	cmd.Flags().StringVar(&peerTrustPolicy, "peer-trust-policy", "", "Peer trust policy: same-owner | same-cloudbox | tofu-allow")
 	return cmd
 }
 

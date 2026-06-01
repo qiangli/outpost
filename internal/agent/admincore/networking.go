@@ -23,6 +23,19 @@ type NetworkingParams struct {
 	// an empty slice to revert to the legacy "anyone with the OS
 	// password is admin" mode.
 	AdminUsers *[]string `json:"admin_users,omitempty"`
+
+	// Wave 3A: LAN peer discovery + LAN-direct SSH knobs. All nil =
+	// leave alone; explicit zero-value (empty string / false) = clear.
+
+	// DiscoveryEnabled flips the mDNS + HTTP discovery master switch.
+	DiscoveryEnabled *bool `json:"discovery_enabled,omitempty"`
+	// SSHListenAddr binds the LAN-direct SSH listener. Empty disables.
+	SSHListenAddr *string `json:"ssh_listen_addr,omitempty"`
+	// DiscoveryHTTPListenAddr binds the /api/v1/discover/* listener.
+	DiscoveryHTTPListenAddr *string `json:"discovery_http_listen_addr,omitempty"`
+	// PeerTrustPolicy is one of "same-owner" / "same-cloudbox" /
+	// "tofu-allow". Validated server-side.
+	PeerTrustPolicy *string `json:"peer_trust_policy,omitempty"`
 }
 
 // NetworkingResult reports what changed. RestartPending is true
@@ -62,6 +75,36 @@ func (s *Server) SetNetworking(p NetworkingParams) (NetworkingResult, error) {
 		cleaned := cleanAdminUsers(*p.AdminUsers)
 		if !stringSlicesEqual(cleaned, fc.AdminUsers) {
 			fc.AdminUsers = cleaned
+			changed = true
+		}
+	}
+	if p.DiscoveryEnabled != nil {
+		// pointer-bool: only write when the new value differs from the
+		// current effective state (DiscoveryOn() folds the absent case).
+		if fc.DiscoveryOn() != *p.DiscoveryEnabled {
+			v := *p.DiscoveryEnabled
+			fc.DiscoveryEnabled = &v
+			changed = true
+		}
+	}
+	if p.SSHListenAddr != nil && strings.TrimSpace(*p.SSHListenAddr) != fc.SSHListenAddr {
+		fc.SSHListenAddr = strings.TrimSpace(*p.SSHListenAddr)
+		changed = true
+	}
+	if p.DiscoveryHTTPListenAddr != nil && strings.TrimSpace(*p.DiscoveryHTTPListenAddr) != fc.DiscoveryHTTPListenAddr {
+		fc.DiscoveryHTTPListenAddr = strings.TrimSpace(*p.DiscoveryHTTPListenAddr)
+		changed = true
+	}
+	if p.PeerTrustPolicy != nil {
+		v := strings.TrimSpace(*p.PeerTrustPolicy)
+		switch v {
+		case "", "same-owner", "same-cloudbox", "tofu-allow":
+			// ok
+		default:
+			return NetworkingResult{}, badRequest("peer_trust_policy must be one of: same-owner, same-cloudbox, tofu-allow")
+		}
+		if v != fc.PeerTrustPolicy {
+			fc.PeerTrustPolicy = v
 			changed = true
 		}
 	}
