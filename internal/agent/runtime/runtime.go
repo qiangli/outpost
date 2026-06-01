@@ -83,6 +83,21 @@ type Options struct {
 	// defaults to 6443.
 	APIPort int
 
+	// KubeletPort is the per-outpost port cloudbox allocated at
+	// pairing time (fc.Cluster.KubeletProxyPort). Three things ride
+	// on this same number so the apiserver→kubelet hop terminates:
+	//   - kubelet binds + advertises this port (so the Node's
+	//     daemonEndpoint.Port matches what's reachable);
+	//   - the in-container frpc publishes 127.0.0.1:<port> to
+	//     cloudbox's loopback at the same port number;
+	//   - cloudbox's apiserver dials 127.0.0.1:<port> for this Node.
+	// Empty (0) leaves the kubelet on its default 10250 with no
+	// outbound publish — `kubectl exec`/`logs`/`port-forward` won't
+	// work against this outpost, but the rest of cluster-agent mode
+	// keeps functioning. Old pairings without KubeletProxyPort
+	// allocated land here.
+	KubeletPort int
+
 	// PodCIDR is the per-outpost /24 carved by cloudbox at Exchange
 	// time. Empty disables the outpost-cni conflist; k3s falls back
 	// to its own defaults (--flannel-backend=none means no pod
@@ -177,6 +192,9 @@ func Up(ctx context.Context, opts Options) error {
 	}
 	if opts.APIPort != 0 {
 		args = append(args, "-e", fmt.Sprintf("OUTPOST_API_PORT=%d", opts.APIPort))
+	}
+	if opts.KubeletPort != 0 {
+		args = append(args, "-e", fmt.Sprintf("OUTPOST_KUBELET_PORT=%d", opts.KubeletPort))
 	}
 	if opts.PodCIDR != "" {
 		args = append(args, "-e", "OUTPOST_POD_CIDR="+opts.PodCIDR)

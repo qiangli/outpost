@@ -721,24 +721,12 @@ func startCmd() *cobra.Command {
 				LocalPort:  localPort,
 				RemotePort: cfg.RemotePort,
 			}}
-			// Phase 2: publish kubelet :10250 so cloudbox's embedded
-			// apiserver can dial through 127.0.0.1:<KubeletProxyPort>
-			// for `kubectl logs/exec`. Only registered in Mode=agent —
-			// vkpodman doesn't have a local kubelet to proxy. A
-			// KubeletProxyPort==0 means cloudbox didn't allocate one
-			// (pool exhausted, or running an older cloudbox); the
-			// outpost just doesn't publish the proxy and the apiserver
-			// keeps using whatever address kubelet self-reports (which
-			// won't resolve from cloudbox — `kubectl logs` will fail,
-			// but the rest of cluster-agent mode works).
-			if fc.ClusterOn() && fc.Cluster.ClusterModeAgent() && fc.Cluster.KubeletProxyPort > 0 {
-				proxies = append(proxies, agent.TCPProxy{
-					Name:       cfg.AgentName + "-kubelet",
-					LocalIP:    "127.0.0.1",
-					LocalPort:  10250,
-					RemotePort: fc.Cluster.KubeletProxyPort,
-				})
-			}
+			// Kubelet routing is published from inside the k3s-agent
+			// runtime container (see script/linux-outpost/entrypoint.sh,
+			// which adds a [[proxies]] block to /tmp/frpc.toml when
+			// OUTPOST_KUBELET_PORT is non-zero). The host-side daemon
+			// can't reach the kubelet's 127.0.0.1 — different netns —
+			// so this publish lives where the kubelet does.
 
 			tunnel, err := agent.NewTunnel(agent.TunnelConfig{
 				ServerAddr: cfg.ServerAddr,
@@ -953,6 +941,7 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 		NodeToken:          cc.NodeToken,
 		APIServer:          fmt.Sprintf("https://127.0.0.1:%d", apiPort),
 		APIPort:            apiPort,
+		KubeletPort:        cc.KubeletProxyPort,
 		CloudboxHost:       fc.ServerAddr,
 		CloudboxPort:       fc.ServerPort,
 		STCPSecret:         cc.STCPSecret,

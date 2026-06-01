@@ -12,6 +12,7 @@ set -eu
 : "${OUTPOST_CLOUDBOX_HOST:?required: e.g. ai.dhnt.io}"
 : "${OUTPOST_CLOUDBOX_PORT:=443}"
 : "${OUTPOST_API_PORT:=6443}"
+: "${OUTPOST_KUBELET_PORT:=0}"
 : "${OUTPOST_STCP_SECRET:?required: STCP secret for cluster.k3s-apiserver}"
 : "${OUTPOST_MATRIX_TOKEN:=}"
 : "${OUTPOST_POD_CIDR:=}"
@@ -122,6 +123,31 @@ bindAddr = "127.0.0.1"
 bindPort = ${OUTPOST_API_PORT}
 EOF
 
+# Publish the in-container kubelet back to cloudbox so the embedded
+# apiserver can dial 127.0.0.1:${OUTPOST_KUBELET_PORT} (the per-outpost
+# loopback port cloudbox allocated at pairing) and reach this node's
+# kubelet for `kubectl exec` / `logs` / `port-forward`. Same port number
+# both sides — kubelet binds it inside the container (--kubelet-arg=port
+# below), and the daemonEndpoint it advertises through the apiserver
+# matches what cloudbox-side loopback exposes.
+#
+# OUTPOST_KUBELET_PORT==0 means an old pairing predates the allocation;
+# skip the proxy and leave the kubelet on its 10250 default. The
+# apiserver→kubelet hop won't work for that outpost, but the rest of
+# cluster-agent stays operational.
+if [ "${OUTPOST_KUBELET_PORT}" != "0" ]; then
+    log "publishing kubelet via frpc: 127.0.0.1:${OUTPOST_KUBELET_PORT} -> cloudbox:${OUTPOST_KUBELET_PORT}"
+    cat >> /tmp/frpc.toml <<EOF
+
+[[proxies]]
+name = "${OUTPOST_AGENT_NAME}-kubelet"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = ${OUTPOST_KUBELET_PORT}
+remotePort = ${OUTPOST_KUBELET_PORT}
+EOF
+fi
+
 log "starting frpc (matrix tunnel + STCP visitor)"
 frpc -c /tmp/frpc.toml >/tmp/frpc.log 2>&1 &
 FRPC_PID=$!
@@ -206,13 +232,28 @@ log "snapshotter=${SNAPSHOTTER}"
 # inside the container's filesystem; the volume mount overlays it.
 mkdir -p /etc/rancher/node
 
-log "exec k3s agent --server=https://127.0.0.1:${OUTPOST_API_PORT} --node-name=${OUTPOST_AGENT_NAME} --with-node-id ${SNAPSHOTTER_ARGS}"
+# Kubelet routing args. node-ip=127.0.0.1 makes the Node advertise an
+# InternalIP that, from cloudbox's apiserver POV, is loopback — which
+# is where the frpc proxy above publishes this kubelet. Without it
+# k3s reports only Hostname=<agent-name>, which the apiserver tries to
+# DNS-resolve from cloudbox's network namespace and fails.
+# kubelet-arg=port=$OUTPOST_KUBELET_PORT both binds the kubelet on the
+# per-outpost loopback proxy port AND makes it report that same port
+# as its daemonEndpoint, so the apiserver dials 127.0.0.1:<port> end
+# to end. Skipped when KUBELET_PORT==0 (old pairing pre-allocation).
+KUBELET_ROUTING_ARGS=""
+if [ "${OUTPOST_KUBELET_PORT}" != "0" ]; then
+    KUBELET_ROUTING_ARGS="--node-ip=127.0.0.1 --kubelet-arg=port=${OUTPOST_KUBELET_PORT}"
+fi
+
+log "exec k3s agent --server=https://127.0.0.1:${OUTPOST_API_PORT} --node-name=${OUTPOST_AGENT_NAME} --with-node-id ${SNAPSHOTTER_ARGS} ${KUBELET_ROUTING_ARGS}"
 exec /usr/local/bin/k3s agent \
     --server="https://127.0.0.1:${OUTPOST_API_PORT}" \
     --token="${OUTPOST_NODE_TOKEN}" \
     --node-name="${OUTPOST_AGENT_NAME}" \
     --with-node-id \
     ${SNAPSHOTTER_ARGS} \
+    ${KUBELET_ROUTING_ARGS} \
     --kubelet-arg=address=127.0.0.1 \
     --kubelet-arg=feature-gates=KubeletInUserNamespace=true \
     --kubelet-arg=cgroups-per-qos=false \
