@@ -80,6 +80,75 @@ func TestSSHTargetNameValidation(t *testing.T) {
 	}
 }
 
+// TestResolveSSHTargetChain covers the three interesting shapes the
+// resolver has to handle: a flat target (no Via), a two-hop chain,
+// and a cycle that has to be rejected.
+func TestResolveSSHTargetChain(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	mustSave := func(s SSHTarget) {
+		t.Helper()
+		if err := SaveSSHTarget(s); err != nil {
+			t.Fatalf("save %s: %v", s.Name, err)
+		}
+	}
+
+	// Flat: no Via → chain == [inner].
+	mustSave(SSHTarget{Name: "flat", Host: "novicortex", User: "u"})
+	got, err := ResolveSSHTargetChain("flat", "")
+	if err != nil {
+		t.Fatalf("flat: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "flat" {
+		t.Errorf("flat chain wrong: %+v", got)
+	}
+
+	// Two-hop: lab → via gateway. Resolver returns outer-first so the
+	// first element is the cloudbox-dialed gateway and the last is the
+	// requested inner target.
+	mustSave(SSHTarget{Name: "gateway", Host: "gateway-host", User: "u"})
+	mustSave(SSHTarget{Name: "lab", Host: "192.168.1.50", User: "u", Via: "gateway", Port: 22})
+	got, err = ResolveSSHTargetChain("lab", "")
+	if err != nil {
+		t.Fatalf("two-hop: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("two-hop length=%d, want 2: %+v", len(got), got)
+	}
+	if got[0].Name != "gateway" || got[1].Name != "lab" {
+		t.Errorf("two-hop order wrong: [%s, %s], want [gateway, lab]", got[0].Name, got[1].Name)
+	}
+
+	// Override at the leaf: ssh exec lab --jump otherGw should swap
+	// gateway for otherGw at the innermost level.
+	mustSave(SSHTarget{Name: "otherGw", Host: "other-gw", User: "u"})
+	got, err = ResolveSSHTargetChain("lab", "otherGw")
+	if err != nil {
+		t.Fatalf("override: %v", err)
+	}
+	if len(got) != 2 || got[0].Name != "otherGw" {
+		t.Errorf("override didn't replace via: %+v", got)
+	}
+
+	// Cycle: a → via b → via a. Must be rejected with a clear error.
+	mustSave(SSHTarget{Name: "cyclea", Host: "h", User: "u", Via: "cycleb"})
+	mustSave(SSHTarget{Name: "cycleb", Host: "h", User: "u", Via: "cyclea"})
+	_, err = ResolveSSHTargetChain("cyclea", "")
+	if err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("expected cycle rejection, got: %v", err)
+	}
+
+	// Missing via target surfaces the underlying "no ssh target" error
+	// rather than a generic chain error.
+	mustSave(SSHTarget{Name: "danglesrc", Host: "h", User: "u", Via: "nonexistent"})
+	_, err = ResolveSSHTargetChain("danglesrc", "")
+	if err == nil || !strings.Contains(err.Error(), "no ssh target") {
+		t.Errorf("expected missing-via error, got: %v", err)
+	}
+}
+
 // TestSSHTargetSaveValidatesHost ensures Save refuses an empty host —
 // otherwise ExecSSH would just fail later with a noisier error.
 func TestSSHTargetSaveValidatesHost(t *testing.T) {

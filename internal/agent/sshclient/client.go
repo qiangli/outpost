@@ -28,10 +28,15 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"os/signal"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/term"
 )
 
 // Client wraps an established SSH connection (over the matrix tunnel)
@@ -324,4 +329,276 @@ func isCtxErr(ctx context.Context) bool {
 // import coder/websocket directly when sshclient is sufficient.
 func AsNetConn(ctx context.Context, conn *websocket.Conn) net.Conn {
 	return websocket.NetConn(ctx, conn, websocket.MessageBinary)
+}
+
+// DirectTCPIP opens an SSH "direct-tcpip" channel through this Client
+// to (host, port) on the remote outpost's reachable network. The
+// returned net.Conn byte-bridges through the channel — suitable for
+// either layering another SSH session on top (the hop/ProxyJump
+// pattern) or for plain TCP forwarding (the tunnel pattern).
+//
+// host is the destination as the remote outpost would resolve it.
+// For paired-outpost-to-paired-outpost hops this is a peer hostname
+// the remote's peerhosts allowlist accepts. For LAN destinations it
+// must match an entry the operator added to SSHForwardSockets or
+// otherwise widened the destination allowlist for.
+//
+// The caller owns the returned conn — close it (or the parent
+// Client) to tear down the channel.
+func (c *Client) DirectTCPIP(ctx context.Context, host string, port int) (net.Conn, error) {
+	if c == nil || c.ssh == nil {
+		return nil, errors.New("sshclient: nil Client")
+	}
+	if port <= 0 {
+		return nil, fmt.Errorf("sshclient: invalid port %d", port)
+	}
+	conn, err := c.ssh.DialContext(ctx, "tcp", net.JoinHostPort(host, fmt.Sprintf("%d", port)))
+	if err != nil {
+		return nil, fmt.Errorf("direct-tcpip to %s:%d: %w", host, port, err)
+	}
+	return conn, nil
+}
+
+// ShellOptions parameterizes an interactive shell session.
+type ShellOptions struct {
+	// Stdin/Stdout/Stderr wire the local terminal to the remote PTY.
+	// Typically os.Stdin / os.Stdout / os.Stderr. Stderr is merged
+	// into Stdout by the SSH PTY by default; we keep the field for
+	// callers that want to split (uncommon).
+	Stdin  io.Reader
+	Stdout io.Writer
+	Stderr io.Writer
+
+	// TermType is the TERM string sent in pty-req (default "xterm-256color").
+	TermType string
+
+	// Width / Height seed the remote PTY's dimensions. When zero and
+	// Stdin is a TTY, the dimensions are autodetected from the
+	// terminal. SIGWINCH-driven updates take effect regardless.
+	Width  int
+	Height int
+}
+
+// Shell opens a session, requests a PTY, starts the user's login
+// shell, and pipes I/O until the session ends. Handles:
+//   - Local terminal raw mode (so keystrokes go through, not line-
+//     buffered) when Stdin is a TTY. Restored on return.
+//   - SIGWINCH propagation: when the local terminal resizes, send
+//     a "window-change" SSH request to update the remote PTY size.
+//
+// Exit code mapping mirrors Exec: the remote's exit status when one
+// was sent; -1 for signal-only exits or transport errors.
+func (c *Client) Shell(ctx context.Context, opts ShellOptions) (int, error) {
+	if c == nil || c.ssh == nil {
+		return -1, errors.New("sshclient: nil Client")
+	}
+	if opts.Stdin == nil {
+		opts.Stdin = os.Stdin
+	}
+	if opts.Stdout == nil {
+		opts.Stdout = os.Stdout
+	}
+	if opts.Stderr == nil {
+		opts.Stderr = os.Stderr
+	}
+	if opts.TermType == "" {
+		opts.TermType = "xterm-256color"
+	}
+
+	sess, err := c.ssh.NewSession()
+	if err != nil {
+		return -1, fmt.Errorf("open session: %w", err)
+	}
+	defer sess.Close()
+
+	// Detect local TTY for raw-mode + SIGWINCH wiring. Non-TTY stdin
+	// is still legal (piped input); we just skip terminal-mode setup.
+	stdinFile, _ := opts.Stdin.(*os.File)
+	isTTY := stdinFile != nil && term.IsTerminal(int(stdinFile.Fd()))
+
+	width, height := opts.Width, opts.Height
+	if isTTY && (width == 0 || height == 0) {
+		if w, h, err := term.GetSize(int(stdinFile.Fd())); err == nil {
+			width, height = w, h
+		}
+	}
+	if width == 0 {
+		width = 80
+	}
+	if height == 0 {
+		height = 24
+	}
+
+	if err := sess.RequestPty(opts.TermType, height, width, ssh.TerminalModes{
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: 14400,
+		ssh.TTY_OP_OSPEED: 14400,
+	}); err != nil {
+		return -1, fmt.Errorf("pty-req: %w", err)
+	}
+
+	sess.Stdin = opts.Stdin
+	sess.Stdout = opts.Stdout
+	sess.Stderr = opts.Stderr
+
+	var restoreTerm func()
+	if isTTY {
+		oldState, err := term.MakeRaw(int(stdinFile.Fd()))
+		if err == nil {
+			restoreTerm = func() { _ = term.Restore(int(stdinFile.Fd()), oldState) }
+			defer restoreTerm()
+		}
+	}
+
+	// Propagate SIGWINCH to the remote PTY for as long as the session
+	// runs. Closed via the deferred cancel.
+	winch, winchCancel := setupSIGWINCH(stdinFile, sess, isTTY)
+	defer winchCancel()
+	_ = winch
+
+	// Close the session if the parent context fires (Ctrl-C from the
+	// outer wrapper, deadline, etc.).
+	doneCtx := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = sess.Close()
+		case <-doneCtx:
+		}
+	}()
+
+	runErr := sess.Shell()
+	if runErr != nil {
+		close(doneCtx)
+		return -1, fmt.Errorf("start shell: %w", runErr)
+	}
+	runErr = sess.Wait()
+	close(doneCtx)
+
+	exit := 0
+	if runErr != nil {
+		var exitErr *ssh.ExitError
+		if errors.As(runErr, &exitErr) {
+			exit = exitErr.ExitStatus()
+		} else {
+			exit = -1
+		}
+	}
+	return exit, nil
+}
+
+// setupSIGWINCH wires the local SIGWINCH to a "window-change" SSH
+// request that resizes the remote PTY. Returns the signal channel and
+// a cancel func that stops the goroutine.
+func setupSIGWINCH(stdinFile *os.File, sess *ssh.Session, isTTY bool) (chan os.Signal, func()) {
+	winch := make(chan os.Signal, 1)
+	stop := make(chan struct{})
+	cancel := func() {
+		signal.Stop(winch)
+		close(stop)
+	}
+	if !isTTY || stdinFile == nil {
+		return winch, cancel
+	}
+	signal.Notify(winch, sigwinch)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-winch:
+				w, h, err := term.GetSize(int(stdinFile.Fd()))
+				if err != nil {
+					continue
+				}
+				// RFC 4254 §6.7: window-change payload is
+				// (width, height, pixWidth, pixHeight), each big-endian
+				// uint32. Pixels are advisory; 0 is standard.
+				payload := []byte{
+					byte(w >> 24), byte(w >> 16), byte(w >> 8), byte(w),
+					byte(h >> 24), byte(h >> 16), byte(h >> 8), byte(h),
+					0, 0, 0, 0,
+					0, 0, 0, 0,
+				}
+				_, _ = sess.SendRequest("window-change", false, payload)
+			}
+		}
+	}()
+	return winch, cancel
+}
+
+// LocalForward opens a local listener and bridges every accepted
+// connection to (destHost, destPort) on the remote outpost's reachable
+// network via direct-tcpip. Blocks until ctx is canceled or the
+// listener errors. The CLI tunnel subcommand owns lifecycle.
+//
+// The listener is closed when LocalForward returns.
+func (c *Client) LocalForward(ctx context.Context, listener net.Listener, destHost string, destPort int) error {
+	if c == nil || c.ssh == nil {
+		return errors.New("sshclient: nil Client")
+	}
+	defer listener.Close()
+	if destPort <= 0 {
+		return fmt.Errorf("sshclient: invalid destPort %d", destPort)
+	}
+
+	// Close the listener on ctx so Accept() unblocks.
+	go func() {
+		<-ctx.Done()
+		_ = listener.Close()
+	}()
+
+	var wg sync.WaitGroup
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			wg.Wait()
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+		wg.Add(1)
+		go func(local net.Conn) {
+			defer wg.Done()
+			defer local.Close()
+			remote, derr := c.DirectTCPIP(ctx, destHost, destPort)
+			if derr != nil {
+				// Drop the local conn; the operator-visible failure
+				// is reported by the next LocalForward error or by
+				// the client side observing closed conn.
+				return
+			}
+			defer remote.Close()
+			// Watch ctx so a tunnel-down signal unblocks the io.Copy
+			// halves by force-closing both conns. Without this, an
+			// idle tunneled session (no bytes flowing either way)
+			// would hold the LocalForward goroutine open past the
+			// caller's intent to shut down.
+			watchDone := make(chan struct{})
+			go func() {
+				select {
+				case <-ctx.Done():
+					_ = local.Close()
+					_ = remote.Close()
+				case <-watchDone:
+				}
+			}()
+			done := make(chan struct{}, 2)
+			go func() { _, _ = io.Copy(remote, local); done <- struct{}{} }()
+			go func() { _, _ = io.Copy(local, remote); done <- struct{}{} }()
+			<-done
+			close(watchDone)
+		}(conn)
+	}
+}
+
+// SFTP opens an SFTP subsystem channel and wraps it with pkg/sftp's
+// client. Caller owns the returned *sftp.Client — call Close before
+// closing the outer Client.
+func (c *Client) SFTP() (*sftp.Client, error) {
+	if c == nil || c.ssh == nil {
+		return nil, errors.New("sshclient: nil Client")
+	}
+	return sftp.NewClient(c.ssh)
 }

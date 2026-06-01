@@ -37,17 +37,36 @@ Friendly aliases for paired hosts plus an in-process SSH client that
 reaches them through the matrix tunnel — no system /usr/bin/ssh
 required, no ~/.ssh/config wiring needed for agentic callers.
 
-Wave 1 surface:
-  outpost ssh add <name> --host <paired-host> --user <os-user>
+Surface:
+  outpost ssh add <name> --host <paired-host> --user <os-user> [--via <alias>]
   outpost ssh list [--json]
   outpost ssh show <name>
   outpost ssh rm <name>
-  outpost ssh exec <name> -- <command> [args...]
+  outpost ssh exec <name> [--jump <alias>] -- <command> [args...]
+  outpost ssh connect <name> [--jump <alias>]
+  outpost ssh tunnel <name> [--jump <alias>] -L <local>:<remote-host>:<remote-port>
+  outpost ssh sftp <name> [--jump <alias>] (get|put|ls) ...
+  outpost ssh <name>                       # shorthand for 'connect <name>'
 
-Once a target is added and you've run 'outpost connect <host>' to seed
-an elevation cookie, 'outpost ssh exec <name> -- <cmd>' runs <cmd> on
-the remote host and returns stdout/stderr + exit code — suitable for
-both shell scripts and agentic-tool drive loops.`,
+Hop/jump:
+  Attach --via <alias> at add time (or --jump <alias> per-call) to
+  ProxyJump through another configured target. Chains are walked
+  outer-first (cloudbox → outer → ... → inner). The innermost target
+  is the one your command runs on.`,
+		// Allow bare 'outpost ssh <name>' to fall through to connect.
+		Args: cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+			// If the first arg matches a known subcommand we never get
+			// here (cobra dispatches). So a single arg here is treated
+			// as a target alias for the shorthand-connect.
+			if len(args) == 1 {
+				return runSSHConnect(cmd.Context(), args[0], "")
+			}
+			return fmt.Errorf("unknown subcommand %q (try 'outpost ssh --help')", args[0])
+		},
 	}
 	cmd.AddCommand(
 		sshListCmd(),
@@ -55,6 +74,9 @@ both shell scripts and agentic-tool drive loops.`,
 		sshShowCmd(),
 		sshRmCmd(),
 		sshExecCmd(),
+		sshConnectCmd(),
+		sshTunnelCmd(),
+		sshSFTPCmd(),
 	)
 	return cmd
 }
@@ -65,6 +87,8 @@ type sshTargetRow struct {
 	Name        string `json:"name"`
 	Host        string `json:"host"`
 	User        string `json:"user,omitempty"`
+	Port        int    `json:"port,omitempty"`
+	Via         string `json:"via,omitempty"`
 	Description string `json:"description,omitempty"`
 }
 
@@ -103,9 +127,13 @@ func runSSHList(ctx context.Context, jsonOut bool) error {
 		fmt.Println("No SSH targets configured. Use `outpost ssh add <name> --host <paired-host>` to add one.")
 		return nil
 	}
-	fmt.Printf("%-20s  %-20s  %-12s  %s\n", "NAME", "HOST", "USER", "DESCRIPTION")
+	fmt.Printf("%-20s  %-20s  %-12s  %-16s  %s\n", "NAME", "HOST", "USER", "VIA", "DESCRIPTION")
 	for _, t := range out.Targets {
-		fmt.Printf("%-20s  %-20s  %-12s  %s\n", t.Name, t.Host, t.User, t.Description)
+		via := t.Via
+		if via == "" {
+			via = "-"
+		}
+		fmt.Printf("%-20s  %-20s  %-12s  %-16s  %s\n", t.Name, t.Host, t.User, via, t.Description)
 	}
 	return nil
 }
@@ -115,36 +143,50 @@ func sshAddCmd() *cobra.Command {
 		hostFlag string
 		userFlag string
 		descFlag string
+		viaFlag  string
+		portFlag int
 	)
 	cmd := &cobra.Command{
 		Use:   "add <name>",
-		Short: "Register a friendly alias for a paired host",
+		Short: "Register a friendly alias for a paired host (with optional hop)",
 		Long: `Stores the alias under $XDG_CONFIG_HOME/outpost/ssh/<name>.json
 (mode 0600). After adding, 'outpost ssh exec <name> -- <cmd>' runs
 <cmd> on the configured host without further configuration.
 
 --user defaults to the OS user the remote outpost runs as (reported
-by cloudbox's /api/v1/ssh/hosts); pass --user only to override.`,
+by cloudbox's /api/v1/ssh/hosts at exec time); pass --user to override.
+
+--via <alias> sets a ProxyJump-style hop: dialing this target first
+dials <alias>, then opens a direct-tcpip channel to <host>:<port>
+through it. Chains are walked recursively (max 8 hops). For paired
+peer destinations the remote outpost's peerhosts allowlist accepts
+the channel automatically; for other LAN destinations the operator
+must have widened SSHAllowLocalForward.
+
+--port defaults to 22 and is only meaningful when --via is set
+(direct dials to cloudbox-paired hosts don't carry a port).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSSHAdd(cmd.Context(), args[0], hostFlag, userFlag, descFlag)
+			return runSSHAdd(cmd.Context(), args[0], hostFlag, userFlag, descFlag, viaFlag, portFlag)
 		},
 	}
-	cmd.Flags().StringVar(&hostFlag, "host", "", "Paired host name in cloudbox (e.g. novicortex). Required.")
+	cmd.Flags().StringVar(&hostFlag, "host", "", "Destination: paired host name (when --via is empty), or hop-side address (when --via is set). Required.")
 	cmd.Flags().StringVar(&userFlag, "user", "", "OS user on the remote host (default: reported by /api/v1/ssh/hosts at exec time)")
 	cmd.Flags().StringVar(&descFlag, "description", "", "Freeform note for `outpost ssh list`")
+	cmd.Flags().StringVar(&viaFlag, "via", "", "ProxyJump-style hop: alias of another configured target to dial through first")
+	cmd.Flags().IntVar(&portFlag, "port", 0, "SSH port on the hop destination (default 22; ignored unless --via is set)")
 	return cmd
 }
 
-func runSSHAdd(ctx context.Context, name, host, user, description string) error {
+func runSSHAdd(ctx context.Context, name, host, user, description, via string, port int) error {
 	host = strings.TrimSpace(host)
 	if host == "" {
-		return fmt.Errorf("--host is required (the paired-host name cloudbox routes to)")
+		return fmt.Errorf("--host is required (the destination's address)")
 	}
-	// If --user is empty, try to resolve from cloudbox's /api/v1/ssh/hosts.
-	// We do this here (in the CLI, not the daemon) so the on-disk
-	// record carries everything ExecSSH needs without per-call lookups.
-	if strings.TrimSpace(user) == "" {
+	// --user resolution from cloudbox makes sense only when reaching
+	// a paired outpost directly. Hop targets reach raw hosts; the
+	// operator must supply --user themselves.
+	if strings.TrimSpace(user) == "" && strings.TrimSpace(via) == "" {
 		if u, ok, _ := resolveRemoteOSUser(ctx, host); ok {
 			user = u
 		}
@@ -157,19 +199,30 @@ func runSSHAdd(ctx context.Context, name, host, user, description string) error 
 	var out struct {
 		Target sshTargetRow `json:"target"`
 	}
-	if err := session.callTool(ctx, "outpost_add_ssh_target", map[string]any{
+	args := map[string]any{
 		"name":        name,
 		"host":        host,
 		"user":        user,
 		"description": description,
-	}, &out); err != nil {
+	}
+	if via != "" {
+		args["via"] = via
+	}
+	if port > 0 {
+		args["port"] = port
+	}
+	if err := session.callTool(ctx, "outpost_add_ssh_target", args, &out); err != nil {
 		return err
 	}
 	if out.Target.User == "" {
 		fmt.Fprintf(os.Stderr, "warning: target %q has no user set — `outpost ssh exec` will refuse until you re-run `outpost ssh add %s --host %s --user <os-user>`.\n",
 			out.Target.Name, out.Target.Name, out.Target.Host)
 	}
-	fmt.Printf("Added SSH target %q → %s (user=%s)\n", out.Target.Name, out.Target.Host, out.Target.User)
+	suffix := ""
+	if out.Target.Via != "" {
+		suffix = fmt.Sprintf(" via %s", out.Target.Via)
+	}
+	fmt.Printf("Added SSH target %q → %s (user=%s)%s\n", out.Target.Name, out.Target.Host, out.Target.User, suffix)
 	return nil
 }
 
@@ -276,6 +329,7 @@ func sshExecCmd() *cobra.Command {
 	var (
 		timeoutFlag time.Duration
 		jsonOut     bool
+		jumpFlag    string
 	)
 	cmd := &cobra.Command{
 		Use:   "exec <name> -- <command> [args...]",
@@ -289,20 +343,23 @@ failure).
 Requires a current elevation for the target's host — run
 'outpost connect <host>' first (or 'outpost connect <host> --keep-alive'
 to keep the cookie warm). If no elevation is present, exec returns
-401 with guidance.`,
+401 with guidance.
+
+--jump <alias> overrides the target's persisted Via for this one
+call (analogous to ssh's -J).`,
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-			// Cobra collapses "--" out of args by default; everything
-			// after the alias is the command line.
 			cmdLine := strings.Join(args[1:], " ")
-			return runSSHExec(cmd.Context(), name, cmdLine, timeoutFlag, jsonOut)
+			return runSSHExec(cmd.Context(), name, cmdLine, jumpFlag, timeoutFlag, jsonOut)
 		},
 	}
 	cmd.Flags().DurationVar(&timeoutFlag, "timeout", 60*time.Second,
 		"Cap on remote runtime; capped server-side at 10m")
 	cmd.Flags().BoolVar(&jsonOut, "json", false,
 		"Emit the full result envelope as JSON instead of writing stdout/stderr through")
+	cmd.Flags().StringVar(&jumpFlag, "jump", "",
+		"ProxyJump alias for this call (overrides the target's persisted --via)")
 	return cmd
 }
 
@@ -314,18 +371,22 @@ type sshExecResult struct {
 	StderrTruncated bool   `json:"stderr_truncated,omitempty"`
 }
 
-func runSSHExec(ctx context.Context, name, command string, timeout time.Duration, jsonOut bool) error {
+func runSSHExec(ctx context.Context, name, command, jump string, timeout time.Duration, jsonOut bool) error {
 	session, err := dialMCP(ctx)
 	if err != nil {
 		return err
 	}
 	defer session.close()
 	var res sshExecResult
-	if err := session.callTool(ctx, "outpost_ssh_exec", map[string]any{
+	args := map[string]any{
 		"name":            name,
 		"command":         command,
 		"timeout_seconds": int(timeout.Seconds()),
-	}, &res); err != nil {
+	}
+	if jump != "" {
+		args["jump"] = jump
+	}
+	if err := session.callTool(ctx, "outpost_ssh_exec", args, &res); err != nil {
 		return err
 	}
 	if jsonOut {

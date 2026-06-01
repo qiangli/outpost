@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"path/filepath"
@@ -208,6 +209,267 @@ func TestDialAndExec(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("test SSH server did not exit within 2s of client close")
+	}
+}
+
+// TestDirectTCPIPHop wires up TWO in-test SSH servers and confirms
+// that opening a direct-tcpip channel through server-A to server-B's
+// TCP listener, then layering another sshclient.Client on top, lets
+// us run an Exec on B via A — i.e. the ProxyJump (hop) pattern works
+// end-to-end.
+//
+// This is the core integration test for Wave 2's hop feature.
+func TestDirectTCPIPHop(t *testing.T) {
+	// Server B: the final destination. Listens on its own TCP port.
+	bKey := makeTestHostKey(t)
+	bListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen B: %v", err)
+	}
+	t.Cleanup(func() { _ = bListener.Close() })
+	bPort := bListener.Addr().(*net.TCPAddr).Port
+
+	bCfg := &ssh.ServerConfig{NoClientAuth: true}
+	bCfg.AddHostKey(bKey)
+	go func() {
+		for {
+			conn, err := bListener.Accept()
+			if err != nil {
+				return
+			}
+			go runTestSSHServer(conn, bCfg, func(req *ssh.Request) (stdout, stderr []byte, exitCode uint32) {
+				if string(req.Payload[4:]) == "uname" {
+					return []byte("ServerB\n"), nil, 0
+				}
+				return nil, []byte("unknown"), 1
+			})
+		}
+	}()
+
+	// Server A: the jump host. Standard NoClientAuth server + handles
+	// direct-tcpip channels by dialing the requested host:port (which
+	// will be 127.0.0.1:bPort).
+	aKey := makeTestHostKey(t)
+	aListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen A: %v", err)
+	}
+	t.Cleanup(func() { _ = aListener.Close() })
+
+	aCfg := &ssh.ServerConfig{NoClientAuth: true}
+	aCfg.AddHostKey(aKey)
+	go func() {
+		conn, err := aListener.Accept()
+		if err != nil {
+			return
+		}
+		runTestSSHHopServer(conn, aCfg)
+	}()
+
+	// Client → A: standard handshake.
+	clientConn, err := net.Dial("tcp", aListener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial A: %v", err)
+	}
+	tmp := t.TempDir()
+	cbA, err := KnownHostsCallbackTOFU(filepath.Join(tmp, "kha"), "outpost-A")
+	if err != nil {
+		t.Fatalf("known_hosts A: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	aClient, err := Dial(ctx, Config{
+		Transport: clientConn, HostAlias: "outpost-A", User: "u", HostKeyCallback: cbA,
+	})
+	if err != nil {
+		t.Fatalf("Dial A: %v", err)
+	}
+	defer aClient.Close()
+
+	// Hop: A direct-tcpip → 127.0.0.1:bPort. Layer SSH on top.
+	bConn, err := aClient.DirectTCPIP(ctx, "127.0.0.1", bPort)
+	if err != nil {
+		t.Fatalf("DirectTCPIP: %v", err)
+	}
+	cbB, err := KnownHostsCallbackTOFU(filepath.Join(tmp, "khb"), "outpost-B")
+	if err != nil {
+		t.Fatalf("known_hosts B: %v", err)
+	}
+	bClient, err := Dial(ctx, Config{
+		Transport: bConn, HostAlias: "outpost-B", User: "u", HostKeyCallback: cbB,
+	})
+	if err != nil {
+		t.Fatalf("Dial B (via hop): %v", err)
+	}
+	defer bClient.Close()
+
+	res, err := bClient.Exec(ctx, ExecOptions{Command: "uname", Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("Exec on B: %v", err)
+	}
+	if res.ExitCode != 0 || string(res.Stdout) != "ServerB\n" {
+		t.Errorf("hop result wrong: exit=%d stdout=%q", res.ExitCode, string(res.Stdout))
+	}
+}
+
+// runTestSSHHopServer is like runTestSSHServer but accepts
+// direct-tcpip channels and bridges them to a raw TCP dial. Used by
+// TestDirectTCPIPHop to model an outpost-A whose SSH server permits
+// hop traffic to peer hosts.
+func runTestSSHHopServer(conn net.Conn, cfg *ssh.ServerConfig) {
+	sConn, chans, reqs, err := ssh.NewServerConn(conn, cfg)
+	if err != nil {
+		return
+	}
+	defer sConn.Close()
+	go ssh.DiscardRequests(reqs)
+	for newCh := range chans {
+		if newCh.ChannelType() != "direct-tcpip" {
+			_ = newCh.Reject(ssh.UnknownChannelType, "test server only accepts direct-tcpip")
+			continue
+		}
+		// direct-tcpip extra data: 4-byte len-host + host + uint32 port
+		// + 4-byte len-orig + orig + uint32 origPort. Parse just enough
+		// to extract host + port.
+		host, port, ok := parseDirectTCPIPExtra(newCh.ExtraData())
+		if !ok {
+			_ = newCh.Reject(ssh.ConnectionFailed, "bad direct-tcpip payload")
+			continue
+		}
+		ch, chReqs, err := newCh.Accept()
+		if err != nil {
+			continue
+		}
+		go ssh.DiscardRequests(chReqs)
+		go func() {
+			defer ch.Close()
+			dst, err := net.Dial("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", port)))
+			if err != nil {
+				return
+			}
+			defer dst.Close()
+			done := make(chan struct{}, 2)
+			go func() { _, _ = io.Copy(dst, ch); done <- struct{}{} }()
+			go func() { _, _ = io.Copy(ch, dst); done <- struct{}{} }()
+			<-done
+		}()
+	}
+}
+
+// parseDirectTCPIPExtra parses the RFC 4254 §7.2 direct-tcpip data:
+//
+//	string  host to connect
+//	uint32  port to connect
+//	string  originator IP
+//	uint32  originator port
+func parseDirectTCPIPExtra(b []byte) (host string, port uint32, ok bool) {
+	if len(b) < 4 {
+		return "", 0, false
+	}
+	hlen := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+	if uint32(len(b)) < 4+hlen+4 {
+		return "", 0, false
+	}
+	host = string(b[4 : 4+hlen])
+	p := b[4+hlen : 4+hlen+4]
+	port = uint32(p[0])<<24 | uint32(p[1])<<16 | uint32(p[2])<<8 | uint32(p[3])
+	return host, port, true
+}
+
+// TestLocalForwardByteBridge confirms LocalForward shovels bytes
+// faithfully in both directions. Uses a stub TCP echo server as the
+// hop destination and a vanilla TCP client on the local side.
+func TestLocalForwardByteBridge(t *testing.T) {
+	// Echo destination: any byte received is echoed back.
+	echo, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen echo: %v", err)
+	}
+	t.Cleanup(func() { _ = echo.Close() })
+	echoPort := echo.Addr().(*net.TCPAddr).Port
+	go func() {
+		for {
+			c, err := echo.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = io.Copy(c, c)
+			}(c)
+		}
+	}()
+
+	// SSH server-A: same hop pattern as TestDirectTCPIPHop.
+	aKey := makeTestHostKey(t)
+	aListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen A: %v", err)
+	}
+	t.Cleanup(func() { _ = aListener.Close() })
+	aCfg := &ssh.ServerConfig{NoClientAuth: true}
+	aCfg.AddHostKey(aKey)
+	go func() {
+		conn, err := aListener.Accept()
+		if err != nil {
+			return
+		}
+		runTestSSHHopServer(conn, aCfg)
+	}()
+
+	clientConn, err := net.Dial("tcp", aListener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial A: %v", err)
+	}
+	tmp := t.TempDir()
+	cb, err := KnownHostsCallbackTOFU(filepath.Join(tmp, "kh"), "outpost-A")
+	if err != nil {
+		t.Fatalf("kh: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := Dial(ctx, Config{
+		Transport: clientConn, HostAlias: "outpost-A", User: "u", HostKeyCallback: cb,
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer client.Close()
+
+	localListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("local listen: %v", err)
+	}
+	localAddr := localListener.Addr().String()
+
+	fwdCtx, fwdCancel := context.WithCancel(ctx)
+	defer fwdCancel()
+	fwdDone := make(chan error, 1)
+	go func() { fwdDone <- client.LocalForward(fwdCtx, localListener, "127.0.0.1", echoPort) }()
+
+	// Connect to the local listener, write, expect echo back.
+	c, err := net.Dial("tcp", localAddr)
+	if err != nil {
+		t.Fatalf("dial local fwd: %v", err)
+	}
+	defer c.Close()
+	msg := []byte("hello-tunnel\n")
+	if _, err := c.Write(msg); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	buf := make([]byte, len(msg))
+	if _, err := io.ReadFull(c, buf); err != nil {
+		t.Fatalf("read echo: %v", err)
+	}
+	if !bytes.Equal(buf, msg) {
+		t.Errorf("echo mismatch: got %q want %q", buf, msg)
+	}
+
+	fwdCancel()
+	select {
+	case <-fwdDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("LocalForward did not exit within 2s of ctx cancel")
 	}
 }
 

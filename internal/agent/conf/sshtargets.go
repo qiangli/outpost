@@ -35,20 +35,47 @@ type SSHTarget struct {
 	// One alias per file; the filename is `<name>.json`.
 	Name string `json:"name"`
 
-	// Host is the cloudbox-paired host name — what `outpost ssh-config`
-	// would print as the `Host` stanza, and what cloudbox routes
-	// `/h/<host>/ssh` to. Required.
+	// Host is the destination this target reaches:
+	//   - when Via == "":  a cloudbox-paired host name (`outpost
+	//     ssh-config` would print this as the `Host` stanza, and
+	//     cloudbox routes `/h/<host>/ssh` to it).
+	//   - when Via != "":  the hop-side destination address — i.e.,
+	//     what the upstream Via target's outpost can reach over its
+	//     LAN / peer allowlist via an SSH direct-tcpip channel. Often
+	//     a paired peer hostname (the remote outpost's SSH server
+	//     accepts peer destinations via peerhosts) or, after the
+	//     operator widens SSHAllowLocalForward, a LAN IP.
+	// Required.
 	Host string `json:"host"`
+
+	// Port is the destination's SSH port, used only when Via != "".
+	// Defaults to 22 (canonical sshd). Ignored when reaching cloudbox-
+	// paired hosts directly — the WS path doesn't carry a port.
+	Port int `json:"port,omitempty"`
 
 	// User overrides the OS username the remote outpost's /auth gate
 	// expects. Empty = resolve from cloudbox's /api/v1/ssh/hosts
 	// at connect time (same fallback chain `outpost connect` uses).
 	User string `json:"user,omitempty"`
 
+	// Via is the alias of another configured target to ProxyJump
+	// through. When set, dialing this target first dials Via, then
+	// opens an SSH direct-tcpip channel to Host:Port, and layers SSH
+	// on that channel. Chains are walked recursively.
+	//
+	// This is the equivalent of ssh's ProxyJump (`ssh -J <via>
+	// <name>`) but resolved at our config layer so MCP tools / CLI
+	// can use it uniformly.
+	Via string `json:"via,omitempty"`
+
 	// Description is a freeform note for the operator's benefit
 	// (printed by `outpost ssh list`). Not interpreted.
 	Description string `json:"description,omitempty"`
 }
+
+// DefaultSSHPort is the port assumed for hop destinations when Port
+// is left zero. Mirrors openssh's defaults.
+const DefaultSSHPort = 22
 
 // SSHTargetsDir is `<UserConfigDir>/outpost/ssh`. Created on demand.
 func SSHTargetsDir() (string, error) {
@@ -181,6 +208,53 @@ func DeleteSSHTarget(name string) error {
 		return err
 	}
 	return nil
+}
+
+// MaxSSHTargetChainDepth bounds the depth of `Via` chains. Generous —
+// real-world chains rarely exceed two hops; this is just a cycle and
+// runaway-recursion guard.
+const MaxSSHTargetChainDepth = 8
+
+// ResolveSSHTargetChain walks the Via field starting at `name` and
+// returns the chain in DIAL order: the first element is the cloudbox-
+// reachable outpost (the outermost hop), and the last element is
+// `name` itself (the innermost endpoint we want to reach).
+//
+// Cycles and overlong chains are detected and surfaced as errors so a
+// hand-edited config can't trap the dial loop.
+//
+// `override` is the alias whose Via should be substituted for the
+// target's persisted Via — used by `--jump <alias>` runtime flags
+// and the MCP `jump` field. Pass "" to use the on-disk Via.
+func ResolveSSHTargetChain(name, override string) ([]SSHTarget, error) {
+	// Walk inward (Via → ...) collecting outer-first nodes.
+	chain := make([]SSHTarget, 0, 4)
+	seen := map[string]struct{}{}
+	cursor := name
+	cursorOverride := strings.TrimSpace(override)
+	for range MaxSSHTargetChainDepth + 1 {
+		if _, dup := seen[cursor]; dup {
+			return nil, fmt.Errorf("ssh target chain has a cycle at %q", cursor)
+		}
+		seen[cursor] = struct{}{}
+		t, err := LoadSSHTarget(cursor)
+		if err != nil {
+			return nil, err
+		}
+		// Apply the override only on the innermost requested target.
+		via := strings.TrimSpace(t.Via)
+		if cursor == name && cursorOverride != "" {
+			via = cursorOverride
+		}
+		t.Via = via // canonicalize the in-memory copy
+		chain = append([]SSHTarget{*t}, chain...) // prepend: outer-first
+		if via == "" {
+			return chain, nil
+		}
+		cursor = via
+		cursorOverride = "" // override applied only to the original innermost
+	}
+	return nil, fmt.Errorf("ssh target chain starting at %q exceeded max depth %d", name, MaxSSHTargetChainDepth)
 }
 
 // ListSSHTargets enumerates all on-disk targets, sorted by name.

@@ -99,6 +99,11 @@ type ExecSSHParams struct {
 	// fed verbatim to `ssh.Session.Run`.
 	Command string
 
+	// JumpOverride, when non-empty, overrides the target's persisted
+	// Via field for this one call (analogous to ssh's `-J <alias>`).
+	// Use the empty string to honor the on-disk Via.
+	JumpOverride string
+
 	// Timeout caps the remote process's wall-clock runtime. Default
 	// 60s; capped at 600s server-side to keep MCP callers from
 	// holding the connection forever.
@@ -125,15 +130,16 @@ const (
 	execSSHDefaultStderr  = int64(256) << 10 // 256 KiB
 )
 
-// ExecSSH resolves the target alias, dials cloudbox over the matrix
-// tunnel, opens an in-process SSH client, and runs Command.
+// ExecSSH resolves the target chain (including any Via hops), dials
+// each leg, opens an in-process SSH client on the innermost
+// connection, and runs Command.
 //
 // Errors map as follows:
 //   - target missing                       → 404 NotFound
-//   - target.User empty                    → 400 BadRequest with guidance
+//   - any chain target.User empty          → 400 BadRequest with guidance
 //   - elev cookie missing/stale            → 401 with EAUTHREQUIRED hint
 //   - cloudbox unreachable / SSH handshake → 502 BadGateway
-//   - timeout                              → 504 (wrapped in APIError? we use upstream())
+//   - timeout                              → wrapped as upstream() (502)
 //   - remote exit-code != 0                → NOT an error — result is returned
 //     with .ExitCode set; lets agents distinguish "command ran and failed"
 //     from "couldn't get to the host."
@@ -145,14 +151,11 @@ func (s *Server) ExecSSH(ctx context.Context, p ExecSSHParams) (*ExecSSHResult, 
 		return nil, badRequest("command is required")
 	}
 
-	target, err := conf.LoadSSHTarget(p.Name)
+	innerClient, cleanup, err := s.dialSSHChain(ctx, p.Name, p.JumpOverride)
 	if err != nil {
-		return nil, notFound("%s", err.Error())
+		return nil, err
 	}
-	if target.User == "" {
-		return nil, badRequest("target %q has no user set — run `outpost ssh add %s --host %s --user <os_user>`",
-			p.Name, p.Name, target.Host)
-	}
+	defer cleanup()
 
 	// Apply caps + defaults.
 	timeout := p.Timeout
@@ -170,75 +173,7 @@ func (s *Server) ExecSSH(ctx context.Context, p ExecSSHParams) (*ExecSSHResult, 
 		maxStderr = execSSHDefaultStderr
 	}
 
-	// Resolve transport parameters from FileConfig (the same source
-	// ssh-proxy uses).
-	fc, err := s.loadConfig()
-	if err != nil {
-		return nil, internalErr("load config: %s", err.Error())
-	}
-	if fc.ServerAddr == "" {
-		return nil, unavailable("local outpost is not paired with cloudbox yet")
-	}
-	bearer := strings.TrimSpace(fc.AccessToken)
-	if bearer == "" {
-		bearer = strings.TrimSpace(fc.Token)
-	}
-	if bearer == "" {
-		return nil, unavailable("no cloudbox bearer cached — re-pair with `outpost register`")
-	}
-
-	wsURL, err := sshclient.BuildWSURL(fc.ServerAddr, fc.ServerPort, fc.Protocol, target.Host)
-	if err != nil {
-		return nil, internalErr("build ws url: %s", err.Error())
-	}
-	cookie, _ := conf.ReadSessionCookie(target.Host)
-
-	// Dial WS. No OnElevate — admincore is server-side and cannot
-	// prompt for a password. Surface EAUTHREQUIRED as a structured
-	// 401 so MCP callers can guide the operator.
-	dialCtx, dialCancel := context.WithTimeout(ctx, 35*time.Second)
-	wsConn, err := sshclient.DialWS(dialCtx, sshclient.DialOptions{
-		WSURL:  wsURL,
-		Bearer: bearer,
-		Cookie: cookie,
-		Host:   target.Host,
-	})
-	dialCancel()
-	if err != nil {
-		var eauth sshclient.EAuthRequiredError
-		if asEAuth(err, &eauth) {
-			return nil, &APIError{
-				Status: http.StatusUnauthorized,
-				Msg:    fmt.Sprintf("elevation required for %q — run `outpost connect %s`", target.Host, target.Host),
-			}
-		}
-		return nil, upstream("dial cloudbox: %s", err.Error())
-	}
-	netConn := sshclient.AsNetConn(ctx, wsConn)
-
-	knownHostsPath, err := conf.KnownHostsPath()
-	if err != nil {
-		_ = netConn.Close()
-		return nil, internalErr("known_hosts path: %s", err.Error())
-	}
-	hostKeyCB, err := sshclient.KnownHostsCallbackTOFU(knownHostsPath, sshclient.HostAliasForHost(target.Host))
-	if err != nil {
-		_ = netConn.Close()
-		return nil, internalErr("known_hosts callback: %s", err.Error())
-	}
-
-	client, err := sshclient.Dial(ctx, sshclient.Config{
-		Transport:       netConn,
-		HostAlias:       sshclient.HostAliasForHost(target.Host),
-		User:            target.User,
-		HostKeyCallback: hostKeyCB,
-	})
-	if err != nil {
-		return nil, upstream("ssh handshake: %s", err.Error())
-	}
-	defer client.Close()
-
-	res, runErr := client.Exec(ctx, sshclient.ExecOptions{
+	res, runErr := innerClient.Exec(ctx, sshclient.ExecOptions{
 		Command:   p.Command,
 		Timeout:   timeout,
 		MaxStdout: maxStdout,
@@ -247,18 +182,141 @@ func (s *Server) ExecSSH(ctx context.Context, p ExecSSHParams) (*ExecSSHResult, 
 	if runErr != nil && res == nil {
 		return nil, upstream("exec: %s", runErr.Error())
 	}
-	out := &ExecSSHResult{
+	return &ExecSSHResult{
 		Stdout:          res.Stdout,
 		Stderr:          res.Stderr,
 		ExitCode:        res.ExitCode,
 		StdoutTruncated: res.StdoutTruncated,
 		StderrTruncated: res.StderrTruncated,
+	}, nil
+}
+
+// dialSSHChain dials the full target chain (outermost via cloudbox,
+// then each subsequent hop via direct-tcpip) and returns the
+// innermost ssh.Client. The cleanup func closes each client in
+// reverse order — call it to tear down the whole chain.
+//
+// This is shared between admincore.ExecSSH and any future MCP-driven
+// methods (interactive subsystems, sftp, port-forwarding) — the
+// chain semantics belong here, not duplicated per verb.
+func (s *Server) dialSSHChain(ctx context.Context, name, jumpOverride string) (*sshclient.Client, func(), error) {
+	chain, err := conf.ResolveSSHTargetChain(name, jumpOverride)
+	if err != nil {
+		return nil, nil, notFound("%s", err.Error())
 	}
-	// runErr non-nil means the session terminated with an error AFTER
-	// producing some output (e.g. exit code != 0). The structured
-	// result is the agent-visible part; the error itself is logged
-	// only.
-	return out, nil
+	// Validate users along the chain up front so we fail fast before
+	// any network I/O.
+	for _, t := range chain {
+		if strings.TrimSpace(t.User) == "" {
+			return nil, nil, badRequest("target %q in chain has no user set — run `outpost ssh add %s --host %s --user <os_user>`",
+				t.Name, t.Name, t.Host)
+		}
+	}
+
+	fc, err := s.loadConfig()
+	if err != nil {
+		return nil, nil, internalErr("load config: %s", err.Error())
+	}
+	if fc.ServerAddr == "" {
+		return nil, nil, unavailable("local outpost is not paired with cloudbox yet")
+	}
+	bearer := strings.TrimSpace(fc.AccessToken)
+	if bearer == "" {
+		bearer = strings.TrimSpace(fc.Token)
+	}
+	if bearer == "" {
+		return nil, nil, unavailable("no cloudbox bearer cached — re-pair with `outpost register`")
+	}
+
+	knownHostsPath, err := conf.KnownHostsPath()
+	if err != nil {
+		return nil, nil, internalErr("known_hosts path: %s", err.Error())
+	}
+
+	clients := make([]*sshclient.Client, 0, len(chain))
+	closeAll := func() {
+		for i := len(clients) - 1; i >= 0; i-- {
+			_ = clients[i].Close()
+		}
+	}
+
+	// Leg 0: cloudbox WS dial to the outermost target.
+	outer := chain[0]
+	wsURL, err := sshclient.BuildWSURL(fc.ServerAddr, fc.ServerPort, fc.Protocol, outer.Host)
+	if err != nil {
+		return nil, nil, internalErr("build ws url: %s", err.Error())
+	}
+	cookie, _ := conf.ReadSessionCookie(outer.Host)
+	dialCtx, dialCancel := context.WithTimeout(ctx, 35*time.Second)
+	wsConn, err := sshclient.DialWS(dialCtx, sshclient.DialOptions{
+		WSURL:  wsURL,
+		Bearer: bearer,
+		Cookie: cookie,
+		Host:   outer.Host,
+	})
+	dialCancel()
+	if err != nil {
+		var eauth sshclient.EAuthRequiredError
+		if asEAuth(err, &eauth) {
+			return nil, nil, &APIError{
+				Status: http.StatusUnauthorized,
+				Msg:    fmt.Sprintf("elevation required for %q — run `outpost connect %s`", outer.Host, outer.Host),
+			}
+		}
+		return nil, nil, upstream("dial cloudbox: %s", err.Error())
+	}
+	netConn := sshclient.AsNetConn(ctx, wsConn)
+
+	hostKeyCB, err := sshclient.KnownHostsCallbackTOFU(knownHostsPath, sshclient.HostAliasForHost(outer.Host))
+	if err != nil {
+		_ = netConn.Close()
+		return nil, nil, internalErr("known_hosts callback: %s", err.Error())
+	}
+	cli, err := sshclient.Dial(ctx, sshclient.Config{
+		Transport:       netConn,
+		HostAlias:       sshclient.HostAliasForHost(outer.Host),
+		User:            outer.User,
+		HostKeyCallback: hostKeyCB,
+	})
+	if err != nil {
+		return nil, nil, upstream("ssh handshake (outer %s): %s", outer.Host, err.Error())
+	}
+	clients = append(clients, cli)
+
+	// Hops 1..N: open direct-tcpip through the prior client, then
+	// layer another SSH session on top.
+	for i := 1; i < len(chain); i++ {
+		hop := chain[i]
+		port := hop.Port
+		if port <= 0 {
+			port = conf.DefaultSSHPort
+		}
+		prior := clients[i-1]
+		hopConn, err := prior.DirectTCPIP(ctx, hop.Host, port)
+		if err != nil {
+			closeAll()
+			return nil, nil, upstream("direct-tcpip to %s:%d via %s: %s", hop.Host, port, chain[i-1].Name, err.Error())
+		}
+		hopCB, err := sshclient.KnownHostsCallbackTOFU(knownHostsPath, sshclient.HostAliasForHost(hop.Host))
+		if err != nil {
+			_ = hopConn.Close()
+			closeAll()
+			return nil, nil, internalErr("known_hosts callback: %s", err.Error())
+		}
+		hopCli, err := sshclient.Dial(ctx, sshclient.Config{
+			Transport:       hopConn,
+			HostAlias:       sshclient.HostAliasForHost(hop.Host),
+			User:            hop.User,
+			HostKeyCallback: hopCB,
+		})
+		if err != nil {
+			closeAll()
+			return nil, nil, upstream("ssh handshake (hop %s): %s", hop.Host, err.Error())
+		}
+		clients = append(clients, hopCli)
+	}
+
+	return clients[len(clients)-1], closeAll, nil
 }
 
 // asEAuth is a tiny errors.As alias localized here so we don't pull

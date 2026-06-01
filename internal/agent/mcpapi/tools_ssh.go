@@ -24,8 +24,10 @@ import (
 // conf.SSHTarget with explicit JSON tags so the schema is concrete.
 type sshTargetView struct {
 	Name        string `json:"name" jsonschema:"Friendly local alias used by outpost ssh subcommands"`
-	Host        string `json:"host" jsonschema:"Cloudbox-paired host the alias routes to"`
+	Host        string `json:"host" jsonschema:"Destination: paired host (when via is empty) or hop-side address (when via is set)"`
+	Port        int    `json:"port,omitempty" jsonschema:"SSH port on the hop destination (default 22; ignored when via is empty)"`
 	User        string `json:"user,omitempty" jsonschema:"OS user on the remote host (resolves from /api/v1/ssh/hosts when empty at exec time)"`
+	Via         string `json:"via,omitempty" jsonschema:"ProxyJump-style hop: alias of another configured target to dial through first"`
 	Description string `json:"description,omitempty" jsonschema:"Freeform note"`
 }
 
@@ -35,8 +37,10 @@ type listSSHTargetsOut struct {
 
 type upsertSSHTargetIn struct {
 	Name        string `json:"name" jsonschema:"Alias; letters, digits, -, _, ."`
-	Host        string `json:"host" jsonschema:"Paired host name in cloudbox"`
+	Host        string `json:"host" jsonschema:"Destination: paired host (when via is empty) or hop-side address (when via is set)"`
+	Port        int    `json:"port,omitempty" jsonschema:"SSH port on the hop destination (default 22; ignored when via is empty)"`
 	User        string `json:"user,omitempty" jsonschema:"OS user on the remote host"`
+	Via         string `json:"via,omitempty" jsonschema:"ProxyJump-style hop alias"`
 	Description string `json:"description,omitempty"`
 }
 
@@ -48,6 +52,7 @@ type upsertSSHTargetOut struct {
 type sshExecIn struct {
 	Name           string `json:"name" jsonschema:"Configured target alias"`
 	Command        string `json:"command" jsonschema:"Literal command line passed to the remote shell"`
+	Jump           string `json:"jump,omitempty" jsonschema:"ProxyJump alias that overrides the target's persisted via for this call"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"Cap on remote wall-clock runtime; default 60, max 600"`
 	MaxStdout      int64  `json:"max_stdout,omitempty" jsonschema:"Cap on captured stdout (bytes); default 1 MiB"`
 	MaxStderr      int64  `json:"max_stderr,omitempty" jsonschema:"Cap on captured stderr (bytes); default 256 KiB"`
@@ -75,7 +80,9 @@ func (s *Server) registerSSHTools() {
 			views = append(views, sshTargetView{
 				Name:        t.Name,
 				Host:        t.Host,
+				Port:        t.Port,
 				User:        t.User,
+				Via:         t.Via,
 				Description: t.Description,
 			})
 		}
@@ -89,7 +96,9 @@ func (s *Server) registerSSHTools() {
 		t, err := s.core.UpsertSSHTarget(admincore.SSHTargetView{
 			Name:        in.Name,
 			Host:        in.Host,
+			Port:        in.Port,
 			User:        in.User,
+			Via:         in.Via,
 			Description: in.Description,
 		})
 		if err != nil {
@@ -100,7 +109,9 @@ func (s *Server) registerSSHTools() {
 			Target: sshTargetView{
 				Name:        t.Name,
 				Host:        t.Host,
+				Port:        t.Port,
 				User:        t.User,
+				Via:         t.Via,
 				Description: t.Description,
 			},
 		}, nil
@@ -125,11 +136,12 @@ func (s *Server) registerSSHTools() {
 			timeout = time.Duration(in.TimeoutSeconds) * time.Second
 		}
 		res, err := s.core.ExecSSH(ctx, admincore.ExecSSHParams{
-			Name:      in.Name,
-			Command:   in.Command,
-			Timeout:   timeout,
-			MaxStdout: in.MaxStdout,
-			MaxStderr: in.MaxStderr,
+			Name:         in.Name,
+			Command:      in.Command,
+			JumpOverride: in.Jump,
+			Timeout:      timeout,
+			MaxStdout:    in.MaxStdout,
+			MaxStderr:    in.MaxStderr,
 		})
 		if err != nil {
 			return apiErrResult[sshExecOut](err)
