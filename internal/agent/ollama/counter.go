@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // defaultMaxParallel matches Ollama's own default for OLLAMA_NUM_PARALLEL
@@ -23,32 +24,117 @@ const defaultMaxParallel = 4
 // "how many HTTP requests are in flight." That's why Wrap only
 // increments for the request paths that actually consume a generation
 // slot — /api/tags or /api/show pulls are free.
+//
+// numLoadedMax and keepAliveS mirror OLLAMA_MAX_LOADED_MODELS and
+// OLLAMA_KEEP_ALIVE so cloudbox can reason about per-host model
+// packing and warmth without a separate /api/show round-trip. Both are
+// read once at construction; the daemon doesn't expose runtime changes
+// to either anyway.
 type Counter struct {
-	inFlight    atomic.Int64
-	maxParallel int
+	inFlight     atomic.Int64
+	maxParallel  int
+	numLoadedMax int
+	keepAliveS   int
 }
 
 // NewCounter returns a Counter sized to the local Ollama's parallel
 // capacity. When OLLAMA_NUM_PARALLEL is unset or unparseable we fall
 // back to defaultMaxParallel, matching the daemon's own default.
+// OLLAMA_MAX_LOADED_MODELS and OLLAMA_KEEP_ALIVE are surfaced too;
+// both default to zero ("let ollama decide") when unset or unparseable,
+// which cloudbox must not interpret as "no models can load" / "unload
+// immediately."
 func NewCounter() *Counter {
-	max := defaultMaxParallel
-	if v := strings.TrimSpace(os.Getenv("OLLAMA_NUM_PARALLEL")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			max = n
-		}
+	return &Counter{
+		maxParallel:  envMaxParallel(),
+		numLoadedMax: envMaxLoadedModels(),
+		keepAliveS:   envKeepAliveSeconds(),
 	}
-	return &Counter{maxParallel: max}
 }
 
-// Snapshot returns the current load+limit pair. Safe to call from any
-// goroutine; the read is atomic for InFlight and immutable for
-// MaxParallel.
+// Snapshot returns the current load+limit snapshot. Safe to call from
+// any goroutine; the InFlight read is atomic and the rest are
+// immutable after construction. Queued is best-effort: Ollama doesn't
+// expose the real internal queue depth, so we approximate as the
+// overflow past max_parallel (zero when not overloaded).
+//
+// LoadedModels / Swapping are NOT filled here — those come from the
+// Watcher's /api/ps cache. Service.Snapshot composes the full v2
+// report from Counter + Watcher.
 func (c *Counter) Snapshot() CapacityReport {
-	return CapacityReport{
-		MaxParallel: c.maxParallel,
-		InFlight:    int(c.inFlight.Load()),
+	inFlight := int(c.inFlight.Load())
+	queued := 0
+	if inFlight > c.maxParallel {
+		queued = inFlight - c.maxParallel
 	}
+	return CapacityReport{
+		Version:      2,
+		MaxParallel:  c.maxParallel,
+		InFlight:     inFlight,
+		Queued:       queued,
+		NumLoadedMax: c.numLoadedMax,
+		KeepAliveS:   c.keepAliveS,
+	}
+}
+
+// envMaxParallel reads OLLAMA_NUM_PARALLEL. Falls back to
+// defaultMaxParallel on unset / unparseable / non-positive.
+func envMaxParallel() int {
+	v := strings.TrimSpace(os.Getenv("OLLAMA_NUM_PARALLEL"))
+	if v == "" {
+		return defaultMaxParallel
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return defaultMaxParallel
+	}
+	return n
+}
+
+// envMaxLoadedModels reads OLLAMA_MAX_LOADED_MODELS. Returns 0 on unset
+// or unparseable — cloudbox treats zero as "use ollama's default", not
+// "zero models allowed." Negative values are clamped to zero (ollama
+// doesn't use negatives here).
+func envMaxLoadedModels() int {
+	v := strings.TrimSpace(os.Getenv("OLLAMA_MAX_LOADED_MODELS"))
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// envKeepAliveSeconds reads OLLAMA_KEEP_ALIVE. Ollama accepts duration
+// strings ("5m", "1h30m"), bare seconds as integers, or the sentinel
+// "-1" / "forever" / "infinity" meaning "pin loaded forever." We
+// translate to seconds: positive duration ⇒ seconds, sentinels ⇒ -1,
+// unset/unparseable ⇒ 0 ("use ollama's default").
+func envKeepAliveSeconds() int {
+	v := strings.TrimSpace(os.Getenv("OLLAMA_KEEP_ALIVE"))
+	if v == "" {
+		return 0
+	}
+	switch strings.ToLower(v) {
+	case "-1", "forever", "infinity":
+		return -1
+	}
+	if d, err := time.ParseDuration(v); err == nil {
+		s := int(d.Seconds())
+		if s < 0 {
+			return -1
+		}
+		return s
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		if n < 0 {
+			return -1
+		}
+		return n
+	}
+	return 0
 }
 
 // Wrap returns next instrumented so calls whose request path consumes

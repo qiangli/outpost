@@ -41,13 +41,76 @@ type ModelInfo struct {
 }
 
 // CapacityReport is the live load+limit snapshot returned by
-// GET /app/ollama/_pool/capacity. MaxParallel is the upper bound the
-// daemon will serve concurrently (derived from OLLAMA_NUM_PARALLEL,
-// default 4). InFlight is the count of currently-streaming chat /
-// generate / embeddings requests as observed by the outpost proxy.
+// GET /app/ollama/_pool/capacity and embedded in every registry push.
+//
+// MaxParallel is the upper bound the daemon will serve concurrently
+// (derived from OLLAMA_NUM_PARALLEL, default 4). InFlight is the count
+// of currently-streaming chat / generate / embeddings requests as
+// observed by the outpost proxy. Both fields are present in v1 and v2.
+//
+// The remaining fields are v2-only — additive, so a v1 cloudbox parser
+// keeps decoding cleanly and a v1 outpost (omitting them) marshals to
+// the v1 shape thanks to omitempty / omitzero. The schema-discipline
+// rule is: never remove or repurpose an existing JSON key; new fields
+// only.
+//
+//   - Version is the schema marker. Absent / zero ⇒ v1. v2 outposts
+//     set it to 2 so a router can branch explicitly when needed.
+//   - Queued approximates the daemon's pending-but-not-yet-running
+//     queue depth as max(0, in_flight - max_parallel). Ollama doesn't
+//     expose the real OLLAMA_MAX_QUEUE depth, so this is the best
+//     signal until they do; cloudbox's scheduler uses it as a "are we
+//     already piling work on this host" hint, not as ground truth.
+//   - LoadedModels is the list of model names currently resident in
+//     VRAM/RAM as reported by /api/ps. Used by cloudbox to prefer
+//     hosts where a candidate model is already warm (load-thrash
+//     avoidance) and as a second source for the loaded-cache that
+//     llm_loaded.go maintains via its own /api/ps probes.
+//   - Swapping is true when /api/ps shows a model in a loading state
+//     or its expires_at is in the past. Cloudbox treats this host as
+//     having zero free slots for one capacity-cache window (~3 s) so
+//     the next routing decision doesn't pile a fresh request onto a
+//     daemon that's mid-swap.
+//   - NumLoadedMax mirrors OLLAMA_MAX_LOADED_MODELS so cloudbox can
+//     reason about per-host model packing. Zero means "use ollama's
+//     default" — cloudbox should not treat 0 as "no models can load."
+//   - KeepAliveS mirrors OLLAMA_KEEP_ALIVE in seconds. -1 means "pin
+//     forever" (matches ollama's sentinel). Zero means "use ollama's
+//     default" (5 m at time of writing).
+//   - InstanceID is reserved for the eventual multi-Ollama-per-host
+//     payload (see ollama-ha-plan.md Phase 0 Track A#2). Today every
+//     outpost reports one capacity; this field is empty. Holding the
+//     name now keeps a future split from competing for it.
 type CapacityReport struct {
-	MaxParallel int `json:"max_parallel"`
-	InFlight    int `json:"in_flight"`
+	Version      int      `json:"version,omitempty"`
+	MaxParallel  int      `json:"max_parallel"`
+	InFlight     int      `json:"in_flight"`
+	Queued       int      `json:"queued,omitempty"`
+	LoadedModels []string `json:"loaded_models,omitempty"`
+	Swapping     bool     `json:"swapping,omitempty"`
+	NumLoadedMax int      `json:"num_loaded_max,omitempty"`
+	KeepAliveS   int      `json:"keep_alive_s,omitempty"`
+	InstanceID   string   `json:"instance_id,omitempty"`
+}
+
+// psResponse is the subset of GET /api/ps the watcher decodes. Ollama
+// returns one entry per loaded model with name, digest, size, and an
+// expires_at timestamp. State strings vary across versions — we accept
+// "loading" / "pulling" as in-progress signals — and a zero
+// expires_at or one in the past flags a model that's about to (or
+// just did) unload.
+type psResponse struct {
+	Models []psModel `json:"models"`
+}
+
+type psModel struct {
+	Name      string    `json:"name"`
+	Model     string    `json:"model,omitempty"`
+	Digest    string    `json:"digest,omitempty"`
+	Size      int64     `json:"size,omitempty"`
+	SizeVRAM  int64     `json:"size_vram,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	State     string    `json:"state,omitempty"`
 }
 
 // RegistryPushPayload is what the watcher POSTs to cloudbox's

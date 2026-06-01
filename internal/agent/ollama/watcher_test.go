@@ -69,17 +69,43 @@ func (cr *capturingRegistry) lastPayload() (RegistryPushPayload, bool) {
 	return cr.payloads[len(cr.payloads)-1], true
 }
 
+// stubPS serves the same body on every /api/ps call. nil means "404
+// here," which exercises the watcher's graceful-degrade path.
+type stubPS struct {
+	body  string
+	calls atomic.Int32
+}
+
+func (s *stubPS) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+	s.calls.Add(1)
+	if s == nil || s.body == "" {
+		http.NotFound(w, nil)
+		return
+	}
+	_, _ = io.WriteString(w, s.body)
+}
+
 // newTestWatcher wires a Watcher to two httptest servers — one for the
 // Ollama daemon side, one for the cloudbox registry side. Short poll
-// intervals so tests don't drag.
-func newTestWatcher(t *testing.T, tags *stubTags, reg *capturingRegistry) (*Watcher, *httptest.Server, *httptest.Server) {
+// intervals so tests don't drag. ps may be nil to leave /api/ps
+// returning 404 (which exercises the watcher's graceful-degrade path
+// — the cache stays stale rather than being wiped).
+func newTestWatcher(t *testing.T, tags *stubTags, reg *capturingRegistry, ps *stubPS) (*Watcher, *httptest.Server, *httptest.Server) {
 	t.Helper()
 	ollamaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/tags" {
-			http.NotFound(w, r)
+		switch r.URL.Path {
+		case "/api/tags":
+			tags.ServeHTTP(w, r)
+			return
+		case "/api/ps":
+			if ps == nil {
+				http.NotFound(w, r)
+				return
+			}
+			ps.ServeHTTP(w, r)
 			return
 		}
-		tags.ServeHTTP(w, r)
+		http.NotFound(w, r)
 	}))
 	t.Cleanup(ollamaSrv.Close)
 
@@ -125,7 +151,7 @@ func TestWatcher_InitialPushAndChangeDetection(t *testing.T) {
 		`{"models":[{"name":"llama3.2:1b","digest":"d1","size":100,"details":{"family":"llama","parameter_size":"1B","quantization_level":"Q4"}},{"name":"mistral:7b","digest":"d2","size":200,"details":{"family":"mistral","parameter_size":"7B","quantization_level":"Q5"}}]}`,
 	}}
 	reg := &capturingRegistry{}
-	w, _, _ := newTestWatcher(t, tags, reg)
+	w, _, _ := newTestWatcher(t, tags, reg, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -175,7 +201,7 @@ func TestWatcher_SuppressesPushWhenUnchanged(t *testing.T) {
 	body := `{"models":[{"name":"a","digest":"d"}]}`
 	tags := &stubTags{bodies: []string{body, body, body, body, body}}
 	reg := &capturingRegistry{}
-	w, _, _ := newTestWatcher(t, tags, reg)
+	w, _, _ := newTestWatcher(t, tags, reg, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -233,7 +259,7 @@ func TestWatcher_AuthRevoked_Stops(t *testing.T) {
 	tags := &stubTags{bodies: []string{`{"models":[]}`}}
 	reg := &capturingRegistry{}
 	reg.status.Store(int32(http.StatusUnauthorized))
-	w, _, _ := newTestWatcher(t, tags, reg)
+	w, _, _ := newTestWatcher(t, tags, reg, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
@@ -249,7 +275,7 @@ func TestWatcher_AuthRevoked_Stops(t *testing.T) {
 func TestWatcher_NoAccessTokenIsNoOp(t *testing.T) {
 	tags := &stubTags{bodies: []string{`{"models":[]}`}}
 	reg := &capturingRegistry{}
-	w, _, _ := newTestWatcher(t, tags, reg)
+	w, _, _ := newTestWatcher(t, tags, reg, nil)
 	w.cfg.AccessToken = ""
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -266,7 +292,7 @@ func TestWatcher_BackoffOnFailure(t *testing.T) {
 	tags := &stubTags{bodies: []string{`{"models":[]}`}}
 	reg := &capturingRegistry{}
 	reg.status.Store(int32(http.StatusInternalServerError))
-	w, _, _ := newTestWatcher(t, tags, reg)
+	w, _, _ := newTestWatcher(t, tags, reg, nil)
 
 	// Very short ceiling so the test doesn't drag.
 	w.cfg.PollInterval = 5 * time.Millisecond
@@ -288,7 +314,7 @@ func TestWatcher_BackoffOnFailure(t *testing.T) {
 func TestWatcher_Status_TracksPushAndError(t *testing.T) {
 	tags := &stubTags{bodies: []string{`{"models":[{"name":"a"}]}`}}
 	reg := &capturingRegistry{}
-	w, _, _ := newTestWatcher(t, tags, reg)
+	w, _, _ := newTestWatcher(t, tags, reg, nil)
 
 	// Pre-Run: Status should be zero-valued (not running).
 	pre := w.Status()
@@ -325,7 +351,7 @@ func TestWatcher_Status_RecordsErrorOnFailure(t *testing.T) {
 	tags := &stubTags{bodies: []string{`{"models":[]}`}}
 	reg := &capturingRegistry{}
 	reg.status.Store(int32(http.StatusInternalServerError))
-	w, _, _ := newTestWatcher(t, tags, reg)
+	w, _, _ := newTestWatcher(t, tags, reg, nil)
 	w.cfg.PollInterval = 5 * time.Millisecond
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -452,7 +478,7 @@ func TestWatcher_FetchModels_ShowFailureIsCachedAsZero(t *testing.T) {
 func TestWatcher_PushIncludesCapacity(t *testing.T) {
 	tags := &stubTags{bodies: []string{`{"models":[]}`}}
 	reg := &capturingRegistry{}
-	w, _, _ := newTestWatcher(t, tags, reg)
+	w, _, _ := newTestWatcher(t, tags, reg, nil)
 
 	cap := NewCounter()
 	w.cfg.Capacity = cap
@@ -467,5 +493,128 @@ func TestWatcher_PushIncludesCapacity(t *testing.T) {
 	}
 	if last.Capacity.MaxParallel != defaultMaxParallel {
 		t.Errorf("Capacity.MaxParallel=%d, want %d", last.Capacity.MaxParallel, defaultMaxParallel)
+	}
+}
+
+func TestWatcher_LoadedSnapshot_FromPS(t *testing.T) {
+	tags := &stubTags{bodies: []string{`{"models":[]}`}}
+	reg := &capturingRegistry{}
+	ps := &stubPS{body: `{"models":[
+		{"name":"qwen2.5-coder:7b","digest":"d1"},
+		{"name":"llama3.2:3b","digest":"d2"}
+	]}`}
+	w, _, _ := newTestWatcher(t, tags, reg, ps)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	_ = w.Run(ctx)
+
+	if ps.calls.Load() == 0 {
+		t.Fatal("/api/ps was never polled")
+	}
+	models, swapping := w.LoadedSnapshot()
+	if swapping {
+		t.Errorf("Swapping=true, want false (no state/expires_at hints in fixture)")
+	}
+	want := []string{"llama3.2:3b", "qwen2.5-coder:7b"} // sorted
+	if len(models) != len(want) {
+		t.Fatalf("LoadedSnapshot models=%v, want %v", models, want)
+	}
+	for i, m := range models {
+		if m != want[i] {
+			t.Errorf("models[%d]=%q, want %q", i, m, want[i])
+		}
+	}
+}
+
+func TestWatcher_LoadedSnapshot_DetectsSwapping(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "state-loading",
+			body: `{"models":[{"name":"a","digest":"d","state":"loading"}]}`,
+		},
+		{
+			name: "state-pulling",
+			body: `{"models":[{"name":"a","digest":"d","state":"pulling"}]}`,
+		},
+		{
+			name: "expires-at-in-past",
+			body: `{"models":[{"name":"a","digest":"d","expires_at":"2000-01-01T00:00:00Z"}]}`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tags := &stubTags{bodies: []string{`{"models":[]}`}}
+			reg := &capturingRegistry{}
+			ps := &stubPS{body: tt.body}
+			w, _, _ := newTestWatcher(t, tags, reg, ps)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			_ = w.Run(ctx)
+
+			_, swapping := w.LoadedSnapshot()
+			if !swapping {
+				t.Errorf("Swapping=false, want true (fixture: %s)", tt.name)
+			}
+		})
+	}
+}
+
+func TestWatcher_LoadedSnapshot_PSFailureLeavesCacheStale(t *testing.T) {
+	tags := &stubTags{bodies: []string{`{"models":[]}`}}
+	reg := &capturingRegistry{}
+	// nil ps ⇒ /api/ps returns 404. Watcher should not panic, should
+	// not wipe its cache, should still push tags normally.
+	w, _, _ := newTestWatcher(t, tags, reg, nil)
+
+	// Pre-seed the cache so we can prove a failed probe does NOT clear it.
+	w.setLoaded([]string{"stale-model"}, false)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_ = w.Run(ctx)
+
+	models, swapping := w.LoadedSnapshot()
+	if len(models) != 1 || models[0] != "stale-model" || swapping {
+		t.Errorf("after failed /api/ps probe: models=%v swapping=%v, want [stale-model] false (stale cache preserved)", models, swapping)
+	}
+	// Tags push should still have happened.
+	if reg.calls.Load() == 0 {
+		t.Error("registry push never fired despite /api/ps 404 — tick must not abort on /api/ps failure")
+	}
+}
+
+func TestWatcher_PushIncludesLoadedAndSwapping_WhenServiceIsCapacitySource(t *testing.T) {
+	tags := &stubTags{bodies: []string{`{"models":[]}`}}
+	reg := &capturingRegistry{}
+	ps := &stubPS{body: `{"models":[{"name":"qwen2.5:0.5b","digest":"d","state":"loading"}]}`}
+	w, _, _ := newTestWatcher(t, tags, reg, ps)
+
+	// Wire the service as the capacity source — this is how main.go
+	// does it. Service.Snapshot composes counter + watcher loaded
+	// cache so the push payload carries the v2 fields.
+	svc := NewService(NewCounter())
+	svc.SetWatcher(w)
+	w.cfg.Capacity = svc
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	_ = w.Run(ctx)
+
+	last, ok := reg.lastPayload()
+	if !ok {
+		t.Fatal("no payload")
+	}
+	if last.Capacity.Version != 2 {
+		t.Errorf("Capacity.Version=%d, want 2", last.Capacity.Version)
+	}
+	if !last.Capacity.Swapping {
+		t.Error("Capacity.Swapping=false, want true (fixture state=loading)")
+	}
+	if len(last.Capacity.LoadedModels) != 1 || last.Capacity.LoadedModels[0] != "qwen2.5:0.5b" {
+		t.Errorf("Capacity.LoadedModels=%v, want [qwen2.5:0.5b]", last.Capacity.LoadedModels)
 	}
 }

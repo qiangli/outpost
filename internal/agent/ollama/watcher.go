@@ -118,6 +118,37 @@ type Watcher struct {
 	// models ever loaded on this host (tiny in practice).
 	detailsMu    sync.Mutex
 	detailsCache map[string]modelDetails
+
+	// loadedMu protects the cached /api/ps result. Refreshed on every
+	// tick; consumed by LoadedSnapshot for the capacity probe and the
+	// registry push.
+	loadedMu     sync.Mutex
+	loadedModels []string
+	swapping     bool
+}
+
+// LoadedSnapshot returns the watcher's most recent view of which
+// models are loaded on the local Ollama daemon, plus a hint about
+// whether a model swap is in progress. Safe to call from any
+// goroutine. Returns empty/false when the watcher hasn't yet completed
+// its first /api/ps probe — callers should treat that as "we don't
+// know yet," not "no models loaded."
+func (w *Watcher) LoadedSnapshot() (models []string, swapping bool) {
+	w.loadedMu.Lock()
+	defer w.loadedMu.Unlock()
+	if len(w.loadedModels) == 0 {
+		return nil, w.swapping
+	}
+	out := make([]string, len(w.loadedModels))
+	copy(out, w.loadedModels)
+	return out, w.swapping
+}
+
+func (w *Watcher) setLoaded(models []string, swapping bool) {
+	w.loadedMu.Lock()
+	w.loadedModels = models
+	w.swapping = swapping
+	w.loadedMu.Unlock()
 }
 
 // modelDetails is the per-digest enriched info populated from /api/show.
@@ -267,6 +298,12 @@ func (w *Watcher) bumpBackoff(cur time.Duration) time.Duration {
 // tick runs one fetch + diff + maybe-push cycle. Updates lastSnapshot
 // and lastPushAt by reference so the outer loop can drive cadence.
 //
+// /api/ps is polled best-effort on every tick — its result feeds the
+// LoadedSnapshot cache that Service.CapacityHandler reads. A failing
+// /api/ps does not abort the tick: the cache is left as-is (stale but
+// not empty), and the push still goes through using whatever loaded
+// info Service composes from Counter alone.
+//
 // Push happens when:
 //   - the model set changed since lastSnapshot, OR
 //   - lastPushAt is older than HeartbeatInterval (or zero, on first run).
@@ -275,6 +312,11 @@ func (w *Watcher) tick(ctx context.Context, lastSnapshot *[]ModelInfo, lastPushA
 	if err != nil {
 		return fmt.Errorf("fetch tags: %w", err)
 	}
+	// Refresh /api/ps cache before the push so the embedded
+	// CapacityReport carries the freshest loaded/swapping info. Failure
+	// is logged at debug level and ignored — the rest of the tick must
+	// still run.
+	w.refreshLoaded(ctx)
 	changed := !modelsEqual(*lastSnapshot, models)
 	heartbeatDue := time.Since(*lastPushAt) >= w.cfg.HeartbeatInterval
 	if !changed && !heartbeatDue {
@@ -292,6 +334,64 @@ func (w *Watcher) tick(ctx context.Context, lastSnapshot *[]ModelInfo, lastPushA
 		w.cfg.Logger.Debug("ollama watcher: pushed heartbeat", "models", len(models))
 	}
 	return nil
+}
+
+// refreshLoaded GETs /api/ps and updates the loadedModels / swapping
+// cache. Best-effort: on any failure (404, decode error, transport)
+// the cache is left untouched so transient blips don't flip cloudbox
+// into thinking models unloaded.
+func (w *Watcher) refreshLoaded(ctx context.Context) {
+	pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(pctx, http.MethodGet, w.cfg.OllamaURL+"/api/ps", nil)
+	if err != nil {
+		return
+	}
+	resp, err := w.cfg.HTTPClient.Do(req)
+	if err != nil {
+		w.cfg.Logger.Debug("ollama watcher: /api/ps probe failed", "err", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		// 404 on /api/ps means the daemon is older than 0.1.x or the
+		// probe is being served by a non-ollama replacement; don't
+		// alarm, just leave the cache stale.
+		return
+	}
+	var pr psResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&pr); err != nil {
+		w.cfg.Logger.Debug("ollama watcher: /api/ps decode failed", "err", err)
+		return
+	}
+	now := time.Now()
+	names := make([]string, 0, len(pr.Models))
+	swapping := false
+	for _, m := range pr.Models {
+		name := m.Name
+		if name == "" {
+			name = m.Model
+		}
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+		// "loading" / "pulling" are in-progress signals; either one
+		// means the daemon is mid-swap and cloudbox should hold off
+		// new dispatches.
+		switch strings.ToLower(m.State) {
+		case "loading", "pulling":
+			swapping = true
+		}
+		// A non-zero expires_at in the past means this slot has just
+		// been (or is being) evicted by LRU/keep-alive. Treat as a
+		// swap-in-progress hint too.
+		if !m.ExpiresAt.IsZero() && m.ExpiresAt.Before(now) {
+			swapping = true
+		}
+	}
+	sort.Strings(names)
+	w.setLoaded(names, swapping)
 }
 
 // fetchModels GETs the local Ollama daemon's /api/tags, then enriches

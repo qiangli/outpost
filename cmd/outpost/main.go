@@ -823,13 +823,20 @@ func startCmd() *cobra.Command {
 					if ollamaURL == "" {
 						ollamaURL = "http://127.0.0.1:11434"
 					}
+					// Capacity source is the Service, not the Counter: Service
+					// composes the v2 CapacityReport (counter snapshot + the
+					// watcher's own /api/ps cache for loaded_models/swapping)
+					// so the registry push and the /_pool/capacity probe
+					// emit the same shape. Service.SetWatcher below closes
+					// the loop; Snapshot tolerates a nil watcher and just
+					// returns the counter snapshot until then.
 					w, werr := ollama.New(ollama.Config{
 						AgentName:   cfg.AgentName,
 						Version:     agent.ReadBuildInfo().Short(),
 						OllamaURL:   ollamaURL,
 						CloudboxURL: cbBase,
 						AccessToken: fc.AccessToken,
-						Capacity:    ollamaSvc.Counter(),
+						Capacity:    ollamaSvc,
 					})
 					if werr != nil {
 						slog.Warn("ollama pool: watcher init failed", "err", werr)

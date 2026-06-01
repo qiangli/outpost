@@ -43,11 +43,27 @@ func (s *Service) SetWatcher(w *Watcher) { s.watcher = w }
 
 // Status returns the combined diagnostic snapshot.
 func (s *Service) Status() PoolStatus {
-	out := PoolStatus{Capacity: s.counter.Snapshot()}
+	out := PoolStatus{Capacity: s.Snapshot()}
 	if s.watcher != nil {
 		out.Watcher = s.watcher.Status()
 	}
 	return out
+}
+
+// Snapshot composes the full v2 CapacityReport by overlaying the
+// Watcher's /api/ps cache (loaded models + swapping signal) on the
+// Counter's counter-known fields. Implements CapacitySource so the
+// Watcher's push payload carries the same enriched report cloudbox
+// gets from the per-routing /_pool/capacity probe.
+//
+// Watcher may be nil when the pool is off / the outpost is unpaired;
+// in that case we return just the counter snapshot (no loaded info).
+func (s *Service) Snapshot() CapacityReport {
+	rep := s.counter.Snapshot()
+	if s.watcher != nil {
+		rep.LoadedModels, rep.Swapping = s.watcher.LoadedSnapshot()
+	}
+	return rep
 }
 
 // WrapProxy is the middleware factory passed to
@@ -59,17 +75,17 @@ func (s *Service) WrapProxy(next http.Handler) http.Handler {
 }
 
 // CapacityHandler returns the http.Handler bound at
-// /app/ollama/_pool/capacity. It returns the live CapacityReport as
-// JSON. No body input; the snapshot is read directly from the
-// counter.
+// /app/ollama/_pool/capacity. It returns the live v2 CapacityReport
+// as JSON. No body input; Snapshot composes from the counter's atomic
+// load plus the watcher's cached /api/ps result.
 //
 // The endpoint must answer quickly — cloudbox's scheduler may probe
-// it on every request — so we encode directly into the response
-// without holding any locks beyond the atomic load inside
-// Counter.Snapshot.
+// it on every request — so we encode directly into the response. The
+// atomic InFlight load and the loadedMu critical section are both
+// cheap.
 func (s *Service) CapacityHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(s.counter.Snapshot())
+		_ = json.NewEncoder(w).Encode(s.Snapshot())
 	})
 }
