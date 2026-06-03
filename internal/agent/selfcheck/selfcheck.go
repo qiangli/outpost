@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -170,6 +171,21 @@ func (s *Server) runOnce() {
 				r.Status = StatusFail
 				r.Issues = append(r.Issues, "admin session key regen failed: "+err.Error())
 			}
+		}
+
+		// 5. Per-app sso_secret must be non-empty whenever an app
+		//    has trust_cloud_identity:true. Skipping the HMAC
+		//    leaves Remote-User LAN-spoofable. Boot ensures this in
+		//    main.go; selfcheck catches mid-life drift (operator
+		//    hand-edited the config, secret rotated out, etc.).
+		if minted, err := conf.EnsureAppSSOSecrets(s.cfgPath, fc); err == nil && len(minted) > 0 {
+			r.Repairs = append(r.Repairs, "auto-generated sso_secret for "+strings.Join(minted, ",")+" (paste into upstream config)")
+			if r.Status == StatusOK {
+				r.Status = StatusWarn
+			}
+		} else if err != nil {
+			r.Status = StatusFail
+			r.Issues = append(r.Issues, "sso_secret regen failed: "+err.Error())
 		}
 	}
 

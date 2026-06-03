@@ -142,3 +142,56 @@ func TestOllamaPoolOn(t *testing.T) {
 		})
 	}
 }
+
+// TestEnsureAppSSOSecrets — boot-time safety net. Apps with
+// TrustCloudIdentity:true but no SSOSecret get a freshly minted
+// 32-byte hex secret; persisted to disk; other apps untouched.
+func TestEnsureAppSSOSecrets(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "agent.json")
+	fc := &FileConfig{
+		Apps: []AppConfig{
+			{Name: "trusted-no-secret", TrustCloudIdentity: true},
+			{Name: "trusted-has-secret", TrustCloudIdentity: true, SSOSecret: "existing"},
+			{Name: "untrusted", TrustCloudIdentity: false},
+		},
+	}
+	if err := SaveFile(tmp, fc); err != nil {
+		t.Fatal(err)
+	}
+
+	minted, err := EnsureAppSSOSecrets(tmp, fc)
+	if err != nil {
+		t.Fatalf("EnsureAppSSOSecrets: %v", err)
+	}
+	if len(minted) != 1 || minted[0] != "trusted-no-secret" {
+		t.Errorf("minted = %v, want [trusted-no-secret]", minted)
+	}
+	if got := fc.Apps[0].SSOSecret; len(got) != 64 {
+		t.Errorf("trusted-no-secret SSOSecret len = %d, want 64 (32 hex bytes)", len(got))
+	}
+	if fc.Apps[1].SSOSecret != "existing" {
+		t.Errorf("trusted-has-secret SSOSecret = %q, want unchanged", fc.Apps[1].SSOSecret)
+	}
+	if fc.Apps[2].SSOSecret != "" {
+		t.Errorf("untrusted SSOSecret = %q, want empty (TrustCloudIdentity off)", fc.Apps[2].SSOSecret)
+	}
+
+	// Persisted: round-trip from disk should see the new secret.
+	loaded, err := LoadFile(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Apps[0].SSOSecret != fc.Apps[0].SSOSecret {
+		t.Errorf("SSOSecret not persisted; disk=%q in-mem=%q",
+			loaded.Apps[0].SSOSecret, fc.Apps[0].SSOSecret)
+	}
+
+	// Second call is a no-op (idempotent).
+	minted2, err := EnsureAppSSOSecrets(tmp, fc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(minted2) != 0 {
+		t.Errorf("second call minted = %v, want []", minted2)
+	}
+}

@@ -419,6 +419,21 @@ func startCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("admin session key: %w", err)
 			}
+			// Auto-generate sso_secret for any app that has
+			// TrustCloudIdentity:true but no secret. Skipping the HMAC
+			// because the secret is empty is a LAN-spoof exposure:
+			// Remote-User flows to the upstream without an integrity
+			// stamp, and any LAN process that can reach the upstream
+			// port can forge it. The admin UI auto-generates the
+			// secret when the operator flips the toggle on; this is
+			// the boot-time safety net for hand-edited configs and
+			// older outpost versions.
+			if minted, err := conf.EnsureAppSSOSecrets(cfgPath, fc); err != nil {
+				return fmt.Errorf("app sso secrets: %w", err)
+			} else if len(minted) > 0 {
+				slog.Warn("auto-generated sso_secret for trust_cloud_identity apps — paste the new value into each upstream app's config via `outpost apps secret <name>`",
+					"apps", strings.Join(minted, ","))
+			}
 			// Outbound manager: derives the cloudbox HTTP base URL from
 			// the pairing. ServerAddr/ServerPort/Protocol describe how
 			// the matrix tunnel dials cloudbox; for plain HTTP API calls

@@ -1165,6 +1165,48 @@ func EnsureMCPBearerToken(path string, fc *FileConfig) (string, error) {
 	return fc.MCPBearerToken, nil
 }
 
+// EnsureAppSSOSecrets walks fc.Apps and generates a 32-byte hex
+// SSOSecret for any app that has TrustCloudIdentity set but no
+// secret. Returns the list of app names that received a freshly
+// minted secret (so callers can log them — the operator usually
+// wants to paste the new value into the upstream app's config).
+// Persists via SaveFile when anything changes and path != "".
+//
+// The admin UI already auto-generates the secret alongside
+// ProvisioningToken when the operator flips TrustCloudIdentity on;
+// this function is the boot-time safety net for configs written by
+// hand, by older outpost versions, or by automation that set
+// TrustCloudIdentity without also seeding the secret. Skipping the
+// HMAC because the secret is empty is a real LAN-spoof exposure
+// (dragon's `kg` tile was the trigger for adding this).
+func EnsureAppSSOSecrets(path string, fc *FileConfig) ([]string, error) {
+	if fc == nil {
+		return nil, fmt.Errorf("nil FileConfig")
+	}
+	var minted []string
+	for i := range fc.Apps {
+		app := &fc.Apps[i]
+		if !app.TrustCloudIdentity {
+			continue
+		}
+		if strings.TrimSpace(app.SSOSecret) != "" {
+			continue
+		}
+		var b [32]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return minted, fmt.Errorf("generate sso secret for %q: %w", app.Name, err)
+		}
+		app.SSOSecret = hex.EncodeToString(b[:])
+		minted = append(minted, app.Name)
+	}
+	if len(minted) > 0 && path != "" {
+		if err := SaveFile(path, fc); err != nil {
+			return minted, fmt.Errorf("save sso secrets: %w", err)
+		}
+	}
+	return minted, nil
+}
+
 // RotateMCPBearerToken forces a fresh token regardless of the current
 // value, persists it, and returns the new value. The old token stops
 // authenticating immediately. Callers (admin UI / CLI / MCP itself)
