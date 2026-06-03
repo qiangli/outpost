@@ -716,10 +716,10 @@ func TestPeerDial_BuildURL(t *testing.T) {
 	cases := []struct {
 		name, base, proto, peer, want string
 	}{
-		{"https-base", "https://ai.dhnt.io", "wss", "novidesign", "wss://ai.dhnt.io/h/novidesign/ssh"},
-		{"http-base", "http://localhost:18080", "ws", "peerA", "ws://localhost:18080/h/peerA/ssh"},
-		{"infer-wss-from-base", "https://example", "", "peerB", "wss://example/h/peerB/ssh"},
-		{"trim-trailing-slash", "https://ai.dhnt.io/", "wss", "x", "wss://ai.dhnt.io/h/x/ssh"},
+		{"https-base", "https://ai.dhnt.io", "wss", "novidesign", "wss://ai.dhnt.io/matrix/h/novidesign/ssh"},
+		{"http-base", "http://localhost:18080", "ws", "peerA", "ws://localhost:18080/matrix/h/peerA/ssh"},
+		{"infer-wss-from-base", "https://example", "", "peerB", "wss://example/matrix/h/peerB/ssh"},
+		{"trim-trailing-slash", "https://ai.dhnt.io/", "wss", "x", "wss://ai.dhnt.io/matrix/h/x/ssh"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

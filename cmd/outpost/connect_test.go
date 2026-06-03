@@ -61,7 +61,7 @@ func TestKeepAlivePingsAndUpdatesCookie(t *testing.T) {
 		http.SetCookie(w, &http.Cookie{
 			Name:  "matrix_elev",
 			Value: "refreshed-" + strings.Repeat("v", int(n)),
-			Path:  "/h/" + host + "/ssh",
+			Path:  "/matrix/h/" + host + "/ssh",
 		})
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -530,7 +530,7 @@ func TestKeepAlive_SelfHealReElevates(t *testing.T) {
 			http.SetCookie(w, &http.Cookie{
 				Name:  "matrix_elev",
 				Value: "rotated-cookie",
-				Path:  "/h/" + host + "/ssh",
+				Path:  "/matrix/h/" + host + "/ssh",
 			})
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{}`))

@@ -7,11 +7,26 @@ import (
 	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
-// reservedNames are the route prefixes the admin UI / MCP server own.
-// An app or outbound mount with one of these names would shadow either
-// the admin REST API, the SPA assets, the health probe, or the MCP
-// server — all of which sit on the same loopback listener.
+// reservedNames are the route prefixes the admin UI / MCP server own
+// PLUS the cloudbox-side top-level namespace owners. An app or
+// outbound mount with one of these names would either:
+//
+//   - Shadow a route on outpost's own loopback listener (admin REST,
+//     SPA assets, health probe, MCP server, per-app provisioning
+//     relay). That breaks the outpost host immediately.
+//
+//   - Shadow a cloudbox-side top-level namespace. That doesn't break
+//     anything today — outpost-side apps proxy under /matrix/h/<host>
+//     /app/<name>/, so the name is sandboxed at cloudbox-edge. But it
+//     blocks future moves like vanity domain handling (`/<name>/`
+//     mapped to an app via APP_DOMAINS) and pollutes the operator's
+//     mental model. Cheap to refuse now while the field is small.
+//
+// The cloudbox-side blacklist mirrors hub/internal/reserved/Names. Keep
+// the two in lockstep — if you add a top-level cloudbox prefix there,
+// add the segment here too (and vice-versa).
 var reservedNames = map[string]struct{}{
+	// Outpost-loopback reservations.
 	"api":        {},
 	"static":     {},
 	"healthz":    {},
@@ -19,6 +34,20 @@ var reservedNames = map[string]struct{}{
 	"app":        {},
 	"mcp":        {},
 	"_periscope": {},
+	// Cloudbox top-level namespace mirror.
+	"cloudbox":     {},
+	"periscope":    {},
+	"matrix":       {},
+	"cloud":        {},
+	"v1":           {},
+	"health":       {},
+	"version":      {},
+	"metrics":      {},
+	"config":       {},
+	"overlay":      {},
+	"embed.js":     {},
+	"favicon.ico":  {},
+	".well-known":  {},
 }
 
 func isReserved(name string) bool {

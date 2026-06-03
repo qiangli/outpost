@@ -635,7 +635,7 @@ func buildElevateURL(server string, port int, protocol, host string) (string, er
 	if u.Port() == "" && port > 0 {
 		u.Host = u.Hostname() + ":" + strconv.Itoa(port)
 	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/h/" + url.PathEscape(host) + "/elev/ssh"
+	u.Path = strings.TrimRight(u.Path, "/") + "/matrix/h/" + url.PathEscape(host) + "/elev/ssh"
 	return u.String(), nil
 }
 

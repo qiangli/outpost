@@ -29,11 +29,11 @@ func TestBuildWSURL(t *testing.T) {
 		host   string
 		want   string
 	}{
-		{"bare host + port via field, ws", "example.com", 18080, "tcp", "myhost", "ws://example.com:18080/h/myhost/ssh"},
-		{"bare host, no port, wss", "ai.dhnt.io", 0, "wss", "myhost", "wss://ai.dhnt.io/h/myhost/ssh"},
-		{"https:// URL forces wss", "https://ai.dhnt.io", 0, "tcp", "myhost", "wss://ai.dhnt.io/h/myhost/ssh"},
-		{"hostport in server, field-port ignored", "example.com:9090", 18080, "tcp", "myhost", "ws://example.com:9090/h/myhost/ssh"},
-		{"path-encoded host", "example.com", 0, "ws", "host with space", "ws://example.com/h/host%20with%20space/ssh"},
+		{"bare host + port via field, ws", "example.com", 18080, "tcp", "myhost", "ws://example.com:18080/matrix/h/myhost/ssh"},
+		{"bare host, no port, wss", "ai.dhnt.io", 0, "wss", "myhost", "wss://ai.dhnt.io/matrix/h/myhost/ssh"},
+		{"https:// URL forces wss", "https://ai.dhnt.io", 0, "tcp", "myhost", "wss://ai.dhnt.io/matrix/h/myhost/ssh"},
+		{"hostport in server, field-port ignored", "example.com:9090", 18080, "tcp", "myhost", "ws://example.com:9090/matrix/h/myhost/ssh"},
+		{"path-encoded host", "example.com", 0, "ws", "host with space", "ws://example.com/matrix/h/host%20with%20space/ssh"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -326,13 +326,14 @@ func (m *OutboundManager) Connect(path, password string) error {
 	ctx, cancelReq := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelReq()
 	// Elevate URL depends on what we're targeting:
-	//   - http/tcp scheme → per-(host, app):     /h/<host>/elev/app/<name>
-	//   - ssh scheme      → per-(host, builtin): /h/<host>/elev/ssh
+	//   - http/tcp scheme → per-(host, app):     /matrix/h/<host>/elev/app/<name>
+	//   - ssh scheme      → per-(host, builtin): /matrix/h/<host>/elev/ssh
 	// Cloudbox uses `/elev/` as a literal segment (not a suffix on the
 	// data URL) so the per-(host, app) elevate endpoint doesn't collide
-	// with the gin catch-all wildcard for HostProxy at /h/:host/app/:name.
-	// The host-wide /h/<host>/elevate form returns 410.
-	elevateURL := m.serverURL + "/h/" + url.PathEscape(cfg.Host) + "/elev"
+	// with the gin catch-all wildcard for HostProxy at
+	// /matrix/h/:host/app/:name. The host-wide /matrix/h/<host>/elevate
+	// form returns 410.
+	elevateURL := m.serverURL + "/matrix/h/" + url.PathEscape(cfg.Host) + "/elev"
 	if cfg.BuiltinSSH() {
 		elevateURL += "/ssh"
 	} else {
@@ -547,7 +548,7 @@ func (m *OutboundManager) Disconnect(path string) {
 // cookie's Path or cloudbox won't see the cookie: per-(host, app) for
 // http/tcp scheme, host-level for ssh scheme.
 func (m *OutboundManager) pinger(ctx context.Context, path string, cfg conf.OutboundConfig) {
-	pingURL := m.serverURL + "/h/" + url.PathEscape(cfg.Host) + "/elev"
+	pingURL := m.serverURL + "/matrix/h/" + url.PathEscape(cfg.Host) + "/elev"
 	if cfg.BuiltinSSH() {
 		pingURL += "/ssh/ping"
 	} else {
@@ -615,7 +616,7 @@ func (m *OutboundManager) ProxyTo(c *gin.Context, path, rest string) {
 		rest = "/"
 	}
 	upstream := m.serverURL +
-		"/h/" + url.PathEscape(cfg.Host) +
+		"/matrix/h/" + url.PathEscape(cfg.Host) +
 		"/app/" + url.PathEscape(cfg.Name) +
 		rest
 	if c.Request.URL.RawQuery != "" {
@@ -713,7 +714,7 @@ func (m *OutboundManager) bridgeTCP(ctx context.Context, path string, cfg conf.O
 	}
 	cookie := state.elevCookie
 
-	wsURL := strings.Replace(m.serverURL, "http", "ws", 1) + "/h/" + url.PathEscape(cfg.Host)
+	wsURL := strings.Replace(m.serverURL, "http", "ws", 1) + "/matrix/h/" + url.PathEscape(cfg.Host)
 	if cfg.BuiltinSSH() {
 		wsURL += "/ssh"
 	} else {

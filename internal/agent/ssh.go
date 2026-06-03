@@ -605,7 +605,7 @@ func buildPeerSSHWSURL(cloudboxBase, protocol, peer string) (string, error) {
 		}
 	}
 	u.Scheme = scheme
-	u.Path = strings.TrimRight(u.Path, "/") + "/h/" + url.PathEscape(peer) + "/ssh"
+	u.Path = strings.TrimRight(u.Path, "/") + "/matrix/h/" + url.PathEscape(peer) + "/ssh"
 	return u.String(), nil
 }
 

@@ -175,6 +175,6 @@ func BuildWSURL(server string, port int, protocol, host string) (string, error) 
 	// (e.g. "host space" -> "host%2520space"). We do reject hostile bytes
 	// upstream (cloudbox validates agent names), so leaving the encoding
 	// to net/url is the right shape.
-	u.Path = strings.TrimRight(u.Path, "/") + "/h/" + host + "/ssh"
+	u.Path = strings.TrimRight(u.Path, "/") + "/matrix/h/" + host + "/ssh"
 	return u.String(), nil
 }

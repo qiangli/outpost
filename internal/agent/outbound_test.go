@@ -68,14 +68,14 @@ type fakeCloud struct {
 func newFakeCloud(elevToken string) (*fakeCloud, *httptest.Server) {
 	fc := &fakeCloud{elevToken: elevToken, pingAlwaysOK: true}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/h/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/matrix/h/", func(w http.ResponseWriter, r *http.Request) {
 		// Cloudbox routes after the /elev/ refactor:
 		//   POST /h/<host>/elev/app/<name>          → mint cookie
 		//   POST /h/<host>/elev/app/<name>/ping     → slide cookie TTL
 		//   ANY  /h/<host>/app/<name>/<rest>        → proxy to the app
 		// parts[0]=<host>; parts[1] is "elev" for elevation routes or
 		// "app" for the proxy data plane.
-		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/h/"), "/")
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/matrix/h/"), "/")
 		if r.Header.Get("Authorization") != "Bearer test-access-token" {
 			http.Error(w, "bad bearer", http.StatusUnauthorized)
 			return
@@ -87,7 +87,7 @@ func newFakeCloud(elevToken string) (*fakeCloud, *httptest.Server) {
 			if len(parts) >= 5 {
 				action = parts[4]
 			}
-			cookiePath := "/h/" + host + "/app/" + appName
+			cookiePath := "/matrix/h/" + host + "/app/" + appName
 			switch action {
 			case "": // mint
 				w.Header().Set("Content-Type", "application/json")
@@ -181,7 +181,7 @@ func TestOutboundConnectRejectsBadElev(t *testing.T) {
 	// Cloud that returns OK but no matrix_elev cookie — Connect must
 	// notice and refuse.
 	mux := http.NewServeMux()
-	mux.HandleFunc("/h/foo/elev/app/a", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/matrix/h/foo/elev/app/a", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{}`))
@@ -243,17 +243,17 @@ func TestOutboundTCPBridge(t *testing.T) {
 	//   ANY  /h/<host>/app/<name>/<rest> → WS bridge to echo
 	// The Bearer + cookie assertions match what the real cloudbox enforces.
 	mux := http.NewServeMux()
-	mux.HandleFunc("/h/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/matrix/h/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-access-token" {
 			http.Error(w, "bad bearer", http.StatusUnauthorized)
 			return
 		}
-		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/h/"), "/")
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/matrix/h/"), "/")
 		// /h/<host>/elev/app/<name> — mint
 		if len(parts) >= 4 && parts[1] == "elev" && parts[2] == "app" {
 			w.Header().Set("Content-Type", "application/json")
 			http.SetCookie(w, &http.Cookie{Name: "matrix_elev", Value: "elev-token",
-				Path: "/h/" + parts[0] + "/app/" + parts[3]})
+				Path: "/matrix/h/" + parts[0] + "/app/" + parts[3]})
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
 			return
@@ -475,13 +475,13 @@ func TestOutboundSSHBridge(t *testing.T) {
 
 	var elevateHits, sshHits int
 	mux := http.NewServeMux()
-	mux.HandleFunc("/h/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/matrix/h/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-access-token" {
 			http.Error(w, "bad bearer", http.StatusUnauthorized)
 			return
 		}
-		// Strip "/h/<host>/" prefix and dispatch by the remaining path.
-		parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/h/"), "/", 2)
+		// Strip "/matrix/h/<host>/" prefix and dispatch by the remaining path.
+		parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/matrix/h/"), "/", 2)
 		if len(parts) < 2 {
 			http.Error(w, "bad path", http.StatusBadRequest)
 			return
@@ -492,7 +492,7 @@ func TestOutboundSSHBridge(t *testing.T) {
 			elevateHits++
 			w.Header().Set("Content-Type", "application/json")
 			http.SetCookie(w, &http.Cookie{Name: "matrix_elev", Value: "ssh-elev-token",
-				Path: "/h/" + host + "/ssh"})
+				Path: "/matrix/h/" + host + "/ssh"})
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		case "ssh":
@@ -612,12 +612,12 @@ func TestOutboundConnectForwardsTTL(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var got map[string]any
 			mux := http.NewServeMux()
-			mux.HandleFunc("/h/h1/elev/app/a1", func(w http.ResponseWriter, r *http.Request) {
+			mux.HandleFunc("/matrix/h/h1/elev/app/a1", func(w http.ResponseWriter, r *http.Request) {
 				b, _ := io.ReadAll(r.Body)
 				if err := json.Unmarshal(b, &got); err != nil {
 					t.Fatalf("decode body: %v", err)
 				}
-				http.SetCookie(w, &http.Cookie{Name: "matrix_elev", Value: "ck", Path: "/h/h1/app/a1"})
+				http.SetCookie(w, &http.Cookie{Name: "matrix_elev", Value: "ck", Path: "/matrix/h/h1/app/a1"})
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte(`{}`))
