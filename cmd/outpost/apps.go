@@ -28,6 +28,8 @@ func appsCmd() *cobra.Command {
 		appsStopCmd(),
 		appsStartCmd(),
 		appsRotateTokenCmd(),
+		appsSecretCmd(),
+		appsRotateSecretCmd(),
 		appsSuggestCmd(),
 	)
 	return cmd
@@ -288,6 +290,58 @@ func appsRotateTokenCmd() *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+// appsSecretCmd prints the current SSO HMAC secret for one app so the
+// operator can paste it into the cooperating app's config (one-time
+// bootstrap; the value is also persisted in agent.json mode 0600).
+func appsSecretCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "secret <name>",
+		Short: "Print an app's SSO HMAC secret for pasting into the cooperating app's config",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			session, err := dialMCP(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer session.close()
+			var out struct {
+				SSOSecret string `json:"sso_secret"`
+			}
+			if err := session.callTool(cmd.Context(), "outpost_get_app_sso_secret", map[string]any{"name": args[0]}, &out); err != nil {
+				return err
+			}
+			fmt.Println(out.SSOSecret)
+			return nil
+		},
+	}
+}
+
+// appsRotateSecretCmd mints a new SSO HMAC secret for one app. The
+// cooperating app stops verifying signatures until the operator pastes
+// the new value into its config — same trade-off as `rotate-token`.
+func appsRotateSecretCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "rotate-secret <name>",
+		Short: "Rotate an app's SSO HMAC secret (trust_cloud_identity must be on)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			session, err := dialMCP(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer session.close()
+			var out struct {
+				SSOSecret string `json:"sso_secret"`
+			}
+			if err := session.callTool(cmd.Context(), "outpost_rotate_app_sso_secret", map[string]any{"name": args[0]}, &out); err != nil {
+				return err
+			}
+			fmt.Println(out.SSOSecret)
+			return nil
+		},
+	}
 }
 
 func appsSuggestCmd() *cobra.Command {

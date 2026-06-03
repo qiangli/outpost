@@ -638,6 +638,19 @@ type AppConfig struct {
 	// safeView (presence reported separately).
 	ProvisioningToken string `json:"provisioning_token,omitempty"`
 
+	// SSOSecret is the per-app HMAC key outpost uses to sign the
+	// identity headers it stamps on proxied requests. Auto-generated
+	// (32 bytes, hex) alongside ProvisioningToken when TrustCloudIdentity
+	// is on. The cooperating upstream app verifies the signature with
+	// the same secret — pasted in by the operator from `outpost apps
+	// secret <name>` — and only then trusts Remote-User / Remote-Groups.
+	// Closes the LAN spoof window: a local-network attacker can set the
+	// trusted headers but cannot mint a valid signature without the
+	// secret. Empty means SSO authn is not bootstrapped; cooperating
+	// apps fall back to their own login UI. Stored in agent.json (mode
+	// 0600) and redacted out of the admin UI's safeView.
+	SSOSecret string `json:"sso_secret,omitempty"`
+
 	// Role is deprecated. Kept for back-compat parsing of older
 	// agent.json files. NewFromJSON migrates "guest" → RequireLogin
 	// false; "user"/"admin"/empty → true.

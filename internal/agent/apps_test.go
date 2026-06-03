@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net"
 	"net/http"
@@ -232,6 +235,7 @@ func TestProxy_IdentityHeaders_Gated(t *testing.T) {
 	type seen struct {
 		periscopeUser, periscopeRole               string
 		remoteUser, remoteEmail, remoteName, group string
+		sig, ts, prefix                            string
 	}
 	gotCh := make(chan seen, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -243,6 +247,9 @@ func TestProxy_IdentityHeaders_Gated(t *testing.T) {
 			remoteEmail:   r.Header.Get("Remote-Email"),
 			remoteName:    r.Header.Get("Remote-Name"),
 			group:         r.Header.Get("Remote-Groups"),
+			sig:           r.Header.Get("X-Outpost-Identity-Sig"),
+			ts:            r.Header.Get("X-Outpost-Identity-Ts"),
+			prefix:        r.Header.Get("X-Forwarded-Prefix"),
 		}:
 		default:
 		}
@@ -369,6 +376,76 @@ func TestProxy_IdentityHeaders_Gated(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("toggle on + sso_secret: HMAC signature stamped and verifiable", func(t *testing.T) {
+		const secret = "test-secret-32-bytes-of-entropy-xx"
+		reg := NewAppRegistry()
+		if err := reg.RegisterFromConfig(conf.AppConfig{
+			Name: "app", Scheme: "http", Host: uhost, Port: uport, Enabled: true,
+			TrustCloudIdentity: true, SSOSecret: secret,
+		}); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		front := httptest.NewServer(newTestRouter(reg))
+		t.Cleanup(front.Close)
+
+		req, _ := http.NewRequest("GET", front.URL+"/app/app/ping", nil)
+		req.Header.Set("X-Forwarded-Prefix", "/h/dragon/app/app")
+		req.Header.Set("X-Periscope-User", "alice@example.com")
+		req.Header.Set("X-Periscope-Role", "admin")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		_ = resp.Body.Close()
+		got := read(t)
+		if got.sig == "" || got.ts == "" {
+			t.Fatalf("expected signature + timestamp, got sig=%q ts=%q", got.sig, got.ts)
+		}
+		// Recompute and compare. The upstream sees the same prefix value
+		// it was stamped with, so we read it back from the seen struct
+		// rather than hardcoding (insulates the test from prefix-rewrite
+		// changes in the proxy).
+		payload := got.periscopeUser + "\n" + got.periscopeRole + "\n" + got.prefix + "\n" + got.ts
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write([]byte(payload))
+		want := hex.EncodeToString(mac.Sum(nil))
+		if got.sig != want {
+			t.Errorf("signature mismatch:\n got  %s\n want %s", got.sig, want)
+		}
+	})
+
+	t.Run("toggle on + no sso_secret: identity stamped but signature absent", func(t *testing.T) {
+		reg := NewAppRegistry()
+		if err := reg.RegisterFromConfig(conf.AppConfig{
+			Name: "app", Scheme: "http", Host: uhost, Port: uport, Enabled: true,
+			TrustCloudIdentity: true, // SSOSecret left empty
+		}); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		front := httptest.NewServer(newTestRouter(reg))
+		t.Cleanup(front.Close)
+
+		req, _ := http.NewRequest("GET", front.URL+"/app/app/ping", nil)
+		req.Header.Set("X-Forwarded-Prefix", "/h/dragon/app/app")
+		req.Header.Set("X-Periscope-User", "alice@example.com")
+		req.Header.Set("X-Periscope-Role", "admin")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		_ = resp.Body.Close()
+		got := read(t)
+		if got.sig != "" || got.ts != "" {
+			t.Errorf("signature stamped without a configured secret: sig=%q ts=%q", got.sig, got.ts)
+		}
+		// Identity headers still flow — the cooperating app's verifier
+		// is what should refuse them when no secret is configured on
+		// its side; outpost just stops short of signing them.
+		if got.periscopeUser != "alice@example.com" {
+			t.Errorf("identity not forwarded: %+v", got)
+		}
+	})
 }
 
 // splitHostPort is the shared helper for tests that point AppConfig.Host/Port

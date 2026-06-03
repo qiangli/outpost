@@ -60,6 +60,9 @@ func (s *Server) UpsertApp(p AppUpsertParams) (conf.AppConfig, error) {
 	// generate when the toggle is on and we don't already have one;
 	// rotation is a separate explicit operation so an accidental edit
 	// can't quietly mint a new token and lock out the cooperating app.
+	// Same logic applies to SSOSecret (the HMAC key for stamped identity
+	// headers) — both are generated/preserved together so the cooperating
+	// app's bootstrap is a single paste from `outpost apps secret <name>`.
 	if ac.TrustCloudIdentity {
 		if strings.TrimSpace(ac.ProvisioningToken) == "" {
 			for _, existing := range fc.Apps {
@@ -76,13 +79,28 @@ func (s *Server) UpsertApp(p AppUpsertParams) (conf.AppConfig, error) {
 			}
 			ac.ProvisioningToken = tok
 		}
+		if strings.TrimSpace(ac.SSOSecret) == "" {
+			for _, existing := range fc.Apps {
+				if existing.Name == ac.Name && existing.SSOSecret != "" {
+					ac.SSOSecret = existing.SSOSecret
+					break
+				}
+			}
+		}
+		if strings.TrimSpace(ac.SSOSecret) == "" {
+			sec, serr := generateProvisioningToken()
+			if serr != nil {
+				return conf.AppConfig{}, internalErr("%s", serr.Error())
+			}
+			ac.SSOSecret = sec
+		}
 	} else {
-		// Toggle off → drop the token. Otherwise a stale token would
+		// Toggle off → drop both. Otherwise stale credentials would
 		// linger in agent.json and still authenticate against the
-		// relay endpoint (which would 401 since the registry no
-		// longer carries it, but operator visibility is better when
-		// off truly means off).
+		// relay endpoint / sign identity headers. Operator visibility
+		// is better when off truly means off.
 		ac.ProvisioningToken = ""
+		ac.SSOSecret = ""
 	}
 
 	if fc.Apps == nil {
@@ -176,6 +194,70 @@ func (s *Server) RotateProvisioningToken(name string) (string, error) {
 	// isn't in the proxy/tcp maps (disabled apps).
 	s.deps.Apps.SetProvisioningToken(name, tok)
 	return tok, nil
+}
+
+// RotateSSOSecret mints a new 32-byte hex HMAC key for the named app
+// and updates both the persisted FileConfig and the live registry.
+// Errors with 404 when the app doesn't exist and 400 when
+// TrustCloudIdentity is off (rotation is only meaningful when the SSO
+// handshake is in use). Rotating breaks the cooperating app until the
+// operator pastes the new value — same trade-off as
+// RotateProvisioningToken.
+func (s *Server) RotateSSOSecret(name string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fc, err := s.loadConfig()
+	if err != nil {
+		return "", err
+	}
+	idx := -1
+	for i, a := range fc.Apps {
+		if a.Name == name {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return "", notFound("unknown app")
+	}
+	if !fc.Apps[idx].TrustCloudIdentity {
+		return "", badRequest("enable Trust cloud identity first; rotation only meaningful when the SSO handshake is in use")
+	}
+	sec, err := generateProvisioningToken()
+	if err != nil {
+		return "", internalErr("%s", err.Error())
+	}
+	fc.Apps[idx].SSOSecret = sec
+	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
+		return "", internalErr("%s", err.Error())
+	}
+	// Reflect into the live registry without re-registering the proxy —
+	// the HMAC key is read per-request from the registry map.
+	s.deps.Apps.SetSSOSecret(name, sec)
+	return sec, nil
+}
+
+// GetSSOSecret returns the current SSO HMAC secret for the named app.
+// Errors with 404 when the app doesn't exist and 400 when
+// TrustCloudIdentity is off. This is what `outpost apps secret <name>`
+// surfaces so the operator can paste it into the cooperating app's
+// config.
+func (s *Server) GetSSOSecret(name string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fc, err := s.loadConfig()
+	if err != nil {
+		return "", err
+	}
+	for _, a := range fc.Apps {
+		if a.Name == name {
+			if !a.TrustCloudIdentity {
+				return "", badRequest("enable Trust cloud identity first; no SSO secret without it")
+			}
+			return a.SSOSecret, nil
+		}
+	}
+	return "", notFound("unknown app")
 }
 
 // SetAppEnabled flips an app's Enabled flag without re-supplying the

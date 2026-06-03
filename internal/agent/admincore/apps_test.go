@@ -86,3 +86,99 @@ func TestSetAppEnabled_UnknownName404(t *testing.T) {
 		t.Errorf("want 404 APIError, got %v", err)
 	}
 }
+
+// TestUpsertApp_SSOSecretLifecycle locks in the auto-gen / preserve /
+// clear pattern shared with ProvisioningToken. The cooperating app's
+// bootstrap depends on the secret being minted exactly once and
+// surviving subsequent edits — accidental rotation breaks the upstream
+// verifier until the operator re-pastes.
+func TestUpsertApp_SSOSecretLifecycle(t *testing.T) {
+	core, cfgPath := newTestCore(t)
+
+	// Initial upsert with TrustCloudIdentity=true mints both token and secret.
+	if _, err := core.UpsertApp(AppUpsertParams{
+		AppConfig: conf.AppConfig{Name: "myapp", Enabled: true, TrustCloudIdentity: true},
+		URL:       "http://127.0.0.1:18080",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	fc, err := conf.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := fc.Apps[0].SSOSecret
+	if first == "" {
+		t.Fatal("SSOSecret not auto-generated when TrustCloudIdentity flipped on")
+	}
+	if fc.Apps[0].ProvisioningToken == "" {
+		t.Fatal("ProvisioningToken regression — should still auto-gen")
+	}
+
+	// Re-upsert (caller didn't echo the secret back, which is the
+	// normal admin-UI shape). Secret must be preserved.
+	if _, err := core.UpsertApp(AppUpsertParams{
+		AppConfig: conf.AppConfig{Name: "myapp", Enabled: true, TrustCloudIdentity: true},
+		URL:       "http://127.0.0.1:18080",
+	}); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	fc, err = conf.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fc.Apps[0].SSOSecret != first {
+		t.Errorf("SSOSecret changed on re-upsert: %q → %q", first, fc.Apps[0].SSOSecret)
+	}
+
+	// GetSSOSecret returns the live value (matches CLI `outpost apps secret`).
+	got, err := core.GetSSOSecret("myapp")
+	if err != nil {
+		t.Fatalf("GetSSOSecret: %v", err)
+	}
+	if got != first {
+		t.Errorf("GetSSOSecret returned %q, want %q", got, first)
+	}
+
+	// RotateSSOSecret mints a new one and persists.
+	rotated, err := core.RotateSSOSecret("myapp")
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if rotated == "" || rotated == first {
+		t.Errorf("rotate returned %q (first=%q)", rotated, first)
+	}
+	fc, err = conf.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fc.Apps[0].SSOSecret != rotated {
+		t.Errorf("rotated secret not persisted: file=%q want %q", fc.Apps[0].SSOSecret, rotated)
+	}
+
+	// Flipping TrustCloudIdentity off clears the secret (off truly means off).
+	if _, err := core.UpsertApp(AppUpsertParams{
+		AppConfig: conf.AppConfig{Name: "myapp", Enabled: true, TrustCloudIdentity: false},
+		URL:       "http://127.0.0.1:18080",
+	}); err != nil {
+		t.Fatalf("toggle off: %v", err)
+	}
+	fc, err = conf.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fc.Apps[0].SSOSecret != "" {
+		t.Errorf("SSOSecret survived TrustCloudIdentity=false: %q", fc.Apps[0].SSOSecret)
+	}
+	if fc.Apps[0].ProvisioningToken != "" {
+		t.Errorf("ProvisioningToken survived TrustCloudIdentity=false: %q", fc.Apps[0].ProvisioningToken)
+	}
+
+	// GetSSOSecret now refuses (TrustCloudIdentity is off).
+	if _, err := core.GetSSOSecret("myapp"); err == nil {
+		t.Error("GetSSOSecret should fail when TrustCloudIdentity is off")
+	}
+	// Rotate refuses too.
+	if _, err := core.RotateSSOSecret("myapp"); err == nil {
+		t.Error("RotateSSOSecret should fail when TrustCloudIdentity is off")
+	}
+}

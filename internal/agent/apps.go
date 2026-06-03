@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
@@ -85,6 +88,12 @@ type AppRegistry struct {
 	// register. The token only matters for the /_periscope/apps/<name>
 	// relay endpoint — it does not affect proxy behavior.
 	provisioningTokens map[string]string
+	// ssoSecrets maps app name → HMAC key used to sign the identity
+	// headers outpost stamps on proxied requests (X-Outpost-Identity-Sig
+	// + X-Outpost-Identity-Ts). Read per-request inside the reverse-proxy
+	// Rewrite callback; empty means no signature is stamped and the
+	// cooperating app falls back to its own login UI.
+	ssoSecrets map[string]string
 	// intercepts is a per-app list of path-prefix → handler bindings.
 	// When a /app/<name>/<rest> request matches one of an app's
 	// intercept prefixes, the intercept fires instead of forwarding to
@@ -125,6 +134,8 @@ var identityHeaders = []string{
 	"Remote-Email",
 	"Remote-Name",
 	"Remote-Groups",
+	"X-Outpost-Identity-Sig",
+	"X-Outpost-Identity-Ts",
 }
 
 // remoteNameFromEmail derives a Remote-Name value from an email-shaped
@@ -151,6 +162,7 @@ func NewAppRegistry() *AppRegistry {
 		capabilities:       map[string]*AppCapabilities{},
 		trustCloudIdentity: map[string]bool{},
 		provisioningTokens: map[string]string{},
+		ssoSecrets:         map[string]string{},
 		intercepts:         map[string][]appIntercept{},
 		proxyWrap:          map[string]func(http.Handler) http.Handler{},
 		tcp:                map[string]string{},
@@ -197,6 +209,29 @@ func (r *AppRegistry) ProvisioningToken(name string) string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.provisioningTokens[name]
+}
+
+// SetSSOSecret records or clears the HMAC key used to sign identity
+// headers stamped on requests proxied to this app. Empty clears the
+// entry. Read per-request inside the proxy Rewrite callback; safe to
+// call on an unknown name.
+func (r *AppRegistry) SetSSOSecret(name, secret string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if secret == "" {
+		delete(r.ssoSecrets, name)
+		return
+	}
+	r.ssoSecrets[name] = secret
+}
+
+// SSOSecret returns the HMAC key associated with name, or "" if none
+// is set. Used by `outpost apps secret <name>` and the admin UI to
+// surface the value to the operator.
+func (r *AppRegistry) SSOSecret(name string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.ssoSecrets[name]
 }
 
 // AddIntercept binds prefix → h under app `name`. Subsequent requests
@@ -251,6 +286,12 @@ type AppMeta struct {
 	// tunnel. Off by default; the per-app sanitize pass strips any
 	// inbound copies of these headers regardless.
 	TrustCloudIdentity bool
+	// SSOSecret is the HMAC key outpost signs the identity headers
+	// with so the upstream app can verify the stamp came from outpost
+	// (defends the LAN spoof window where an attacker could set
+	// Remote-User on a request that bypasses outpost). Empty means no
+	// signature is stamped — upstream falls back to its own login.
+	SSOSecret string
 }
 
 // Register adds (or replaces) an app entry with the default
@@ -398,6 +439,27 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 					pr.Out.Header.Set("X-Periscope-Role", role)
 					pr.Out.Header.Set("Remote-Groups", role)
 				}
+				// HMAC-sign the identity tuple so the upstream app can
+				// distinguish a real outpost stamp from a LAN attacker
+				// who just sets Remote-User on a request that bypasses
+				// outpost. Stamp only when a secret is configured —
+				// empty secret means the cooperating app hasn't been
+				// bootstrapped yet (operator runs `outpost apps secret
+				// <name>` and pastes the value into the app's config),
+				// in which case the app will refuse to honor identity
+				// headers anyway. Read under RLock so a concurrent
+				// rotate is safe.
+				r.mu.RLock()
+				secret := r.ssoSecrets[name]
+				r.mu.RUnlock()
+				if secret != "" {
+					ts := strconv.FormatInt(time.Now().Unix(), 10)
+					payload := user + "\n" + role + "\n" + pr.Out.Header.Get("X-Forwarded-Prefix") + "\n" + ts
+					mac := hmac.New(sha256.New, []byte(secret))
+					_, _ = mac.Write([]byte(payload))
+					pr.Out.Header.Set("X-Outpost-Identity-Sig", hex.EncodeToString(mac.Sum(nil)))
+					pr.Out.Header.Set("X-Outpost-Identity-Ts", ts)
+				}
 			}
 		},
 	}
@@ -409,6 +471,11 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 	r.indexPath[name] = meta.IndexPath
 	r.capabilities[name] = meta.Capabilities
 	r.trustCloudIdentity[name] = meta.TrustCloudIdentity
+	if s := strings.TrimSpace(meta.SSOSecret); s != "" {
+		r.ssoSecrets[name] = s
+	} else {
+		delete(r.ssoSecrets, name)
+	}
 	// Mode swap: an HTTP register wins over any prior tcp entry with the
 	// same name. (Re-registers in the other direction do the inverse in
 	// registerTCP.)
@@ -494,6 +561,7 @@ func (r *AppRegistry) Unregister(name string) {
 	delete(r.capabilities, name)
 	delete(r.trustCloudIdentity, name)
 	delete(r.provisioningTokens, name)
+	delete(r.ssoSecrets, name)
 	delete(r.intercepts, name)
 	delete(r.proxyWrap, name)
 	delete(r.tcp, name)
@@ -513,6 +581,7 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 		LANOnlyPaths:       ac.LANOnlyPaths,
 		IndexPath:          ac.IndexPath,
 		TrustCloudIdentity: ac.TrustCloudIdentity,
+		SSOSecret:          ac.SSOSecret,
 	}
 	scheme := strings.ToLower(strings.TrimSpace(ac.Scheme))
 	if scheme == "" {
@@ -559,6 +628,9 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 	// don't push grants leave it empty. Set unconditionally so a
 	// re-register with a cleared token actually clears the entry.
 	r.SetProvisioningToken(ac.Name, strings.TrimSpace(ac.ProvisioningToken))
+	// SSO secret rides the same lifecycle — set unconditionally so a
+	// re-register with a cleared secret clears the entry.
+	r.SetSSOSecret(ac.Name, strings.TrimSpace(ac.SSOSecret))
 	return nil
 }
 

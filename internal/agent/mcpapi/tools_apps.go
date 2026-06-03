@@ -54,6 +54,11 @@ type rotateTokenOut struct {
 	ProvisioningToken string `json:"provisioning_token"`
 }
 
+type ssoSecretOut struct {
+	OK        bool   `json:"ok"`
+	SSOSecret string `json:"sso_secret"`
+}
+
 type suggestionsOut struct {
 	Suggestions []admincore.Suggestion `json:"suggestions"`
 }
@@ -127,6 +132,28 @@ func (s *Server) registerAppsTools() {
 			return apiErrResult[rotateTokenOut](err)
 		}
 		return nil, rotateTokenOut{OK: true, ProvisioningToken: tok}, nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_get_app_sso_secret",
+		Description: "Return the per-app HMAC secret outpost signs identity headers with (X-Outpost-Identity-Sig). Operator pastes the value into the cooperating app's config so the app can verify the signature. Only valid when trust_cloud_identity is on.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in byNameIn) (*mcp.CallToolResult, ssoSecretOut, error) {
+		sec, err := s.core.GetSSOSecret(in.Name)
+		if err != nil {
+			return apiErrResult[ssoSecretOut](err)
+		}
+		return nil, ssoSecretOut{OK: true, SSOSecret: sec}, nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_rotate_app_sso_secret",
+		Description: "Rotate the per-app HMAC secret. Only valid when trust_cloud_identity is on. Returns the new secret; the operator must update the cooperating app's config before the next request or identity verification will fail.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in byNameIn) (*mcp.CallToolResult, ssoSecretOut, error) {
+		sec, err := s.core.RotateSSOSecret(in.Name)
+		if err != nil {
+			return apiErrResult[ssoSecretOut](err)
+		}
+		return nil, ssoSecretOut{OK: true, SSOSecret: sec}, nil
 	})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
