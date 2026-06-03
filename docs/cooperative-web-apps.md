@@ -141,6 +141,230 @@ a vendor app or your own code: read `Remote-User` (or `X-Periscope-User`),
 trust it because outpost guarantees it only ever appears on requests
 that came through the matrix tunnel.
 
+### What `Remote-Groups: admin` actually means
+
+When an app reads `Remote-Groups`, the semantic is *"this caller cleared
+cloudbox's OAuth + elevation gate at admin tier"* — not *"this caller is
+an admin in your app."* The two layers can diverge:
+
+- Cloudbox today stamps `admin` for every caller who clears elevation —
+  owner and shared member alike. Under the binary share model, any
+  sharee on a `require_login:true` app gets `admin` stamped at the
+  proxy.
+- For apps where every sharee being an app-admin is the right outcome
+  (most home-lab scenarios — Plex for the family, a notes app for a
+  partner), trust the header and move on.
+- For apps where sharees should NOT be app-admins by default (a
+  multi-tenant tool, a school system, anything with destructive ops),
+  treat the cloud stamp as identity-only and apply your own RBAC on top
+  — either against a roster the app already owns, or by requiring a
+  second factor (local username/password) before granting elevated
+  scope.
+
+The classgo deployment on dragon is an example of the second pattern:
+the cloud stamp gets the sharee through cloudbox + outpost, then
+classgo's own OS-PAM `/admin/login` (against a separate dragon OS
+account) gates app-level admin scope.
+
+## Verifying the identity stamp (LAN-bypass defense)
+
+The headers above only carry weight if the app can verify they actually
+came from outpost. A process on the same LAN that reaches the upstream
+port directly (bypassing outpost) could forge `Remote-User: admin@x`
+trivially. Outpost defends against this by HMAC-signing the identity
+tuple with a per-app shared secret.
+
+### Per-app SSO secret
+
+When the **Trust cloudbox identity** toggle is on, the admin UI displays
+a per-app SSO secret. The upstream app and outpost share this secret
+out-of-band — paste it into the app's config the same way you would a
+JWT signing key. Rotate via the admin UI's "Rotate" button when needed;
+the app reloads the new value on its next config refresh.
+
+### Signed headers
+
+For every proxied request that arrived through cloudbox AND has a
+non-empty SSO secret configured, outpost stamps two extra headers:
+
+| Header                       | Value (example)                    |
+| ---------------------------- | ---------------------------------- |
+| `X-Outpost-Identity-Ts`      | `1717392845`                       |
+| `X-Outpost-Identity-Sig`     | `<hex sha256-hmac>`                |
+
+The signature is `HMAC-SHA256(secret, payload)` over the canonical
+payload (newline-separated, no trailing newline):
+
+```
+<Remote-User>
+<Remote-Groups>
+<X-Forwarded-Prefix>
+<X-Outpost-Identity-Ts>
+```
+
+If `sso_secret` is empty, outpost stamps `Remote-*` headers without the
+signature pair — the trust then rests entirely on outpost being the
+only ingress (which is true when the upstream port is loopback-only).
+Apps that read `Remote-User` SHOULD require a non-empty signature when
+the upstream is reachable beyond loopback.
+
+### Verification recipe
+
+Reject the request when any of these checks fail:
+
+1. `X-Forwarded-Prefix` is present (otherwise the caller isn't behind
+   the proxy — apply your own LAN policy).
+2. `X-Outpost-Identity-Ts` parses as a Unix timestamp and is within 60
+   seconds of `now()` (the same window outpost enforces).
+3. `X-Outpost-Identity-Sig` matches `HMAC-SHA256(secret, payload)`,
+   compared with a constant-time equality function (Go
+   `hmac.Equal` / Node `crypto.timingSafeEqual` / Python `hmac.compare_digest`).
+
+#### Go
+
+```go
+func verifyOutpost(r *http.Request, secret []byte) bool {
+    prefix := r.Header.Get("X-Forwarded-Prefix")
+    user := r.Header.Get("Remote-User")
+    role := r.Header.Get("Remote-Groups")
+    ts := r.Header.Get("X-Outpost-Identity-Ts")
+    sigHex := r.Header.Get("X-Outpost-Identity-Sig")
+    if prefix == "" || ts == "" || sigHex == "" {
+        return false
+    }
+    t, err := strconv.ParseInt(ts, 10, 64)
+    if err != nil || abs(time.Now().Unix()-t) > 60 {
+        return false
+    }
+    payload := user + "\n" + role + "\n" + prefix + "\n" + ts
+    mac := hmac.New(sha256.New, secret)
+    mac.Write([]byte(payload))
+    want := mac.Sum(nil)
+    got, err := hex.DecodeString(sigHex)
+    if err != nil {
+        return false
+    }
+    return hmac.Equal(got, want)
+}
+```
+
+#### Node
+
+```js
+import { createHmac, timingSafeEqual } from "crypto"
+function verifyOutpost(req, secret) {
+  const prefix = req.get("X-Forwarded-Prefix") || ""
+  const user   = req.get("Remote-User")        || ""
+  const role   = req.get("Remote-Groups")      || ""
+  const ts     = req.get("X-Outpost-Identity-Ts")  || ""
+  const sigHex = req.get("X-Outpost-Identity-Sig") || ""
+  if (!prefix || !ts || !sigHex) return false
+  const t = parseInt(ts, 10)
+  if (!Number.isFinite(t) || Math.abs(Math.floor(Date.now()/1000)-t) > 60) return false
+  const payload = [user, role, prefix, ts].join("\n")
+  const want = createHmac("sha256", secret).update(payload).digest()
+  const got = Buffer.from(sigHex, "hex")
+  return got.length === want.length && timingSafeEqual(got, want)
+}
+```
+
+## Choosing an integration pattern
+
+There are five recurring patterns. Pick whichever matches your app's
+identity model; the admin-UI knobs (`require_login`, `lan_only_paths`,
+`index_path`, `trust_cloud_identity`) compose to express all of them.
+
+### A. Bring your own auth (multi-role)
+
+Your app has its own user list and login UI; cloudbox is just transport.
+Examples: Plex, Home Assistant, NextCloud, classgo.
+
+- `require_login`: false for the public surface, true for the admin
+  surface (use the multi-tile pattern below if both).
+- `trust_cloud_identity`: optional — turn on if you want `Remote-User`
+  for SSO; off if the app fully owns auth.
+- `lan_only_paths`: anything destructive that should never be reachable
+  from the web side (admin APIs, kiosk endpoints).
+- The app's own login is the second layer of defense even when cloud
+  identity is trusted.
+
+### B. Trust the cloud completely (JIT-provisioned SSO)
+
+Your app provisions users from the cloud-vouched email and never asks
+for credentials. Examples: a custom dashboard, a personal wiki.
+
+- `require_login`: true.
+- `trust_cloud_identity`: true; SSO secret set; app verifies the HMAC.
+- `lan_only_paths`: empty or just the routes you actively want to LAN-
+  fence.
+- Implement the verification recipe above before granting any session.
+- Decide upfront: on unknown email, do you JIT-create a user, or 403?
+  See "Unknown-email miss policy" below.
+
+### C. No internal auth (cloudbox is the only gate)
+
+Your app has zero auth — the proxy is the entire trust boundary.
+Examples: a Jupyter notebook without a token, an IoT dashboard.
+
+- `require_login`: true (cloudbox is your only gate, so don't skip it).
+- `trust_cloud_identity`: usually off (no identity to read).
+- `lan_only_paths`: any endpoint dangerous from the web (the IoT
+  "restart device" route, the notebook kernel-shell, anything that
+  presumes the same trust as physical access).
+- The upstream port MUST stay loopback-only — if it's reachable from
+  any LAN host, a sibling process bypasses the gate entirely.
+
+### D. Public landing + private admin (multi-tile)
+
+One upstream with two surfaces — a public face and an admin face.
+Examples: a CMS blog, classgo's `lern` + `lern-admin` split.
+
+- Register the SAME upstream twice with two different `name`s.
+- Public tile: `require_login=false` + `lan_only_paths` listing every
+  admin-or-API path you want hidden from the web.
+- Admin tile: `require_login=true` + `index_path` pointing at the admin
+  landing page (e.g. `/admin`).
+- Both tiles share the SSO secret if `trust_cloud_identity` is on for
+  either, so the upstream sees one HMAC key per app.
+- Owner shares only the admin tile with admins; the public tile is
+  open.
+
+### E. API-only / headless
+
+No browser surface — the app is consumed via Bearer tokens by scripts
+and mobile clients.
+
+- `require_login`: false (Bearer-only is its own auth).
+- The Bearer is minted at cloudbox; the upstream does its own scope
+  check against the token if needed.
+- No `Remote-*` headers in this path; if the call needs cloud identity,
+  pass it explicitly in the JSON payload.
+
+## The three decisions every app author has to make
+
+Before wiring an app into outpost, answer these:
+
+1. **Where does the identity for a request come from?** Cloud-vouched
+   (`Remote-User`), app-internal login, or both (cloud-vouched +
+   second-factor)? Once you pick, document it in the app's CLAUDE-style
+   notes so future contributors don't reintroduce a bypass.
+2. **What's the unknown-email miss policy?** When `Remote-User` is a
+   new email the app's roster doesn't know:
+   - JIT-create (most home-lab apps, vendor SSO apps like Grafana).
+   - Fall through to local login (apps with their own pre-existing
+     user list — classgo does this).
+   - Hard 403 (multi-tenant apps where every user is provisioned
+     out-of-band).
+   The default in most off-the-shelf SSO integrations is JIT — fine for
+   single-owner deployments, possibly wrong for multi-tenant.
+3. **Which paths should never be reachable from the web?** Walk the
+   app's route table once and list every destructive or
+   physical-presence-only path. Put them in `lan_only_paths`. The fence
+   is checked before `require_login`, so even an authenticated admin
+   from the web cannot reach them. The intent is "this path is
+   physically dangerous from off-LAN; the fence catches operator
+   mistakes and a future cloudbox bug both."
+
 ## Bottom-up user provisioning
 
 For the app's tile to appear on a cloudbox user's dashboard, cloudbox
