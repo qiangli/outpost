@@ -140,8 +140,15 @@ jobs:
           # The outpost worker probes the staged binary via
           # `<candidate> version --json` and refuses to apply if its
           # self-reported commit doesn't match.
+          #
+          # NOTE: For annotated tags (created with `git tag -a`), the
+          # /git/refs/tags/<tag> endpoint returns the tag OBJECT's SHA,
+          # not the commit's SHA — the binary's probe would then never
+          # match. /commits/<ref> auto-dereferences annotated tags to
+          # the underlying commit SHA, which is what the binary's
+          # ldflags-stamped version reports.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            commit=$(gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" --jq .object.sha)
+            commit=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${tag}" --jq .sha)
           else
             commit="${{ github.event.workflow_run.head_sha }}"
           fi
