@@ -10,15 +10,20 @@
 #   2. POST /api/v1/fleet/upgrade on cloudbox with hosts=[<canary>].
 #   3. The canary host's outpost (with update_mode=auto) accepts and
 #      applies the envelope: stage → probe → atomic-swap → re-exec.
-#   4. The job fails if cloudbox reports any per-host status other than
-#      "ok" for the canary host.
-#
-# Fan-out to the rest of the fleet is NOT automated here. Cloudbox's
-# /api/v1/fleet/upgrade sends one envelope shape to all targets, so a
-# mixed-platform fleet needs per-platform dispatch. Until that's
-# plumbed (e.g., cloudbox grows per-platform envelope routing, or this
-# workflow grows a host→platform map), the operator runs additional
-# fleet-upgrade POSTs manually for non-canary hosts.
+#      The job fails if cloudbox reports any per-host status other
+#      than "ok".
+#   4. Poll /api/hosts until the canary host's reported commit matches
+#      the envelope (cloudbox's host-poller refreshes within ~5 s of
+#      the daemon re-execing; convergence usually 10-20 s). Abort if
+#      it doesn't converge in 2 minutes — a stuck canary is the
+#      exact "stop before it hits the whole fleet" case rollout.yml
+#      is designed to catch.
+#   5. Re-POST the same envelope WITHOUT the hosts filter; cloudbox
+#      fans out to every paired host. The canary gets a 304 same_commit
+#      no-op; other same-platform hosts apply; cross-platform hosts
+#      fail at the probe step (envelope is built for one platform).
+#      Cross-platform rejections surface as a warning, not failure —
+#      operator runs per-platform follow-ups for mixed fleets.
 #
 # Required repository secrets:
 #   CLOUDBOX_BASE_URL              — e.g. https://ai.dhnt.io
@@ -152,6 +157,7 @@ jobs:
             echo 'json<<ENV_END'
             echo "$envelope"
             echo 'ENV_END'
+            echo "commit=$commit"
           } >> "$GITHUB_OUTPUT"
 
       - name: Preview envelope (dry run)
@@ -190,13 +196,75 @@ jobs:
           fi
           echo "✓ canary upgrade succeeded on host: $host"
 
-      - name: Fan-out note
-        if: always()
+      - name: Wait for canary host to converge
+        if: steps.cfg.outputs.dry_run != 'true'
+        env:
+          CLOUDBOX_BASE_URL: ${{ secrets.CLOUDBOX_BASE_URL }}
+          CLOUDBOX_FLEET_UPGRADE_TOKEN: ${{ secrets.CLOUDBOX_FLEET_UPGRADE_TOKEN }}
         run: |
-          echo "Canary scope = ['${{ steps.cfg.outputs.host }}']."
-          echo "Fan-out to remaining hosts is currently manual:"
-          echo "  - cloudbox /api/v1/fleet/upgrade sends one envelope shape"
-          echo "    to every target."
-          echo "  - mixed-platform fleets need per-platform dispatch."
-          echo "  - run additional fleet-upgrade POSTs manually for"
-          echo "    non-canary hosts (one call per platform group)."
+          # Poll cloudbox's /api/hosts until the canary host's reported
+          # commit matches the envelope's commit. The host-poller in
+          # cloudbox refreshes the cached `commit` field within ~5 s of
+          # the outpost daemon re-execing post-swap, so this typically
+          # converges in 10-20 s. Cap at 2 minutes; if the canary
+          # host doesn't converge, abort before fanning out — a stuck
+          # canary is the exact "stop before it hits the whole fleet"
+          # case rollout.yml is designed to catch.
+          host="${{ steps.cfg.outputs.host }}"
+          target="${{ steps.envelope.outputs.commit }}"
+          target_short="${target:0:12}"
+          for i in $(seq 1 24); do
+            sleep 5
+            live=$(curl -fsS \
+              -H "Authorization: Bearer $CLOUDBOX_FLEET_UPGRADE_TOKEN" \
+              "${CLOUDBOX_BASE_URL}/api/hosts" \
+              | jq -r ".hosts[] | select(.name == \"$host\") | .commit")
+            live_short="${live:0:12}"
+            if [ "$live_short" = "$target_short" ]; then
+              echo "✓ canary host '$host' converged at commit $live_short"
+              exit 0
+            fi
+            echo "  poll $i/24: host=$host live=${live_short:-<none>} expected=$target_short"
+          done
+          echo "::error::canary host '$host' did not converge to commit $target_short within 2 minutes"
+          exit 1
+
+      - name: Fan-out to remaining fleet
+        if: steps.cfg.outputs.dry_run != 'true'
+        env:
+          CLOUDBOX_BASE_URL: ${{ secrets.CLOUDBOX_BASE_URL }}
+          CLOUDBOX_FLEET_UPGRADE_TOKEN: ${{ secrets.CLOUDBOX_FLEET_UPGRADE_TOKEN }}
+        run: |
+          # Re-POST the same envelope but without the `hosts` filter —
+          # cloudbox fans out to every paired host owned by the caller.
+          # The canary host (already at envelope.commit) gets
+          # `code:304 same_commit` from its worker and that surfaces as
+          # `status:"ok"` in the aggregate response (no-op replay).
+          # Hosts of a different platform fail at the worker's probe
+          # step (`<candidate> version --json` won't match the
+          # envelope's commit because the binary is built for a
+          # different arch); those land as non-"ok" per-host results
+          # and we surface them as a warning, not a failure — they're
+          # the expected outcome for the mixed-platform case, not a
+          # bug. The operator runs a per-platform POST follow-up.
+          envelope_fanout=$(echo '${{ steps.envelope.outputs.json }}' | jq 'del(.hosts)')
+          echo "fan-out envelope (hosts filter removed):"
+          echo "$envelope_fanout" | jq .
+          resp=$(curl -fsS -X POST \
+            -H "Authorization: Bearer $CLOUDBOX_FLEET_UPGRADE_TOKEN" \
+            -H "Content-Type: application/json" \
+            "${CLOUDBOX_BASE_URL}/api/v1/fleet/upgrade" \
+            --data-binary "$envelope_fanout")
+          echo "$resp" | jq .
+          ok=$(echo "$resp" | jq -r .ok)
+          total=$(echo "$resp" | jq -r .total)
+          rejected=$(echo "$resp" | jq -r '[.results[] | select(.status != "ok")] | length')
+          echo "fan-out: $ok/$total host(s) accepted v${{ steps.cfg.outputs.tag }}"
+          if [ "$rejected" -gt 0 ]; then
+            echo "::warning::$rejected host(s) did not accept the envelope (likely cross-platform or update_mode=manual/never)"
+            echo "$resp" | jq '.results[] | select(.status != "ok")'
+          fi
+          # The job has already validated the canary applied cleanly,
+          # so even if the fan-out has rejections (cross-platform, etc),
+          # the rollout itself is considered successful — the operator
+          # follows up on rejections per host.
