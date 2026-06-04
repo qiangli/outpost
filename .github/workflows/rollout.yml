@@ -266,7 +266,7 @@ jobs:
           ok=$(echo "$resp" | jq -r .ok)
           total=$(echo "$resp" | jq -r .total)
           rejected=$(echo "$resp" | jq -r '[.results[] | select(.status != "ok")] | length')
-          echo "fan-out: $ok/$total host(s) accepted v${{ steps.cfg.outputs.tag }}"
+          echo "fan-out: $ok/$total host(s) accepted ${{ steps.cfg.outputs.tag }}"
           if [ "$rejected" -gt 0 ]; then
             echo "::warning::$rejected host(s) did not accept the envelope (likely cross-platform or update_mode=manual/never)"
             echo "$resp" | jq '.results[] | select(.status != "ok")'
