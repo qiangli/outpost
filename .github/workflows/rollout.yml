@@ -1,0 +1,202 @@
+# Canary-then-fan-out for outpost releases.
+#
+# Fires automatically after `release.yml` succeeds on a tag push, OR can
+# be triggered manually via workflow_dispatch.
+#
+# Behavior:
+#   1. Resolve the artifact URL + sha256 for the canary host's platform
+#      from the published GitHub Release (release.yml uploads both the
+#      binary and a .sha256 sidecar per platform).
+#   2. POST /api/v1/fleet/upgrade on cloudbox with hosts=[<canary>].
+#   3. The canary host's outpost (with update_mode=auto) accepts and
+#      applies the envelope: stage → probe → atomic-swap → re-exec.
+#   4. The job fails if cloudbox reports any per-host status other than
+#      "ok" for the canary host.
+#
+# Fan-out to the rest of the fleet is NOT automated here. Cloudbox's
+# /api/v1/fleet/upgrade sends one envelope shape to all targets, so a
+# mixed-platform fleet needs per-platform dispatch. Until that's
+# plumbed (e.g., cloudbox grows per-platform envelope routing, or this
+# workflow grows a host→platform map), the operator runs additional
+# fleet-upgrade POSTs manually for non-canary hosts.
+#
+# Required repository secrets:
+#   CLOUDBOX_BASE_URL              — e.g. https://ai.dhnt.io
+#   CLOUDBOX_FLEET_UPGRADE_TOKEN   — operator-minted Bearer with
+#                                    fleet:upgrade scope; mint via the
+#                                    cloudbox SPA's API Keys page.
+#
+# Manual canary recipe:
+#   gh workflow run rollout.yml --field tag=v0.4.5
+#                               --field dry_run=false
+#                               --field host=<host>
+#                               --field platform=<os>-<arch>
+
+name: rollout
+
+on:
+  workflow_run:
+    workflows: ["release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.4.5)"
+        required: true
+      host:
+        description: "Canary host name (must match a cloudbox-paired host)"
+        default: "dragon"
+      platform:
+        description: "Canary host platform"
+        default: "darwin-arm64"
+        type: choice
+        options:
+          - darwin-arm64
+          - darwin-amd64
+          - linux-arm64
+          - linux-amd64
+          - windows-amd64
+          - windows-arm64
+      dry_run:
+        description: "Preview the envelope, don't actually push"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    # Fire on:
+    #   - Manual dispatch
+    #   - `release` workflow finishing successfully on a tag push (the
+    #     workflow_run.event = "push" is set even for tag pushes; the
+    #     fact that release.yml only triggers on `v*` tags means
+    #     workflow_run firings of it correspond to releases).
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Resolve parameters
+        id: cfg
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+            host="${{ inputs.host }}"
+            platform="${{ inputs.platform }}"
+            dry_run="${{ inputs.dry_run }}"
+          else
+            # workflow_run: derive tag from source workflow. GitHub sets
+            # head_branch to the tag ref for tag-triggered workflows.
+            tag="${{ github.event.workflow_run.head_branch }}"
+            host="dragon"
+            platform="darwin-arm64"
+            dry_run="false"
+          fi
+          if [ -z "$tag" ]; then
+            echo "::error::could not resolve release tag"
+            exit 1
+          fi
+          {
+            echo "tag=$tag"
+            echo "host=$host"
+            echo "platform=$platform"
+            echo "dry_run=$dry_run"
+          } >> "$GITHUB_OUTPUT"
+          echo "→ canary tag=$tag host=$host platform=$platform dry_run=$dry_run"
+
+      - name: Build canary envelope
+        id: envelope
+        run: |
+          tag="${{ steps.cfg.outputs.tag }}"
+          platform="${{ steps.cfg.outputs.platform }}"
+          host="${{ steps.cfg.outputs.host }}"
+          asset="outpost-${tag}-${platform}"
+          # Windows artifact filename has .exe; the .sha256 sidecar uses
+          # the same base name + .sha256 regardless.
+          case "$platform" in
+            windows-*) bin_asset="${asset}.exe" ;;
+            *) bin_asset="$asset" ;;
+          esac
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
+          url="${base}/${bin_asset}"
+          # .sha256 sidecar format (from release.yml): one line of
+          # "<hex>  <filename>". Awk the first field.
+          sha=$(curl -fsSL "${base}/${asset}.sha256" | awk '{print $1}')
+          if [ -z "$sha" ]; then
+            echo "::error::could not fetch sha256 sidecar at ${base}/${asset}.sha256"
+            exit 1
+          fi
+          # Resolve the tag's commit for the envelope's `commit` field.
+          # The outpost worker probes the staged binary via
+          # `<candidate> version --json` and refuses to apply if its
+          # self-reported commit doesn't match.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            commit=$(gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" --jq .object.sha)
+          else
+            commit="${{ github.event.workflow_run.head_sha }}"
+          fi
+          envelope=$(jq -n \
+            --arg release_id "$tag" \
+            --arg url "$url" \
+            --arg sha256 "$sha" \
+            --arg commit "$commit" \
+            --arg host "$host" \
+            '{release_id: $release_id, url: $url, sha256: $sha256, commit: $commit, hosts: [$host]}')
+          echo "$envelope" | jq .
+          {
+            echo 'json<<ENV_END'
+            echo "$envelope"
+            echo 'ENV_END'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Preview envelope (dry run)
+        if: steps.cfg.outputs.dry_run == 'true'
+        env:
+          CLOUDBOX_BASE_URL: ${{ secrets.CLOUDBOX_BASE_URL }}
+        run: |
+          echo "DRY RUN — would POST to ${CLOUDBOX_BASE_URL:-<unset>}/api/v1/fleet/upgrade:"
+          echo '${{ steps.envelope.outputs.json }}' | jq .
+
+      - name: Push canary envelope
+        if: steps.cfg.outputs.dry_run != 'true'
+        env:
+          CLOUDBOX_BASE_URL: ${{ secrets.CLOUDBOX_BASE_URL }}
+          CLOUDBOX_FLEET_UPGRADE_TOKEN: ${{ secrets.CLOUDBOX_FLEET_UPGRADE_TOKEN }}
+        run: |
+          if [ -z "$CLOUDBOX_BASE_URL" ] || [ -z "$CLOUDBOX_FLEET_UPGRADE_TOKEN" ]; then
+            echo "::error::CLOUDBOX_BASE_URL or CLOUDBOX_FLEET_UPGRADE_TOKEN not set on this repo"
+            exit 1
+          fi
+          host="${{ steps.cfg.outputs.host }}"
+          # POST the envelope; capture the aggregate response. The
+          # cloudbox handler dispatches synchronously per-host and
+          # returns one result row per target.
+          resp=$(curl -fsS -X POST \
+            -H "Authorization: Bearer $CLOUDBOX_FLEET_UPGRADE_TOKEN" \
+            -H "Content-Type: application/json" \
+            "${CLOUDBOX_BASE_URL}/api/v1/fleet/upgrade" \
+            --data-binary '${{ steps.envelope.outputs.json }}')
+          echo "$resp" | jq .
+          status=$(echo "$resp" | jq -r ".results[] | select(.host == \"$host\") | .status")
+          if [ "$status" != "ok" ]; then
+            echo "::error::canary host '$host' upgrade status: ${status:-<missing>}"
+            echo "$resp" | jq ".results[] | select(.host == \"$host\")"
+            exit 1
+          fi
+          echo "✓ canary upgrade succeeded on host: $host"
+
+      - name: Fan-out note
+        if: always()
+        run: |
+          echo "Canary scope = ['${{ steps.cfg.outputs.host }}']."
+          echo "Fan-out to remaining hosts is currently manual:"
+          echo "  - cloudbox /api/v1/fleet/upgrade sends one envelope shape"
+          echo "    to every target."
+          echo "  - mixed-platform fleets need per-platform dispatch."
+          echo "  - run additional fleet-upgrade POSTs manually for"
+          echo "    non-canary hosts (one call per platform group)."
