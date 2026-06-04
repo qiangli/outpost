@@ -1,7 +1,7 @@
 # Cooperative web apps
 
 Guidelines for HTTP apps you register with outpost (so they work cleanly
-behind cloudbox at `https://<cloudbox>/h/<host>/app/<name>/...`).
+behind cloudbox at `https://<cloudbox>/matrix/h/<host>/app/<name>/...`).
 
 ## What outpost gives you
 
@@ -11,7 +11,7 @@ Every proxied request carries the standard forwarding headers:
 | --------------------- | -------------------------------------------- |
 | `X-Forwarded-Host`    | `ai.dhnt.io`                                 |
 | `X-Forwarded-Proto`   | `https`                                      |
-| `X-Forwarded-Prefix`  | `/h/dragon/app/lern-admin`                   |
+| `X-Forwarded-Prefix`  | `/matrix/h/dragon/app/lern-admin`            |
 | `X-Forwarded-For`     | client IP chain                              |
 
 When the app's **Trust cloudbox identity** toggle is on (admin UI per-app
