@@ -76,7 +76,9 @@ Write-Host "  tag: $tag"
 
 $asset       = "outpost-$tag-$os-$arch.exe"
 $assetUrl    = "https://github.com/$Repo/releases/download/$tag/$asset"
-$sidecarUrl  = "$assetUrl.sha256"
+# Sidecar is named without the .exe suffix — see release.yml's sha256
+# step, which writes outpost-<tag>-<os>-<arch>.sha256.
+$sidecarUrl  = "https://github.com/$Repo/releases/download/$tag/outpost-$tag-$os-$arch.sha256"
 $tmpDir      = Join-Path ([System.IO.Path]::GetTempPath()) ("outpost-install-" + [System.IO.Path]::GetRandomFileName())
 $null        = New-Item -ItemType Directory -Path $tmpDir
 try {
