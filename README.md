@@ -73,10 +73,33 @@ HTTP server to loopback (`127.0.0.1:<random>`).
 
 ## Build from source
 
+outpost is **fully open source** under the [MIT license](LICENSE). You
+don't have to trust the binaries we publish — clone the repo, read every
+line of code that talks to the portal, build your own binary, and pair
+that with [ai.dhnt.io](https://ai.dhnt.io). Nothing is hidden, nothing
+phones home behind your back.
+
 ```bash
-go build ./cmd/outpost
+git clone https://github.com/qiangli/outpost
+cd outpost
+make build         # → ./bin/outpost
+./bin/outpost register --server https://ai.dhnt.io --code <code> --name <host>
+./bin/outpost start
 ```
 
-Requires Go 1.25+. See [`docs/install.md`](docs/install.md) for the CGO-enabled recipe needed for Linux PAM auth.
+Requires Go 1.25+. The `make build` target runs `go build ./cmd/outpost`
+with the version + commit baked into the binary so `outpost version`
+reports a build you can trace back to a git SHA. See
+[`docs/install.md`](docs/install.md) for the CGO-enabled recipe needed
+for Linux PAM auth (`CGO_ENABLED=1` + `libpam-dev`), Windows build
+notes, and cross-compilation tips.
+
+**Forking, modifying, contributing** — outpost has no proprietary
+hooks. The wire protocol with cloudbox is documented inline in
+[`internal/agent/portal/`](internal/agent/portal/) (the `exchange.go`
+round-trip is the only handshake), and every config key is in
+[`docs/settings.md`](docs/settings.md). A modified outpost that obeys
+the same protocol will pair with the public portal the same way an
+official binary does. PRs welcome.
 
 Release notes: <https://github.com/qiangli/outpost/releases>.
