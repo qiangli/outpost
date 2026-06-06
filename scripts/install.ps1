@@ -23,6 +23,14 @@
 param()
 
 $ErrorActionPreference = 'Stop'
+# Disable PS 7.3+'s native-command auto-throw. We want $ErrorActionPreference=Stop
+# for PowerShell cmdlets (so a failed Invoke-WebRequest aborts the install) but
+# *not* for native exes: schtasks.exe writes "ERROR: The system cannot find the
+# file specified" + exit 1 when querying a not-yet-registered task on a fresh
+# install, and we explicitly check $LASTEXITCODE where it matters. Without this,
+# the installer dies on its first schtasks call. PS 5.1 doesn't have this
+# preference variable; the assignment is a harmless no-op there.
+$PSNativeCommandUseErrorActionPreference = $false
 # Modern TLS for older Windows defaults.
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
@@ -127,20 +135,13 @@ try {
     }
 
     Info "installing to $target"
-    # Stop a running outpost so the file isn't locked. On a fresh install
-    # the task isn't registered yet, and `schtasks /End` against a missing
-    # task exits non-zero with "ERROR: The system cannot find the file
-    # specified" — which $ErrorActionPreference='Stop' (combined with
-    # PS 7.3+'s default $PSNativeCommandUseErrorActionPreference=$true)
-    # escalates to a terminating script error. Probe with /Query first
-    # and only /End when the task exists; reset $LASTEXITCODE so the
-    # probe's expected non-zero doesn't poison subsequent native calls.
-    & schtasks.exe /Query /TN outpost *>$null
-    if ($LASTEXITCODE -eq 0) {
-        & schtasks.exe /End /TN outpost *>$null
-    }
-    $global:LASTEXITCODE = 0
+    # Stop a running outpost so the binary file isn't locked while we
+    # replace it. Stop-Process is sufficient: /Create below uses /F to
+    # overwrite any existing task entry, so calling schtasks /End first
+    # adds nothing and would fail awkwardly on a fresh install (no task
+    # registered yet).
     Get-Process -Name outpost -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 200
     try {
         Move-Item -Path $assetPath -Destination $target -Force
     } catch {
