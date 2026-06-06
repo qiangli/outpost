@@ -181,24 +181,40 @@ try {
 
     if ($registerService) {
         Info 'registering Task Scheduler entry (ONLOGON)'
-        # /SC ONLOGON + /RL LIMITED registers the task in the current
-        # user's context, no admin elevation required, starts on user
-        # logon. This is the analogue of "launchctl bootstrap gui/<uid>"
-        # / "systemctl --user enable --now" on the other platforms.
-        # /F overwrites any prior registration so a re-install picks up
-        # the new path. The /TR argument wraps $target in quotes so a
-        # path containing spaces (e.g. "C:\Program Files\outpost") is
-        # parsed as a single program token by Task Scheduler.
-        $tr = '"' + $target + '" start'
-        $output = & schtasks.exe /Create /SC ONLOGON /RL LIMITED /TN outpost /TR $tr /F 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Warn "schtasks failed: $output"
-            Write-Host '  Register manually with:'
-            Write-Host "    schtasks /Create /SC ONLOGON /RL LIMITED /TN outpost /TR `"$tr`" /F"
-        } else {
+        # Use Register-ScheduledTask (PS-native, talks to the Task
+        # Scheduler COM API directly) instead of `schtasks.exe /Create
+        # /TR "..."`. The schtasks path joins all args into one command
+        # line and re-parses /TR as a quoted string — which fails when
+        # $target or $env:USERNAME contains spaces (e.g. a user named
+        # "Lijuan Song" lands at "C:\Users\Lijuan Song\AppData\..."),
+        # because the embedded `"…"` quotes don't survive the PS → exe
+        # → schtasks-internal-parser round-trip. The COM API takes
+        # -Execute and -Argument as separate parameters and never
+        # round-trips through a command line, so the quoting problem
+        # vanishes. -AtLogOn with -User scopes the trigger to this user
+        # (mirrors `schtasks /SC ONLOGON` without /RU). InteractiveToken
+        # logon type is what lets the task register without prompting
+        # for a password. -RunLevel Limited matches the prior `/RL
+        # LIMITED`. -Force overwrites any prior registration so a
+        # re-install picks up the new path. Same analogue as
+        # "launchctl bootstrap gui/<uid>" / "systemctl --user enable
+        # --now" on the other platforms.
+        $userId = if ($env:USERDOMAIN) { "$env:USERDOMAIN\$env:USERNAME" } else { $env:USERNAME }
+        try {
+            $action    = New-ScheduledTaskAction    -Execute $target -Argument 'start'
+            $trigger   = New-ScheduledTaskTrigger   -AtLogOn -User $userId
+            $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType InteractiveToken -RunLevel Limited
+            $null = Register-ScheduledTask -TaskName 'outpost' -Action $action -Trigger $trigger -Principal $principal -Force
             Ok 'outpost task registered (run on logon)'
             Write-Host '  status: schtasks /Query /TN outpost'
             Write-Host '  remove: schtasks /Delete /TN outpost /F'
+        } catch {
+            Warn "scheduled-task registration failed: $($_.Exception.Message)"
+            Write-Host '  Register manually with:'
+            Write-Host "    `$a = New-ScheduledTaskAction -Execute '$target' -Argument 'start'"
+            Write-Host "    `$t = New-ScheduledTaskTrigger -AtLogOn -User '$userId'"
+            Write-Host "    `$p = New-ScheduledTaskPrincipal -UserId '$userId' -LogonType InteractiveToken -RunLevel Limited"
+            Write-Host "    Register-ScheduledTask -TaskName outpost -Action `$a -Trigger `$t -Principal `$p -Force"
         }
     }
 } finally {
