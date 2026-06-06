@@ -38,6 +38,13 @@ const exchangeMaxAttempts = 4
 // hosts but never accepts inbound traffic. Cloudbox skips the matrix-
 // tunnel port allocation, the launcher hides the row from its tile
 // grid, and `outpost start` becomes a no-op tunnel-less stub.
+//
+// Ring is an optional deployment-ring tag (e.g. "dev", "test", "stage",
+// "prod") that seeds the cloudbox-side host.ring column at first pairing.
+// Cloudbox is authoritative after that — admins can re-assign rings from
+// the portal SPA, and a subsequent re-pair without --ring will not
+// overwrite the admin's value. Used by `POST /api/v1/fleet/upgrade` to
+// scope fleet-upgrade fan-out to one cohort (dev → test → stage → prod).
 type ExchangeRequest struct {
 	ServerURL  string
 	Code       string
@@ -45,6 +52,7 @@ type ExchangeRequest struct {
 	Title      string
 	AuthURL    string
 	ClientOnly bool
+	Ring       string
 }
 
 // Exchange POSTs the pairing code to the portal and returns the FileConfig
@@ -75,6 +83,7 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		"os_hostname":     osHostname,
 		"has_auth_url":    authURL != "",
 		"client_only":     req.ClientOnly,
+		"ring":            strings.TrimSpace(req.Ring),
 	}
 	body, _ := json.Marshal(payload)
 	url := strings.TrimRight(req.ServerURL, "/") + "/api/register/exchange"

@@ -1532,6 +1532,7 @@ func registerCmd() *cobra.Command {
 		title        string
 		assumeYes    bool
 		clientOnly   bool
+		ring         string
 	)
 	cmd := &cobra.Command{
 		Use:     "register",
@@ -1592,7 +1593,7 @@ code" dialog usually only needs --code.`,
 					return errors.New("scripted mode requires --code; --server and --name fall back to defaults if omitted, but the host name resolver returned empty — pass --name explicitly")
 				}
 
-				if err := doExchange(cmd.Context(), serverURL, code, name, title, authURL, out, clientOnly); err == nil {
+				if err := doExchange(cmd.Context(), serverURL, code, name, title, authURL, out, clientOnly, ring); err == nil {
 					break
 				} else {
 					fmt.Fprintf(os.Stderr, "Registration failed: %v\n", err)
@@ -1648,6 +1649,8 @@ code" dialog usually only needs --code.`,
 	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "On success, start outpost immediately without asking")
 	cmd.Flags().BoolVar(&clientOnly, "client-only", false,
 		"Pair this machine as a credential-only outpost — outbound SSH via `outpost ssh-proxy` only, no inbound listeners, no matrix tunnel. The host row shows up in cloudbox with a 'client' badge so the operator can see it; it cannot be a share target.")
+	cmd.Flags().StringVar(&ring, "ring", "",
+		"Optional deployment ring tag (e.g. dev/test/stage/prod) that seeds the host's ring on cloudbox at first pairing. Used to scope fleet-upgrade fan-out to one cohort. Empty leaves the host untagged. Cloudbox admins can re-assign rings from the SPA — a subsequent re-pair without --ring will not overwrite their value.")
 	return cmd
 }
 
@@ -1732,7 +1735,7 @@ func doRecover(ctx context.Context, serverURL, recoveryCode, name, title, authUR
 // doExchange runs the pairing exchange and writes the resulting config to
 // disk. Thin wrapper over portal.Exchange — the admin UI calls the same
 // portal package directly so it can layer Apps + toggles in before saving.
-func doExchange(ctx context.Context, serverURL, code, name, title, authURL, out string, clientOnly bool) error {
+func doExchange(ctx context.Context, serverURL, code, name, title, authURL, out string, clientOnly bool, ring string) error {
 	fc, err := portal.Exchange(ctx, portal.ExchangeRequest{
 		ServerURL:  serverURL,
 		Code:       code,
@@ -1740,6 +1743,7 @@ func doExchange(ctx context.Context, serverURL, code, name, title, authURL, out 
 		Title:      title,
 		AuthURL:    authURL,
 		ClientOnly: clientOnly,
+		Ring:       ring,
 	})
 	if err != nil {
 		return err
