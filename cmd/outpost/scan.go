@@ -2,9 +2,12 @@
 // surfaces for LAN peer discovery.
 //
 // scan       — broadcasts an mDNS query for `_outpost._tcp.local`,
-//                prints a table of responding peers (Tier 1).
+//
+//	prints a table of responding peers (Tier 1).
+//
 // discover   — performs a full hello → probe exchange against a known
-//   probe       URL and prints the result with the trust state.
+//
+//	probe       URL and prints the result with the trust state.
 //
 // Both commands work without the daemon being paired and without any
 // MCP roundtrip — they're operator tooling that runs in the

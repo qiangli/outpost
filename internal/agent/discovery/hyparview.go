@@ -78,9 +78,9 @@ func (c *Cache) Compact() (active int, passive int) {
 	// Snapshot into slices so we can sort by LastSeenAt without
 	// fighting the map iteration order.
 	type entry struct {
-		id  PeerID
-		p   *Peer
-		ts  time.Time
+		id PeerID
+		p  *Peer
+		ts time.Time
 	}
 	var actives, passives []entry
 	for id, p := range c.byID {

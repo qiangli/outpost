@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	defaultSessionTTL = 5 * time.Minute
+	defaultSessionTTL  = 5 * time.Minute
 	defaultMaxSessions = 256
 )
 
@@ -33,10 +33,10 @@ type Session struct {
 // SessionStore is the in-memory cap-bounded session table. Safe for
 // concurrent use.
 type SessionStore struct {
-	mu       sync.Mutex
-	byID     map[string]*Session
-	ttl      time.Duration
-	maxSize  int
+	mu      sync.Mutex
+	byID    map[string]*Session
+	ttl     time.Duration
+	maxSize int
 }
 
 // NewSessionStore returns an empty store with defaults.

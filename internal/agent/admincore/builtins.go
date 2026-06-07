@@ -13,25 +13,25 @@ import (
 // SSHForwardSockets exist in FileConfig but the SPA has no toggle for
 // them. MCP / CLI callers can drive them directly.
 type BuiltinsParams struct {
-	Shell                 *bool    `json:"shell,omitempty"`
-	Desktop               *bool    `json:"desktop,omitempty"`
-	Clipboard             *bool    `json:"clipboard,omitempty"`
-	SSH                   *bool    `json:"ssh,omitempty"`
-	SSHAllowLocalForward  *bool    `json:"ssh_allow_local_forward,omitempty"`
-	SSHAllowRemoteForward *bool    `json:"ssh_allow_remote_forward,omitempty"`
-	SSHAllowAgentForward  *bool    `json:"ssh_allow_agent_forward,omitempty"`
-	SSHForwardSockets     []string `json:"ssh_forward_sockets,omitempty"`
-	SFTP                  *bool    `json:"sftp,omitempty"`
-	Podman                *bool    `json:"podman,omitempty"`
-	Ollama                *bool    `json:"ollama,omitempty"`
-	OllamaPool            *bool    `json:"ollama_pool,omitempty"`
-	Otel                  *bool    `json:"otel,omitempty"`
-	OtelPool              *bool    `json:"otel_pool,omitempty"`
+	Shell                  *bool           `json:"shell,omitempty"`
+	Desktop                *bool           `json:"desktop,omitempty"`
+	Clipboard              *bool           `json:"clipboard,omitempty"`
+	SSH                    *bool           `json:"ssh,omitempty"`
+	SSHAllowLocalForward   *bool           `json:"ssh_allow_local_forward,omitempty"`
+	SSHAllowRemoteForward  *bool           `json:"ssh_allow_remote_forward,omitempty"`
+	SSHAllowAgentForward   *bool           `json:"ssh_allow_agent_forward,omitempty"`
+	SSHForwardSockets      []string        `json:"ssh_forward_sockets,omitempty"`
+	SFTP                   *bool           `json:"sftp,omitempty"`
+	Podman                 *bool           `json:"podman,omitempty"`
+	Ollama                 *bool           `json:"ollama,omitempty"`
+	OllamaPool             *bool           `json:"ollama_pool,omitempty"`
+	Otel                   *bool           `json:"otel,omitempty"`
+	OtelPool               *bool           `json:"otel_pool,omitempty"`
 	Ycode                  *bool           `json:"ycode,omitempty"`
 	YcodeShare             *bool           `json:"ycode_share,omitempty"`
 	YcodeShareRequireLogin *bool           `json:"ycode_share_require_login,omitempty"`
 	YcodeShareSurfaces     map[string]bool `json:"ycode_share_surfaces,omitempty"`
-	Cluster               *bool    `json:"cluster,omitempty"`
+	Cluster                *bool           `json:"cluster,omitempty"`
 	// ClusterMode selects which runtime joins the cluster:
 	// "" / "vkpodman" → legacy virtual-kubelet path (default).
 	// "agent" → real `k3s agent` subprocess (Linux only). Pointer-string

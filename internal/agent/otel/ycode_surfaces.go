@@ -40,11 +40,11 @@ type YcodeSurface struct {
 //
 // Phase-scoped to chat-style entry points for now:
 //   - ycode         → /chat/         the polished chat ycode itself
-//                                     advertises as the canonical
-//                                     entry (default-on)
+//     advertises as the canonical
+//     entry (default-on)
 //   - ycode-canvas  → /ycode/canvas/ canvas/a2ui interaction surface
 //   - ycode-classic → /ycode/        the minimal chat at the legacy
-//                                     /ycode/ path
+//     /ycode/ path
 //
 // Non-chat surfaces (ollama UI, git, memos, graph) live in ycode's
 // componentPathMap and are still reachable via outpost-add custom

@@ -77,11 +77,11 @@ func builtinsShowCmd() *cobra.Command {
 func builtinsSetCmd() *cobra.Command {
 	var (
 		shell, desktop, clipboard, ssh, sshLocalFwd, sshRemoteFwd, sshAgentFwd, sftp, podman, ollama, ollamaPool, otel, otelPool, ycodeShare, ycodeShareRequireLogin, cluster string
-		clusterMode                                                                                                       string
-		updateMode, autoUpgradeLegacy                                                                                     string
-		sshForwardSockets                                                                                                 []string
-		clearSSHForwardSockets                                                                                            bool
-		ycodeShareSurfaces                                                                                                map[string]string
+		clusterMode                                                                                                                                                           string
+		updateMode, autoUpgradeLegacy                                                                                                                                         string
+		sshForwardSockets                                                                                                                                                     []string
+		clearSSHForwardSockets                                                                                                                                                bool
+		ycodeShareSurfaces                                                                                                                                                    map[string]string
 	)
 	cmd := &cobra.Command{
 		Use:   "set",

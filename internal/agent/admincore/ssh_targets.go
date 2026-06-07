@@ -135,7 +135,7 @@ type ExecSSHResult struct {
 const (
 	execSSHDefaultTimeout = 60 * time.Second
 	execSSHMaxTimeout     = 10 * time.Minute
-	execSSHDefaultStdout  = int64(1) << 20  // 1 MiB
+	execSSHDefaultStdout  = int64(1) << 20   // 1 MiB
 	execSSHDefaultStderr  = int64(256) << 10 // 256 KiB
 )
 

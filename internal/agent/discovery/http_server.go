@@ -59,25 +59,25 @@ type HelloRequest struct {
 // HelloResponse is the response shape.
 type HelloResponse struct {
 	SessionID string    `json:"session_id"`
-	My        PeerHello `json:"my"`  // server's own info
-	You       PeerHello `json:"you"` // server echoes the caller's claim
+	My        PeerHello `json:"my"`                  // server's own info
+	You       PeerHello `json:"you"`                 // server echoes the caller's claim
 	Challenge string    `json:"challenge,omitempty"` // base64 32-byte nonce
 }
 
 // ProbeRequest is the body of POST /api/v1/discover/probe.
 type ProbeRequest struct {
 	SessionID        string `json:"session_id"`
-	SignedChallenge  string `json:"signed_challenge"`            // base64 ed25519 sig over server's nonce
-	YourChallenge    string `json:"your_challenge,omitempty"`    // optional: a fresh nonce for the server to sign back
+	SignedChallenge  string `json:"signed_challenge"`             // base64 ed25519 sig over server's nonce
+	YourChallenge    string `json:"your_challenge,omitempty"`     // optional: a fresh nonce for the server to sign back
 	YourCallerPubkey string `json:"your_caller_pubkey,omitempty"` // base64 ed25519 pubkey; needed for sig verification when no cert
 }
 
 // ProbeResponse is the response shape.
 type ProbeResponse struct {
-	SessionID         string `json:"session_id"`
-	OK                bool   `json:"ok"`
+	SessionID           string `json:"session_id"`
+	OK                  bool   `json:"ok"`
 	SignedYourChallenge string `json:"signed_your_challenge,omitempty"` // server's sig over the caller's optional nonce
-	ServerPubkey      string `json:"server_pubkey,omitempty"`           // base64 ed25519 pubkey so caller can verify
+	ServerPubkey        string `json:"server_pubkey,omitempty"`         // base64 ed25519 pubkey so caller can verify
 }
 
 // PeersResponse is the body of GET /api/v1/discover/peers.

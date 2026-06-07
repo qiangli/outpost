@@ -152,54 +152,54 @@ func toClusterView(fc *conf.FileConfig) ClusterView {
 // SafeView is the redacted FileConfig sent over the API. Token never
 // leaves the agent; presence is reported as has_token instead.
 type SafeView struct {
-	AgentName             string               `json:"agent_name"`
-	ServerAddr            string               `json:"server_addr"`
-	ServerPort            int                  `json:"server_port"`
-	CloudboxURL           string               `json:"cloudbox_url,omitempty"`
-	Protocol              string               `json:"protocol,omitempty"`
-	RemotePort            int                  `json:"remote_port"`
-	AuthURL               string               `json:"auth_url,omitempty"`
-	HasToken              bool                 `json:"has_token"`
-	LocalAddr             string               `json:"local_addr,omitempty"`
-	VNCAddr               string               `json:"vnc_addr,omitempty"`
-	AdminAddr             string               `json:"admin_addr,omitempty"`
+	AgentName   string `json:"agent_name"`
+	ServerAddr  string `json:"server_addr"`
+	ServerPort  int    `json:"server_port"`
+	CloudboxURL string `json:"cloudbox_url,omitempty"`
+	Protocol    string `json:"protocol,omitempty"`
+	RemotePort  int    `json:"remote_port"`
+	AuthURL     string `json:"auth_url,omitempty"`
+	HasToken    bool   `json:"has_token"`
+	LocalAddr   string `json:"local_addr,omitempty"`
+	VNCAddr     string `json:"vnc_addr,omitempty"`
+	AdminAddr   string `json:"admin_addr,omitempty"`
 	// Wave 3A discovery + LAN-direct knobs (all default off).
-	DiscoveryEnabled        bool   `json:"discovery_enabled"`
-	SSHListenAddr           string `json:"ssh_listen_addr,omitempty"`
-	DiscoveryHTTPListenAddr string `json:"discovery_http_listen_addr,omitempty"`
-	PeerTrustPolicy         string `json:"peer_trust_policy,omitempty"`
-	AssignedHostname        string `json:"assigned_hostname,omitempty"`
-	OAuth2Email             string `json:"oauth2_email,omitempty"`
-	AdminUsers            []string             `json:"admin_users"`
-	Apps                  []conf.AppConfig     `json:"apps"`
-	ShellEnabled          bool                 `json:"shell_enabled"`
-	DesktopEnabled        bool                 `json:"desktop_enabled"`
-	ClipboardEnabled      bool                 `json:"clipboard_enabled"`
-	SSHEnabled            bool                 `json:"ssh_enabled"`
-	SSHAllowLocalForward  bool                 `json:"ssh_allow_local_forward"`
-	SSHAllowRemoteForward bool                 `json:"ssh_allow_remote_forward"`
-	SSHAllowAgentForward  bool                 `json:"ssh_allow_agent_forward"`
-	SSHForwardSockets     []string             `json:"ssh_forward_sockets"`
-	SFTPEnabled           bool                 `json:"sftp_enabled"`
-	ClientOnly            bool                 `json:"client_only"`
-	Podman                BuiltinView          `json:"podman"`
-	Ollama                BuiltinView          `json:"ollama"`
-	OllamaPoolEnabled     bool                 `json:"ollama_pool_enabled"`
-	OtelEnabled           bool                 `json:"otel_enabled"`
-	OtelPoolEnabled       bool                 `json:"otel_pool_enabled"`
-	Ycode                  YcodeView            `json:"ycode"`
-	YcodeShareEnabled      bool                 `json:"ycode_share_enabled"`
-	YcodeShareRequireLogin bool                 `json:"ycode_share_require_login"`
+	DiscoveryEnabled        bool             `json:"discovery_enabled"`
+	SSHListenAddr           string           `json:"ssh_listen_addr,omitempty"`
+	DiscoveryHTTPListenAddr string           `json:"discovery_http_listen_addr,omitempty"`
+	PeerTrustPolicy         string           `json:"peer_trust_policy,omitempty"`
+	AssignedHostname        string           `json:"assigned_hostname,omitempty"`
+	OAuth2Email             string           `json:"oauth2_email,omitempty"`
+	AdminUsers              []string         `json:"admin_users"`
+	Apps                    []conf.AppConfig `json:"apps"`
+	ShellEnabled            bool             `json:"shell_enabled"`
+	DesktopEnabled          bool             `json:"desktop_enabled"`
+	ClipboardEnabled        bool             `json:"clipboard_enabled"`
+	SSHEnabled              bool             `json:"ssh_enabled"`
+	SSHAllowLocalForward    bool             `json:"ssh_allow_local_forward"`
+	SSHAllowRemoteForward   bool             `json:"ssh_allow_remote_forward"`
+	SSHAllowAgentForward    bool             `json:"ssh_allow_agent_forward"`
+	SSHForwardSockets       []string         `json:"ssh_forward_sockets"`
+	SFTPEnabled             bool             `json:"sftp_enabled"`
+	ClientOnly              bool             `json:"client_only"`
+	Podman                  BuiltinView      `json:"podman"`
+	Ollama                  BuiltinView      `json:"ollama"`
+	OllamaPoolEnabled       bool             `json:"ollama_pool_enabled"`
+	OtelEnabled             bool             `json:"otel_enabled"`
+	OtelPoolEnabled         bool             `json:"otel_pool_enabled"`
+	Ycode                   YcodeView        `json:"ycode"`
+	YcodeShareEnabled       bool             `json:"ycode_share_enabled"`
+	YcodeShareRequireLogin  bool             `json:"ycode_share_require_login"`
 	// YcodeShareSurfaces is the catalog rendered as effective state:
 	// every entry the SPA might offer, with the boolean folding the
 	// per-surface overlay against the catalog's DefaultOn. The SPA
 	// renders one toggle row per entry; the value drives the switch.
 	YcodeShareSurfaces []YcodeShareSurfaceView `json:"ycode_share_surfaces"`
-	UpdateMode            string               `json:"update_mode"`
-	LLMPool               LLMPoolStatusView    `json:"llm_pool"`
-	Cluster               ClusterView          `json:"cluster"`
-	Outbound              []agent.OutboundView `json:"outbound"`
-	Defaults              map[string]string    `json:"defaults"`
+	UpdateMode         string                  `json:"update_mode"`
+	LLMPool            LLMPoolStatusView       `json:"llm_pool"`
+	Cluster            ClusterView             `json:"cluster"`
+	Outbound           []agent.OutboundView    `json:"outbound"`
+	Defaults           map[string]string       `json:"defaults"`
 }
 
 // SafeView returns the redacted view of the on-disk FileConfig + live
@@ -234,18 +234,18 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		sshSockets = []string{}
 	}
 	return SafeView{
-		AgentName:             fc.AgentName,
-		ServerAddr:            fc.ServerAddr,
-		ServerPort:            fc.ServerPort,
-		CloudboxURL:           CloudboxHTTPBase(fc),
-		Protocol:              fc.Protocol,
-		RemotePort:            fc.RemotePort,
-		AuthURL:               fc.AuthURL,
-		HasToken:              fc.Token != "",
-		LocalAddr:             fc.LocalAddr,
-		VNCAddr:               fc.VNCAddr,
-		AdminAddr:             fc.AdminAddr,
-		AdminUsers:            admins,
+		AgentName:   fc.AgentName,
+		ServerAddr:  fc.ServerAddr,
+		ServerPort:  fc.ServerPort,
+		CloudboxURL: CloudboxHTTPBase(fc),
+		Protocol:    fc.Protocol,
+		RemotePort:  fc.RemotePort,
+		AuthURL:     fc.AuthURL,
+		HasToken:    fc.Token != "",
+		LocalAddr:   fc.LocalAddr,
+		VNCAddr:     fc.VNCAddr,
+		AdminAddr:   fc.AdminAddr,
+		AdminUsers:  admins,
 		// Wave 3A discovery + LAN-direct view.
 		DiscoveryEnabled:        fc.DiscoveryOn(),
 		SSHListenAddr:           fc.SSHListenAddr,
@@ -253,30 +253,30 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		PeerTrustPolicy:         fc.EffectivePeerTrustPolicy(),
 		AssignedHostname:        fc.AssignedHostname,
 		OAuth2Email:             fc.OAuth2Email,
-		Apps:                  apps,
-		ShellEnabled:          fc.ShellOn(),
-		DesktopEnabled:        fc.DesktopOn(),
-		ClipboardEnabled:      fc.ClipboardOn(),
-		SSHEnabled:            fc.SSHOn(),
-		SSHAllowLocalForward:  fc.SSHAllowLocalForwardOn(),
-		SSHAllowRemoteForward: fc.SSHAllowRemoteForwardOn(),
-		SSHAllowAgentForward:  fc.SSHAllowAgentForwardOn(),
-		SSHForwardSockets:     sshSockets,
-		SFTPEnabled:           fc.SFTPOn(),
-		ClientOnly:            fc.ClientOnly,
-		Podman:                toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
-		Ollama:                toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
-		OllamaPoolEnabled:     fc.OllamaPoolOn(),
-		OtelEnabled:           fc.OtelOn(),
-		OtelPoolEnabled:       fc.OtelPoolOn(),
-		Ycode:                  toYcodeView(fc.YcodeOn(), ycode.Detect()),
-		YcodeShareEnabled:      fc.YcodeShareOn(),
-		YcodeShareRequireLogin: fc.YcodeShareRequireLoginOn(),
-		YcodeShareSurfaces:     toYcodeShareSurfacesView(fc.YcodeShareSurfaces),
-		UpdateMode:            fc.UpdateModeName(),
-		LLMPool:               s.llmPoolStatusView(fc),
-		Cluster:               toClusterView(fc),
-		Outbound:              s.outboundList(),
+		Apps:                    apps,
+		ShellEnabled:            fc.ShellOn(),
+		DesktopEnabled:          fc.DesktopOn(),
+		ClipboardEnabled:        fc.ClipboardOn(),
+		SSHEnabled:              fc.SSHOn(),
+		SSHAllowLocalForward:    fc.SSHAllowLocalForwardOn(),
+		SSHAllowRemoteForward:   fc.SSHAllowRemoteForwardOn(),
+		SSHAllowAgentForward:    fc.SSHAllowAgentForwardOn(),
+		SSHForwardSockets:       sshSockets,
+		SFTPEnabled:             fc.SFTPOn(),
+		ClientOnly:              fc.ClientOnly,
+		Podman:                  toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
+		Ollama:                  toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
+		OllamaPoolEnabled:       fc.OllamaPoolOn(),
+		OtelEnabled:             fc.OtelOn(),
+		OtelPoolEnabled:         fc.OtelPoolOn(),
+		Ycode:                   toYcodeView(fc.YcodeOn(), ycode.Detect()),
+		YcodeShareEnabled:       fc.YcodeShareOn(),
+		YcodeShareRequireLogin:  fc.YcodeShareRequireLoginOn(),
+		YcodeShareSurfaces:      toYcodeShareSurfacesView(fc.YcodeShareSurfaces),
+		UpdateMode:              fc.UpdateModeName(),
+		LLMPool:                 s.llmPoolStatusView(fc),
+		Cluster:                 toClusterView(fc),
+		Outbound:                s.outboundList(),
 		Defaults: map[string]string{
 			"server_url": "https://ai.dhnt.io",
 			"name":       defaultName,

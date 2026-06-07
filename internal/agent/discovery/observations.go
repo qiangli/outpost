@@ -161,10 +161,10 @@ func (o *Observations) Predict(peer PeerID, hour int) float64 {
 
 // PredictedView is the wire shape returned by `outpost scan --predicted`.
 type PredictedView struct {
-	PeerID     PeerID    `json:"peer_id"`
-	Hour       int       `json:"hour_of_week"`
-	Probability float64  `json:"probability"`
-	LastSeenAt time.Time `json:"last_seen_at,omitzero"`
+	PeerID      PeerID    `json:"peer_id"`
+	Hour        int       `json:"hour_of_week"`
+	Probability float64   `json:"probability"`
+	LastSeenAt  time.Time `json:"last_seen_at,omitzero"`
 }
 
 // PredictedAt returns predictions for every known peer at the given

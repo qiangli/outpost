@@ -139,11 +139,11 @@ type Peer struct {
 	OAuth2Email string `json:"oauth2_email,omitempty"`
 	OSUsername  string `json:"os_username,omitempty"`
 
-	Endpoints    []Endpoint     `json:"endpoints"`
-	Addrs        []netip.Addr   `json:"-"` // resolved IPs from mDNS; not serialized in MCP/JSON (use Endpoints)
-	Version      string         `json:"version,omitempty"`
-	CloudboxBase string         `json:"cloudbox_base,omitempty"`
-	Paired       bool           `json:"paired"`
+	Endpoints    []Endpoint   `json:"endpoints"`
+	Addrs        []netip.Addr `json:"-"` // resolved IPs from mDNS; not serialized in MCP/JSON (use Endpoints)
+	Version      string       `json:"version,omitempty"`
+	CloudboxBase string       `json:"cloudbox_base,omitempty"`
+	Paired       bool         `json:"paired"`
 
 	Sources    []Source   `json:"sources"`
 	Trust      TrustLevel `json:"trust"`

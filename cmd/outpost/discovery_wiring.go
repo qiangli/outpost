@@ -109,10 +109,10 @@ var daemonObservations *discovery.Observations
 // startDiscovery wires up the LAN discovery surfaces when
 // fc.DiscoveryOn():
 //
-//	1. mDNS advertisement (`<assigned_hostname>._outpost._tcp`)
-//	2. HTTP /api/v1/discover/* listener (when DiscoveryHTTPListenAddr set)
-//	3. Background mDNS browse loop that populates daemonCache
-//	4. Observation ticker that feeds daemonObservations
+//  1. mDNS advertisement (`<assigned_hostname>._outpost._tcp`)
+//  2. HTTP /api/v1/discover/* listener (when DiscoveryHTTPListenAddr set)
+//  3. Background mDNS browse loop that populates daemonCache
+//  4. Observation ticker that feeds daemonObservations
 //
 // One gate (DiscoveryEnabled) covers all four — operators decide
 // once "discovery on / off" rather than juggling per-feature flags.

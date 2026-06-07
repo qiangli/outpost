@@ -256,7 +256,7 @@ func ResolveSSHTargetChain(name, override string) ([]SSHTarget, error) {
 		if cursor == name && cursorOverride != "" {
 			via = cursorOverride
 		}
-		t.Via = via // canonicalize the in-memory copy
+		t.Via = via                               // canonicalize the in-memory copy
 		chain = append([]SSHTarget{*t}, chain...) // prepend: outer-first
 		if via == "" {
 			return chain, nil
