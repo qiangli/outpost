@@ -56,6 +56,7 @@ go run ./cmd/outpost rollback              # swap <binary>.previous back over th
 go run ./cmd/outpost remote {login,logout,list} <name>     # cached creds for LAN deploy targets
 go run ./cmd/outpost {jobs,fg <pid>,bg <pid>,kill <pid> [SIG]}  # manage matrix-shell detached jobs
 go run ./cmd/outpost run -- <cmd> [args...]                # submit as per-user launchd agent (macOS)
+go run ./cmd/outpost shell [-c "cmd"]                      # local in-process bash (same engine as matrix shell)
 go run ./cmd/outpost {restart,unpair}
 
 # Embedded git client (no system git required — Windows-friendly):
