@@ -85,7 +85,7 @@ func main() {
 		// MCP-client CLI parity (Phase 1.5):
 		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), unpairCmd(), restartCmd(), mcpCmd(),
 		remoteCmd(),
-		docsCmd(), versionCmd(), upgradeCmd(), rollbackCmd(),
+		docsCmd(), gitCmd(), versionCmd(), upgradeCmd(), rollbackCmd(),
 	)
 	// Wave 3A: LAN peer discovery + peer-assisted repair. Registered
 	// via a helper so main.go's root AddCommand block stays compact.

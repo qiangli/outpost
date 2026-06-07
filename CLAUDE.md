@@ -58,6 +58,11 @@ go run ./cmd/outpost {jobs,fg <pid>,bg <pid>,kill <pid> [SIG]}  # manage matrix-
 go run ./cmd/outpost run -- <cmd> [args...]                # submit as per-user launchd agent (macOS)
 go run ./cmd/outpost {restart,unpair}
 
+# Embedded git client (no system git required — Windows-friendly):
+go run ./cmd/outpost git clone https://github.com/qiangli/outpost
+go run ./cmd/outpost git {status,log,diff,branch,show,remote,fetch,pull}
+go run ./cmd/outpost git {add,commit,checkout,push,init}
+
 # Companion binaries (separate build targets, separate concerns):
 go run ./cmd/outpost-vk -kubeconfig ~/.kube/config -node <name>  # standalone virtual-kubelet PoC (vkpodman)
 # Phase-3 CNI plugin (kubelet exec, not a daemon) — source lives at
@@ -354,6 +359,7 @@ Supporting packages:
 - **`internal/agent/provision.go`** — `/_periscope/*` per-app provisioning relay. App-side caller authenticates with its per-app `ProvisioningToken`; outpost re-signs with `fc.AccessToken` and forwards to cloudbox at `/api/hosts/<host>/apps/<name>/grants`. 503s when unpaired (no `CloudboxBase` or `AccessToken`).
 - **`internal/agent/sysinfo/`** + **`internal/agent/osversion/`** — host capability + OS-version probes (pure stdlib, no `gopsutil`). Shipped in the `/apps` poll loop under `system` so cloudbox can render host details and (future) make placement decisions for CPU-heavy pods. Per-platform behind build tags. Includes GPU probes (NVIDIA VRAM).
 - **`internal/agent/ycode/`** — detection-only probe for a side-by-side `ycode serve` (the agentic engine outpost delegates to for inference, podman, OTel, etc.). Follows ycode's own TUI convention: a running instance publishes `$HOME/.agents/ycode/manifest.json` + `server.token`. Outpost reads + health-checks; admin UI shows "Running" / "Install ycode" / "installed (not running)" based on `State`. **Outpost never spawns or restarts ycode** — the operator owns ycode's lifecycle (and the CLI flags it was started with, which outpost has no way to reproduce). When ycode isn't running, the UI tells the operator to run `ycode serve` themselves.
+- **`internal/agent/git/`** — pure-Go git client wrapping `go-git/v5`, exposed as `outpost git …` (clone, init, add, commit, status, log, diff, branch, checkout, push, pull, fetch, remote, show). The load-bearing case is Windows-without-system-git: outpost ships a self-contained git so users don't have to wire up a real `git` binary + credential helper on every machine. Scope intentionally stops at the typical dev cycle — rebase, stash, merge, tag, reset, blame, submodules, worktrees, reflog, bisect are not implemented. HTTPS auth supports explicit `--username/--password` and falls back to `$GITHUB_TOKEN` / `$GIT_TOKEN` as an oauth2-style basic-auth password. SSH auth takes `--ssh-key [--ssh-key-pass]`. No MCP surface — classic `git` is CLI-only, so `outpost git` matches. Cobra wiring in `cmd/outpost/git.go`.
 
 ## Conventions worth knowing
 
