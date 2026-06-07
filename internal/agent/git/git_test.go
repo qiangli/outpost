@@ -230,6 +230,75 @@ func TestBuildAuthMethodEnvFallback(t *testing.T) {
 	}
 }
 
+// TestRevParse covers HEAD resolution + dirty detection — the two
+// signals the build scripts use to stamp the binary with commit +
+// dirty metadata.
+func TestRevParse(t *testing.T) {
+	dir := t.TempDir()
+
+	if _, err := Init(InitOptions{Path: dir}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	// rev-parse on an empty repo (no commits yet) should fail because
+	// HEAD doesn't resolve. We don't pin the error string — go-git's
+	// wording is its own — but RevParse should return an error.
+	if _, err := RevParse(RevParseOptions{RepoPath: dir}); err == nil {
+		t.Fatalf("expected error on empty repo, got nil")
+	}
+
+	// Seed a commit.
+	fpath := filepath.Join(dir, "f")
+	if err := os.WriteFile(fpath, []byte("a\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := Add(AddOptions{RepoPath: dir, Path: "f"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if _, err := Commit(CommitOptions{RepoPath: dir, Message: "seed", AuthorName: "T", AuthorEmail: "t@e"}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// Full SHA, clean tree.
+	r, err := RevParse(RevParseOptions{RepoPath: dir})
+	if err != nil {
+		t.Fatalf("rev-parse: %v", err)
+	}
+	if len(r.Hash) != 40 {
+		t.Errorf("expected 40-char hash, got %q (len=%d)", r.Hash, len(r.Hash))
+	}
+	if r.Short != "" {
+		t.Errorf("expected empty Short when Short=0, got %q", r.Short)
+	}
+	if r.Dirty {
+		t.Errorf("expected clean tree, got dirty")
+	}
+
+	// Short SHA (default 7).
+	r, err = RevParse(RevParseOptions{RepoPath: dir, Short: 7})
+	if err != nil {
+		t.Fatalf("rev-parse --short: %v", err)
+	}
+	if len(r.Short) != 7 {
+		t.Errorf("expected 7-char short, got %q", r.Short)
+	}
+	if !strings.HasPrefix(r.Hash, r.Short) {
+		t.Errorf("short %q is not a prefix of full %q", r.Short, r.Hash)
+	}
+
+	// Dirty after a worktree modification.
+	if err := os.WriteFile(fpath, []byte("b\n"), 0o644); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	r, err = RevParse(RevParseOptions{RepoPath: dir})
+	if err != nil {
+		t.Fatalf("rev-parse dirty: %v", err)
+	}
+	if !r.Dirty {
+		t.Errorf("expected dirty after worktree modification")
+	}
+}
+
 // TestStatusCodes spot-checks the XY-code mapping.
 func TestStatusCodes(t *testing.T) {
 	// We can't easily construct go-git's StatusCode constants without

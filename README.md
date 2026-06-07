@@ -82,14 +82,17 @@ phones home behind your back.
 ```bash
 git clone https://github.com/qiangli/outpost
 cd outpost
-make build         # → ./bin/outpost
+./scripts/build.sh   # → ./bin/outpost
 ./bin/outpost register --server https://ai.dhnt.io --code <code> --name <host>
 ./bin/outpost start
 ```
 
-Requires Go 1.25+. The `make build` target runs `go build ./cmd/outpost`
+Requires Go 1.25+. `./scripts/build.sh` runs `go build ./cmd/outpost`
 with the version + commit baked into the binary so `outpost version`
-reports a build you can trace back to a git SHA. See
+reports a build you can trace back to a git SHA. Already have outpost
+installed? `outpost git clone … && outpost shell ./scripts/build.sh`
+rebuilds it without needing system git, make, or coreutils — only the
+Go toolchain. See
 [`docs/install.md`](docs/install.md) for the CGO-enabled recipe needed
 for Linux PAM auth (`CGO_ENABLED=1` + `libpam-dev`), Windows build
 notes, and cross-compilation tips.

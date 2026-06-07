@@ -12,16 +12,25 @@ The local HTTP server binds loopback only — the cloud reaches it strictly thro
 
 Requires Go 1.25+ (see `go.mod`). Note the `replace mvdan.cc/sh/v3 => ../sh` in `go.mod` — the shell runner depends on a fork. The fork additionally implements `disown` / `kill` / `nohup` / `setsid` as builtins (upstream has them only as declarations or not at all), which is what lets `nohup ... &` survive a closed SSH session in the matrix shell. The fork also ships `mvdan.cc/sh/v3/interactive` — a reusable read-edit-execute loop wrapping `ergochat/readline` around `interp.Runner`, originally extracted from `cmd/bashy`; this is what gives the matrix shell + `/ssh` arrow-key history, cursor editing, and Ctrl-R reverse search that upstream `parser.Interactive` does not provide.
 
-The sibling-path replace resolves in two contexts: inside the dhnt umbrella it points at the `dhnt/sh` submodule; standalone, run `make bootstrap` (or `./scripts/bootstrap-siblings.sh`) to clone it into `../sh` at the SHA pinned in `.sibling-pins`. CI runs the bootstrap automatically.
+The sibling-path replace resolves in two contexts: inside the dhnt umbrella it points at the `dhnt/sh` submodule; standalone, run `./scripts/bootstrap-siblings.sh` to clone it into `../sh` at the SHA pinned in `.sibling-pins`. CI runs the bootstrap automatically. The bootstrap script prefers `outpost git` when an outpost is on PATH (so a Windows machine with only outpost + go installed can self-rebuild) and falls back to system `git` otherwise.
 
 ```bash
-# Make targets (see `make help`)
-make build      # → ./bin/outpost
-make install    # go install ./cmd/outpost
-make tidy       # go mod tidy + go fmt ./... + go vet ./...
-make clean
+# Build scripts (no Makefile — bash scripts under scripts/ are the canonical entry points)
+./scripts/build.sh           # → ./bin/outpost
+./scripts/build-all.sh       # cross-compile darwin/linux/windows × amd64/arm64
+./scripts/install-bin.sh     # build + install to $HOME/bin (override via INSTALL_DIR)
+./scripts/tidy.sh            # go mod tidy + go fmt ./... + go vet ./...
+./scripts/clean.sh           # rm -rf ./bin
+./scripts/bootstrap-siblings.sh   # materialize ../sh from .sibling-pins (idempotent)
 
-# Tests (no `make test` target). Test files live under:
+# Rebuild outpost from outpost (zero system-git, zero make — only Go toolchain required):
+outpost git clone https://github.com/qiangli/outpost.git
+cd outpost
+outpost shell ./scripts/bootstrap-siblings.sh
+outpost shell ./scripts/build.sh
+# → ./bin/outpost
+
+# Tests (no test wrapper script). Test files live under:
 #   internal/agent/{auth,apps,clipboard,ssh,hostkey,tunnel,outbound}_test.go
 #   internal/agent/portal/exchange_test.go
 #   internal/agent/conf/{file,url}_test.go

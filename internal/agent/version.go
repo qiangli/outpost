@@ -30,11 +30,12 @@ var releaseTag string
 // auto-detect from the working tree's git state. Necessary because
 // the dhnt umbrella mounts outpost as a submodule, and Go's vcs probe
 // walks UP the directory tree until it finds a .git — landing on the
-// umbrella's HEAD, not the outpost submodule's. The Makefile injects
-// the right values; release builds via the GH Action are auto-correct
-// because the action checks out only the outpost repo. ldDirty is a
-// string so the empty case ("no injection") falls through to the
-// auto-detect path for `go run` / bare `go build` invocations.
+// umbrella's HEAD, not the outpost submodule's. `scripts/build.sh`
+// (via `scripts/lib.sh:compute_ldflags`) injects the right values;
+// release builds via the GH Action are auto-correct because the action
+// checks out only the outpost repo. ldDirty is a string so the empty
+// case ("no injection") falls through to the auto-detect path for
+// `go run` / bare `go build` invocations.
 var (
 	ldCommit string
 	ldDirty  string

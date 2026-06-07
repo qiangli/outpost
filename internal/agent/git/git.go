@@ -298,6 +298,58 @@ func Status(repoPath string) (*Result, []StatusEntry, error) {
 	return &Result{Success: true}, entries, nil
 }
 
+// RevParseOptions configures a RevParse call.
+type RevParseOptions struct {
+	RepoPath string
+	// Short, when > 0, abbreviates the SHA to that many leading hex
+	// chars. 0 means full 40-char SHA.
+	Short int
+}
+
+// RevParseResult is the output of resolving HEAD: the full SHA, a
+// short (abbreviated) form (when Short > 0), and a Dirty flag computed
+// from the worktree status. Build scripts use this to stamp the binary
+// with the source commit + dirty state without shelling out to system
+// git — that's the load-bearing case on Windows hosts where outpost
+// rebuilds itself with only a Go toolchain installed.
+type RevParseResult struct {
+	Hash  string
+	Short string
+	Dirty bool
+}
+
+// RevParse resolves HEAD of the repo at opts.RepoPath (default ".")
+// and reports whether the worktree is dirty (any staged or unstaged
+// change relative to HEAD). When opts.Short > 0, Short is filled with
+// the abbreviated SHA; otherwise Short is empty.
+func RevParse(opts RevParseOptions) (*RevParseResult, error) {
+	if opts.RepoPath == "" {
+		opts.RepoPath = "."
+	}
+	r, err := gogit.PlainOpen(opts.RepoPath)
+	if err != nil {
+		return nil, fmt.Errorf("not a git repository: %w", err)
+	}
+	ref, err := r.Head()
+	if err != nil {
+		return nil, fmt.Errorf("HEAD: %w", err)
+	}
+	w, err := r.Worktree()
+	if err != nil {
+		return nil, fmt.Errorf("worktree: %w", err)
+	}
+	st, err := w.Status()
+	if err != nil {
+		return nil, fmt.Errorf("status: %w", err)
+	}
+	full := ref.Hash().String()
+	res := &RevParseResult{Hash: full, Dirty: !st.IsClean()}
+	if opts.Short > 0 {
+		res.Short = full[:min(opts.Short, len(full))]
+	}
+	return res, nil
+}
+
 // StatusCode renders a go-git StatusCode as the XY pair upstream git
 // uses in `git status --short`.
 func StatusCode(status gogit.StatusCode) string {

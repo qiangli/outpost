@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -53,6 +54,7 @@ basic-auth password (with user "oauth2", which GitHub accepts).`,
 		gitDiffCmd(),
 		gitRemoteCmd(),
 		gitShowCmd(),
+		gitRevParseCmd(),
 	)
 	return cmd
 }
@@ -573,4 +575,79 @@ func gitShowCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// gitRevParseCmd implements the subset of `git rev-parse` outpost's
+// build scripts need to stamp the binary with commit + dirty metadata
+// without shelling out to system git. Three forms:
+//
+//	outpost git rev-parse HEAD                  → full 40-char SHA
+//	outpost git rev-parse --short[=N] HEAD      → abbreviated SHA (default 7)
+//	outpost git rev-parse --is-dirty            → "true"/"false" + exit 0/1
+//
+// --is-dirty is an outpost convenience, not real git: it returns the
+// same boolean the Makefile derived from `git diff --quiet` so the new
+// scripts can compute the ldDirty stamp pure-Go.
+func gitRevParseCmd() *cobra.Command {
+	var (
+		short    int
+		shortSet bool
+		isDirty  bool
+	)
+	cmd := &cobra.Command{
+		Use:   "rev-parse [HEAD]",
+		Short: "Resolve HEAD to a SHA (or report worktree dirtiness)",
+		Args:  cobra.MaximumNArgs(1),
+		Example: `  outpost git rev-parse HEAD
+  outpost git rev-parse --short HEAD
+  outpost git rev-parse --short=12 HEAD
+  outpost git rev-parse --is-dirty`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Only HEAD is supported as the rev argument — that's
+			// the only thing the build scripts ever ask about.
+			if len(args) == 1 && args[0] != "HEAD" {
+				return fmt.Errorf("rev-parse: only HEAD is supported, got %q", args[0])
+			}
+			opts := outgit.RevParseOptions{}
+			if shortSet {
+				if short <= 0 {
+					short = 7
+				}
+				opts.Short = short
+			}
+			res, err := outgit.RevParse(opts)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if isDirty {
+				// Match `git diff --quiet` exit-code semantics:
+				// 0 = clean, 1 = dirty. Stdout always reports
+				// "true"/"false" so scripts can read either signal.
+				if res.Dirty {
+					fmt.Fprintln(out, "true")
+					os.Exit(1)
+				}
+				fmt.Fprintln(out, "false")
+				return nil
+			}
+			if opts.Short > 0 {
+				fmt.Fprintln(out, res.Short)
+				return nil
+			}
+			fmt.Fprintln(out, res.Hash)
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&short, "short", 7, "Abbreviate SHA to N chars (default 7)")
+	// NoOptDefVal lets `outpost git rev-parse --short HEAD` work — without
+	// it, cobra greedily consumes "HEAD" as the value for --short and
+	// fails to parse it as int. Passing --short alone now means "use 7".
+	cmd.Flags().Lookup("short").NoOptDefVal = "7"
+	cmd.Flags().BoolVar(&isDirty, "is-dirty", false, "Print true/false and exit 0/1 based on worktree dirtiness")
+	cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
+		shortSet = cmd.Flags().Changed("short")
+		return nil
+	}
+	return cmd
 }
