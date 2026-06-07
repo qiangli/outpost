@@ -618,3 +618,151 @@ func TestWatcher_PushIncludesLoadedAndSwapping_WhenServiceIsCapacitySource(t *te
 		t.Errorf("Capacity.LoadedModels=%v, want [qwen2.5:0.5b]", last.Capacity.LoadedModels)
 	}
 }
+
+// TestContentHash_StableUnderTimestampJitter pins the load-bearing
+// invariant of the delta protocol: two pushes whose only difference is
+// the ModifiedAt timestamp MUST hash to the same value. Pre-delta the
+// watcher used reflect.DeepEqual including ModifiedAt, which fired
+// spurious "change" pushes every poll due to Ollama's filesystem-stat
+// jitter — exactly the noise floor this commit is meant to fix.
+func TestContentHash_StableUnderTimestampJitter(t *testing.T) {
+	t1 := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	t2 := t1.Add(43 * time.Millisecond)
+	a := []ModelInfo{
+		{Name: "llama3.2:1b", Digest: "d1", Size: 100, ModifiedAt: t1, Family: "llama", ParameterSize: "1B"},
+		{Name: "mistral:7b", Digest: "d2", Size: 200, ModifiedAt: t1, Family: "mistral", ParameterSize: "7B"},
+	}
+	b := []ModelInfo{
+		{Name: "llama3.2:1b", Digest: "d1", Size: 100, ModifiedAt: t2, Family: "llama", ParameterSize: "1B"},
+		{Name: "mistral:7b", Digest: "d2", Size: 200, ModifiedAt: t2, Family: "mistral", ParameterSize: "7B"},
+	}
+	ha, hb := ContentHash(a), ContentHash(b)
+	if ha != hb {
+		t.Fatalf("timestamp-only difference must not change hash:\n  a=%s\n  b=%s", ha, hb)
+	}
+	if ha == "" {
+		t.Error("ContentHash should be non-empty for non-empty input")
+	}
+}
+
+// TestContentHash_DiffersOnRealChange flips every stable field one at
+// a time and asserts the hash moves. Baseline is the same set used in
+// the jitter test so the two together pin both directions.
+func TestContentHash_DiffersOnRealChange(t *testing.T) {
+	base := []ModelInfo{
+		{Name: "llama3.2:1b", Digest: "d1", Size: 100, Family: "llama",
+			ParameterSize: "1B", Quantization: "Q4", Capabilities: []string{"completion"}, ContextLength: 4096},
+	}
+	baseline := ContentHash(base)
+
+	mutators := map[string]func([]ModelInfo){
+		"name":           func(m []ModelInfo) { m[0].Name = "llama3.2:3b" },
+		"digest":         func(m []ModelInfo) { m[0].Digest = "different" },
+		"size":           func(m []ModelInfo) { m[0].Size = 999 },
+		"family":         func(m []ModelInfo) { m[0].Family = "qwen" },
+		"parameter_size": func(m []ModelInfo) { m[0].ParameterSize = "3B" },
+		"quantization":   func(m []ModelInfo) { m[0].Quantization = "Q8" },
+		"capabilities":   func(m []ModelInfo) { m[0].Capabilities = []string{"completion", "embedding"} },
+		"context_length": func(m []ModelInfo) { m[0].ContextLength = 8192 },
+		"add_row":        func(m []ModelInfo) { /* handled inline */ },
+	}
+	for name, mut := range mutators {
+		t.Run(name, func(t *testing.T) {
+			cp := make([]ModelInfo, len(base))
+			copy(cp, base)
+			if name == "add_row" {
+				cp = append(cp, ModelInfo{Name: "qwen:7b", Digest: "d2"})
+			} else {
+				mut(cp)
+			}
+			if got := ContentHash(cp); got == baseline {
+				t.Errorf("changing %q should change hash, got equal: %s", name, got)
+			}
+		})
+	}
+}
+
+// TestContentHash_OrderInsensitive: same models posted in different
+// order from /api/tags must hash to the same value. Sorting by Name
+// is the canonicalization step.
+func TestContentHash_OrderInsensitive(t *testing.T) {
+	a := []ModelInfo{
+		{Name: "a", Digest: "d1"},
+		{Name: "b", Digest: "d2"},
+	}
+	b := []ModelInfo{
+		{Name: "b", Digest: "d2"},
+		{Name: "a", Digest: "d1"},
+	}
+	if ContentHash(a) != ContentHash(b) {
+		t.Fatal("hash must be order-insensitive")
+	}
+}
+
+// TestContentHash_CapabilityOrderInsensitive: Ollama may emit
+// capabilities in different orders across versions; the hash must not
+// flip on the order alone.
+func TestContentHash_CapabilityOrderInsensitive(t *testing.T) {
+	a := []ModelInfo{{Name: "x", Capabilities: []string{"completion", "embedding"}}}
+	b := []ModelInfo{{Name: "x", Capabilities: []string{"embedding", "completion"}}}
+	if ContentHash(a) != ContentHash(b) {
+		t.Fatal("capability order must not affect hash")
+	}
+}
+
+// TestWatcher_PushIncludesContentHash verifies the field reaches
+// cloudbox on every push. Smoke check tying ContentHash() to the wire.
+func TestWatcher_PushIncludesContentHash(t *testing.T) {
+	tags := &stubTags{bodies: []string{
+		`{"models":[{"name":"a","digest":"d1","size":100}]}`,
+	}}
+	reg := &capturingRegistry{}
+	w, _, _ := newTestWatcher(t, tags, reg, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	_ = w.Run(ctx)
+
+	last, ok := reg.lastPayload()
+	if !ok {
+		t.Fatal("no push captured")
+	}
+	if last.ContentHash == "" {
+		t.Fatal("push must carry ContentHash")
+	}
+	// And the hash must match what ContentHash would compute over the
+	// payload's own models slice (proves the field isn't randomly
+	// stamped).
+	want := ContentHash(last.Models)
+	if last.ContentHash != want {
+		t.Errorf("ContentHash on wire = %s, computed = %s", last.ContentHash, want)
+	}
+}
+
+// TestWatcher_TimestampJitterDoesNotPush: this is the integration
+// proof that pre-delta we would have pushed on every poll, and now we
+// don't. Ollama serves the same model with ModifiedAt advancing by a
+// few milliseconds each poll (the realistic noise floor).
+func TestWatcher_TimestampJitterDoesNotPush(t *testing.T) {
+	bodies := []string{
+		`{"models":[{"name":"a","digest":"d","modified_at":"2026-06-07T12:00:00.001Z"}]}`,
+		`{"models":[{"name":"a","digest":"d","modified_at":"2026-06-07T12:00:00.044Z"}]}`,
+		`{"models":[{"name":"a","digest":"d","modified_at":"2026-06-07T12:00:00.103Z"}]}`,
+		`{"models":[{"name":"a","digest":"d","modified_at":"2026-06-07T12:00:00.207Z"}]}`,
+		`{"models":[{"name":"a","digest":"d","modified_at":"2026-06-07T12:00:00.311Z"}]}`,
+	}
+	tags := &stubTags{bodies: bodies}
+	reg := &capturingRegistry{}
+	w, _, _ := newTestWatcher(t, tags, reg, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	_ = w.Run(ctx)
+
+	// Initial push is unconditional (1). All subsequent polls only see
+	// timestamp jitter — must NOT push.
+	if got := reg.calls.Load(); got != 1 {
+		t.Errorf("registry calls=%d, want exactly 1 — pre-delta timestamp jitter would have pushed %d times here",
+			got, len(bodies))
+	}
+}

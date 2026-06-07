@@ -134,6 +134,20 @@ type RegistryPushPayload struct {
 	HeartbeatAt time.Time      `json:"heartbeat_at"`
 	Models      []ModelInfo    `json:"models"`
 	Capacity    CapacityReport `json:"capacity"`
+
+	// ContentHash is sha256 over the stable fields of the model list
+	// (name, digest, size, family, parameter_size, quantization,
+	// capabilities, context_length — NOT modified_at, which Ollama
+	// jitters under filesystem-stat noise even when nothing changed).
+	// When cloudbox receives a payload whose ContentHash matches the
+	// one it cached on the previous push, the receiver fast-paths to
+	// a single UPDATE on last_seen_at instead of running the
+	// transactional DELETE+INSERT that Replace performs.
+	//
+	// Empty is the legacy/sentinel value — cloudbox treats it as
+	// "always run Replace". Pre-content-hash outposts marshal to
+	// empty via omitempty and keep working unchanged.
+	ContentHash string `json:"content_hash,omitempty"`
 }
 
 // tagsResponse is the on-the-wire shape of GET /api/tags as Ollama

@@ -234,6 +234,11 @@ func (w *Watcher) Run(ctx context.Context) error {
 
 	var (
 		lastSnapshot []ModelInfo
+		// lastPushedHash is the ContentHash of the model list we last
+		// successfully pushed to cloudbox. Empty until the first push
+		// completes (cloudbox treats this as "always do Replace" on
+		// its side, so the first push behaves like today).
+		lastPushedHash string
 		// lastPushAt is zero until we've successfully pushed at least
 		// once. Heartbeats fire when (now - lastPushAt) >= HeartbeatInterval.
 		// Zero-value time forces an initial push on the first tick.
@@ -247,7 +252,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 	// Run one cycle immediately so cloudbox learns about this outpost
 	// without waiting a full PollInterval — the user just enabled the
 	// pool and expects to see their models in the cloud "soon."
-	if err := w.tick(ctx, &lastSnapshot, &lastPushAt); err != nil {
+	if err := w.tick(ctx, &lastSnapshot, &lastPushedHash, &lastPushAt); err != nil {
 		if errors.Is(err, ErrAuthRevoked) {
 			w.recordError(err)
 			return err
@@ -271,7 +276,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 		case <-t.C:
 		}
 
-		err := w.tick(ctx, &lastSnapshot, &lastPushAt)
+		err := w.tick(ctx, &lastSnapshot, &lastPushedHash, &lastPushAt)
 		switch {
 		case err == nil:
 			backoff = 0
@@ -295,8 +300,9 @@ func (w *Watcher) bumpBackoff(cur time.Duration) time.Duration {
 	return min(cur*2, defaultMaxBackoff)
 }
 
-// tick runs one fetch + diff + maybe-push cycle. Updates lastSnapshot
-// and lastPushAt by reference so the outer loop can drive cadence.
+// tick runs one fetch + diff + maybe-push cycle. Updates lastSnapshot,
+// lastPushedHash, and lastPushAt by reference so the outer loop can
+// drive cadence.
 //
 // /api/ps is polled best-effort on every tick — its result feeds the
 // LoadedSnapshot cache that Service.CapacityHandler reads. A failing
@@ -305,9 +311,16 @@ func (w *Watcher) bumpBackoff(cur time.Duration) time.Duration {
 // info Service composes from Counter alone.
 //
 // Push happens when:
-//   - the model set changed since lastSnapshot, OR
+//   - the content hash changed since lastPushedHash (real model
+//     set/digest/family change), OR
 //   - lastPushAt is older than HeartbeatInterval (or zero, on first run).
-func (w *Watcher) tick(ctx context.Context, lastSnapshot *[]ModelInfo, lastPushAt *time.Time) error {
+//
+// Note: we no longer push on bare modelsEqual change — Ollama's
+// ModifiedAt jitters under stat-syscall noise even when the underlying
+// model file hasn't been touched, which used to flood cloudbox with
+// false-positive "change detected" pushes. ContentHash projects onto
+// the stable fields so timestamp noise is invisible.
+func (w *Watcher) tick(ctx context.Context, lastSnapshot *[]ModelInfo, lastPushedHash *string, lastPushAt *time.Time) error {
 	models, err := w.fetchModels(ctx)
 	if err != nil {
 		return fmt.Errorf("fetch tags: %w", err)
@@ -317,15 +330,17 @@ func (w *Watcher) tick(ctx context.Context, lastSnapshot *[]ModelInfo, lastPushA
 	// is logged at debug level and ignored — the rest of the tick must
 	// still run.
 	w.refreshLoaded(ctx)
-	changed := !modelsEqual(*lastSnapshot, models)
+	currentHash := ContentHash(models)
+	changed := currentHash != *lastPushedHash
 	heartbeatDue := time.Since(*lastPushAt) >= w.cfg.HeartbeatInterval
 	if !changed && !heartbeatDue {
 		return nil
 	}
-	if err := w.push(ctx, models); err != nil {
+	if err := w.push(ctx, models, currentHash); err != nil {
 		return err
 	}
 	*lastSnapshot = models
+	*lastPushedHash = currentHash
 	*lastPushAt = time.Now()
 	w.recordPush(len(models))
 	if changed {
@@ -487,7 +502,7 @@ func (w *Watcher) fetchDetails(ctx context.Context, name string) modelDetails {
 // push POSTs the RegistryPushPayload to cloudbox. Returns
 // ErrAuthRevoked on HTTP 401 so the outer Run loop can stop; any other
 // non-2xx returns an error the outer loop will back off and retry on.
-func (w *Watcher) push(ctx context.Context, models []ModelInfo) error {
+func (w *Watcher) push(ctx context.Context, models []ModelInfo, contentHash string) error {
 	capReport := CapacityReport{MaxParallel: defaultMaxParallel}
 	if w.cfg.Capacity != nil {
 		capReport = w.cfg.Capacity.Snapshot()
@@ -498,6 +513,7 @@ func (w *Watcher) push(ctx context.Context, models []ModelInfo) error {
 		HeartbeatAt: time.Now().UTC(),
 		Models:      models,
 		Capacity:    capReport,
+		ContentHash: contentHash,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
