@@ -46,6 +46,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/userkube"
 	"github.com/qiangli/outpost/internal/agent/vkpodman"
 	"github.com/qiangli/outpost/internal/scheduler"
+	"github.com/qiangli/outpost/internal/telemetry"
 )
 
 // defaultPortal is the public ai.dhnt.io address used when the user
@@ -720,7 +721,32 @@ func startCmd() *cobra.Command {
 				})
 			}
 
+			// Bootstrap OTEL providers. No-op when
+			// OTEL_EXPORTER_OTLP_ENDPOINT is unset (the global W3C
+			// propagator still gets installed so the matrix-tunnel
+			// envelope contract — traceparent preservation across
+			// the proxy hop — works regardless of whether anyone is
+			// listening for spans on this hop). Idempotent via
+			// sync.Once so an in-process restart doesn't double-up.
+			otelProv, otelErr := telemetry.Init(gctx)
+			if otelErr != nil {
+				slog.Warn("outpost: telemetry init failed; continuing without OTEL", "error", otelErr)
+			}
+			if otelProv != nil {
+				defer func() {
+					shCtx, shCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer shCancel()
+					_ = otelProv.Shutdown(shCtx)
+				}()
+			}
+
 			engine := gin.Default()
+			// Generic tracing middleware — every proxied app, every
+			// builtin route (/shell, /ssh, /apps, /healthz), every
+			// inbound cloudbox call gets a span linked to whatever
+			// traceparent it arrived with. No-op when telemetry.Init
+			// ran in no-op mode.
+			engine.Use(telemetry.Tracing("outpost"))
 			agent.RegisterRoutes(engine.Group("/"), agent.Deps{
 				AgentName:             cfg.AgentName,
 				Apps:                  apps,

@@ -21,6 +21,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/telemetry"
 )
 
 // AppEntry is one declared app published to the cloud via GET /apps.
@@ -461,6 +462,16 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 					pr.Out.Header.Set("X-Outpost-Identity-Ts", ts)
 				}
 			}
+			// Preserve the W3C trace context across the outpost-to-app
+			// boundary. Cloudbox stamped a `traceparent` when it
+			// forwarded this request through the matrix tunnel; the
+			// gin tracing middleware extracted it into pr.In's context
+			// (re-parented under outpost's own server span). Re-inject
+			// onto pr.Out so the cooperative app can attach its spans
+			// to the same trace. The contract works regardless of
+			// whether OTEL_EXPORTER_OTLP_ENDPOINT is set on the
+			// outpost — the global propagator is always installed.
+			telemetry.PreserveTraceContext(pr.Out, pr.In)
 		},
 	}
 	r.mu.Lock()
