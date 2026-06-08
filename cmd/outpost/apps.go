@@ -3,9 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -89,9 +95,22 @@ func runSetAppEnabled(ctx context.Context, name string, enabled bool) error {
 func appsListCmd() *cobra.Command {
 	var jsonOut bool
 	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "List registered custom apps",
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		Use:   "list [host]",
+		Short: "List registered custom apps (local daemon, or a paired remote host)",
+		Long: `outpost apps list           # local daemon's app registry
+outpost apps list <host>    # apps on a paired remote host (via cloudbox)
+
+Without a positional, lists the local outpost's app registry via the
+running daemon's MCP endpoint. With <host>, fetches the remote host's
+catalog from cloudbox's /api/v1/hosts (using the persisted access
+token's ssh:read scope) and prints the app slugs. The remote view
+shows only what cloudbox last polled from the host's GET /apps — it's
+the same data the SPA renders for that host's tiles.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				return runAppsListRemote(cmd.Context(), args[0], jsonOut)
+			}
 			session, err := dialMCP(cmd.Context())
 			if err != nil {
 				return err
@@ -139,6 +158,142 @@ func appsListCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit JSON instead of a table")
 	return cmd
+}
+
+// remoteAppEntry mirrors cloudbox's V1HostAppEntry — the subset of
+// fields the CLI surfaces for a remote host's app catalog. Keeping
+// this type local (rather than importing the cloudbox handler types)
+// preserves the OSS / proprietary boundary: outpost ships in the
+// public github.com/qiangli/outpost repo, cloudbox is internal.
+type remoteAppEntry struct {
+	Name         string `json:"name"`
+	Scheme       string `json:"scheme,omitempty"`
+	RequireLogin bool   `json:"require_login"`
+	IndexPath    string `json:"index_path,omitempty"`
+}
+
+type remoteHostView struct {
+	Host   string           `json:"host"`
+	Online bool             `json:"online"`
+	Shared bool             `json:"shared,omitempty"`
+	Apps   []remoteAppEntry `json:"apps"`
+}
+
+func runAppsListRemote(ctx context.Context, host string, jsonOut bool) error {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return errors.New("apps list: empty host")
+	}
+	cfgPath, err := conf.DefaultConfigPath()
+	if err != nil {
+		return fmt.Errorf("locate config: %w", err)
+	}
+	fc, err := conf.LoadFile(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if fc == nil || fc.ServerAddr == "" {
+		return errors.New("local outpost is not paired with cloudbox — run `outpost register` first")
+	}
+	bearer := strings.TrimSpace(os.Getenv("OUTPOST_SESSION_JWT"))
+	if bearer == "" {
+		bearer = fc.AccessToken
+	}
+	if bearer == "" {
+		return errors.New("no cloudbox bearer cached — re-pair with `outpost register`")
+	}
+
+	view, err := fetchRemoteHostApps(ctx, fc.ServerAddr, fc.ServerPort, fc.Protocol, bearer, host)
+	if err != nil {
+		return fmt.Errorf("fetch apps for %s: %w", host, err)
+	}
+	if view == nil {
+		return fmt.Errorf("%s: not paired or not visible to this bearer", host)
+	}
+
+	if jsonOut {
+		b, _ := json.MarshalIndent(view, "", "  ")
+		fmt.Println(string(b))
+		return nil
+	}
+	statusBits := []string{}
+	if view.Online {
+		statusBits = append(statusBits, "online")
+	} else {
+		statusBits = append(statusBits, "offline")
+	}
+	if view.Shared {
+		statusBits = append(statusBits, "shared")
+	}
+	fmt.Printf("Host %s (%s)\n", view.Host, strings.Join(statusBits, ", "))
+	if len(view.Apps) == 0 {
+		fmt.Println("  no apps in cloudbox's last poll snapshot")
+		return nil
+	}
+	fmt.Printf("%-20s  %-8s  %-13s  %s\n", "NAME", "SCHEME", "REQUIRE_LOGIN", "INDEX_PATH")
+	for _, a := range view.Apps {
+		fmt.Printf("%-20s  %-8s  %-13t  %s\n",
+			a.Name, a.Scheme, a.RequireLogin, a.IndexPath)
+	}
+	return nil
+}
+
+// fetchRemoteHostApps GETs cloudbox's /api/v1/hosts (the same endpoint
+// that powers `outpost ssh-config`), filters to the matching host, and
+// returns its app catalog. Returns (nil, nil) when the host isn't
+// visible to the bearer — caller distinguishes that from an error.
+//
+// This piggybacks on the existing endpoint rather than adding a
+// per-host sibling: the listing is small (<1KB even for 50 hosts) and
+// already carries every field we need. Same trust model as
+// fetchSSHHosts, same ssh:read scope.
+func fetchRemoteHostApps(ctx context.Context, server string, port int, protocol, token, host string) (*remoteHostView, error) {
+	s := strings.TrimSpace(server)
+	if !strings.Contains(s, "://") {
+		s = "http://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return nil, err
+	}
+	if strings.EqualFold(strings.TrimSpace(protocol), "wss") || strings.EqualFold(u.Scheme, "https") {
+		u.Scheme = "https"
+	} else {
+		u.Scheme = "http"
+	}
+	if u.Port() == "" && port > 0 {
+		u.Host = u.Hostname() + ":" + strconv.Itoa(port)
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + "/api/v1/hosts"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var out struct {
+		Hosts []remoteHostView `json:"hosts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	for i := range out.Hosts {
+		if strings.EqualFold(out.Hosts[i].Host, host) {
+			return &out.Hosts[i], nil
+		}
+	}
+	return nil, nil
 }
 
 func appsAddCmd() *cobra.Command {
