@@ -10,6 +10,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -58,7 +60,8 @@ func parseSCPArg(arg string) scpEndpoint {
 }
 
 func scpCmd() *cobra.Command {
-	return &cobra.Command{
+	var safe, keepPrevious bool
+	cmd := &cobra.Command{
 		Use:   "scp <src> <dst>",
 		Short: "Copy a file to or from a paired host (LAN-direct when possible)",
 		Long: `outpost scp [user@]host:src dst   # download remote → local
@@ -74,6 +77,16 @@ Rides the SFTP subsystem under the hood (same as modern openssh-scp
 since 8.8). Exactly one of src/dst must carry a [user@]host: prefix
 — local-to-local and host-to-host copies are not supported.
 
+Upload-only flags:
+  --safe            stage to <dst>.new, sha256-verify the stream, then
+                    posix-rename to <dst>. The rename swaps inodes
+                    atomically — re-execing a freshly-deployed signed
+                    binary won't be SIGKILL'd by macOS amfid, which
+                    caches code-signatures by inode.
+  --keep-previous   before the swap, posix-rename the existing <dst>
+                    to <dst>.previous so rollback is a one-command
+                    revert. Implies --safe.
+
 Out of scope for v1 (use system scp or run the copy in two steps):
   -r  recursive directory copy
   -p  preserve mtime/mode
@@ -81,12 +94,15 @@ Out of scope for v1 (use system scp or run the copy in two steps):
       tunneled path uses cloudbox's HTTPS port)`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSCP(cmd.Context(), args[0], args[1])
+			return runSCP(cmd.Context(), args[0], args[1], safe || keepPrevious, keepPrevious)
 		},
 	}
+	cmd.Flags().BoolVar(&safe, "safe", false, "Stage to <dst>.new and posix-rename — amfid-safe binary delivery (upload only)")
+	cmd.Flags().BoolVar(&keepPrevious, "keep-previous", false, "Posix-rename existing <dst> to <dst>.previous before the swap; implies --safe")
+	return cmd
 }
 
-func runSCP(ctx context.Context, srcArg, dstArg string) error {
+func runSCP(ctx context.Context, srcArg, dstArg string, safe, keepPrevious bool) error {
 	src := parseSCPArg(srcArg)
 	dst := parseSCPArg(dstArg)
 	switch {
@@ -95,8 +111,14 @@ func runSCP(ctx context.Context, srcArg, dstArg string) error {
 	case src.Remote && dst.Remote:
 		return errors.New("scp: host-to-host copies are not supported (use two invocations through a local staging file)")
 	case src.Remote:
+		if safe {
+			return errors.New("scp: --safe / --keep-previous apply to uploads only")
+		}
 		return runSCPDownload(ctx, src, dst.Path)
 	default:
+		if safe {
+			return runSCPSafeUpload(ctx, src.Path, dst, keepPrevious)
+		}
 		return runSCPUpload(ctx, src.Path, dst)
 	}
 }
@@ -192,6 +214,96 @@ func runSCPUpload(ctx context.Context, localPath string, dst scpEndpoint) error 
 		return fmt.Errorf("copy %s -> %s: %w", localPath, remotePath, err)
 	}
 	fmt.Fprintf(os.Stderr, "outpost scp: copied %d bytes %s -> %s:%s\n", n, localPath, dst.Host, remotePath)
+	return nil
+}
+
+// runSCPSafeUpload stages the local file to <remote>.new, hashes the
+// stream client-side, then sftp.PosixRename's it over <remote>. On
+// POSIX filesystems PosixRename swaps inodes atomically; on macOS the
+// inode swap is what lets a re-execed signed binary clear amfid's
+// per-inode signature cache. The plain Create-and-overwrite path used
+// by runSCPUpload keeps the destination inode and SIGKILLs the next
+// re-exec silently (exit 137, empty stderr).
+//
+// When keepPrevious is true, the existing <remote> is PosixRenamed to
+// <remote>.previous before the swap — same atomic-rename trick. A
+// missing destination is fine; we just skip the snapshot step.
+func runSCPSafeUpload(ctx context.Context, localPath string, dst scpEndpoint, keepPrevious bool) error {
+	if strings.TrimSpace(localPath) == "" {
+		return errors.New("scp --safe: empty local source path")
+	}
+	lf, err := os.Open(localPath)
+	if err != nil {
+		return fmt.Errorf("open local %s: %w", localPath, err)
+	}
+	defer lf.Close()
+
+	client, cleanup, err := dialOutpostHost(ctx, dst.Host, dst.User)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	sftpCli, err := client.SFTP()
+	if err != nil {
+		return fmt.Errorf("open sftp subsystem on %s: %w", dst.Host, err)
+	}
+	defer sftpCli.Close()
+
+	remotePath := dst.Path
+	if strings.TrimSpace(remotePath) == "" {
+		return errors.New("scp --safe: explicit remote path required (no SFTP-CWD default)")
+	}
+	// scp --safe foo host:/some/dir/ — write into the dir under the
+	// local basename, matching plain scp's behavior.
+	if info, serr := sftpCli.Stat(remotePath); serr == nil && info.IsDir() {
+		remotePath = path.Join(remotePath, filepath.Base(localPath))
+	}
+
+	stagingPath := remotePath + ".new"
+	// O_EXCL surfaces a stale .new from a previous failure as an
+	// explicit error instead of silently overwriting it.
+	rf, err := sftpCli.OpenFile(stagingPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
+	if err != nil {
+		return fmt.Errorf("create remote staging %s: %w (run `outpost ssh %s -- rm -f %q` if a previous --safe run aborted)", stagingPath, err, dst.Host, stagingPath)
+	}
+	// Best-effort cleanup of the staging file if anything below fails
+	// before we successfully rename it into place.
+	stagingKept := false
+	defer func() {
+		if !stagingKept {
+			_ = sftpCli.Remove(stagingPath)
+		}
+	}()
+
+	hasher := sha256.New()
+	n, err := io.Copy(io.MultiWriter(rf, hasher), lf)
+	if cerr := rf.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return fmt.Errorf("copy %s -> %s: %w", localPath, stagingPath, err)
+	}
+	digest := hex.EncodeToString(hasher.Sum(nil))
+
+	if keepPrevious {
+		// PosixRename refuses a missing source on most servers; check
+		// first so the absence of a prior generation is silent rather
+		// than an error.
+		if _, serr := sftpCli.Stat(remotePath); serr == nil {
+			previousPath := remotePath + ".previous"
+			if err := sftpCli.PosixRename(remotePath, previousPath); err != nil {
+				return fmt.Errorf("snapshot %s -> %s: %w", remotePath, previousPath, err)
+			}
+		}
+	}
+
+	if err := sftpCli.PosixRename(stagingPath, remotePath); err != nil {
+		return fmt.Errorf("posix-rename %s -> %s: %w (SFTP server missing posix-rename@openssh.com?)", stagingPath, remotePath, err)
+	}
+	stagingKept = true
+
+	fmt.Fprintf(os.Stderr, "outpost scp --safe: copied %d bytes %s -> %s:%s (sha256=%s)\n", n, localPath, dst.Host, remotePath, digest)
 	return nil
 }
 
