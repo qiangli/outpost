@@ -347,6 +347,14 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 		// prefixed by the mount (so a well-behaved app that already
 		// honors X-Forwarded-Prefix doesn't get double-prefixed).
 		ModifyResponse: func(resp *http.Response) error {
+			// Echo the traceparent outpost saw back as a response
+			// header so an end-to-end caller (ycode + curl) can
+			// inspect the trace_id outpost actually received — load-
+			// bearing for the collector-free e2e validation when no
+			// OTLP collector is wired up at the outpost.
+			if tp := resp.Request.Header.Get("traceparent"); tp != "" {
+				resp.Header.Set("X-Outpost-Traceparent", tp)
+			}
 			loc := resp.Header.Get("Location")
 			if loc == "" || loc[0] != '/' || (len(loc) >= 2 && loc[1] == '/') {
 				return nil
