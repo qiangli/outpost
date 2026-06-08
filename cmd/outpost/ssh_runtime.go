@@ -44,24 +44,41 @@ import (
 // for interactive shell).
 func runSSHHost(ctx context.Context, arg string, cmdArgs []string) error {
 	user, host := parseUserAtHost(arg)
+	client, cleanup, err := dialOutpostHost(ctx, host, user)
+	if err != nil {
+		return err
+	}
+	return runRemote(ctx, client, cleanup, host, cmdArgs)
+}
 
+// dialOutpostHost is the shared "open an SSH session to <host>" helper.
+// Both `outpost ssh` and `outpost scp` go through here so the
+// mDNS-probe → cookie-elevate → peer-ticket → LAN-direct → tunnel-
+// fallback flow lives in exactly one place. `host` is the bare
+// hostname (no user@); `user` is the OS user to authenticate as
+// (empty means "resolve from cloudbox/$USER like outpost connect").
+//
+// Returns the connected *sshclient.Client plus a cleanup func the
+// caller defers. On any error the cleanup is already a no-op so
+// callers don't need to gate the defer on err == nil.
+func dialOutpostHost(ctx context.Context, host, user string) (*sshclient.Client, func(), error) {
 	cfgPath, err := conf.DefaultConfigPath()
 	if err != nil {
-		return fmt.Errorf("locate config: %w", err)
+		return nil, func() {}, fmt.Errorf("locate config: %w", err)
 	}
 	fc, err := conf.LoadFile(cfgPath)
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
+		return nil, func() {}, fmt.Errorf("load config: %w", err)
 	}
 	if fc == nil || fc.ServerAddr == "" {
-		return errors.New("local outpost is not paired with cloudbox yet — run `outpost register` first")
+		return nil, func() {}, errors.New("local outpost is not paired with cloudbox yet — run `outpost register` first")
 	}
 	bearer := strings.TrimSpace(os.Getenv("OUTPOST_SESSION_JWT"))
 	if bearer == "" {
 		bearer = fc.AccessToken
 	}
 	if bearer == "" {
-		return errors.New("no cloudbox bearer cached — re-pair with `outpost register`")
+		return nil, func() {}, errors.New("no cloudbox bearer cached — re-pair with `outpost register`")
 	}
 
 	// Resolve OS user (if not explicit) the same way `outpost connect`
@@ -82,7 +99,7 @@ func runSSHHost(ctx context.Context, arg string, cmdArgs []string) error {
 		user = strings.TrimSpace(os.Getenv("USER"))
 	}
 	if user == "" {
-		return errors.New("could not determine OS username; use `outpost ssh user@host`")
+		return nil, func() {}, errors.New("could not determine OS username; specify user@host")
 	}
 
 	// Ensure we have a cached matrix_elev cookie for this host. If
@@ -94,11 +111,11 @@ func runSSHHost(ctx context.Context, arg string, cmdArgs []string) error {
 	if strings.TrimSpace(cookie) == "" {
 		fmt.Fprintf(os.Stderr, "outpost: %s has no cached elevation; prompting for OS password…\n", host)
 		if err := runConnect(ctx, host, user, false, false, 0); err != nil {
-			return fmt.Errorf("elevate %s: %w", host, err)
+			return nil, func() {}, fmt.Errorf("elevate %s: %w", host, err)
 		}
 		cookie, _ = conf.ReadSessionCookie(host)
 		if strings.TrimSpace(cookie) == "" {
-			return errors.New("elevation completed but no cookie was cached")
+			return nil, func() {}, errors.New("elevation completed but no cookie was cached")
 		}
 	}
 
@@ -108,7 +125,7 @@ func runSSHHost(ctx context.Context, arg string, cmdArgs []string) error {
 	// no pubkey configured, peer-ticket exchange fails) falls back
 	// to the cloudbox-tunneled path so the command always works.
 	if client, cleanup, err := dialLANDirect(ctx, fc, bearer, host, user, cookie); err == nil {
-		return runRemote(ctx, client, cleanup, host, cmdArgs)
+		return client, cleanup, nil
 	} else if !errors.Is(err, errLANNotAvailable) {
 		// Log non-trivial LAN-direct failures (e.g. peer-ticket
 		// exchange returned 5xx) so the operator can see what
@@ -116,12 +133,7 @@ func runSSHHost(ctx context.Context, arg string, cmdArgs []string) error {
 		slog.Info("ssh: LAN-direct attempt failed, falling back to cloudbox tunnel",
 			"host", host, "err", err)
 	}
-
-	client, cleanup, err := dialCloudboxTunnel(ctx, fc, bearer, host, user, cookie)
-	if err != nil {
-		return err
-	}
-	return runRemote(ctx, client, cleanup, host, cmdArgs)
+	return dialCloudboxTunnel(ctx, fc, bearer, host, user, cookie)
 }
 
 // errLANNotAvailable signals that LAN-direct simply doesn't apply
