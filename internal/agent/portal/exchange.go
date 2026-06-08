@@ -160,6 +160,13 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		AccessToken string `json:"access_token"`
 		ClientOnly  bool   `json:"client_only"`
 
+		// CloudboxTicketPubkey is the PEM-encoded ed25519 pubkey the
+		// outpost stores in FileConfig to verify peer tickets locally
+		// on the LAN-direct SSH path. Cloudbox publishes the same key
+		// to every outpost it pairs so they can trust each other's
+		// LAN-direct dials without cloudbox in the data path.
+		CloudboxTicketPubkey string `json:"cloudbox_ticket_pubkey"`
+
 		// Cluster join data — populated only when cloudbox is running
 		// in cluster mode AND has already materialized the node-token.
 		// Outpost persists into ClusterConfig.{NodeToken,STCPSecret,
@@ -217,15 +224,16 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 	}
 
 	fc := &conf.FileConfig{
-		AgentName:   ex.AgentName,
-		ServerAddr:  ex.ServerAddr,
-		ServerPort:  ex.ServerPort,
-		Protocol:    ex.Protocol,
-		Token:       ex.Token,
-		RemotePort:  ex.RemotePort,
-		AuthURL:     authURL,
-		AccessToken: ex.AccessToken,
-		ClientOnly:  ex.ClientOnly,
+		AgentName:            ex.AgentName,
+		ServerAddr:           ex.ServerAddr,
+		ServerPort:           ex.ServerPort,
+		Protocol:             ex.Protocol,
+		Token:                ex.Token,
+		RemotePort:           ex.RemotePort,
+		AuthURL:              authURL,
+		AccessToken:          ex.AccessToken,
+		ClientOnly:           ex.ClientOnly,
+		CloudboxTicketPubkey: ex.CloudboxTicketPubkey,
 	}
 	// Carry the cluster-join bits onto the persisted ClusterConfig
 	// when cloudbox returned them. Mode stays empty here — the
@@ -380,6 +388,11 @@ func Reattach(ctx context.Context, req ReattachRequest) (*conf.FileConfig, error
 		AccessToken string `json:"access_token"` // always "" on reattach
 		ClientOnly  bool   `json:"client_only"`
 
+		// CloudboxTicketPubkey is re-published on reattach so a re-pair
+		// after a cloudbox key rotation picks up the new key without an
+		// explicit migration step.
+		CloudboxTicketPubkey string `json:"cloudbox_ticket_pubkey"`
+
 		ClusterNodeToken   string `json:"cluster_node_token"`
 		ClusterSTCPSecret  string `json:"cluster_stcp_secret"`
 		ClusterAPIPort     int    `json:"cluster_api_port"`
@@ -397,15 +410,16 @@ func Reattach(ctx context.Context, req ReattachRequest) (*conf.FileConfig, error
 	}
 
 	fc := &conf.FileConfig{
-		AgentName:   ex.AgentName,
-		ServerAddr:  ex.ServerAddr,
-		ServerPort:  ex.ServerPort,
-		Protocol:    ex.Protocol,
-		Token:       ex.Token,
-		RemotePort:  ex.RemotePort,
-		AuthURL:     authURL,
-		AccessToken: req.AccessToken, // carry the existing bearer through
-		ClientOnly:  ex.ClientOnly,
+		AgentName:            ex.AgentName,
+		ServerAddr:           ex.ServerAddr,
+		ServerPort:           ex.ServerPort,
+		Protocol:             ex.Protocol,
+		Token:                ex.Token,
+		RemotePort:           ex.RemotePort,
+		AuthURL:              authURL,
+		AccessToken:          req.AccessToken, // carry the existing bearer through
+		ClientOnly:           ex.ClientOnly,
+		CloudboxTicketPubkey: ex.CloudboxTicketPubkey,
 	}
 	if ex.ClusterNodeToken != "" || ex.ClusterSTCPSecret != "" ||
 		ex.ClusterAPIPort != 0 || ex.ClusterKubeletPort != 0 ||

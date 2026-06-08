@@ -18,7 +18,8 @@
 //	cb   = cloudbox base URL (when paired; "" otherwise)
 //	ver  = build commit
 //	pair = "1" when paired, "0" otherwise
-//	ssh  = SSH LAN listener `host:port` (when bound)
+//	ssh  = plain-TCP SSH LAN listener `host:port` (when bound; PAM-gated)
+//	sshws= WS-mounted SSH LAN listener `host:port` (when bound; peer-ticket auth)
 //	http = HTTP discover LAN listener `host:port` (when bound)
 //
 // Receivers ignore unknown keys, so this set is forward-compatible.
@@ -56,7 +57,7 @@ type AdvertiseOptions struct {
 	IPs []string
 
 	// PeerID, AgentName, AssignedHostname, OSUsername, OAuth2Email,
-	// CloudboxBase, Version, Paired, SSHListenAddr,
+	// CloudboxBase, Version, Paired, SSHListenAddr, SSHWSListenAddr,
 	// HTTPDiscoverListenAddr feed the TXT records.
 	PeerID                 PeerID
 	AgentName              string
@@ -67,6 +68,7 @@ type AdvertiseOptions struct {
 	Version                string
 	Paired                 bool
 	SSHListenAddr          string
+	SSHWSListenAddr        string
 	HTTPDiscoverListenAddr string
 }
 
@@ -140,6 +142,7 @@ func buildTXTRecords(opts AdvertiseOptions) []string {
 		{"ver", opts.Version},
 		{"pair", paired01(opts.Paired)},
 		{"ssh", opts.SSHListenAddr},
+		{"sshws", opts.SSHWSListenAddr},
 		{"http", opts.HTTPDiscoverListenAddr},
 	}
 	out := make([]string, 0, len(entries))

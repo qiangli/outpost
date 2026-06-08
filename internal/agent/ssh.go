@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
+	"github.com/qiangli/outpost/internal/agent/peerticket"
 	outshell "github.com/qiangli/outpost/internal/agent/shell"
 )
 
@@ -52,6 +54,28 @@ type sshHandlerDeps struct {
 	// X-Outpost-Peer-Origin header on peer-tunneled dials so
 	// cloudbox's audit log can record the originating sibling.
 	SelfName string
+
+	// TrustPeriscopeRole controls whether the handler accepts the
+	// `X-Periscope-Role` header as a vouching signal. True on the
+	// loopback-bound handler (where the matrix tunnel is the only
+	// ingress, so cloudbox is the only entity that can stamp the
+	// header). False on any LAN-bound handler — a LAN listener that
+	// honored the header would let any LAN device promote itself to
+	// admin by spoofing it. The peer-ticket path (Authorization:
+	// Bearer <ticket>, verified locally) is the LAN-side substitute.
+	TrustPeriscopeRole bool
+
+	// TicketVerifier and TicketAudience configure the peer-ticket
+	// verification path that replaces X-Periscope-Role on LAN-bound
+	// handlers. Nil Verifier or empty Pubkey disables verification —
+	// the handler falls through to the OS-password gate as if the
+	// ticket weren't presented. TicketAudience is the receiver's
+	// expected `aud` claim (e.g. "outpost:peer-b"); set from the
+	// outpost's own AgentName at boot, never from a request.
+	TicketVerifier *peerticket.Verifier
+	TicketPubkey   ed25519.PublicKey
+	TicketAudience string
+	TicketScope    string // capability gate: "ssh" for this handler
 
 	// CloudboxBase is the cloudbox HTTP(S) base URL (e.g.
 	// "https://ai.dhnt.io"). When set together with AccessToken, the
@@ -97,20 +121,53 @@ func sshHandler(deps sshHandlerDeps) gin.HandlerFunc {
 	streamlocalAllow := buildStreamlocalAllowlist(deps.ForwardSockets)
 
 	return func(c *gin.Context) {
-		// Cloudbox stamps X-Periscope-Role on the WSS upgrade after its
-		// own elevation gate passes. When present and >= "user", the
-		// caller has already been authenticated at the cloudbox edge
-		// (matrix_elev cookie minted by /h/:host/elevate against the
-		// outpost's /auth PAM check). We honor that vouching and skip
-		// the SSH-protocol password challenge — otherwise the user
-		// would be prompted for the OS password twice on every session.
+		// Two vouching paths feed cloudboxVouched. Both end in the
+		// same effect (NoClientAuth=true → no SSH password prompt):
 		//
-		// Loopback-only binding + matrix-tunnel ingress make this
-		// header trustworthy (same model /shell already trusts
-		// X-Periscope-User on). Direct-loopback access bypassing
-		// cloudbox falls through to the password fallback below.
-		periscopeRole := strings.TrimSpace(c.GetHeader("X-Periscope-Role"))
-		cloudboxVouched := periscopeRole == "admin" || periscopeRole == "user"
+		//  1. X-Periscope-Role header — what cloudbox stamps after
+		//     validating the matrix_elev cookie on its own edge. Only
+		//     trustworthy when the matrix tunnel is the only ingress
+		//     to this handler (loopback bind). The TrustPeriscopeRole
+		//     dep gates this: false on LAN-bound handlers because a
+		//     LAN listener that honored this header would let any
+		//     LAN device promote itself to admin.
+		//
+		//  2. Authorization: Bearer <peer-ticket> — a short-lived
+		//     JWT cloudbox issues at /api/v1/ssh/peer-ticket in
+		//     exchange for the client's matrix_elev cookie. The
+		//     receiver verifies the signature locally using
+		//     CloudboxTicketPubkey (stored at pairing time). Lets the
+		//     LAN-direct path stay passwordless without putting
+		//     cloudbox in the data plane. The cookie itself never
+		//     traverses to the LAN bind — only the derived ticket.
+		//
+		// Direct-loopback access bypassing both falls through to the
+		// PasswordCallback OS-password gate.
+		cloudboxVouched := false
+		if deps.TrustPeriscopeRole {
+			periscopeRole := strings.TrimSpace(c.GetHeader("X-Periscope-Role"))
+			cloudboxVouched = periscopeRole == "admin" || periscopeRole == "user"
+		}
+		if !cloudboxVouched && deps.TicketVerifier != nil && len(deps.TicketPubkey) > 0 {
+			if tok := extractBearerTicket(c.Request); tok != "" {
+				claims, verr := deps.TicketVerifier.Verify(tok, peerticket.VerifyOptions{
+					Pubkey:           deps.TicketPubkey,
+					ExpectedAudience: deps.TicketAudience,
+					RequiredScope:    deps.TicketScope,
+				})
+				if verr == nil {
+					cloudboxVouched = true
+					slog.Info("ssh: peer-ticket accepted",
+						"remote", c.Request.RemoteAddr,
+						"sub", claims.Subject,
+						"role", claims.Role)
+				} else {
+					slog.Warn("ssh: peer-ticket rejected",
+						"remote", c.Request.RemoteAddr,
+						"err", verr)
+				}
+			}
+		}
 
 		// Loopback-only, reached only through the cloud's WS proxy. Same
 		// origin-skip rationale as shellHandler.
@@ -133,6 +190,25 @@ func sshHandler(deps sshHandlerDeps) gin.HandlerFunc {
 
 		handleSSHConn(ctx, netConn, c.Request.RemoteAddr, cloudboxVouched, deps, currentUser, authURL, streamlocalAllow)
 	}
+}
+
+// extractBearerTicket returns the peer-ticket from an Authorization
+// header of the form `Bearer <ticket>`. Empty string when no header
+// is present or the scheme isn't Bearer — callers fall through to
+// the password path in that case.
+func extractBearerTicket(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	h := strings.TrimSpace(r.Header.Get("Authorization"))
+	if h == "" {
+		return ""
+	}
+	const prefix = "Bearer "
+	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
+		return ""
+	}
+	return strings.TrimSpace(h[len(prefix):])
 }
 
 // handleSSHConn services one already-established byte stream as an
@@ -327,6 +403,66 @@ func ServeLANSSH(ctx context.Context, ln net.Listener, deps Deps) error {
 		SelfName:           deps.SelfName,
 	}
 	return ServeLANListener(ctx, ln, handlerDeps)
+}
+
+// ServeLANSSHWS mounts the same /ssh handler the loopback gin engine
+// uses on a fresh HTTP server bound to ln. Replaces the plain-TCP
+// ServeLANSSH path with a WS-mounted listener that accepts peer-ticket
+// JWTs as the auth signal (the cookie itself never traverses the LAN).
+//
+// `deps.SSHTicketPubkey` + `deps.SSHTicketVerifier` + `deps.SSHTicketAudience`
+// are the new wiring. With them set, a client that presents
+// `Authorization: Bearer <peer-ticket>` on the WS upgrade verifies
+// without a password prompt. Empty pubkey or nil verifier disables the
+// path — the handler still mounts, but every connection falls through
+// to the OS-password gate (matching the legacy LAN-TCP behavior).
+//
+// `X-Periscope-Role` is NOT trusted on this path (TrustPeriscopeRole=false)
+// because a LAN listener that honored it would let any LAN device
+// promote itself to admin by spoofing the header.
+func ServeLANSSHWS(ctx context.Context, ln net.Listener, deps Deps) error {
+	auth := deps.Auth
+	if auth == nil {
+		auth = hostauth.DefaultAuthenticator()
+	}
+	handlerDeps := sshHandlerDeps{
+		HostKey:            deps.SSHHostKey,
+		Auth:               auth,
+		AuthURL:            deps.AuthURL,
+		AllowLocalForward:  deps.SSHAllowLocalForward,
+		AllowRemoteForward: deps.SSHAllowRemoteForward,
+		AllowAgentForward:  deps.SSHAllowAgentForward,
+		SFTPEnabled:        deps.SFTPEnabled,
+		Peers:              deps.PeerHosts,
+		ForwardSockets:     deps.SSHForwardSockets,
+		CloudboxBase:       deps.CloudboxBase,
+		CloudboxProtocol:   deps.CloudboxProtocol,
+		AccessToken:        deps.AccessToken,
+		SelfName:           deps.SelfName,
+		TrustPeriscopeRole: false,
+		TicketPubkey:       deps.SSHTicketPubkey,
+		TicketVerifier:     deps.SSHTicketVerifier,
+		TicketAudience:     deps.SSHTicketAudience,
+		TicketScope:        "ssh",
+	}
+
+	// Minimal gin engine: only `/ssh` is mounted. We deliberately
+	// don't reuse the loopback engine — apps, clipboard, /shell,
+	// etc. should never appear on a LAN bind. This is the SSH
+	// transport, nothing else.
+	engine := gin.New()
+	engine.GET("/ssh", sshHandler(handlerDeps))
+	httpSrv := &http.Server{Handler: engine}
+
+	// Tie listener lifetime to ctx.
+	go func() {
+		<-ctx.Done()
+		_ = httpSrv.Close()
+	}()
+	if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
 
 // directTCPIPMsg is the channel-data payload SSH clients send when

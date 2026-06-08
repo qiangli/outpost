@@ -39,6 +39,22 @@ type FileConfig struct {
 	// shared secret used by the FRP client.
 	AccessToken string `json:"access_token,omitempty"`
 
+	// CloudboxTicketPubkey is the PEM-encoded ed25519 public key
+	// cloudbox uses to sign peer tickets — short-lived JWTs the client
+	// trades the matrix_elev cookie for at cloudbox and presents to a
+	// peer outpost on the LAN-direct path. The receiving outpost
+	// verifies signatures locally with this key, so peer-to-peer SSH
+	// (and the other LAN-direct flows that will follow) stays
+	// passwordless after the first `outpost connect` without putting
+	// cloudbox on the data path.
+	//
+	// Populated at pairing time (POST /api/register/exchange returns
+	// `cloudbox_ticket_pubkey`). Empty means this outpost can't verify
+	// peer tickets yet, so LAN-direct callers fall through to the
+	// X-Periscope-Role path (loopback only) — equivalent to the
+	// pre-peer-ticket world.
+	CloudboxTicketPubkey string `json:"cloudbox_ticket_pubkey,omitempty"`
+
 	// ClientOnly marks this machine as a credential vehicle that should
 	// never accept inbound traffic — the user wants to ssh OUT to other
 	// paired hosts but not BE one. When true: `outpost start` skips
@@ -307,6 +323,17 @@ type FileConfig struct {
 	// services WS and LAN paths; PasswordCallback authentication
 	// applies on LAN-direct (no cloudbox vouching available).
 	SSHListenAddr string `json:"ssh_listen_addr,omitempty"`
+
+	// SSHWSListenAddr is the optional LAN WebSocket-mounted SSH
+	// listener (e.g. "0.0.0.0:2223"). Same /ssh handler as the
+	// loopback bind — clients open a WSS upgrade with
+	// `Authorization: Bearer <peer-ticket>` and the receiver
+	// verifies the ticket locally against CloudboxTicketPubkey.
+	// Enables passwordless LAN-direct `outpost ssh` without putting
+	// cloudbox on the data plane. Distinct from SSHListenAddr
+	// (plain-TCP PAM-gated) so an operator can run both transports
+	// during migration without port-conflict. Empty disables.
+	SSHWSListenAddr string `json:"ssh_ws_listen_addr,omitempty"`
 
 	// DiscoveryHTTPListenAddr is the optional LAN bind for the HTTP
 	// /api/v1/discover/* surface (e.g. "0.0.0.0:17778"). Empty disables.
@@ -586,6 +613,7 @@ func (oc OutboundConfig) BuiltinSSH() bool {
 //     WebSocket upgrade and byte-bridges WS↔TCP. Reached from a remote
 //     outpost via a tcp-scheme outbound (see OutboundConfig). Used for
 //     ssh, postgres, mysql, redis and other non-HTTP services.
+//
 // BackupConfig is the operator-declared "what folders to watch and
 // how often" for the off-host backup scheduler. One cron entry fires
 // on Schedule; each fire iterates Folders and picks the newest

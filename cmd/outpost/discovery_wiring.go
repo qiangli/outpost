@@ -27,6 +27,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/discovery"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
+	"github.com/qiangli/outpost/internal/agent/peerticket"
 )
 
 // registerDiscoveryCommands attaches the Wave 3A LAN-discovery and
@@ -94,6 +95,73 @@ func startLANSSHListener(
 	})
 }
 
+// startLANSSHWSListener binds the optional WS-mounted SSH listener
+// when fc.SSHWSListenAddr is set. Same /ssh route as the loopback
+// handler, but the trust signal is a peer-ticket JWT (Authorization:
+// Bearer <ticket>) rather than the X-Periscope-Role header (which is
+// only safe on loopback). Lets `outpost ssh <peer>` stay passwordless
+// over a direct LAN connection.
+//
+// Disabled silently when the outpost has no CloudboxTicketPubkey
+// (pre-rollout or unpaired) — the listener still binds, but every
+// peer-ticket presented will fail verification and the connection
+// falls through to the OS-password gate.
+func startLANSSHWSListener(
+	gctx context.Context,
+	g *errgroup.Group,
+	fc *conf.FileConfig,
+	cfg *conf.Config,
+	sshHostKey ssh.Signer,
+	peers *peerhosts.Registry,
+	apps *agent.AppRegistry,
+) {
+	addr := strings.TrimSpace(fc.SSHWSListenAddr)
+	if addr == "" || !fc.SSHOn() || sshHostKey == nil {
+		return
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		slog.Warn("lan ssh-ws: listen failed", "addr", addr, "err", err)
+		return
+	}
+	slog.Info("lan ssh-ws: listening", "addr", ln.Addr().String())
+
+	pubkey, perr := peerticket.LoadPubkey(fc.CloudboxTicketPubkey)
+	if perr != nil {
+		slog.Warn("lan ssh-ws: invalid CloudboxTicketPubkey — peer-ticket auth disabled",
+			"err", perr)
+	}
+	verifier := peerticket.NewVerifier(0)
+	lanDeps := agent.Deps{
+		Apps:                  apps,
+		Auth:                  hostauth.DefaultAuthenticator(),
+		AuthURL:               cfg.AuthURL,
+		SSHAllowLocalForward:  fc.SSHAllowLocalForwardOn(),
+		SSHAllowRemoteForward: fc.SSHAllowRemoteForwardOn(),
+		SSHAllowAgentForward:  fc.SSHAllowAgentForwardOn(),
+		SFTPEnabled:           fc.SFTPOn(),
+		SSHHostKey:            sshHostKey,
+		PeerHosts:             peers,
+		SSHForwardSockets:     fc.SSHForwardSockets,
+		CloudboxBase:          cloudboxHTTPBase(fc),
+		CloudboxProtocol:      cfg.Protocol,
+		AccessToken:           fc.AccessToken,
+		SelfName:              cfg.AgentName,
+		SSHTicketPubkey:       pubkey,
+		SSHTicketVerifier:     verifier,
+		SSHTicketAudience:     "outpost:" + cfg.AgentName,
+	}
+	g.Go(func() error {
+		if err := agent.ServeLANSSHWS(gctx, ln, lanDeps); err != nil &&
+			!errors.Is(err, context.Canceled) &&
+			!errors.Is(err, net.ErrClosed) {
+			slog.Warn("lan ssh-ws: listener exited", "err", err)
+			return err
+		}
+		return nil
+	})
+}
+
 // daemonCache is the process-wide discovery cache populated by the
 // browse loop and consumed by the observation ticker, outpost peers
 // list, and the outpost://peers MCP resource. Lazy-initialized so
@@ -154,6 +222,9 @@ func startDiscovery(
 	// carries the dial forward.
 	if h, p := splitListenSpec(fc.SSHListenAddr, assignedHostname); p > 0 {
 		self.Endpoints = append(self.Endpoints, discovery.Endpoint{Kind: discovery.EndpointLANSSH, Host: h, Port: p})
+	}
+	if h, p := splitListenSpec(fc.SSHWSListenAddr, assignedHostname); p > 0 {
+		self.Endpoints = append(self.Endpoints, discovery.Endpoint{Kind: discovery.EndpointLANSSHWS, Host: h, Port: p})
 	}
 	if h, p := splitListenSpec(fc.DiscoveryHTTPListenAddr, assignedHostname); p > 0 {
 		self.Endpoints = append(self.Endpoints, discovery.Endpoint{Kind: discovery.EndpointLANHTTPDiscover, Host: h, Port: p})
@@ -293,6 +364,7 @@ func startDiscovery(
 			Version:                version,
 			Paired:                 fc.AccessToken != "",
 			SSHListenAddr:          fc.SSHListenAddr,
+			SSHWSListenAddr:        fc.SSHWSListenAddr,
 			HTTPDiscoverListenAddr: fc.DiscoveryHTTPListenAddr,
 		})
 		if aerr != nil {

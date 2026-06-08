@@ -135,6 +135,7 @@ func serviceEntryToPeer(e *mdns.ServiceEntry) (Peer, bool) {
 	// outpost itself; the cloudbox endpoint is added by callers
 	// (we don't know the cloudbox-side host:port shape from TXT).
 	addEndpointFromAddr(&p, EndpointLANSSH, txt["ssh"])
+	addEndpointFromAddr(&p, EndpointLANSSHWS, txt["sshws"])
 	addEndpointFromAddr(&p, EndpointLANHTTPDiscover, txt["http"])
 
 	// Fall back to the SRV record's port when no TXT listener

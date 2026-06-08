@@ -879,6 +879,7 @@ func startCmd() *cobra.Command {
 			// Wave 3A: optional LAN-direct SSH listener + LAN peer
 			// discovery. Both off by default; see discovery_wiring.go.
 			startLANSSHListener(gctx, g, fc, cfg, sshHostKey, peers, apps)
+			startLANSSHWSListener(gctx, g, fc, cfg, sshHostKey, peers, apps)
 			startDiscovery(gctx, g, fc, cfg, sshHostKey)
 
 			// Ollama pool watcher — only spins up when the user opted

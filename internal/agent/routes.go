@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"crypto/ed25519"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
+	"github.com/qiangli/outpost/internal/agent/peerticket"
 )
 
 // UpdateModeProvider returns the current host's update_mode for
@@ -108,6 +110,17 @@ type Deps struct {
 	CloudboxBase     string
 	CloudboxProtocol string
 	AccessToken      string
+
+	// SSHTicketPubkey, SSHTicketVerifier, and SSHTicketAudience
+	// configure the peer-ticket auth path for the LAN-WS SSH
+	// listener. Threaded from cmd/outpost/main.go where the
+	// FileConfig and AgentName are known. nil/empty disables the
+	// path: an unpaired outpost or one without a configured pubkey
+	// can still serve a LAN-WS listener, it just won't accept any
+	// connections passwordlessly.
+	SSHTicketPubkey   ed25519.PublicKey
+	SSHTicketVerifier *peerticket.Verifier
+	SSHTicketAudience string
 
 	// MountUpgradeRoute, if non-nil, is invoked once during
 	// RegisterRoutes with the root gin.RouterGroup so an external
@@ -272,6 +285,9 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 			CloudboxProtocol:   deps.CloudboxProtocol,
 			AccessToken:        deps.AccessToken,
 			SelfName:           deps.SelfName,
+			// Loopback ingress only — matrix tunnel is the sole way
+			// in, so cloudbox-stamped X-Periscope-Role is trustworthy.
+			TrustPeriscopeRole: true,
 		}))
 	}
 

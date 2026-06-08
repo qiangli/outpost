@@ -52,13 +52,23 @@ type DialOptions struct {
 	// Cookie is the currently-cached matrix_elev value (may be empty).
 	Cookie string
 
+	// PeerTicket, when set, swaps the dial onto the LAN-direct path:
+	// the only header attached is `Authorization: Bearer <PeerTicket>`,
+	// Cookie and the cloudbox Bearer are both omitted, and OnElevate
+	// is never invoked (peer-ticket auth doesn't have an in-band
+	// recovery path — the caller re-mints by re-running the
+	// cookie→ticket exchange at cloudbox). Used when WSURL targets a
+	// peer outpost's SSH-WS LAN listener directly, not cloudbox.
+	PeerTicket string
+
 	// Host is just the bare host name (the same value embedded in
 	// WSURL). Used in error messages and threaded into OnElevate.
 	Host string
 
 	// OnElevate, if non-nil, is invoked once on the first 401/403 to
 	// recover a fresh cookie. nil => surface EAuthRequiredError on the
-	// first auth failure (the non-interactive policy).
+	// first auth failure (the non-interactive policy). Ignored when
+	// PeerTicket is set (no in-band recovery on the LAN-direct path).
 	OnElevate ElevationCallback
 
 	// DialTimeout caps each individual dial attempt. Default 30s.
@@ -80,6 +90,24 @@ func DialWS(ctx context.Context, opts DialOptions) (*websocket.Conn, error) {
 	if opts.DialTimeout == 0 {
 		opts.DialTimeout = 30 * time.Second
 	}
+
+	// LAN-direct peer-ticket path: one-shot dial with just the ticket
+	// in Authorization. The receiver verifies the ticket locally; no
+	// 401 retry/recover logic applies here (re-elev means going back
+	// to cloudbox for a fresh ticket, which is the caller's job).
+	if opts.PeerTicket != "" {
+		dialCtx, cancel := context.WithTimeout(ctx, opts.DialTimeout)
+		defer cancel()
+		h := http.Header{}
+		h.Set("Authorization", "Bearer "+opts.PeerTicket)
+		conn, _, err := websocket.Dial(dialCtx, opts.WSURL, &websocket.DialOptions{HTTPHeader: h})
+		if err != nil {
+			return nil, fmt.Errorf("dial %s (peer-ticket): %w", opts.WSURL, err)
+		}
+		conn.SetReadLimit(-1)
+		return conn, nil
+	}
+
 	dialOpts := func(cookie string) *websocket.DialOptions {
 		h := http.Header{}
 		if opts.Bearer != "" {

@@ -28,6 +28,23 @@ import (
 	"github.com/qiangli/outpost/internal/agent/discovery"
 )
 
+// isSavedSSHAlias reports whether `name` matches an existing target
+// file on disk. Used by the cobra fall-through to decide whether a
+// single positional arg is an alias (route to runSSHConnect) or an
+// ad-hoc host (route to runSSHHost). Conservative: any error reading
+// the path is treated as "not a saved alias" so the ad-hoc path
+// stays usable when the targets dir is unreadable.
+func isSavedSSHAlias(name string) bool {
+	path, err := conf.SSHTargetPath(strings.TrimSpace(name))
+	if err != nil {
+		return false
+	}
+	if _, err := os.Stat(path); err != nil {
+		return false
+	}
+	return true
+}
+
 // lookupDiscoveredPeer scans the LAN for peers and returns the first
 // one matching `name` (against AgentName or AssignedHostname). Used by
 // `outpost ssh add --from-peer`.
@@ -64,26 +81,41 @@ Surface:
   outpost ssh connect <name> [--jump <alias>]
   outpost ssh tunnel <name> [--jump <alias>] -L <local>:<remote-host>:<remote-port>
   outpost ssh sftp <name> [--jump <alias>] (get|put|ls) ...
-  outpost ssh <name>                       # shorthand for 'connect <name>'
+  outpost ssh [user@]<host> [cmd args...]  # ad-hoc; LAN-direct if reachable
+
+Ad-hoc shorthand:
+  'outpost ssh foo' or 'outpost ssh user@foo cmd args...' connects
+  without a pre-saved alias. The command probes mDNS first — when
+  the peer outpost is on the same LAN, it trades the cached cookie
+  at cloudbox for a short-lived peer ticket and dials LAN-direct;
+  otherwise falls back to the cloudbox-tunneled path. Passwordless
+  after the first 'outpost connect'.
 
 Hop/jump:
   Attach --via <alias> at add time (or --jump <alias> per-call) to
   ProxyJump through another configured target. Chains are walked
   outer-first (cloudbox → outer → ... → inner). The innermost target
   is the one your command runs on.`,
-		// Allow bare 'outpost ssh <name>' to fall through to connect.
+		// Allow bare 'outpost ssh [user@]<host> [cmd...]' to fall through.
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
-			// If the first arg matches a known subcommand we never get
-			// here (cobra dispatches). So a single arg here is treated
-			// as a target alias for the shorthand-connect.
-			if len(args) == 1 {
-				return runSSHConnect(cmd.Context(), args[0], "")
+			// Cobra dispatches known sub-verbs (list/add/...) first, so
+			// anything reaching here is the ad-hoc shorthand: first arg
+			// is [user@]host, remaining args are the remote command.
+			//
+			// Preserve backwards compat: if the first arg matches a
+			// saved alias and no extra args follow, route to the
+			// alias-driven runSSHConnect (which honors --via chains).
+			// Otherwise treat as a raw [user@]host and route to
+			// runSSHHost.
+			first := args[0]
+			if len(args) == 1 && isSavedSSHAlias(first) {
+				return runSSHConnect(cmd.Context(), first, "")
 			}
-			return fmt.Errorf("unknown subcommand %q (try 'outpost ssh --help')", args[0])
+			return runSSHHost(cmd.Context(), first, args[1:])
 		},
 	}
 	cmd.AddCommand(

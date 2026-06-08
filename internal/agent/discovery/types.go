@@ -61,8 +61,18 @@ type EndpointKind string
 const (
 	// EndpointLANSSH is the outpost's optional LAN TCP SSH listener
 	// (FileConfig.SSHListenAddr). Reachable directly from peers on
-	// the same broadcast domain.
+	// the same broadcast domain. PAM-gated (no cloudbox-vouching on
+	// LAN-direct) — the legacy plain-TCP path before peer-tickets.
 	EndpointLANSSH EndpointKind = "lan-ssh"
+
+	// EndpointLANSSHWS is the outpost's optional LAN WebSocket-mounted
+	// SSH listener (FileConfig.SSHWSListenAddr). Speaks the same
+	// /ssh route the loopback handler does, plus accepts peer-ticket
+	// JWTs as the auth signal (replacing the cloudbox-stamped
+	// X-Periscope-Role header that's only trustworthy on loopback).
+	// Lets `outpost ssh <peer>` stay passwordless on the LAN-direct
+	// path without putting cloudbox on the data plane.
+	EndpointLANSSHWS EndpointKind = "lan-ssh-ws"
 
 	// EndpointLANHTTPDiscover is the optional LAN HTTP discovery
 	// listener (FileConfig.DiscoveryHTTPListenAddr). Hosts the

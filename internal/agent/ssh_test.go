@@ -71,6 +71,11 @@ func newTestSSHServerOpts(t *testing.T, auth hostauth.Authenticator, cloudboxSta
 		AllowRemoteForward: allowRemoteForward,
 		AllowAgentForward:  true,
 		SFTPEnabled:        sftpEnabled,
+		// Tests that exercise the X-Periscope-Role-vouching path set
+		// cloudboxStamps=true; they pair it with TrustPeriscopeRole
+		// here to match the loopback handler's posture (matrix tunnel
+		// is the only ingress, header is trustworthy).
+		TrustPeriscopeRole: cloudboxStamps,
 	}))
 
 	srv := httptest.NewServer(engine)
@@ -353,6 +358,75 @@ func TestSSHHandlerCloudboxVouchedSkipsPassword(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "vouched") {
 		t.Errorf("exec stdout = %q, want 'vouched'", out)
+	}
+}
+
+// TestSSHHandlerForgedRoleRejectedOnLANHandler — confirms that a
+// LAN-bound handler (TrustPeriscopeRole=false) does NOT honor the
+// X-Periscope-Role header. This is the critical security gate: a
+// LAN-exposed listener that trusted the header would let anyone on
+// the LAN promote themselves to admin by spoofing it.
+func TestSSHHandlerForgedRoleRejectedOnLANHandler(t *testing.T) {
+	currentUser, err := hostauth.CurrentUser()
+	if err != nil || currentUser == "" {
+		t.Skip("cannot determine current OS user")
+	}
+	// Auth stub rejects every password (empty Want map). If the LAN
+	// handler accepts the forged X-Periscope-Role anyway, the SSH
+	// handshake would succeed via NoClientAuth — which is exactly
+	// what we want to prevent.
+	auth := hostauth.StubAuth{Want: map[string]string{}}
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	// Forge the header on every request — exactly what a LAN
+	// attacker could do once the listener is on a LAN address.
+	engine.Use(func(c *gin.Context) {
+		c.Request.Header.Set("X-Periscope-Role", "admin")
+		c.Next()
+	})
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	signer, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	engine.GET("/ssh", sshHandler(sshHandlerDeps{
+		HostKey:            signer,
+		Auth:               auth,
+		AllowLocalForward:  true,
+		AllowRemoteForward: true,
+		SFTPEnabled:        true,
+		// LAN-bound handler: header must NOT be trusted.
+		TrustPeriscopeRole: false,
+	}))
+	srv := httptest.NewServer(engine)
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL)
+	u.Scheme = "ws"
+	u.Path = "/ssh"
+
+	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsConn, _, err := websocket.Dial(dialCtx, u.String(), nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	wsConn.SetReadLimit(-1)
+	netConn := websocket.NetConn(context.Background(), wsConn, websocket.MessageBinary)
+	cfg := &ssh.ClientConfig{
+		User:            currentUser,
+		Auth:            []ssh.AuthMethod{ssh.Password("any-password-rejected-by-stub")},
+		HostKeyCallback: ssh.FixedHostKey(signer.PublicKey()),
+		Timeout:         5 * time.Second,
+	}
+	_, _, _, err = ssh.NewClientConn(netConn, "test", cfg)
+	if err == nil {
+		t.Fatal("LAN handler accepted forged X-Periscope-Role header — security gate is broken")
 	}
 }
 
