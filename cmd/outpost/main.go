@@ -558,6 +558,14 @@ func startCmd() *cobra.Command {
 			if err := backupMgr.Apply(fc.Backup); err != nil {
 				slog.Warn("backup: initial apply failed", "err", err)
 			}
+			// Pusher pushes age-encrypted artifacts to cloudbox after
+			// each worker fire. No-op on unpaired hosts (Configured()
+			// returns false), so attaching is unconditional.
+			backupMgr.AttachPusher(backup.NewPusher(backup.PushConfig{
+				CloudboxBase: cloudboxHTTPBase(fc),
+				AccessToken:  fc.AccessToken,
+				AgentName:    fc.AgentName,
+			}))
 			core.AttachBackup(backupMgr)
 
 			// MCP server — same loopback listener as adminui, mounted

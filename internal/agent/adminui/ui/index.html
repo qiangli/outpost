@@ -1888,15 +1888,21 @@ async function buildBackupHistoryInto(parent) {
     const at = c.at ? new Date(c.at) : null;
     const atStr = at ? `${at.getFullYear()}-${String(at.getMonth()+1).padStart(2,'0')}-${String(at.getDate()).padStart(2,'0')} ${String(at.getHours()).padStart(2,'0')}:${String(at.getMinutes()).padStart(2,'0')}` : '';
     const td = (v, extra) => el('td', {style: 'padding:0.2rem 0.5rem;border-bottom:1px solid #8881;' + (extra||'')}, v||'');
+    // Status precedence: error > push-failed > unchanged > pushed > new.
     let status = 'new';
-    let color = '#16a34a';
-    if (c.error) { status = 'error'; color = '#dc2626'; }
+    let color = '#3b82f6'; // blue — recorded, not yet pushed
+    let detail = (c.sha256 || '').slice(0, 12);
+    if (c.error) { status = 'error'; color = '#dc2626'; detail = c.error; }
+    else if (c.push_error) { status = 'push-failed'; color = '#f97316'; detail = c.push_error; }
     else if (c.skipped) { status = 'unchanged'; color = '#888'; }
+    else if (c.pushed) {
+      status = 'pushed';
+      color = '#16a34a';
+      detail = c.artifact_id ? ('artifact: ' + c.artifact_id.slice(0, 8)) : detail;
+    }
     const statusCell = el('td', {style: `padding:0.2rem 0.5rem;border-bottom:1px solid #8881;color:${color}`}, status);
     const fileBase = c.path ? c.path.split('/').pop() : '';
     const sizeStr = c.size ? fmtBytes(c.size) : '';
-    const sha = (c.sha256 || '').slice(0, 12);
-    const detail = c.error || sha;
     const tr = el('tr', {}, td(atStr), td(c.folder, 'word-break:break-all'),
       td(fileBase, 'word-break:break-all'), td(sizeStr), td(detail, 'word-break:break-all'),
       statusCell);

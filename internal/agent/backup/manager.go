@@ -5,11 +5,21 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/scheduler"
 )
+
+// filepathBase returns the basename of folder, trimming trailing
+// slashes first so "/foo/bar/" returns "bar" not "". Pulled out as
+// a named helper because the worker / pusher / manager all reach for
+// it inline.
+func filepathBase(folder string) string {
+	folder = strings.TrimRight(folder, "/")
+	return filepath.Base(folder)
+}
 
 // JobName is the registered scheduler name for the backup job. Stable
 // constant so manual ledger queries and the admin UI agree on what
@@ -31,14 +41,22 @@ const JobName = "backup-folders"
 // Manager owns the Worker (one per process) so RunOnce dedup is
 // process-wide. Concurrent Apply + RunOnce is safe because both go
 // through the worker's own inFlight mutex.
+//
+// When a Pusher is attached, the manager pushes every fresh
+// (non-skipped, non-errored) candidate to cloudbox after the worker
+// records it. Push outcomes are stamped onto the Candidate's
+// Pushed/PushError/ArtifactID/CipherSHA256 fields and re-appended
+// to the ledger so the admin UI's history view reflects the push
+// status alongside the discovery status.
 type Manager struct {
 	sched      *scheduler.Scheduler
 	defaultLog string // default ledger path when BackupConfig.LedgerPath is empty
 
-	mu      sync.Mutex
-	cfg     conf.BackupConfig
-	worker  *Worker
-	ledger  *Ledger
+	mu     sync.Mutex
+	cfg    conf.BackupConfig
+	worker *Worker
+	ledger *Ledger
+	pusher *Pusher
 }
 
 // NewManager constructs a Manager. scheduler must be non-nil;
@@ -50,6 +68,15 @@ func NewManager(sched *scheduler.Scheduler, defaultLedger string) *Manager {
 		sched:      sched,
 		defaultLog: defaultLedger,
 	}
+}
+
+// AttachPusher injects (or clears) the cloudbox pusher. Called at
+// startup once main.go knows the cloudbox base + access token, and
+// again whenever pairing changes. Pass nil to disable push.
+func (m *Manager) AttachPusher(p *Pusher) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pusher = p
 }
 
 // Apply reconciles the scheduler against cfg: registers (or
@@ -92,9 +119,67 @@ func (m *Manager) Apply(cfg *conf.BackupConfig) error {
 	// the next Apply lands).
 	folders := append([]string(nil), cfg.Folders...)
 	return m.sched.Register(JobName, cfg.Schedule, func(ctx context.Context) error {
-		_, err := m.worker.RunOnce(ctx, folders)
-		return err
+		out, err := m.worker.RunOnce(ctx, folders)
+		if err != nil {
+			return err
+		}
+		m.pushCandidates(ctx, out)
+		return nil
 	})
+}
+
+// pushCandidates iterates the worker's output and pushes each one
+// to cloudbox (when a pusher is attached and the candidate is
+// eligible — has bytes, hasn't been deduped, didn't error). Stamps
+// push status onto the candidate and re-appends to the ledger so
+// the admin UI surfaces "pushed: yes/no" alongside the discovery
+// record.
+//
+// Push errors are recorded but do NOT propagate — one bad cloudbox
+// upload shouldn't abort the worker for the rest of the folders.
+// The next fire will retry candidates whose previous record wasn't
+// Pushed=true (dedup keys off plaintext SHA in worker.runFolder).
+func (m *Manager) pushCandidates(ctx context.Context, candidates []Candidate) {
+	m.mu.Lock()
+	pusher := m.pusher
+	ledger := m.ledger
+	m.mu.Unlock()
+	if pusher == nil || !pusher.Configured() {
+		return
+	}
+	for i := range candidates {
+		c := &candidates[i]
+		if c.Skipped || c.Error != "" || c.Path == "" {
+			continue
+		}
+		app := appLabelFromFolder(c.Folder)
+		res, err := pusher.Push(ctx, *c, app)
+		if err != nil {
+			c.PushError = err.Error()
+		} else {
+			c.Pushed = true
+			c.ArtifactID = res.ArtifactID
+			c.CipherSHA256 = res.CipherSHA256
+		}
+		// Re-append the candidate with push status so the ledger
+		// reflects what actually happened. The original (worker-
+		// only) row stays in place for forensic clarity.
+		if ledger != nil {
+			_ = ledger.Append(*c)
+		}
+	}
+}
+
+// appLabelFromFolder derives the "app" label cloudbox stores
+// alongside the artifact. v1 just uses the folder basename
+// (filepath.Base) — operators can rename folders to control the
+// label. Documented in BackupConfig.Folders comment.
+func appLabelFromFolder(folder string) string {
+	base := filepathBase(folder)
+	if base == "" {
+		return "default"
+	}
+	return base
 }
 
 // RunNow triggers a manual fire against the currently-applied
@@ -112,7 +197,12 @@ func (m *Manager) RunNow(ctx context.Context) ([]Candidate, error) {
 	if len(folders) == 0 {
 		return nil, errors.New("backup: no folders configured")
 	}
-	return worker.RunOnce(ctx, folders)
+	out, err := worker.RunOnce(ctx, folders)
+	if err != nil {
+		return out, err
+	}
+	m.pushCandidates(ctx, out)
+	return out, nil
 }
 
 // History returns the last `n` ledger entries (newest last). Empty

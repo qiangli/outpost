@@ -14,14 +14,25 @@
 // the contract between the two phases.
 package backup
 
-import "time"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"time"
+)
+
+// sha256Sum is a tiny convenience so callers don't import crypto/sha256
+// + encoding/hex everywhere. Returns the hex digest.
+func sha256Sum(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
+}
 
 // Candidate is one (folder, file, content-hash) triple a worker fire
 // produced. Written as a single JSONL line to the ledger. The
 // content-hash is what enables resume + dedup across fires: a folder
 // that hasn't grown a new file since the last fire emits a fresh
-// ledger line with the same SHA256 and the Phase 3 pusher will
-// recognize it as already-shipped.
+// ledger line with the same SHA256 and the pusher will recognize it
+// as already-shipped.
 type Candidate struct {
 	At      time.Time `json:"at"`
 	Folder  string    `json:"folder"`
@@ -31,4 +42,20 @@ type Candidate struct {
 	Mtime   time.Time `json:"mtime"`           // file modtime, UTC
 	Skipped bool      `json:"skipped,omitempty"` // true when SHA matched the previous candidate (no-op fire)
 	Error   string    `json:"error,omitempty"`
+
+	// Push status — populated when the manager has a Pusher wired
+	// (cloudbox URL + access token present). Empty Pushed means the
+	// candidate didn't go through a push attempt (worker only).
+	Pushed       bool   `json:"pushed,omitempty"`
+	ArtifactID   string `json:"artifact_id,omitempty"`
+	CipherSHA256 string `json:"cipher_sha256,omitempty"`
+	PushError    string `json:"push_error,omitempty"`
+}
+
+// shortSHA returns the first 16 hex chars of sha256(s). Used both as
+// the artifact KeyID fingerprint (keys.go) and as a stable tag in
+// log messages.
+func shortSHA(s string) string {
+	sum := sha256Sum([]byte(s))
+	return sum[:16]
 }
