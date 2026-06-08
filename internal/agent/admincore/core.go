@@ -75,6 +75,13 @@ type Deps struct {
 	// stays uniform across MCP / REST / future CLI.
 	Upgrader      *upgrade.Worker
 	UpgradeLedger *upgrade.Ledger
+
+	// Backup, when set, is the live scheduler+worker for the folder-
+	// watcher backup feature (admincore/backup.go). Optional — when
+	// nil, SetBackup still persists the config to FileConfig (so a
+	// future restart with the manager wired picks it up) but cannot
+	// re-register the scheduler entry live.
+	Backup BackupApplier
 }
 
 // LLMPoolStatusView is the wire shape rendered into SafeView. Kept here

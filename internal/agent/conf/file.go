@@ -326,6 +326,16 @@ type FileConfig struct {
 	// install-upgrade through my outpost just because we share a
 	// cloudbox tenant.
 	PeerTrustPolicy string `json:"peer_trust_policy,omitempty"`
+
+	// Backup configures the folder-watcher scheduler that ships the
+	// newest file from each listed folder to peer outposts (Phase 3
+	// adds the actual peer push; Phase 2 only records candidates in a
+	// local ledger). App-opaque by design: the agent doesn't run any
+	// app-specific snapshot logic — the cooperating app (classgo,
+	// kg, …) is responsible for producing backup artifacts inside one
+	// of these folders on its own schedule, and outpost picks the
+	// newest by mtime.
+	Backup *BackupConfig `json:"backup,omitempty"`
 }
 
 // ClusterConfig persists the kubeconfig fields cloudbox issues at
@@ -576,6 +586,41 @@ func (oc OutboundConfig) BuiltinSSH() bool {
 //     WebSocket upgrade and byte-bridges WS↔TCP. Reached from a remote
 //     outpost via a tcp-scheme outbound (see OutboundConfig). Used for
 //     ssh, postgres, mysql, redis and other non-HTTP services.
+// BackupConfig is the operator-declared "what folders to watch and
+// how often" for the off-host backup scheduler. One cron entry fires
+// on Schedule; each fire iterates Folders and picks the newest
+// regular file from each by mtime. Dedup is by file sha256 (a folder
+// that hasn't grown a new file since the last fire is a no-op).
+//
+// The configuration is local — the operator owns it via the admin UI.
+// Cloudbox-side coordination (which peer to ship to, encryption-key
+// recipient) is added in Phase 3 and lives on the cloudbox
+// BackupPolicy row, not here.
+type BackupConfig struct {
+	// Enabled is the master switch. When false the scheduler entry is
+	// not registered and manual /api/backup/run still works but
+	// records the candidate as a dry-run.
+	Enabled bool `json:"enabled"`
+
+	// Schedule is a cron expression. Empty disables auto-fire; the
+	// operator can still trigger the worker manually from the admin
+	// UI. Cron syntax follows robfig/cron/v3: 5-field "M H D M W" or
+	// descriptors ("@daily", "@every 6h", etc.). Sub-second @every
+	// values clamp to 1 s — irrelevant for backup cadence.
+	Schedule string `json:"schedule,omitempty"`
+
+	// Folders is the list of directories to watch. Each is scanned at
+	// fire time for the newest regular file (mtime descending); sub-
+	// directories and dotfiles are ignored. Empty Folders is a no-op
+	// (the worker logs once and skips).
+	Folders []string `json:"folders,omitempty"`
+
+	// LedgerPath overrides the default location for the JSONL backup
+	// history file. Default empty → <UserCacheDir>/outpost/backup.log,
+	// mirroring the upgrade ledger convention.
+	LedgerPath string `json:"ledger_path,omitempty"`
+}
+
 type AppConfig struct {
 	Name    string `json:"name"`
 	Icon    string `json:"icon,omitempty"`

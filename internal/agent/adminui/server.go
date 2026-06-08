@@ -365,6 +365,16 @@ func (s *Server) registerRoutes() {
 	api.GET("/cluster/user-kubeconfig", s.handleClusterKubeconfigStatus)
 	api.POST("/cluster/user-kubeconfig/refresh", s.handleClusterKubeconfigRefresh)
 
+	// Backup tab — folder-watcher scheduler. GET/POST config; manual
+	// fire; ledger tail. App-opaque: the cooperating app produces
+	// backup artifacts in one of the configured folders on its own
+	// cadence, outpost picks the newest by mtime and (Phase 3) ships
+	// off-host.
+	api.GET("/backup/config", s.handleGetBackup)
+	api.POST("/backup/config", s.handleSetBackup)
+	api.POST("/backup/run", s.handleRunBackup)
+	api.GET("/backup/history", s.handleBackupHistory)
+
 	// MCP credentials — the SPA's Pair tab renders the endpoint URL
 	// and bearer token so the operator can paste them into an agent
 	// tool's .mcp.json. Only available when main.go threaded the

@@ -1736,6 +1736,177 @@ async function buildUpdateSection(parent) {
   }
 }
 
+// buildBackupSection populates the Backup tab. Two fetches: the
+// persisted config + recent history. The form supports "Save",
+// "Run now" (manual fire regardless of Enabled), and re-renders the
+// history panel after each fire.
+async function buildBackupSection(parent) {
+  parent.innerHTML = '';
+  let cfg = {enabled: false, schedule: '', folders: []};
+  try {
+    cfg = await api('GET', '/api/backup/config') || cfg;
+  } catch (e) {
+    parent.append(el('p', {class: 'error'}, e.message || 'Failed to load backup config.'));
+    return;
+  }
+
+  // === Form ===========================================================
+  const form = el('fieldset', {});
+  form.append(el('legend', {}, 'Backup schedule'));
+
+  const intro = el('p', {class: 'hint'},
+    'App-opaque folder watcher. List one or more folders the cooperating ',
+    'app writes backup artifacts into (classgo writes daily ZIPs to ',
+    el('code', {style: 'font-family:monospace'}, '~/.classgo/data/backups/'), '). ',
+    'On schedule, outpost picks the newest regular file by mtime, computes ',
+    'sha256, and records a candidate. Off-host replication is added in ',
+    'Phase 3 (requires cloudbox-side wiring).',
+  );
+  form.append(intro);
+
+  // Enabled row
+  const enabledLabel = el('label', {style: 'display:flex;align-items:center;gap:0.5rem;margin:0.5rem 0'});
+  const enabledInput = el('input', {type: 'checkbox'});
+  enabledInput.checked = !!cfg.enabled;
+  enabledLabel.append(enabledInput,
+    el('span', {}, 'Enabled '),
+    el('code', {class: 'key-hint'}, 'enabled'),
+  );
+  form.append(enabledLabel);
+
+  // Schedule row
+  const schedRow = el('div', {class: 'item-row', style: 'gap:0.5rem;margin:0.5rem 0;align-items:center'});
+  const schedInput = el('input', {
+    type: 'text',
+    placeholder: '0 2 * * *  (5-field cron, or @daily / @every 6h)',
+    style: 'min-width:380px;font-family:monospace;font-size:0.85rem',
+  });
+  schedInput.value = cfg.schedule || '';
+  schedRow.append(
+    el('span', {class: 'label', style: 'min-width:120px'}, 'Schedule ',
+      el('code', {class: 'key-hint'}, 'schedule')),
+    schedInput,
+  );
+  form.append(schedRow);
+
+  // Folders row (textarea, one per line)
+  const folLabel = el('div', {style: 'margin:0.5rem 0 0.2rem'},
+    el('span', {class: 'label'}, 'Folders '),
+    el('code', {class: 'key-hint'}, 'folders'),
+    el('span', {class: 'hint', style: 'margin-left:0.4rem;font-size:0.85rem'},
+      '(one absolute path per line)'),
+  );
+  form.append(folLabel);
+  const folInput = el('textarea', {
+    rows: 4,
+    style: 'width:100%;font-family:monospace;font-size:0.85rem;box-sizing:border-box',
+    placeholder: '/home/me/.classgo/data/backups\n/home/me/.kg/exports',
+  });
+  folInput.value = (cfg.folders || []).join('\n');
+  form.append(folInput);
+
+  // Status row + buttons
+  const statusEl = el('div', {class: 'hint', style: 'min-height:1.2rem;margin-top:0.5rem'});
+  const saveBtn = el('button', {type: 'button'}, 'Save');
+  const runBtn = el('button', {type: 'button'}, 'Run now');
+  saveBtn.addEventListener('click', async () => {
+    saveBtn.disabled = true;
+    statusEl.textContent = 'Saving…';
+    const folders = folInput.value.split('\n').map(s => s.trim()).filter(s => s.length > 0);
+    try {
+      const saved = await api('POST', '/api/backup/config', {
+        enabled: enabledInput.checked,
+        schedule: schedInput.value.trim(),
+        folders: folders,
+      });
+      cfg = saved || cfg;
+      folInput.value = (cfg.folders || []).join('\n');
+      statusEl.textContent = `Saved at ${new Date().toLocaleTimeString()}.`;
+      msg('ok', 'Backup config saved.');
+      // Refresh history pane.
+      buildBackupHistoryInto(historyHolder);
+    } catch (e) {
+      statusEl.textContent = '';
+      msg('err', e.message || 'Save failed');
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+  runBtn.addEventListener('click', async () => {
+    runBtn.disabled = true;
+    statusEl.textContent = 'Running…';
+    try {
+      const out = await api('POST', '/api/backup/run', {});
+      const n = (out.candidates || []).length;
+      const skipped = (out.candidates || []).filter(c => c.skipped).length;
+      const errs = (out.candidates || []).filter(c => c.error).length;
+      statusEl.textContent = `Ran: ${n} folders, ${skipped} unchanged, ${errs} errored.`;
+      msg('ok', 'Backup fired.');
+      buildBackupHistoryInto(historyHolder);
+    } catch (e) {
+      statusEl.textContent = '';
+      msg('err', e.message || 'Run failed');
+    } finally {
+      runBtn.disabled = false;
+    }
+  });
+  form.append(el('div', {style: 'display:flex;gap:0.5rem;margin-top:0.5rem;align-items:center'},
+    saveBtn, runBtn, statusEl));
+
+  parent.append(form);
+
+  // === History ========================================================
+  const historyHolder = el('div', {});
+  parent.append(historyHolder);
+  buildBackupHistoryInto(historyHolder);
+}
+
+async function buildBackupHistoryInto(parent) {
+  parent.innerHTML = '';
+  let data;
+  try {
+    data = await api('GET', '/api/backup/history?limit=50');
+  } catch (e) {
+    parent.append(el('p', {class: 'error'}, e.message || 'Failed to load history.'));
+    return;
+  }
+  const candidates = (data && data.candidates) || [];
+  const hist = el('fieldset', {});
+  hist.append(el('legend', {}, 'Recent backups'));
+  if (candidates.length === 0) {
+    hist.append(el('p', {class: 'hint'}, 'No backup runs recorded yet.'));
+    parent.append(hist);
+    return;
+  }
+  const tbl = el('table', {style: 'font-size:0.8rem;margin-top:0.4rem;font-family:monospace;width:100%'});
+  const thead = el('thead', {});
+  thead.append(el('tr', {}, ...['When', 'Folder', 'File', 'Size', 'SHA256', 'Status'].map(h =>
+    el('th', {style: 'text-align:left;padding:0.2rem 0.5rem;border-bottom:1px solid #8884'}, h))));
+  tbl.append(thead);
+  const tbody = el('tbody', {});
+  for (const c of [...candidates].reverse()) {
+    const at = c.at ? new Date(c.at) : null;
+    const atStr = at ? `${at.getFullYear()}-${String(at.getMonth()+1).padStart(2,'0')}-${String(at.getDate()).padStart(2,'0')} ${String(at.getHours()).padStart(2,'0')}:${String(at.getMinutes()).padStart(2,'0')}` : '';
+    const td = (v, extra) => el('td', {style: 'padding:0.2rem 0.5rem;border-bottom:1px solid #8881;' + (extra||'')}, v||'');
+    let status = 'new';
+    let color = '#16a34a';
+    if (c.error) { status = 'error'; color = '#dc2626'; }
+    else if (c.skipped) { status = 'unchanged'; color = '#888'; }
+    const statusCell = el('td', {style: `padding:0.2rem 0.5rem;border-bottom:1px solid #8881;color:${color}`}, status);
+    const fileBase = c.path ? c.path.split('/').pop() : '';
+    const sizeStr = c.size ? fmtBytes(c.size) : '';
+    const sha = (c.sha256 || '').slice(0, 12);
+    const detail = c.error || sha;
+    const tr = el('tr', {}, td(atStr), td(c.folder, 'word-break:break-all'),
+      td(fileBase, 'word-break:break-all'), td(sizeStr), td(detail, 'word-break:break-all'),
+      statusCell);
+    tbody.append(tr);
+  }
+  tbl.append(tbody);
+  hist.append(tbl);
+  parent.append(hist);
+}
+
 // buildRowInto — small helper for buildUpdateSection's many label/value
 // rows. Just keeps the inline DOM construction tidy.
 function buildRowInto(parent, label, value) {
@@ -1939,13 +2110,14 @@ function renderMain(status, cfg) {
   const panelInbound = el('div', {class: 'tab-panel', 'data-panel': 'inbound'});
   const panelOutbound = el('div', {class: 'tab-panel', 'data-panel': 'outbound'});
   const panelUpdate = el('div', {class: 'tab-panel', 'data-panel': 'update'});
-  panels.append(panelPair, panelInbound, panelOutbound, panelUpdate);
+  const panelBackup = el('div', {class: 'tab-panel', 'data-panel': 'backup'});
+  panels.append(panelPair, panelInbound, panelOutbound, panelUpdate, panelBackup);
 
   // Initial tab: stored preference if any, else 'inbound' once paired
   // (the common case), else 'pair' (operator still needs to finish
   // setup).
   let active = localStorage.getItem(TAB_KEY);
-  if (!['pair', 'inbound', 'outbound', 'update'].includes(active)) {
+  if (!['pair', 'inbound', 'outbound', 'update', 'backup'].includes(active)) {
     active = status.configured ? 'inbound' : 'pair';
   }
   const tabDefs = [
@@ -1953,6 +2125,7 @@ function renderMain(status, cfg) {
     ['inbound', 'Inbound'],
     ['outbound', 'Outbound'],
     ['update', 'Update'],
+    ['backup', 'Backup'],
   ];
   const tabBtns = {};
   for (const [key, label] of tabDefs) {
@@ -1969,6 +2142,7 @@ function renderMain(status, cfg) {
     panelInbound.classList.toggle('hidden', key !== 'inbound');
     panelOutbound.classList.toggle('hidden', key !== 'outbound');
     panelUpdate.classList.toggle('hidden', key !== 'update');
+    panelBackup.classList.toggle('hidden', key !== 'backup');
     try { localStorage.setItem(TAB_KEY, key); } catch (_) {}
   }
   activate(active);
@@ -2614,6 +2788,12 @@ function renderMain(status, cfg) {
   // inline with the others. Each Apply / Rollback action re-renders
   // this panel after a short delay so the operator sees fresh state.
   buildUpdateSection(panelUpdate);
+
+  // Backup tab — folder-watcher scheduler. App-opaque: the cooperating
+  // app drops backup artifacts in a watched folder; outpost picks the
+  // newest by mtime on cron schedule. Phase 2 = record candidates +
+  // surface in UI; Phase 3 = ship off-host through cloudbox.
+  buildBackupSection(panelBackup);
 
   // Header actions (Restart / Sign out) — primary blue, right-aligned in
   // the page header.

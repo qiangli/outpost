@@ -29,6 +29,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/adminui"
+	"github.com/qiangli/outpost/internal/agent/backup"
 	"github.com/qiangli/outpost/internal/agent/certs"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/heartbeat"
@@ -44,6 +45,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/upgrade"
 	"github.com/qiangli/outpost/internal/agent/userkube"
 	"github.com/qiangli/outpost/internal/agent/vkpodman"
+	"github.com/qiangli/outpost/internal/scheduler"
 )
 
 // defaultPortal is the public ai.dhnt.io address used when the user
@@ -541,6 +543,23 @@ func startCmd() *cobra.Command {
 				core.AttachUpgrade(upgradeWorker, upgradeLedger)
 			}
 
+			// Folder-watcher backup scheduler. Constructed regardless
+			// of pairing — the cooperating app can start producing
+			// artifacts before the outpost is paired (Phase 2 just
+			// records candidates; Phase 3 adds the peer-push that
+			// requires cloudbox). One process-wide scheduler + one
+			// process-wide manager so manual "Run now" from the SPA
+			// and the scheduled fire never overlap.
+			backupSched := scheduler.New(filepath.Join(func() string {
+				cache, _ := conf.ResolveCacheDir()
+				return cache
+			}(), "scheduler.log"))
+			backupMgr := backup.NewManager(backupSched, backup.DefaultLedgerPath())
+			if err := backupMgr.Apply(fc.Backup); err != nil {
+				slog.Warn("backup: initial apply failed", "err", err)
+			}
+			core.AttachBackup(backupMgr)
+
 			// MCP server — same loopback listener as adminui, mounted
 			// at /mcp/*. Bearer-token auth (FileConfig.MCPBearerToken,
 			// auto-generated on first boot) is isolated from adminui's
@@ -620,6 +639,11 @@ func startCmd() *cobra.Command {
 				slog.Info("outpost: admin ui listening", "url", adminSrv.URL())
 				return adminSrv.Serve(gctx)
 			})
+			// Folder-watcher scheduler. Runs whether or not Backup
+			// is enabled — Apply with a nil/disabled config just
+			// keeps the cron with no entries; the admin UI can
+			// enable it without a restart.
+			g.Go(func() error { return backupSched.Run(gctx) })
 
 			if cfg.AgentName == "" {
 				fmt.Fprintln(os.Stderr, "Not yet configured — open the Admin UI to pair this host with the portal.")
