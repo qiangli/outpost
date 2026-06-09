@@ -447,6 +447,18 @@ func (c *Client) Shell(ctx context.Context, opts ShellOptions) (int, error) {
 		if err == nil {
 			restoreTerm = func() { _ = term.Restore(int(stdinFile.Fd()), oldState) }
 			defer restoreTerm()
+			// Local terminal is now in raw mode (no kernel ONLCR), and
+			// the remote outpost runs an in-process emulated PTY that
+			// ignores RFC 4254 termios opcodes — so the remote can't be
+			// told to do OPOST+ONLCR either. Translate bare \n -> \r\n
+			// on the wire between the SSH channel and the local
+			// stdout/stderr so command output lands at column 0 instead
+			// of staircasing under the prompt column. sh/interactive
+			// already writes a single \r after readline to fix the
+			// Enter-key column drop; this handles every other \n the
+			// remote shell or its children emit during a command.
+			sess.Stdout = &crlfTranslator{w: opts.Stdout}
+			sess.Stderr = &crlfTranslator{w: opts.Stderr}
 		}
 	}
 
@@ -601,4 +613,43 @@ func (c *Client) SFTP() (*sftp.Client, error) {
 		return nil, errors.New("sshclient: nil Client")
 	}
 	return sftp.NewClient(c.ssh)
+}
+
+// crlfTranslator wraps an io.Writer and rewrites bare LF to CRLF. Used
+// by Shell() when the local terminal is in raw mode: the remote outpost
+// runs an in-process emulated PTY that ignores RFC 4254 termios opcodes
+// (see internal/agent/ssh.go:1131 — Modelist is intentionally
+// discarded), so OPOST+ONLCR can't be set server-side, and the local
+// raw terminal performs no LF→CRLF translation either. The remote
+// shell's bare \n would therefore land mid-row at the prompt column,
+// staircasing every command's output. Translating on the client side
+// is the surgical equivalent of what kernel-PTY OPOST+ONLCR would do.
+//
+// Already-CRLF runs pass through unchanged (lastR suppresses the second
+// translation when an explicit \r precedes \n). Stray \r alone is
+// passed through too, since apps emit it deliberately to redraw a line.
+type crlfTranslator struct {
+	w     io.Writer
+	lastR bool
+}
+
+func (c *crlfTranslator) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	buf := make([]byte, 0, len(p)+8)
+	lastR := c.lastR
+	for _, b := range p {
+		if b == '\n' && !lastR {
+			buf = append(buf, '\r', '\n')
+		} else {
+			buf = append(buf, b)
+		}
+		lastR = b == '\r'
+	}
+	if _, err := c.w.Write(buf); err != nil {
+		return 0, err
+	}
+	c.lastR = lastR
+	return len(p), nil
 }
