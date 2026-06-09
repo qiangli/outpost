@@ -51,7 +51,7 @@ What it does:
 3. Downloads the `.exe` and the `.sha256` sidecar.
 4. Verifies via `Get-FileHash`.
 5. Installs to `%LOCALAPPDATA%\outpost\outpost.exe` and adds the directory to the user `PATH`.
-6. Offers to register a Task Scheduler entry that runs `outpost start` at logon (`schtasks /Create /SC ONLOGON /RL LIMITED /TN outpost`).
+6. Offers to register a Task Scheduler entry that runs `outpost start` at logon (PowerShell `Register-ScheduledTask -TaskName outpost -AtLogOn -RunLevel Limited` — the COM-API path, used because `schtasks /Create /TR "..."` breaks on user paths with spaces). Status / remove via `schtasks /Query /TN outpost` and `schtasks /Delete /TN outpost /F`.
 
 Overrides (set the variable in your shell before piping into `iex`):
 
@@ -130,8 +130,11 @@ There is no `outpost uninstall` subcommand yet (tracked for a later release). Ma
 launchctl bootout gui/$(id -u)/io.dhnt.outpost
 rm ~/Library/LaunchAgents/io.dhnt.outpost.plist
 rm "$HOME/.local/bin/outpost" "$HOME/.local/bin/.outpost-installed-via"
-rm -rf "$HOME/Library/Application Support/matrix"   # config (paired identity, tokens)
-rm -rf "$HOME/Library/Caches/outpost"               # pidfile, upgrade ledger, shell history
+# Canonical XDG-style paths (used by all current installs):
+rm -rf "$HOME/.config/matrix"                       # config (paired identity, tokens)
+rm -rf "$HOME/.cache/outpost"                       # pidfile, upgrade ledger, shell history
+# Legacy paths (only present on pre-migration installs; harmless if absent):
+rm -rf "$HOME/Library/Application Support/matrix" "$HOME/Library/Caches/outpost"
 ```
 
 **Linux**:
@@ -149,5 +152,8 @@ rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/outpost"
 schtasks /Delete /TN outpost /F
 Stop-Process -Name outpost -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force "$env:LOCALAPPDATA\outpost"
-Remove-Item -Recurse -Force "$env:APPDATA\matrix"
+# Canonical XDG-style path (used by all current installs):
+Remove-Item -Recurse -Force "$env:USERPROFILE\.config\matrix"
+# Legacy path (only present on pre-migration installs; harmless if absent):
+Remove-Item -Recurse -Force "$env:APPDATA\matrix" -ErrorAction SilentlyContinue
 ```

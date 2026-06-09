@@ -25,8 +25,8 @@ func gitCmd() *cobra.Command {
 		Short: "Embedded git client (clone, pull, status, commit, push, …)",
 		Long: `outpost git is a small, self-contained git client for the typical
 development cycle: clone → edit → add → commit → push, plus the
-common read paths (status, diff, log, branch, show, remote, fetch,
-pull).
+common read paths (status, diff, log, branch, show, remote, fetch)
+and pull (which writes into the working tree).
 
 It is implemented on top of go-git/v5 and does NOT require a system
 'git' binary — that's the point: outpost stays self-sufficient on
@@ -639,7 +639,7 @@ func gitRevParseCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().IntVar(&short, "short", 7, "Abbreviate SHA to N chars (default 7)")
+	cmd.Flags().IntVar(&short, "short", 7, "Abbreviate SHA to N chars when --short is passed; full 40-char SHA when omitted (bare --short uses N=7)")
 	// NoOptDefVal lets `outpost git rev-parse --short HEAD` work — without
 	// it, cobra greedily consumes "HEAD" as the value for --short and
 	// fails to parse it as int. Passing --short alone now means "use 7".

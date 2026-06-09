@@ -25,8 +25,9 @@ import (
 //   - podAntiAffinity (preferred, by hostname) — replicas spread
 //     across outposts; single-node clusters still schedule but
 //     multi-node clusters get HA for free.
-//   - Tolerations for the virtual-kubelet provider taint — without
-//     these, k8s refuses to schedule onto vkpodman nodes.
+//   - Tolerations for the virtual-kubelet.io/provider taint — needed
+//     only for vkpodman-mode outposts; harmless on the default
+//     agent-mode k3s nodes (which carry no such taint).
 //   - containerPort declared but hostPort left to vkpodman auto-
 //     allocate (a7fa651).
 //   - readinessProbe (HTTPGet on /, configurable via --probe-path)

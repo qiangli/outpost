@@ -96,7 +96,8 @@ resource until `configured` settles.
   - `tcp` — local listener on `local_port`
   - `ssh` — local listener bridging to the remote `/ssh` built-in
 - `outpost_delete_outbound` — remove by path.
-- `outpost_connect_outbound` — clear the cloudbox `/elevate` gate.
+- `outpost_connect_outbound` — clear the cloudbox `/matrix/h/<host>/elev/*`
+  gate (`elev/app/<name>` for http/tcp, `elev/ssh` for ssh scheme).
   Takes a `password` arg. **Human-in-the-loop**: agents must ask the
   user for the OS password on every call; do not cache.
 - `outpost_disconnect_outbound` — drop the matrix_elev cookie.
@@ -109,13 +110,17 @@ resource until `configured` settles.
   `clipboard`, `ssh`, `ssh_allow_local_forward`,
   `ssh_allow_remote_forward`, `ssh_allow_agent_forward`,
   `ssh_forward_sockets`, `sftp`, `podman`, `ollama`, `ollama_pool`,
-  `cluster`. Only fields actually present are mutated.
+  `cluster`, `otel`, `otel_pool`, `ycode_share`,
+  `ycode_share_require_login`, `ycode_share_surfaces`, `update_mode`.
+  Only fields actually present are mutated.
 
-### Cluster (virtual-podman)
+### Cluster
 
-- `outpost_set_kubeconfig` — paste a kubeconfig YAML; `enable=true`
-  also flips the join switch.
-- `outpost_clear_kubeconfig` — leave the cluster.
+- `outpost_clear_kubeconfig` — leave the cluster. Joining is done via
+  `outpost_set_builtins` with `cluster: true` once paired; the daemon
+  auto-fetches a kubeconfig from cloudbox on next boot. (The earlier
+  paste-a-kubeconfig path `outpost_set_kubeconfig` was retired —
+  outposts only join their owning cloudbox's cluster.)
 
 ### Lifecycle
 
@@ -139,7 +144,7 @@ For headless / scripted use, the same operations are reachable as
 cobra subcommands that call MCP under the hood:
 
 ```
-outpost apps {list, add, rm, rotate-token, suggest}
+outpost apps {list, add, rm, start, stop, secret, rotate-secret, rotate-token, suggest}
 outpost builtins {show, set --shell=on/off ...}
 outpost status
 outpost unpair --yes

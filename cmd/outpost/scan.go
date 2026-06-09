@@ -102,7 +102,7 @@ func runScan(ctx context.Context, jsonOut bool, timeout time.Duration) error {
 func discoverCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "discover",
-		Short: "LAN discovery: probe a known outpost URL or list discovered peers",
+		Short: "LAN discovery: probe a known outpost URL via /api/v1/discover/{hello,probe}",
 	}
 	cmd.AddCommand(discoverProbeCmd())
 	return cmd

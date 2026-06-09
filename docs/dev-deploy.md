@@ -52,7 +52,7 @@ deploy: build test
 	-podman rm -f $(APP)-dev
 	podman run -d --name $(APP)-dev --restart unless-stopped \
 		-p $(PORT):8080 localhost/$(APP):$(TAG)
-	outpost apps add --name $(APP)-dev --url http://127.0.0.1:$(PORT)
+	outpost apps add $(APP)-dev --url http://127.0.0.1:$(PORT)
 ```
 
 First-time only: the final `outpost apps add` line *registers* the
@@ -109,7 +109,13 @@ images over the wire:
 podman system connection add outpost ssh://$USER@outpost.local
 ```
 
-This rides outpost's existing SSH endpoint (no extra port to open).
+`podman --connection=ssh://...` requires a reachable SSH endpoint on
+the outpost host — either the host's OS sshd, or outpost's LAN SSH
+listener (`outpost config set --ssh-listen-addr 0.0.0.0:2222`). The
+in-process `/ssh` built-in is reachable only through the matrix tunnel,
+not directly from the LAN, so a host-side SSH endpoint is what makes
+this work end-to-end.
+
 See [`remote-podman.md`](remote-podman.md) for the full transport
 story.
 
@@ -131,7 +137,7 @@ deploy: test
 	podman --connection=outpost run -d --name $(APP)-dev \
 		--restart unless-stopped \
 		-p $(PORT):8080 localhost/$(APP):$(TAG)
-	outpost --remote $(REMOTE) apps add --name $(APP)-dev \
+	outpost --remote $(REMOTE) apps add $(APP)-dev \
 		--url http://127.0.0.1:$(PORT)
 	outpost --remote $(REMOTE) apps start $(APP)-dev
 ```

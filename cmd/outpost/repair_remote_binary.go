@@ -44,7 +44,7 @@ func repairRemoteBinaryCmd() *cobra.Command {
 		Long: `Streams the local outpost binary (os.Executable() or --local override)
 to <peer> via SSH and lands it at a candidate path on the peer
 (default ~/.cache/outpost/repair/outpost-incoming). When --apply
-is passed, also runs 'outpost upgrade --local <candidate> --yes'
+is passed, also runs 'outpost upgrade --local <candidate>'
 on the peer to swap + restart.
 
 Use case: a remote outpost has hit a broken-binary state (corrupt
@@ -67,7 +67,7 @@ SSH client chains through a healthy hop.`,
 	cmd.Flags().StringVar(&toFlag, "to", "", "SSH target alias of the peer to repair. Required.")
 	cmd.Flags().StringVar(&localBinFlag, "local", "", "Local binary to push (default: this outpost's binary, via os.Executable())")
 	cmd.Flags().StringVar(&remotePathFlag, "remote-path", "", "Remote candidate path (default: ~/.cache/outpost/repair/outpost-incoming)")
-	cmd.Flags().BoolVar(&applyFlag, "apply", false, "After landing, run 'outpost upgrade --local <candidate> --yes' on the peer")
+	cmd.Flags().BoolVar(&applyFlag, "apply", false, "After landing, run 'outpost upgrade --local <candidate>' on the peer")
 	return cmd
 }
 
@@ -149,17 +149,17 @@ func runRepairRemoteBinary(ctx context.Context, peerName, localBin, remotePath s
 	fmt.Fprintf(os.Stderr, "Candidate self-check: %s\n", trimSpace(probe.Stdout))
 
 	// Step 5 (optional): apply via the existing upgrade flow on the
-	// peer. `outpost upgrade --local <path> --yes` runs the same
+	// peer. `outpost upgrade --local <path>` runs the same
 	// stage → probe → swap → restart machinery used by the cloudbox
 	// fleet-upgrade fan-out; we just kick it via SSH instead of the
 	// matrix tunnel.
 	if !apply {
 		fmt.Fprintf(os.Stderr, "\nPeer-side apply skipped (--apply not passed).\n")
 		fmt.Fprintf(os.Stderr, "Run manually on %s with:\n", peerName)
-		fmt.Fprintf(os.Stderr, "  outpost upgrade --local %s --yes\n", remotePath)
+		fmt.Fprintf(os.Stderr, "  outpost upgrade --local %s\n", remotePath)
 		return nil
 	}
-	applyCmd := "outpost upgrade --local " + shellQuote(remotePath) + " --yes"
+	applyCmd := "outpost upgrade --local " + shellQuote(remotePath)
 	fmt.Fprintf(os.Stderr, "Applying on %s: %s\n", peerName, applyCmd)
 	var apl sshExecResult
 	if err := session.callTool(ctx, "outpost_ssh_exec", map[string]any{

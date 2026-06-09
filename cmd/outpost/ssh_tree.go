@@ -439,10 +439,14 @@ the CLI's exit code matches the remote process's exit code (0 on
 success, the remote's non-zero code otherwise; 1 for an outpost-side
 failure).
 
-Requires a current elevation for the target's host — run
-'outpost connect <host>' first (or 'outpost connect <host> --keep-alive'
-to keep the cookie warm). If no elevation is present, exec returns
-401 with guidance.
+For cloudbox-tunneled targets, requires a current elevation for the
+target's host — run 'outpost connect <host>' first (or
+'outpost connect <host> --keep-alive' to keep the cookie warm).
+If no elevation is present, exec returns 401 with guidance.
+
+LAN-direct targets reuse the cached peer ticket and do NOT require
+re-elevation — once seeded with the first 'outpost connect', exec works
+without further interaction until the peer ticket expires.
 
 --jump <alias> overrides the target's persisted Via for this one
 call (analogous to ssh's -J).`,

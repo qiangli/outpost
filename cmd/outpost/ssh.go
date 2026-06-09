@@ -29,7 +29,7 @@ import (
 func sshProxyCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "ssh-proxy <host>",
-		Short: "Bridge stdin/stdout to wss://<cloudbox>/h/<host>/ssh (use as an SSH ProxyCommand)",
+		Short: "Bridge stdin/stdout to wss://<cloudbox>/matrix/h/<host>/ssh (use as an SSH ProxyCommand)",
 		Long: `ssh-proxy is invoked by your local ssh client through ~/.ssh/config:
 
     Host myhome
@@ -37,9 +37,9 @@ func sshProxyCmd() *cobra.Command {
         ProxyCommand outpost ssh-proxy %h
 
 It reads the local outpost's saved config, opens a WebSocket to
-cloudbox's /h/<host>/ssh endpoint with the persisted bearer token,
-and pipes stdin <-> WebSocket <-> stdout. The remote outpost answers
-the SSH protocol on the other side.`,
+cloudbox's /matrix/h/<host>/ssh endpoint with the persisted bearer
+token, and pipes stdin <-> WebSocket <-> stdout. The remote outpost
+answers the SSH protocol on the other side.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSSHProxy(cmd.Context(), args[0])

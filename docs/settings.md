@@ -74,8 +74,8 @@ audiences differ — and the mapping is one-to-one.
 
 | Field | File key | CLI | UI | MCP | Effect |
 |---|---|---|---|---|---|
-| Agent name | `agent_name` | `register --name` (alias: `outpost pair`), `start --name` | Pair tab | `outpost_pair` | Restart |
-| Portal server | `server_addr` / `server_port` / `protocol` | `register --server`, `start --server / --server-port`, `$MATRIX_SERVER_ADDR`, `$MATRIX_SERVER_PORT`, `$MATRIX_PROTOCOL` | Pair tab (display only) | `outpost_pair` | Restart |
+| Agent name | `agent_name` | `register --name` (alias: `outpost pair`) | Pair tab | `outpost_pair` | Restart |
+| Portal server | `server_addr` / `server_port` / `protocol` | `register --server`, `$MATRIX_SERVER_ADDR`, `$MATRIX_SERVER_PORT`, `$MATRIX_PROTOCOL` | Pair tab (display only) | `outpost_pair` | Restart |
 | Tunnel token | `token` | (portal-issued; never user-input) | `has_token` flag only | (never exposed) | Restart |
 | Cloudbox access token | `access_token` | (portal-issued) | `has_token` flag only | (never exposed) | Restart |
 | Remote port | `remote_port` | (portal-issued; `$MATRIX_REMOTE_PORT` override) | display | (never exposed) | Restart |
@@ -106,7 +106,7 @@ tool, or wipe `agent.json` by hand.
 | Podman daemon proxy | `podman_enabled` | `builtins set --podman` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Ollama daemon proxy | `ollama_enabled` | `builtins set --ollama` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Ollama LLM-pool participation | `ollama_pool_enabled` | `builtins set --ollama-pool` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
-| Cluster join | `cluster.enabled` | `builtins set --cluster` or `cluster set --enable` | Inbound > Cluster | `outpost_set_builtins` / `outpost_set_kubeconfig` | Restart |
+| Cluster join | `cluster.enabled` | `builtins set --cluster` | Inbound > Cluster | `outpost_set_builtins` | Restart |
 | Cloudbox-pushed self-upgrade | `update_mode` | `builtins set --update=auto\|manual\|never` | Inbound > Built-ins | `outpost_set_builtins` | Live |
 
 All built-in toggles default to ON when the JSON key is absent (old
@@ -187,7 +187,7 @@ Status codes the daemon returns to cloudbox:
 | 200 | replay | same `release_id` already handled this run (idempotent) |
 | 409 | in_flight | another upgrade is currently running |
 | 304 | same_commit | daemon is already at this commit |
-| 403 | disabled | operator turned `auto_upgrade` off |
+| 403 | disabled | operator set `update_mode` to `never` |
 | 412 | min_from | daemon's current commit is older than `min_from` requires |
 | 400 | (invalid envelope) | required field missing or `url` is not https |
 
@@ -231,7 +231,7 @@ only the proxy gate — the upstream container/process is untouched.
 | Remote host | `host` | `--host` | (auto from dropdown) |
 | Remote OS user | `user` | `--user` | (auto from dropdown) |
 | Scheme | `scheme` | `--scheme` (`http`, `tcp`, `ssh`) | Scheme |
-| Local port | `local_port` | `--port` | Port (tcp/ssh only) |
+| Local port | `local_port` | `--local-port` | Port (tcp/ssh only) |
 | TTL override | `ttl_seconds` | `--ttl` | TTL selector |
 
 MCP equivalents: `outpost_upsert_outbound`, `outpost_delete_outbound`,
@@ -242,17 +242,23 @@ Add / remove / connect / disconnect are all **live**. `connect`
 requires the user's OS password on the remote host (human-in-the-loop
 for agent calls).
 
-### Cluster (virtual-podman)
+### Cluster join (k3s-agent default)
 
 | Field | File key | CLI | UI | MCP |
 |---|---|---|---|---|
-| Joined | `cluster.enabled` | `cluster set --enable` / `cluster clear` | Inbound > Cluster | `outpost_set_kubeconfig` / `outpost_clear_kubeconfig` |
-| Apiserver URL | `cluster.api_url` | (parsed from kubeconfig YAML) | display | (parsed from kubeconfig) |
-| Bearer token | `cluster.token` | (parsed from kubeconfig YAML) | `has_token` flag only | (parsed; never read back) |
-| CA bundle | `cluster.ca` | (parsed from kubeconfig YAML) | `has_ca` flag only | (parsed; never read back) |
-| Node name override | `cluster.node_name` | `cluster set --node-name` | Inbound > Cluster | `outpost_set_kubeconfig` |
+| Joined | `cluster.enabled` | `builtins set --cluster` / `cluster clear` | Inbound > Cluster | `outpost_set_builtins` / `outpost_clear_kubeconfig` |
+| Apiserver URL | `cluster.api_url` | (fetched from cloudbox at boot) | display | (auto-fetched) |
+| Bearer token | `cluster.token` | (fetched from cloudbox at boot) | `has_token` flag only | (auto-fetched; never read back) |
+| CA bundle | `cluster.ca` | (fetched from cloudbox at boot) | `has_ca` flag only | (auto-fetched; never read back) |
+| Node name override | `cluster.node_name` | (set in cloudbox's host record) | display | (managed in cloudbox) |
 
-Save = restart (the vkpodman runner is built once at boot).
+Save = restart (the cluster runtime is built once at boot). Default
+cluster mode is `agent` (real k3s-agent in a podman-supervised
+container); `vkpodman` is the legacy alternative and opt-in via the
+`--cluster-mode=vkpodman` flag on `start`. Outposts only join their
+owning cloudbox's cluster — the older paste-a-kubeconfig path
+(`outpost_set_kubeconfig`) was removed; cloudbox provides the kubeconfig
+automatically once `cluster.enabled` is set.
 
 ### Networking (boot-time-bound)
 

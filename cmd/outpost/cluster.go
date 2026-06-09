@@ -21,7 +21,7 @@ import (
 func clusterCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cluster",
-		Short: "Interact with the cloudbox virtual-podman cluster",
+		Short: "Interact with this outpost's cloudbox k8s cluster (default mode: real k3s-agent in a podman container; legacy vkpodman is opt-in)",
 	}
 	cmd.AddCommand(clusterKubeconfigCmd(), clusterUserKubeconfigCmd(),
 		clusterInitCmd(), clusterClearCmd(), clusterBuildRuntimeCmd())
@@ -120,7 +120,7 @@ func clusterClearCmd() *cobra.Command {
 				return err
 			}
 			if out.RestartPending {
-				fmt.Println("Cleared. Restarting outpost — vkpodman will stop on the next boot.")
+				fmt.Println("Cleared. Restarting outpost — cluster runtime (k3s-agent or vkpodman) will stop on the next boot.")
 			} else {
 				fmt.Println("Cleared.")
 			}

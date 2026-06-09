@@ -109,7 +109,7 @@ func startCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "start",
-		Short: "Start the local agent and dial the portal",
+		Short: "Start the local agent — dials the portal when paired, otherwise serves only the admin UI and waits for pairing",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// One-shot migration from the legacy os.UserConfigDir() /
 			// os.UserCacheDir() locations (~/Library/Application Support
@@ -1981,7 +1981,7 @@ func removePidFile() {
 func stopCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "stop",
-		Short: "Stop a backgrounded outpost",
+		Short: "Stop the running outpost daemon (SIGTERM, then SIGKILL after 5s)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			p, err := pidFilePath()
 			if err != nil {

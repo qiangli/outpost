@@ -45,8 +45,25 @@ import (
 func kubectlCmd() *cobra.Command {
 	var refresh bool
 	cmd := &cobra.Command{
-		Use:                "kubectl [args...]",
-		Short:              "Run kubectl against this cloudbox cluster (auto-fetches a per-user kubeconfig)",
+		Use:   "kubectl [args...]",
+		Short: "Run kubectl against this cloudbox cluster (auto-fetches a per-user kubeconfig)",
+		Long: `Thin wrapper around the system kubectl binary.
+
+Flags are passed through to kubectl unchanged — DisableFlagParsing is set,
+so 'outpost kubectl --help' does NOT show this Long; the operator sees
+kubectl's own help instead. Read this prose by other means.
+
+Outpost-specific flags (consumed before kubectl sees args):
+  --refresh           Force-refetch the kubeconfig instead of using the cache.
+
+Kubeconfig caching:
+  The per-user kubeconfig is fetched from cloudbox on demand and cached at
+  <userCacheDir>/outpost/cluster-kubeconfig.yaml. The cache is considered
+  fresh for 50 minutes; older copies are re-fetched on next call. Use
+  --refresh to bypass the cache window.
+
+Pass '--' to forward args literally past flag parsing — e.g.
+  outpost kubectl -- get nodes -o yaml`,
 		DisableFlagParsing: true, // all flags are kubectl's; the only outpost flag (--refresh) is consumed before kubectl sees args
 		RunE: func(cmd *cobra.Command, args []string) error {
 			args, refresh = splitOutpostFlags(args)

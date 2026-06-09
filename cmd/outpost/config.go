@@ -21,7 +21,7 @@ import (
 func configCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Show or persist outpost configuration (networking, admin-users allowlist)",
+		Short: "Show or persist outpost configuration (networking, admin-users allowlist, LAN-discovery)",
 	}
 	cmd.AddCommand(configShowCmd(), configSetCmd())
 	return cmd

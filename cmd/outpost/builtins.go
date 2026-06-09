@@ -17,7 +17,7 @@ import (
 func builtinsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "builtins",
-		Short: "Show or toggle built-in routes (shell/desktop/clipboard/ssh/sftp/podman/ollama/cluster)",
+		Short: "Show or toggle built-in routes (shell/desktop/clipboard/ssh/sftp/podman/ollama/ollama-pool/otel/ycode-share/cluster)",
 	}
 	cmd.AddCommand(builtinsShowCmd(), builtinsSetCmd())
 	return cmd
@@ -197,7 +197,7 @@ func builtinsSetCmd() *cobra.Command {
 	// Canonical names match the file/MCP key (ssh_allow_local_forward etc.);
 	// the old shorter spellings stay as deprecated aliases so existing
 	// scripts don't break.
-	cmd.Flags().StringVar(&sshLocalFwd, "ssh-allow-local-forward", "", "on|off — direct-tcpip channels (ssh -L)")
+	cmd.Flags().StringVar(&sshLocalFwd, "ssh-allow-local-forward", "", "on|off — direct-tcpip channels for `ssh -L` and direct-streamlocal@openssh.com for podman/docker sockets")
 	cmd.Flags().StringVar(&sshLocalFwd, "ssh-local-fwd", "", "deprecated alias for --ssh-allow-local-forward")
 	_ = cmd.Flags().MarkDeprecated("ssh-local-fwd", "use --ssh-allow-local-forward")
 	cmd.Flags().StringVar(&sshRemoteFwd, "ssh-allow-remote-forward", "", "on|off — tcpip-forward global requests (ssh -R)")

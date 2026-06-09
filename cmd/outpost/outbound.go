@@ -45,10 +45,13 @@ func outboundCmd() *cobra.Command {
 		Use:   "outbound",
 		Short: "Manage outbound mounts to peer outposts (CLI mirror of the admin UI)",
 		Long: `Outbound mounts let this machine reach apps and services running
-on other paired outposts through cloudbox. Each subcommand drives the
-running local outpost's admin UI API on 127.0.0.1:17777.
+on other paired outposts through cloudbox. Most subcommands (login, logout,
+list, add, rm, connect, disconnect) drive the running local outpost's admin
+UI API on 127.0.0.1:17777 and require an admin-cookie 'login' first.
+'outbound suggest' takes a different path: it goes through the MCP bearer
+endpoint at /mcp/ and does NOT require login.
 
-Two passwords are involved across the subcommands:
+Two passwords are involved across the cookie-based subcommands:
   - "outpost outbound login" takes the LOCAL OS password (admin-UI session).
   - "outpost outbound connect" takes the REMOTE host's OS password
     (cloudbox elevates the matrix_elev cookie scoped to that host+app).`,
