@@ -160,6 +160,46 @@ podman stop myapp-dev                # upstream goes down
 `apps stop` survives daemon restarts (the Enabled=false flag is
 persisted). To re-enable: `outpost apps start myapp-dev`.
 
+## Plain-binary deploy + verify (no container)
+
+When the app *is* the binary — no container in the loop — the deploy
+loop is `build → ship → verify → restart`. Outpost ships a small set
+of verbs that close this loop without leaving the surface:
+
+```sh
+# Preflight: are we LAN-direct or going through cloudbox?
+outpost reach $HOST                    # exit 0=lan, 10=cloudbox, 20=offline
+
+# Ship: amfid-safe atomic replace (macOS-critical, harmless elsewhere)
+outpost scp --safe --keep-previous \
+  ./bin/myapp $HOST:/opt/myapp/bin/myapp
+
+# Verify: parity check vs. the local hash, one shell line
+diff <(outpost shasum $HOST:/opt/myapp/bin/myapp | awk '{print $1}') \
+     <(shasum -a 256 ./bin/myapp                 | awk '{print $1}')
+
+# Restart: launchd / systemd / supervisord — app-specific
+outpost ssh $HOST -- launchctl kickstart -k gui/$UID/com.example.myapp
+```
+
+Why `--safe` matters: plain `scp` (and `outpost scp` without the
+flag) writes in place via SFTP. On macOS that keeps the destination
+inode, and amfid's per-inode signature cache will silently SIGKILL the
+re-execed binary with exit 137 and an empty stderr. `--safe` stages
+to `<dst>.new`, hashes the stream client-side, then issues a
+posix-rename so the OS revalidates the signature on the next exec.
+`--keep-previous` snapshots the prior generation to `<dst>.previous`
+in the same atomic step, so rollback is a one-command revert:
+
+```sh
+outpost ssh $HOST -- mv -f /opt/myapp/bin/myapp{.previous,}
+```
+
+The four verbs all ride `outpost ssh`'s LAN-direct + cloudbox-fallback
+dial path, so they're passwordless after the first `outpost connect
+$HOST`. Same `--remote $REMOTE` selector as the rest of the CLI for
+cached-credential targets.
+
 ## Troubleshooting
 
 - **"outpost daemon at outpost.local not reachable"** — the admin

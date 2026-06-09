@@ -80,10 +80,22 @@ go run ./cmd/outpost-vk -kubeconfig ~/.kube/config -node <name>  # standalone vi
 # container by the multi-stage Dockerfile. No standalone build target.
 outpost cluster build-runtime                                    # rebuild the runtime container image from embedded sources
 
-# Client-side helpers (unchanged):
-go run ./cmd/outpost connect <host>        # mirrors the web "Connect" button
-go run ./cmd/outpost ssh-proxy <host>      # SSH ProxyCommand
-go run ./cmd/outpost ssh-config            # emit ~/.ssh/config stanzas
+# Client-side helpers (target a paired host from a different machine):
+go run ./cmd/outpost connect <host>        # mirrors the web "Connect" button (caches matrix_elev cookie)
+go run ./cmd/outpost ssh-proxy <host>      # SSH ProxyCommand (used by ~/.ssh/config stanzas)
+go run ./cmd/outpost ssh-config            # emit ~/.ssh/config stanzas for visible hosts
+go run ./cmd/outpost ssh <host> [cmd...]   # drop-in ssh; LAN-direct when possible, cloudbox fallback
+go run ./cmd/outpost ssh {list,add,show,rm,exec,tunnel,sftp,ls,get,put}  # SSH target tree
+go run ./cmd/outpost scp [user@]host:src dst         # SFTP-backed copy
+go run ./cmd/outpost scp --safe [--keep-previous] src host:dst  # amfid-safe binary delivery (atomic posix-rename)
+go run ./cmd/outpost shasum [user@]host:path         # sha256 of a remote file (shasum -a 256 format)
+go run ./cmd/outpost reach [user@]host               # lan|cloudbox|offline classifier (exit 0|10|20)
+
+# Discovery + peer-assisted repair (Wave 3A):
+go run ./cmd/outpost scan                            # mDNS browse for outposts on the LAN
+go run ./cmd/outpost peers {list,route-to,history,predicted,help-mint-invite}
+go run ./cmd/outpost repair {cloudbox-url,binary,register,remote-binary}  # recover from a broken peer
+go run ./cmd/outpost version                         # build provenance (commit, dirty flag, Go version)
 ```
 
 `outpost start` no longer requires `register` first — on an unpaired host it brings up the admin UI and waits. `register` still exists for installer scripts and for users who want the whole pairing in one CLI invocation; `register --yes` (or answering "yes" to the prompt) re-execs the binary as a detached background process — see `cmd/outpost/main.go:execSelfStart` and `detach_unix.go` / `detach_windows.go`.
