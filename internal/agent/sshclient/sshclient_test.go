@@ -537,3 +537,100 @@ func runTestSSHServer(conn net.Conn, cfg *ssh.ServerConfig, handle func(req *ssh
 	}
 	return nil
 }
+
+// TestCRLFTranslator pins the LF→CRLF rewriter that Shell() drops
+// between the SSH session output and local stdout when the local
+// terminal is in raw mode. The remote outpost's emulated PTY ignores
+// RFC 4254 termios opcodes, so OPOST+ONLCR can't be set server-side;
+// without this translator, bare \n staircases under the prompt column.
+func TestCRLFTranslator(t *testing.T) {
+	cases := []struct {
+		name  string
+		in    []string // chunks fed to Write in order
+		want  string
+	}{
+		{
+			name: "bare LF expands to CRLF",
+			in:   []string{"hello\nworld\n"},
+			want: "hello\r\nworld\r\n",
+		},
+		{
+			name: "already-CRLF passes through unchanged",
+			in:   []string{"hello\r\nworld\r\n"},
+			want: "hello\r\nworld\r\n",
+		},
+		{
+			name: "stray CR alone passes through (apps use it to redraw)",
+			in:   []string{"100%\r"},
+			want: "100%\r",
+		},
+		{
+			name: "CR followed later by LF still translates (not part of same CRLF run)",
+			in:   []string{"100%\rdone\n"},
+			want: "100%\rdone\r\n",
+		},
+		{
+			name: "chunk boundary at CR keeps the suppression for the next chunk's LF",
+			in:   []string{"hello\r", "\nworld\n"},
+			want: "hello\r\nworld\r\n",
+		},
+		{
+			name: "chunk boundary mid-stream does not double-translate",
+			in:   []string{"a\nb", "\nc\n"},
+			want: "a\r\nb\r\nc\r\n",
+		},
+		{
+			name: "no newlines at all is a pass-through",
+			in:   []string{"plain text no eol"},
+			want: "plain text no eol",
+		},
+		{
+			name: "empty write returns nil error and writes nothing",
+			in:   []string{""},
+			want: "",
+		},
+		{
+			name: "consecutive LFs each get a CR",
+			in:   []string{"\n\n\n"},
+			want: "\r\n\r\n\r\n",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			tr := &crlfTranslator{w: &buf}
+			for _, chunk := range tc.in {
+				n, err := tr.Write([]byte(chunk))
+				if err != nil {
+					t.Fatalf("Write(%q): %v", chunk, err)
+				}
+				if n != len(chunk) {
+					t.Fatalf("Write(%q): reported n=%d, want %d", chunk, n, len(chunk))
+				}
+			}
+			if got := buf.String(); got != tc.want {
+				t.Fatalf("output mismatch\n  got:  %q\n  want: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// errWriter returns the configured error from every Write call. Used
+// to confirm crlfTranslator propagates Write errors instead of
+// silently swallowing them.
+type errWriter struct{ err error }
+
+func (e *errWriter) Write(p []byte) (int, error) { return 0, e.err }
+
+func TestCRLFTranslatorPropagatesWriteError(t *testing.T) {
+	wantErr := errors.New("downstream stdout closed")
+	tr := &crlfTranslator{w: &errWriter{err: wantErr}}
+	n, err := tr.Write([]byte("hello\nworld\n"))
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want %v", err, wantErr)
+	}
+	if n != 0 {
+		t.Fatalf("n = %d, want 0 on error path", n)
+	}
+}
