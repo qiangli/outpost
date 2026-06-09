@@ -108,6 +108,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Need the tag object's annotation body for the release notes
+          # below. Default checkout fetches only the commit, not the
+          # tag object — set fetch-tags so `git tag -l --format=…` can
+          # read the annotation.
+          fetch-tags: true
+          fetch-depth: 0
 
       - uses: actions/download-artifact@v4
         with:
@@ -117,6 +124,26 @@ jobs:
       - name: list artifacts
         run: ls -la dist/
 
+      - name: extract release notes from annotated tag
+        id: notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Prefer the annotated-tag message if present (e.g. multi-line
+          # release notes written via `git tag -a -F …`). Lightweight
+          # tags carry no body — fall back to a generic line so
+          # gh release create still has *something* to publish.
+          body=$(git tag -l --format='%(contents)' "${TAG}")
+          if [ -z "$(echo "$body" | tr -d '[:space:]')" ]; then
+            body="Automated release for ${TAG}."
+          fi
+          # Persist to a file; --notes on the command line would
+          # require shell-quoting every newline + backtick. Reading
+          # from a file is safer for arbitrary markdown bodies.
+          printf '%s\n' "$body" > /tmp/release-notes.md
+          echo "Wrote $(wc -l < /tmp/release-notes.md) lines to /tmp/release-notes.md"
+          head -5 /tmp/release-notes.md
+
       - name: create github release
         id: gh_release
         env:
@@ -125,7 +152,7 @@ jobs:
         run: |
           gh release create "${TAG}" \
             --title "${TAG}" \
-            --notes "Automated release for ${TAG}." \
+            --notes-file /tmp/release-notes.md \
             dist/outpost-*
           # Capture the per-asset download URLs for the webhook payload.
           # GitHub formats them deterministically:
