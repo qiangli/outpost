@@ -657,6 +657,17 @@ func Checkout(opts CheckoutOptions) (*Result, error) {
 	if err := w.Checkout(&gogit.CheckoutOptions{
 		Branch: plumbing.NewBranchReferenceName(opts.Branch),
 	}); err != nil {
+		// Not a branch name — try it as a revision (commit SHA, short
+		// SHA, tag). Upstream `git checkout <sha>` lands on a detached
+		// HEAD; mirror that. This is what lets `.sibling-pins` SHAs and
+		// `outpost build --ref <sha>` check out without system git.
+		if !opts.Create {
+			if hash, rerr := r.ResolveRevision(plumbing.Revision(opts.Branch)); rerr == nil {
+				if herr := w.Checkout(&gogit.CheckoutOptions{Hash: *hash}); herr == nil {
+					return &Result{Success: true, Message: fmt.Sprintf("HEAD is now at %s (detached)", hash.String()[:7])}, nil
+				}
+			}
+		}
 		return nil, fmt.Errorf("checkout: %w", err)
 	}
 	return &Result{Success: true, Message: fmt.Sprintf("Switched to branch '%s'", opts.Branch)}, nil

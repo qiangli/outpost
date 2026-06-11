@@ -22,11 +22,24 @@ curl -fsSL https://raw.githubusercontent.com/qiangli/outpost/main/scripts/instal
 iwr -useb https://raw.githubusercontent.com/qiangli/outpost/main/scripts/install.ps1 | iex
 ```
 
-**From source** — if you have Go 1.25+:
+**From source** — if you have Go 1.25+ (note: `go install …@latest` does
+not work here — go.mod carries a sibling-path `replace` for the forked
+shell runner, which the build scripts materialize for you):
 
 ```bash
-go install github.com/qiangli/outpost/cmd/outpost@latest
+git clone https://github.com/qiangli/outpost.git && cd outpost
+./scripts/build.sh        # macOS / Linux → ./bin/outpost
 ```
+
+```powershell
+git clone https://github.com/qiangli/outpost.git; cd outpost
+.\scripts\build.ps1       # Windows → .\bin\outpost.exe
+```
+
+Already have any outpost release installed? `outpost build` rebuilds
+from GitHub source in one command — no system git needed. See
+[`docs/building.md`](docs/building.md) (or `outpost docs building`) for
+all build paths, tag/commit pinning, and cross-compilation.
 
 See `outpost docs install` (or [`docs/install.md`](docs/install.md)) for the full guide: environment overrides (`INSTALL_DIR`, `OUTPOST_VERSION`, `NO_SERVICE`), Linux PAM auth via `CGO_ENABLED=1`, Windows Defender notes, and uninstall steps.
 
@@ -87,15 +100,20 @@ cd outpost
 ./bin/outpost start
 ```
 
-Requires Go 1.25+. `./scripts/build.sh` runs `go build ./cmd/outpost`
+Requires Go 1.25+. `./scripts/build.sh` (and its Windows twin
+`.\scripts\build.ps1`) first materializes the `../sh` sibling the
+go.mod `replace` directive needs, then runs `go build ./cmd/outpost`
 with the version + commit baked into the binary so `outpost version`
 reports a build you can trace back to a git SHA. Already have outpost
-installed? `outpost git clone … && outpost shell ./scripts/build.sh`
-rebuilds it without needing system git, make, or coreutils — only the
-Go toolchain. See
+installed? `outpost build` does the whole flow — clone from GitHub,
+sibling bootstrap, build — without system git, make, bash, or
+coreutils; only the Go toolchain. Pin a version with
+`outpost build --ref v0.3.0` (tag) or `--ref <sha>` (any commit), then
+swap it in with `outpost upgrade --local <built>`. The full guide is
+[`docs/building.md`](docs/building.md) (`outpost docs building`); see
 [`docs/install.md`](docs/install.md) for the CGO-enabled recipe needed
-for Linux PAM auth (`CGO_ENABLED=1` + `libpam-dev`), Windows build
-notes, and cross-compilation tips.
+for Linux PAM auth (`CGO_ENABLED=1` + `libpam-dev`) and Windows
+Defender notes.
 
 **Forking, modifying, contributing** — outpost has no proprietary
 hooks. The wire protocol with cloudbox is documented inline in

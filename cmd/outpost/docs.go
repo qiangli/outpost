@@ -34,6 +34,7 @@ var docsManifest = []struct {
 	Description string
 }{
 	{"install", "Install guide", "Three install paths (curl-pipe sh, PowerShell, go install), uninstall steps, Windows Defender notes."},
+	{"building", "Build from source", "Per-platform build recipes (build.sh, build.ps1, `outpost build`), sibling bootstrap, cross-compile matrix."},
 	{"settings", "Settings reference", "Every persistable setting: file key, CLI flag, UI location, MCP tool, side-effects."},
 	{"mcp", "MCP server guide", "Setup, tool catalog, .mcp.json snippet, token rotation, security posture."},
 	{"dev-deploy", "Direct-local dev → deploy", "Makefile recipes for same-machine and LAN deploys (podman); apps stop/start; remote-cred caching."},
