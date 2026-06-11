@@ -26,12 +26,35 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
+// ptyFile is one end of the session's terminal pair: a real PTY *os.File
+// on unix, the pipe-backed emulation on Windows (see pty_windows.go).
+type ptyFile interface {
+	io.ReadWriteCloser
+}
+
+// virtualTTY is implemented by PTY emulations that have no kernel TTY
+// behind them (the Windows pipe pair). When the slave end implements it,
+// Session.Run tells readline to treat the stream as an already-raw
+// terminal — the raw mode lives at the far end (SSH client / xterm.js)
+// — and where to read the window size from.
+type virtualTTY interface {
+	WindowSize() (cols, rows int)
+}
+
+// stdinFiler is implemented by slave ends whose input side is a real
+// *os.File. interp must receive that fd directly: for any other reader
+// interp.StdIO spawns a stdin-draining copier goroutine (subprocesses
+// can only inherit real fds) which would race readline for keystrokes.
+type stdinFiler interface {
+	StdinFile() *os.File
+}
+
 // Session is one interactive shell sitting between a tty pair and a runner.
 // Caller writes to / reads from the master side of the PTY; the runner is
 // hooked up to the slave side as stdin/stdout/stderr.
 type Session struct {
-	ptm    *os.File // master (caller side)
-	pts    *os.File // slave (runner side)
+	ptm    ptyFile // master (caller side)
+	pts    ptyFile // slave (runner side)
 	runner *interp.Runner
 	done   chan struct{}
 }
@@ -62,6 +85,13 @@ func NewSession(opts SessionOptions) (*Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open pty: %w", err)
 	}
+	return newSessionFrom(ptm, pts, opts)
+}
+
+// newSessionFrom builds the Session on an already-open terminal pair.
+// Split from NewSession so unix test runs can exercise the virtual
+// (Windows) pair without a kernel PTY.
+func newSessionFrom(ptm, pts ptyFile, opts SessionOptions) (*Session, error) {
 
 	// Merge Term + caller-supplied env overrides (e.g. SSH_AUTH_SOCK
 	// from `ssh -A`) into a single overrides map, then build the env
@@ -79,8 +109,15 @@ func NewSession(opts SessionOptions) (*Session, error) {
 	}
 	env := BuildEnvWith(overrides)
 
+	// interp stdin must be the slave's real fd when there is one — any
+	// other reader makes interp.StdIO spawn a copier goroutine that
+	// would steal keystrokes from readline (see stdinFiler).
+	var stdin io.Reader = pts
+	if sf, ok := pts.(stdinFiler); ok {
+		stdin = sf.StdinFile()
+	}
 	runner, err := interp.New(
-		interp.StdIO(pts, pts, pts),
+		interp.StdIO(stdin, pts, pts),
 		interp.Env(env), // outpost process env + user-shell-style PATH extras (+ TERM if hinted)
 		interp.WithBgPidCallback(func(pid int) {
 			// Cmd is "(detached)" because the fork's callback signature is
@@ -97,13 +134,13 @@ func NewSession(opts SessionOptions) (*Session, error) {
 	if opts.Cols > 0 && opts.Rows > 0 {
 		// Apply geometry before the runner's first read so the very first
 		// `tput cols` / ioctl(TIOCGWINSZ) sees the client's window.
-		_ = setPTYSize(ptm, opts.Cols, opts.Rows)
+		_ = sessionSetSize(ptm, opts.Cols, opts.Rows)
 	}
 	return &Session{ptm: ptm, pts: pts, runner: runner, done: make(chan struct{})}, nil
 }
 
-// Master returns the master fd. The caller pipes WebSocket bytes ↔ this.
-func (s *Session) Master() *os.File { return s.ptm }
+// Master returns the master end. The caller pipes WebSocket bytes ↔ this.
+func (s *Session) Master() io.ReadWriteCloser { return s.ptm }
 
 // RunOnce parses `command` and runs it once through the PTY-backed
 // runner, then returns. Used by the SSH `exec` path when the client
@@ -136,7 +173,18 @@ func (s *Session) RunOnce(ctx context.Context, command string) uint32 {
 
 // Resize updates the PTY's window size — equivalent to a SIGWINCH inside
 // the runner. cols/rows in characters.
-func (s *Session) Resize(cols, rows uint16) error { return setPTYSize(s.ptm, cols, rows) }
+func (s *Session) Resize(cols, rows uint16) error { return sessionSetSize(s.ptm, cols, rows) }
+
+// sessionSetSize routes a resize to the right implementation: the
+// virtual pair stores geometry in-process; a real PTY master takes the
+// per-platform TIOCSWINSZ (pty_unix.go).
+func sessionSetSize(master ptyFile, cols, rows uint16) error {
+	if v, ok := master.(*vptyEnd); ok {
+		v.pty.setSize(cols, rows)
+		return nil
+	}
+	return setPTYSize(master, cols, rows)
+}
 
 // Run starts the interactive read-edit-execute loop, blocking until ctx is
 // canceled, the user exits (the `exit` builtin or Ctrl-D on an empty line),
@@ -155,7 +203,7 @@ func (s *Session) Resize(cols, rows uint16) error { return setPTYSize(s.ptm, col
 func (s *Session) Run(ctx context.Context) error {
 	defer close(s.done)
 
-	return interactive.Run(ctx, interactive.Options{
+	opts := interactive.Options{
 		Runner:            s.runner,
 		Lang:              syntax.LangBash,
 		Stdin:             s.pts,
@@ -172,7 +220,15 @@ func (s *Session) Run(ctx context.Context) error {
 		OnRunError: func(err error) {
 			_, _ = io.WriteString(s.pts, err.Error()+"\r\n")
 		},
-	})
+	}
+	if v, ok := s.pts.(virtualTTY); ok {
+		// Windows pipe-backed pair: no kernel TTY to raw — the remote
+		// terminal (SSH client / xterm.js) is already raw; readline does
+		// echo + editing itself. Size comes from pty-req/window-change.
+		opts.AssumeTTY = true
+		opts.GetSize = v.WindowSize
+	}
+	return interactive.Run(ctx, opts)
 }
 
 // outpostShellHistoryFile returns the path the matrix-shell session uses to

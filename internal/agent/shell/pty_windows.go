@@ -2,15 +2,21 @@
 
 package shell
 
-import (
-	"errors"
-	"os"
-)
+import "errors"
 
-// errNoPTY is returned by the Windows stub. ConPTY support is a follow-up;
-// the v1 Windows agent should fall back to a JS-side line editor (per the
-// plan, this path is also a stub for now).
-var errNoPTY = errors.New("PTY not supported on Windows v1")
+// openPTY hands out the pipe-backed virtual pair (see vpty.go) —
+// Windows has no kernel PTY usable by the in-process runner. Matches
+// the unix signature so NewSession is platform-agnostic.
+func openPTY() (ptyFile, ptyFile, error) {
+	master, slave, err := openVPTY()
+	if err != nil {
+		return nil, nil, err
+	}
+	return master, slave, nil
+}
 
-func openPTY() (*os.File, *os.File, error)            { return nil, nil, errNoPTY }
-func setPTYSize(_ *os.File, _ uint16, _ uint16) error { return errNoPTY }
+// setPTYSize handles real-PTY masters only; every Windows session is a
+// virtual pair, which sessionSetSize (runner.go) intercepts first.
+func setPTYSize(master ptyFile, cols, rows uint16) error {
+	return errors.New("setPTYSize: no kernel PTY on windows")
+}

@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -284,10 +283,10 @@ type ptyDrain struct {
 	mu     sync.Mutex
 	buf    strings.Builder
 	done   chan struct{}
-	master *os.File
+	master io.ReadWriter
 }
 
-func newPtyDrain(master *os.File) *ptyDrain {
+func newPtyDrain(master io.ReadWriter) *ptyDrain {
 	d := &ptyDrain{done: make(chan struct{}), master: master}
 	go d.pump()
 	return d
