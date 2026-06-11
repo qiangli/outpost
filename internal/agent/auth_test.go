@@ -111,6 +111,24 @@ func TestAuthOSPath(t *testing.T) {
 		}
 	})
 
+	t.Run("qualified form of same user accepted", func(t *testing.T) {
+		// Cross-platform consistency: the gate compares bare account
+		// names, so a Windows-style "MACHINE\user" qualifier on the
+		// submitted name matches a bare canonical (and vice versa —
+		// the case that matters on Windows, where currentUser is the
+		// SAM-compatible form). The response echoes the canonical
+		// currentUser, i.e. the local system format.
+		eng := gin.New()
+		RegisterRoutes(eng.Group("/"), Deps{Auth: stub})
+		code, body, _ := postAuth(t, eng, map[string]string{"user": `SOMEBOX\` + currentUser, "password": "right"}, nil)
+		if code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", code)
+		}
+		if body.User != currentUser {
+			t.Errorf("user = %q, want canonical %q", body.User, currentUser)
+		}
+	})
+
 	t.Run("missing user", func(t *testing.T) {
 		eng := gin.New()
 		RegisterRoutes(eng.Group("/"), Deps{Auth: stub})

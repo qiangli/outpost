@@ -100,6 +100,11 @@ func authHandler(auth hostauth.Authenticator, admins AdminSet, authURL string) g
 
 		// OS path: username is required and must match the agent's own
 		// OS user. Anything else is rejected before we touch PAM.
+		// SameUser accepts the bare form ("alice") against a qualified
+		// canonical ("MACHINE\alice" on Windows) so the same username
+		// works against every platform; authentication below always
+		// runs against the canonical currentUser, so the widened match
+		// never changes WHO gets verified.
 		if currentUser == "" {
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "cannot determine current user"})
 			return
@@ -108,7 +113,7 @@ func authHandler(auth hostauth.Authenticator, admins AdminSet, authURL string) g
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "user required"})
 			return
 		}
-		if !strings.EqualFold(req.User, currentUser) {
+		if !hostauth.SameUser(req.User, currentUser) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 			return
 		}

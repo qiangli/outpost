@@ -256,10 +256,15 @@ func handleSSHConn(
 			}
 
 			// OS path: username must equal the running OS user.
+			// SameUser accepts the bare form ("alice") against the
+			// qualified canonical ("MACHINE\alice" on Windows) so
+			// `ssh alice@host` works without quoting the SAM form;
+			// Authenticate below always runs against currentUser, so
+			// the widened match never changes WHO gets verified.
 			if currentUser == "" {
 				return nil, fmt.Errorf("cannot determine current user")
 			}
-			if !strings.EqualFold(user, currentUser) {
+			if !hostauth.SameUser(user, currentUser) {
 				return nil, fmt.Errorf("invalid credentials")
 			}
 			if err := deps.Auth.Authenticate(currentUser, string(password)); err != nil {
