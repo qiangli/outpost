@@ -33,7 +33,7 @@ git clone https://github.com/qiangli/outpost.git && cd outpost
 
 ```powershell
 git clone https://github.com/qiangli/outpost.git; cd outpost
-.\scripts\build.ps1       # Windows → .\bin\outpost.exe
+powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1   # Windows → .\bin\outpost.exe
 ```
 
 Already have any outpost release installed? `outpost build` rebuilds

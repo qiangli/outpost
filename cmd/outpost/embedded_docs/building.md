@@ -36,9 +36,21 @@ cd outpost
 ```powershell
 git clone https://github.com/qiangli/outpost.git
 cd outpost
-.\scripts\build.ps1       # bootstraps ..\sh, builds → .\bin\outpost.exe
+powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1   # → .\bin\outpost.exe
 .\bin\outpost.exe version
 ```
+
+The `-ExecutionPolicy Bypass` wrapper is needed because Windows'
+default execution policy refuses to run `.ps1` files ("running scripts
+is disabled on this system"); it bypasses the policy for this one
+invocation without changing any system setting. Alternatives: relax the
+policy once for your account
+(`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`) and call
+`.\scripts\build.ps1` directly — or skip scripts entirely with
+`outpost build` (below), which is a compiled binary and not subject to
+execution policy. If you fetched the repo as a browser-downloaded ZIP
+rather than `git clone`, also run
+`Unblock-File .\scripts\build.ps1` to clear Mark-of-the-Web.
 
 ## Zero-git: already have outpost installed?
 

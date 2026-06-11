@@ -8,7 +8,13 @@
 # traceable to a git SHA.
 #
 # Usage (from the repo root):
-#   .\scripts\build.ps1            # → .\bin\outpost.exe
+#   powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1   # → .\bin\outpost.exe
+#
+# The Bypass wrapper sidesteps Windows' default execution policy
+# (which refuses .ps1 files) for this one invocation; with
+# `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` in effect,
+# plain `.\scripts\build.ps1` works too. Browser-downloaded ZIPs (not
+# git clones) additionally need `Unblock-File` to clear Mark-of-the-Web.
 #
 # Prerequisites: Go 1.25+ on PATH, plus EITHER system git OR an
 # installed outpost (its embedded `outpost git` is used as fallback —
