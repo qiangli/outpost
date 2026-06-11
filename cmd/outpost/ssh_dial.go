@@ -112,7 +112,7 @@ func dialSSHTargetChain(ctx context.Context, name, jumpOverride string) (*sshcli
 				if !haveTTY() {
 					return "", errors.New("no TTY for password prompt")
 				}
-				fmt.Fprintf(os.Stderr, "outpost: %s requires Connect; prompting for OS password…\n", h)
+				fmt.Fprintf(os.Stderr, "outpost: %s requires Connect; elevating (owned hosts prompt for the OS password)…\n", h)
 				if err := runConnect(c, h, "", false, false, 0); err != nil {
 					return "", err
 				}

@@ -98,6 +98,10 @@ Hop/jump:
   is the one your command runs on.`,
 		// Allow bare 'outpost ssh [user@]<host> [cmd...]' to fall through.
 		Args: cobra.ArbitraryArgs,
+		// Runtime failures (host offline, handshake rejected, EAUTH)
+		// are not usage errors — don't bury the actual message under
+		// a usage dump.
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

@@ -214,6 +214,7 @@ will merge into ~/.ssh/config in-place.`,
 type sshHostEntry struct {
 	Host   string `json:"host"`    // outpost agent name, used in the WSS URL
 	OsUser string `json:"os_user"` // the OS user the remote outpost runs as
+	Shared bool   `json:"shared"`  // true when the caller does not own the host (share grant)
 }
 
 func runSSHConfig(ctx context.Context) error {

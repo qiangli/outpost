@@ -49,6 +49,10 @@ Both interactive ssh (via outpost ssh-proxy) and agentic tools then
 read that cookie automatically — no further password prompts until
 the elevation expires (1 h idle, 8 h absolute by default).
 
+For a host SHARED with your account (not owned by it) there is no
+password prompt at all: the share grant is the authority, and
+cloudbox mints the cookie from it directly.
+
 When stdin is not a TTY (agent context), pass --stdin to read the
 password from stdin so the calling agent can supply it
 programmatically.
@@ -75,6 +79,9 @@ Implies --keep-alive. Errors out if no cached cookie exists for
 daemon never needs the password — launchd-respawn-after-crash
 just resumes pinging.`,
 		Args: cobra.ExactArgs(1),
+		// Elevation failures (wrong password, host offline) are not
+		// usage errors — keep the message readable.
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ttl, err := parseTTL(ttlFlag)
 			if err != nil {
@@ -163,17 +170,35 @@ func runConnect(ctx context.Context, host, userFlag string, fromStdin, keepAlive
 		return errors.New("no auth credential: re-pair with `outpost register`")
 	}
 
-	// Prompt for the password BEFORE the cloudbox round-trip. Resolving
-	// the OS username via /api/v1/ssh/hosts (below) can take a beat over
-	// slow links; doing it after readPassword means the operator sees
-	// the prompt instantly, types the password, and then waits — far
-	// less confusing than a silent gap before the prompt appears.
-	password, err := readPassword(fmt.Sprintf("OS password for %s", host), fromStdin)
-	if err != nil {
-		return fmt.Errorf("read password: %w", err)
+	// Resolve the host's cloudbox view (os_user + shared flag) BEFORE
+	// any password prompt. For a host shared with this account (not
+	// owned), cloudbox's elevate handler mints the cookie from the
+	// HostShare row and never consults the password — the sharee
+	// doesn't have the owner's OS password, and prompting for one
+	// would be both confusing and pointless. Best-effort: when the
+	// lookup fails (cloudbox briefly unreachable, old cloudbox without
+	// the endpoint) fall through to the owner flow and prompt.
+	var hostEntry *sshHostEntry
+	if hosts, ferr := fetchSSHHosts(ctx, fc.ServerAddr, fc.ServerPort, fc.Protocol, bearer); ferr == nil {
+		for i, h := range hosts {
+			if strings.EqualFold(h.Host, host) {
+				hostEntry = &hosts[i]
+				break
+			}
+		}
 	}
-	if password == "" {
-		return errors.New("empty password")
+	shared := hostEntry != nil && hostEntry.Shared
+
+	password := ""
+	if !shared {
+		var perr error
+		password, perr = readPassword(fmt.Sprintf("OS password for %s", host), fromStdin)
+		if perr != nil {
+			return fmt.Errorf("read password: %w", perr)
+		}
+		if password == "" {
+			return errors.New("empty password")
+		}
 	}
 
 	// Resolve the OS username to elevate as. Preference order:
@@ -187,16 +212,12 @@ func runConnect(ctx context.Context, host, userFlag string, fromStdin, keepAlive
 	//      when the operator's local username does happen to match.
 	//   4. hostauth.CurrentUser() as a last resort on systems where $USER
 	//      isn't set (cron, launchd-spawned shells, etc.).
+	// Sharee elevations don't authenticate against the remote /auth gate
+	// at all (the share row is the authority), so an unresolvable
+	// username is only fatal on the owner path.
 	user := strings.TrimSpace(userFlag)
-	if user == "" {
-		if hosts, ferr := fetchSSHHosts(ctx, fc.ServerAddr, fc.ServerPort, fc.Protocol, bearer); ferr == nil {
-			for _, h := range hosts {
-				if strings.EqualFold(h.Host, host) && h.OsUser != "" {
-					user = h.OsUser
-					break
-				}
-			}
-		}
+	if user == "" && hostEntry != nil {
+		user = strings.TrimSpace(hostEntry.OsUser)
 	}
 	if user == "" {
 		user = strings.TrimSpace(os.Getenv("USER"))
@@ -204,7 +225,7 @@ func runConnect(ctx context.Context, host, userFlag string, fromStdin, keepAlive
 	if user == "" {
 		user, _ = hostauth.CurrentUser()
 	}
-	if user == "" {
+	if user == "" && !shared {
 		return errors.New("could not determine OS username; pass --user")
 	}
 
@@ -216,7 +237,11 @@ func runConnect(ctx context.Context, host, userFlag string, fromStdin, keepAlive
 	if err := writeCookie(host, cookie); err != nil {
 		return fmt.Errorf("cache cookie: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "Elevated %s. Cookie cached.\n", host)
+	if shared {
+		fmt.Fprintf(os.Stderr, "Elevated %s via your share grant (no OS password needed). Cookie cached.\n", host)
+	} else {
+		fmt.Fprintf(os.Stderr, "Elevated %s. Cookie cached.\n", host)
+	}
 	if !keepAlive {
 		return nil
 	}

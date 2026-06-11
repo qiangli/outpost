@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -43,6 +45,44 @@ func TestBuildWSURL(t *testing.T) {
 			}
 			if got != c.want {
 				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestDialWSGatewayStatusIsHostOffline pins the gateway-status
+// classification: a 502/503/504 from cloudbox (origin 502 gets
+// rewritten to 504 by DO/Cloudflare in prod) means the matrix tunnel
+// to the host is down — DialWS must surface EHostOfflineError instead
+// of a raw handshake failure, and must NOT invoke OnElevate (a fresh
+// cookie can't bring the host back).
+func TestDialWSGatewayStatusIsHostOffline(t *testing.T) {
+	for _, status := range []int{502, 503, 504} {
+		t.Run(fmt.Sprintf("status_%d", status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+			}))
+			defer srv.Close()
+
+			elevated := false
+			_, err := DialWS(context.Background(), DialOptions{
+				WSURL:  "ws" + strings.TrimPrefix(srv.URL, "http") + "/matrix/h/h1/ssh",
+				Bearer: "tok",
+				Host:   "h1",
+				OnElevate: func(context.Context, string) (string, error) {
+					elevated = true
+					return "fresh", nil
+				},
+			})
+			var off EHostOfflineError
+			if !errors.As(err, &off) {
+				t.Fatalf("want EHostOfflineError, got %v", err)
+			}
+			if off.Host != "h1" || off.Status != status {
+				t.Errorf("got %+v, want Host=h1 Status=%d", off, status)
+			}
+			if elevated {
+				t.Error("OnElevate must not run for a gateway status")
 			}
 		})
 	}

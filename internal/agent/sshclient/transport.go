@@ -130,6 +130,20 @@ func DialWS(ctx context.Context, opts DialOptions) (*websocket.Conn, error) {
 			conn.SetReadLimit(-1)
 			return conn, nil
 		}
+		// 502/503/504 means cloudbox accepted the request but could not
+		// reach the host through the matrix tunnel — the remote outpost
+		// daemon is offline or its tunnel is down. (In prod the origin
+		// 502 is rewritten by DO App Platform / Cloudflare into a 504,
+		// so all three gateway statuses collapse into one condition.)
+		// Retrying or re-elevating can't help; surface a structured
+		// error so callers print "host offline" instead of a raw
+		// handshake failure.
+		if resp != nil {
+			switch resp.StatusCode {
+			case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+				return nil, EHostOfflineError{Host: opts.Host, Status: resp.StatusCode}
+			}
+		}
 		// Only the elevation gate's 401/403 is worth retrying. DNS,
 		// refused, TLS, etc. bubble up immediately.
 		if resp == nil || (resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden) {
@@ -150,6 +164,21 @@ func DialWS(ctx context.Context, opts DialOptions) (*websocket.Conn, error) {
 		cookie = fresh
 	}
 	return nil, EAuthRequiredError{Host: opts.Host, Cause: errors.New("retry budget exhausted")}
+}
+
+// EHostOfflineError is returned when cloudbox itself answered the WS
+// upgrade but could not reach the target host through the matrix
+// tunnel (gateway 502/503/504). Elevation state is irrelevant here —
+// the remote outpost daemon is offline or its tunnel is down, and the
+// only fix is bringing the machine back online.
+type EHostOfflineError struct {
+	Host   string
+	Status int
+}
+
+func (e EHostOfflineError) Error() string {
+	return fmt.Sprintf("outpost: host %q is unreachable through cloudbox (HTTP %d) — its outpost daemon is offline or the matrix tunnel is down; bring the machine online and retry",
+		e.Host, e.Status)
 }
 
 // EAuthRequiredError is returned when the cloudbox elevation gate

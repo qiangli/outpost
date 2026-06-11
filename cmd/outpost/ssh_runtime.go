@@ -109,7 +109,7 @@ func dialOutpostHost(ctx context.Context, host, user string) (*sshclient.Client,
 	// connect --stdin <host>` separately before invoking ssh).
 	cookie, _ := conf.ReadSessionCookie(host)
 	if strings.TrimSpace(cookie) == "" {
-		fmt.Fprintf(os.Stderr, "outpost: %s has no cached elevation; prompting for OS password…\n", host)
+		fmt.Fprintf(os.Stderr, "outpost: %s has no cached elevation; connecting (owned hosts prompt for the OS password)…\n", host)
 		if err := runConnect(ctx, host, user, false, false, 0); err != nil {
 			return nil, func() {}, fmt.Errorf("elevate %s: %w", host, err)
 		}
@@ -233,7 +233,7 @@ func dialCloudboxTunnel(
 			if !haveTTY() {
 				return "", errors.New("no TTY for password prompt")
 			}
-			fmt.Fprintf(os.Stderr, "outpost: %s requires Connect; prompting for OS password…\n", h)
+			fmt.Fprintf(os.Stderr, "outpost: %s requires Connect; elevating (owned hosts prompt for the OS password)…\n", h)
 			if err := runConnect(c, h, "", false, false, 0); err != nil {
 				return "", err
 			}
