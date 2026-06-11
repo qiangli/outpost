@@ -49,14 +49,14 @@ jobs:
           - os: windows
             arch: arm64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0   # full history so vcs.revision stamps correctly
 
       - name: Bootstrap sibling deps (../sh)
         run: ./scripts/bootstrap-siblings.sh
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -95,7 +95,7 @@ jobs:
           shasum -a 256 outpost-* > outpost-${{ github.ref_name }}-${{ matrix.os }}-${{ matrix.arch }}.sha256
           cat outpost-${{ github.ref_name }}-${{ matrix.os }}-${{ matrix.arch }}.sha256
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: outpost-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/outpost-*
@@ -107,9 +107,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
