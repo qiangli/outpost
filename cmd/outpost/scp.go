@@ -61,6 +61,7 @@ func parseSCPArg(arg string) scpEndpoint {
 
 func scpCmd() *cobra.Command {
 	var safe, keepPrevious bool
+	var port int
 	cmd := &cobra.Command{
 		Use:   "scp <src> <dst>",
 		Short: "Copy a file to or from a paired host (LAN-direct when possible)",
@@ -72,6 +73,12 @@ peer outpost is on the same LAN, trades the cached matrix_elev
 cookie at cloudbox for a short-lived peer ticket and dials LAN-
 direct. Falls back to the cloudbox-tunneled path otherwise.
 Passwordless after the first 'outpost connect'.
+
+Cloudbox is optional: against a host running 'outpost sshd' (or a
+daemon with ssh_listen_addr), pass -P <port> to dial plain TCP on
+the LAN — OS-password auth, no pairing or internet needed. An
+unpaired machine also falls back to this LAN path automatically
+(default port 2222).
 
 Rides the SFTP subsystem under the hood (same as modern openssh-scp
 since 8.8). Exactly one of src/dst must carry a [user@]host: prefix
@@ -89,20 +96,19 @@ Upload-only flags:
 
 Out of scope for v1 (use system scp or run the copy in two steps):
   -r  recursive directory copy
-  -p  preserve mtime/mode
-  -P  custom port (LAN-direct uses the advertised sshws port; the
-      tunneled path uses cloudbox's HTTPS port)`,
+  -p  preserve mtime/mode`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSCP(cmd.Context(), args[0], args[1], safe || keepPrevious, keepPrevious)
+			return runSCP(cmd.Context(), args[0], args[1], safe || keepPrevious, keepPrevious, port)
 		},
 	}
 	cmd.Flags().BoolVar(&safe, "safe", false, "Stage to <dst>.new and posix-rename — amfid-safe binary delivery (upload only)")
 	cmd.Flags().BoolVar(&keepPrevious, "keep-previous", false, "Posix-rename existing <dst> to <dst>.previous before the swap; implies --safe")
+	cmd.Flags().IntVarP(&port, "port", "P", 0, "Dial the host directly on this TCP port (LAN 'outpost sshd' / ssh_listen_addr; OS-password auth, no cloudbox)")
 	return cmd
 }
 
-func runSCP(ctx context.Context, srcArg, dstArg string, safe, keepPrevious bool) error {
+func runSCP(ctx context.Context, srcArg, dstArg string, safe, keepPrevious bool, port int) error {
 	src := parseSCPArg(srcArg)
 	dst := parseSCPArg(dstArg)
 	switch {
@@ -114,20 +120,20 @@ func runSCP(ctx context.Context, srcArg, dstArg string, safe, keepPrevious bool)
 		if safe {
 			return errors.New("scp: --safe / --keep-previous apply to uploads only")
 		}
-		return runSCPDownload(ctx, src, dst.Path)
+		return runSCPDownload(ctx, src, dst.Path, port)
 	default:
 		if safe {
-			return runSCPSafeUpload(ctx, src.Path, dst, keepPrevious)
+			return runSCPSafeUpload(ctx, src.Path, dst, keepPrevious, port)
 		}
-		return runSCPUpload(ctx, src.Path, dst)
+		return runSCPUpload(ctx, src.Path, dst, port)
 	}
 }
 
 // runSCPDownload copies remote → local. Empty local path means write
 // to a file named after the remote basename in the current directory
 // — mirrors openssh-scp's `scp host:foo .` ergonomics.
-func runSCPDownload(ctx context.Context, src scpEndpoint, localPath string) error {
-	client, cleanup, err := dialOutpostHost(ctx, src.Host, src.User)
+func runSCPDownload(ctx context.Context, src scpEndpoint, localPath string, port int) error {
+	client, cleanup, err := dialOutpostHost(ctx, src.Host, src.User, port)
 	if err != nil {
 		return err
 	}
@@ -170,7 +176,7 @@ func runSCPDownload(ctx context.Context, src scpEndpoint, localPath string) erro
 // runSCPUpload copies local → remote. Empty remote path falls back
 // to the local basename in the SFTP working directory (typically the
 // remote user's home).
-func runSCPUpload(ctx context.Context, localPath string, dst scpEndpoint) error {
+func runSCPUpload(ctx context.Context, localPath string, dst scpEndpoint, port int) error {
 	if strings.TrimSpace(localPath) == "" {
 		return errors.New("scp: empty local source path")
 	}
@@ -180,7 +186,7 @@ func runSCPUpload(ctx context.Context, localPath string, dst scpEndpoint) error 
 	}
 	defer lf.Close()
 
-	client, cleanup, err := dialOutpostHost(ctx, dst.Host, dst.User)
+	client, cleanup, err := dialOutpostHost(ctx, dst.Host, dst.User, port)
 	if err != nil {
 		return err
 	}
@@ -228,7 +234,7 @@ func runSCPUpload(ctx context.Context, localPath string, dst scpEndpoint) error 
 // When keepPrevious is true, the existing <remote> is PosixRenamed to
 // <remote>.previous before the swap — same atomic-rename trick. A
 // missing destination is fine; we just skip the snapshot step.
-func runSCPSafeUpload(ctx context.Context, localPath string, dst scpEndpoint, keepPrevious bool) error {
+func runSCPSafeUpload(ctx context.Context, localPath string, dst scpEndpoint, keepPrevious bool, port int) error {
 	if strings.TrimSpace(localPath) == "" {
 		return errors.New("scp --safe: empty local source path")
 	}
@@ -238,7 +244,7 @@ func runSCPSafeUpload(ctx context.Context, localPath string, dst scpEndpoint, ke
 	}
 	defer lf.Close()
 
-	client, cleanup, err := dialOutpostHost(ctx, dst.Host, dst.User)
+	client, cleanup, err := dialOutpostHost(ctx, dst.Host, dst.User, port)
 	if err != nil {
 		return err
 	}
@@ -306,4 +312,3 @@ func runSCPSafeUpload(ctx context.Context, localPath string, dst scpEndpoint, ke
 	fmt.Fprintf(os.Stderr, "outpost scp --safe: copied %d bytes %s -> %s:%s (sha256=%s)\n", n, localPath, dst.Host, remotePath, digest)
 	return nil
 }
-

@@ -76,6 +76,16 @@ type Config struct {
 	// remote outpost's host key. Build via KnownHostsCallbackTOFU.
 	HostKeyCallback ssh.HostKeyCallback
 
+	// Auth supplies client-side SSH auth methods. Nil keeps the
+	// historical behavior (no methods): the cloudbox-vouched paths rely
+	// on the remote server flipping NoClientAuth=true, so the handshake
+	// completes without credentials. LAN-direct dials (plain TCP to an
+	// `outpost sshd` / SSHListenAddr listener) have no upstream vouching
+	// — the server runs its OS-password gate — so those callers pass a
+	// password method here (typically ssh.RetryableAuthMethod wrapping
+	// a TTY prompt).
+	Auth []ssh.AuthMethod
+
 	// HandshakeTimeout caps the SSH transport handshake. Default 30s.
 	HandshakeTimeout time.Duration
 }
@@ -102,11 +112,13 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 
 	sshCfg := &ssh.ClientConfig{
 		User: cfg.User,
-		// No AuthMethods. The remote /ssh server flips NoClientAuth=true
-		// when cloudbox stamps X-Periscope-Role on the WS upgrade — see
-		// internal/agent/ssh.go's PasswordCallback branch. The matrix
-		// tunnel + elev cookie is the auth boundary.
-		Auth:            nil,
+		// Default nil AuthMethods: the remote /ssh server flips
+		// NoClientAuth=true when cloudbox stamps X-Periscope-Role on the
+		// WS upgrade — see internal/agent/ssh.go's PasswordCallback
+		// branch. The matrix tunnel + elev cookie is the auth boundary.
+		// LAN-direct callers (no vouching available) pass cfg.Auth so
+		// the server's OS-password gate can be satisfied in-band.
+		Auth:            cfg.Auth,
 		HostKeyCallback: cfg.HostKeyCallback,
 		Timeout:         cfg.HandshakeTimeout,
 	}

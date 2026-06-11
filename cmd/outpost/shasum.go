@@ -2,8 +2,8 @@
 // file in `shasum -a 256` output format ("<hex>  <path>"), so it
 // pipes / diffs against the system tool cleanly:
 //
-//   diff <(outpost shasum host:/opt/bin/foo | awk '{print $1}') \
-//        <(shasum -a 256 ./foo                | awk '{print $1}')
+//	diff <(outpost shasum host:/opt/bin/foo | awk '{print $1}') \
+//	     <(shasum -a 256 ./foo                | awk '{print $1}')
 //
 // Rides the same SFTP subsystem `outpost scp` uses; stream-reads the
 // remote file into sha256.New() so no temporary download is materialized.
@@ -21,7 +21,8 @@ import (
 )
 
 func shasumCmd() *cobra.Command {
-	return &cobra.Command{
+	var port int
+	cmd := &cobra.Command{
 		Use:   "shasum [user@]host:path",
 		Short: "Print the sha256 of a remote file (shasum -a 256 format)",
 		Long: `outpost shasum [user@]host:path
@@ -32,15 +33,18 @@ piping or diffing against a local hash is one shell line.
 
 Reuses the same LAN-direct + cloudbox-fallback dial path as
 'outpost ssh' / 'outpost scp'; passwordless after the first
-'outpost connect'.`,
+'outpost connect'. Pass -P <port> to dial a LAN 'outpost sshd' /
+ssh_listen_addr directly (OS-password auth, no cloudbox).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runShasum(cmd.Context(), args[0])
+			return runShasum(cmd.Context(), args[0], port)
 		},
 	}
+	cmd.Flags().IntVarP(&port, "port", "P", 0, "Dial the host directly on this TCP port (LAN 'outpost sshd' / ssh_listen_addr; OS-password auth, no cloudbox)")
+	return cmd
 }
 
-func runShasum(ctx context.Context, arg string) error {
+func runShasum(ctx context.Context, arg string, port int) error {
 	ep := parseSCPArg(arg)
 	if !ep.Remote {
 		return errors.New("shasum: argument must be [user@]host:path (use system 'shasum -a 256' for local files)")
@@ -49,7 +53,7 @@ func runShasum(ctx context.Context, arg string) error {
 		return errors.New("shasum: empty remote path")
 	}
 
-	client, cleanup, err := dialOutpostHost(ctx, ep.Host, ep.User)
+	client, cleanup, err := dialOutpostHost(ctx, ep.Host, ep.User, port)
 	if err != nil {
 		return err
 	}

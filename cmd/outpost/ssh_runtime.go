@@ -44,7 +44,8 @@ import (
 // for interactive shell).
 func runSSHHost(ctx context.Context, arg string, cmdArgs []string) error {
 	user, host := parseUserAtHost(arg)
-	client, cleanup, err := dialOutpostHost(ctx, host, user)
+	host, port := splitAdHocHostPort(host)
+	client, cleanup, err := dialOutpostHost(ctx, host, user, port)
 	if err != nil {
 		return err
 	}
@@ -52,35 +53,69 @@ func runSSHHost(ctx context.Context, arg string, cmdArgs []string) error {
 }
 
 // dialOutpostHost is the shared "open an SSH session to <host>" helper.
-// Both `outpost ssh` and `outpost scp` go through here so the
-// mDNS-probe → cookie-elevate → peer-ticket → LAN-direct → tunnel-
-// fallback flow lives in exactly one place. `host` is the bare
+// `outpost ssh`, `outpost scp`, and `outpost shasum` go through here so
+// the dial policy lives in exactly one place. `host` is the bare
 // hostname (no user@); `user` is the OS user to authenticate as
-// (empty means "resolve from cloudbox/$USER like outpost connect").
+// (empty means "resolve from cloudbox/$USER like outpost connect");
+// `port` > 0 means the caller named an explicit TCP port (ad-hoc
+// `user@host:2222`, `scp -P 2222`).
+//
+// Dial policy — cloudbox makes things smarter but is never required:
+//
+//  1. Explicit port → plain TCP dial to host:port (the `outpost sshd`
+//     / ssh_listen_addr case). Password auth, TOFU host key. No
+//     cloudbox involvement at all.
+//  2. Unpaired (or no bearer) → LAN-only: mDNS lookup of the name's
+//     advertised lan-ssh endpoint, else a direct dial to
+//     host:2222. Password auth.
+//  3. Paired → the existing smart flow (cookie elevate → peer-ticket
+//     LAN-direct → cloudbox tunnel), and when that whole flow fails
+//     (e.g. internet down), the same LAN fallback as (2) before
+//     surfacing the error.
 //
 // Returns the connected *sshclient.Client plus a cleanup func the
 // caller defers. On any error the cleanup is already a no-op so
 // callers don't need to gate the defer on err == nil.
-func dialOutpostHost(ctx context.Context, host, user string) (*sshclient.Client, func(), error) {
-	cfgPath, err := conf.DefaultConfigPath()
-	if err != nil {
-		return nil, func() {}, fmt.Errorf("locate config: %w", err)
-	}
-	fc, err := conf.LoadFile(cfgPath)
-	if err != nil {
-		return nil, func() {}, fmt.Errorf("load config: %w", err)
-	}
-	if fc == nil || fc.ServerAddr == "" {
-		return nil, func() {}, errors.New("local outpost is not paired with cloudbox yet — run `outpost register` first")
-	}
-	bearer := strings.TrimSpace(os.Getenv("OUTPOST_SESSION_JWT"))
-	if bearer == "" {
-		bearer = fc.AccessToken
-	}
-	if bearer == "" {
-		return nil, func() {}, errors.New("no cloudbox bearer cached — re-pair with `outpost register`")
+func dialOutpostHost(ctx context.Context, host, user string, port int) (*sshclient.Client, func(), error) {
+	if port > 0 {
+		return dialDirectSSH(ctx, host, port, user)
 	}
 
+	var fc *conf.FileConfig
+	if cfgPath, _ := conf.DefaultConfigPath(); cfgPath != "" {
+		fc, _ = conf.LoadFile(cfgPath)
+	}
+	bearer := strings.TrimSpace(os.Getenv("OUTPOST_SESSION_JWT"))
+	if bearer == "" && fc != nil {
+		bearer = fc.AccessToken
+	}
+	if fc == nil || fc.ServerAddr == "" || bearer == "" {
+		// No cloudbox pairing — LAN-direct is the only path. This is
+		// the bootstrap scenario: the target runs `outpost sshd` (or a
+		// daemon with ssh_listen_addr) and this machine has nothing
+		// but the binary.
+		return dialLANFallback(ctx, host, user, nil)
+	}
+
+	cli, cleanup, err := dialPairedHost(ctx, fc, bearer, host, user)
+	if err == nil {
+		return cli, cleanup, nil
+	}
+	// The whole cloudbox-assisted flow failed — cloudbox unreachable,
+	// pairing revoked, host not visible, … Before surfacing that, try
+	// the LAN password path: the machine may be sitting right next to
+	// us running `outpost sshd`.
+	if cli2, cleanup2, derr := dialLANFallback(ctx, host, user, err); derr == nil {
+		return cli2, cleanup2, nil
+	}
+	return nil, func() {}, err
+}
+
+// dialPairedHost is the cloudbox-assisted flow, exactly as it existed
+// before the LAN fallback split: resolve the OS user from cloudbox,
+// ensure a matrix_elev cookie, try peer-ticket LAN-direct, fall back
+// to the cloudbox tunnel.
+func dialPairedHost(ctx context.Context, fc *conf.FileConfig, bearer, host, user string) (*sshclient.Client, func(), error) {
 	// Resolve OS user (if not explicit) the same way `outpost connect`
 	// does: prefer cloudbox's /api/v1/ssh/hosts report, fall back to
 	// $USER. The remote outpost's /auth gate compares against its own
@@ -264,6 +299,146 @@ func dialCloudboxTunnel(
 	recordReachabilityEdge(conf.SSHTarget{Name: host, Host: host, Direct: false}, time.Now())
 	cleanup := func() { _ = cli.Close() }
 	return cli, cleanup, nil
+}
+
+// dialLANFallback is the no-cloudbox path: reach the host over the
+// LAN with the OS-password gate doing the auth (the server side is
+// `outpost sshd` or a daemon with ssh_listen_addr). Candidate
+// endpoint resolution, in order:
+//
+//  1. mDNS: a peer advertising a plain-TCP `lan-ssh` endpoint under
+//     the given name (AgentName / AssignedHostname match).
+//  2. The host string itself as a dialable address (IP, .local name,
+//     LAN DNS) on the default `outpost sshd` port 2222.
+//
+// `cause` is the upstream cloudbox-flow error when this runs as a
+// fallback (logged so the operator sees why we're suddenly prompting
+// for a password); nil when LAN is the primary path (unpaired).
+func dialLANFallback(ctx context.Context, host, user string, cause error) (*sshclient.Client, func(), error) {
+	if user == "" {
+		user = strings.TrimSpace(os.Getenv("USER"))
+	}
+	if user == "" {
+		return nil, func() {}, errors.New("could not determine OS username; specify user@host")
+	}
+	if cause != nil {
+		slog.Info("ssh: cloudbox-assisted dial failed; trying LAN-direct password path",
+			"host", host, "err", cause)
+	}
+
+	browseCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	peers, _ := discovery.Browse(browseCtx, discovery.BrowseOptions{Timeout: 3 * time.Second})
+	cancel()
+	if peer := findMatchingPeer(peers, host); peer != nil {
+		if ep := peer.FirstEndpoint(discovery.EndpointLANSSH); ep.Host != "" && ep.Port > 0 {
+			return dialDirectSSH(ctx, ep.Host, ep.Port, user)
+		}
+	}
+	// Not mDNS-visible under that name — treat the string as an
+	// address and try the conventional `outpost sshd` port.
+	return dialDirectSSH(ctx, host, sshdDefaultPort, user)
+}
+
+// sshdDefaultPort is the port `outpost sshd` binds by default and
+// therefore the port direct dials assume when the caller didn't name
+// one. Reaching a system sshd on 22 (or any other port) just takes an
+// explicit `user@host:22` / `scp -P 22`.
+const sshdDefaultPort = 2222
+
+// dialDirectSSH opens a plain TCP connection to host:port and runs
+// the SSH handshake with password auth (OS-password gate on the
+// server side) and TOFU host-key pinning. This is the client half of
+// `outpost sshd` — zero cloudbox involvement.
+func dialDirectSSH(ctx context.Context, host string, port int, user string) (*sshclient.Client, func(), error) {
+	if user == "" {
+		user = strings.TrimSpace(os.Getenv("USER"))
+	}
+	if user == "" {
+		return nil, func() {}, errors.New("could not determine OS username; specify user@host")
+	}
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	conn, err := net.DialTimeout("tcp", addr, 15*time.Second)
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("lan-direct dial %s: %w", addr, err)
+	}
+	knownHostsPath, err := conf.KnownHostsPath()
+	if err != nil {
+		_ = conn.Close()
+		return nil, func() {}, err
+	}
+	hostKeyCB, err := sshclient.KnownHostsCallbackTOFU(knownHostsPath, sshclient.HostAliasForHost(host))
+	if err != nil {
+		_ = conn.Close()
+		return nil, func() {}, err
+	}
+	cli, err := sshclient.Dial(ctx, sshclient.Config{
+		Transport:       conn,
+		HostAlias:       sshclient.HostAliasForHost(host),
+		User:            user,
+		HostKeyCallback: hostKeyCB,
+		Auth:            sshPasswordAuth(user, addr),
+	})
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("ssh handshake to %s (lan-direct): %w", addr, err)
+	}
+	recordReachabilityEdge(conf.SSHTarget{Name: host, Host: host, Port: port, Direct: true}, time.Now())
+	cleanup := func() { _ = cli.Close() }
+	return cli, cleanup, nil
+}
+
+// sshPasswordAuth builds the client-side auth methods for LAN-direct
+// dials, where the remote outpost's OS-password gate runs in-band
+// (no cloudbox vouching). Password source, in order:
+//
+//  1. $OUTPOST_SSH_PASSWORD — non-interactive escape hatch for
+//     agentic callers without a TTY (analogous to sshpass).
+//  2. /dev/tty prompt.
+//
+// Wrapped in RetryableAuthMethod so a typo gets the same three tries
+// the server's MaxAuthTries allows.
+func sshPasswordAuth(user, target string) []ssh.AuthMethod {
+	envTried := false
+	return []ssh.AuthMethod{
+		ssh.RetryableAuthMethod(ssh.PasswordCallback(func() (string, error) {
+			if pw := os.Getenv("OUTPOST_SSH_PASSWORD"); pw != "" && !envTried {
+				// Env password only gets one shot — re-supplying the
+				// same wrong value three times just burns the server's
+				// auth tries and delays the real error.
+				envTried = true
+				return pw, nil
+			}
+			if !haveTTY() {
+				if envTried {
+					return "", errors.New("OUTPOST_SSH_PASSWORD was rejected (invalid credentials)")
+				}
+				return "", errors.New("no TTY for password prompt (set OUTPOST_SSH_PASSWORD for non-interactive use)")
+			}
+			return readPassword(fmt.Sprintf("%s@%s password", user, target), false)
+		}), 3),
+	}
+}
+
+// splitAdHocHostPort splits an ad-hoc `host[:port]` positional into
+// (host, port). Returns port 0 when no explicit numeric port is
+// present (including bare IPv6 literals, whose colons are address
+// bytes, not a port separator).
+func splitAdHocHostPort(s string) (string, int) {
+	s = strings.TrimSpace(s)
+	h, p, err := net.SplitHostPort(s)
+	if err != nil || h == "" || p == "" {
+		return s, 0
+	}
+	port := 0
+	for _, r := range p {
+		if r < '0' || r > '9' {
+			return s, 0
+		}
+		port = port*10 + int(r-'0')
+		if port > 65535 {
+			return s, 0
+		}
+	}
+	return h, port
 }
 
 // runRemote dispatches to Shell or Exec based on whether the caller

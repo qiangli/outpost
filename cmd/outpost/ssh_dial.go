@@ -47,26 +47,22 @@ func dialSSHTargetChain(ctx context.Context, name, jumpOverride string) (*sshcli
 		}
 	}
 
-	cfgPath, err := conf.DefaultConfigPath()
-	if err != nil {
-		return nil, nil, fmt.Errorf("locate config: %w", err)
-	}
-	fc, err := conf.LoadFile(cfgPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("load config: %w", err)
-	}
-	if fc == nil || fc.ServerAddr == "" {
-		return nil, nil, errors.New("local outpost is not paired with cloudbox yet — run `outpost register` first")
+	// Config + bearer are only REQUIRED when the outer leg rides the
+	// cloudbox WS path. A Direct outer leg (plain TCP to an `outpost
+	// sshd` / ssh_listen_addr listener) must work on a machine that
+	// has never been paired and has no internet — that's the whole
+	// point of the LAN-direct mode. Load best-effort and validate in
+	// the WS branch below.
+	var fc *conf.FileConfig
+	if cfgPath, cerr := conf.DefaultConfigPath(); cerr == nil && cfgPath != "" {
+		fc, _ = conf.LoadFile(cfgPath)
 	}
 	bearer := strings.TrimSpace(os.Getenv("OUTPOST_SESSION_JWT"))
-	if bearer == "" {
+	if bearer == "" && fc != nil {
 		bearer = fc.AccessToken
 	}
-	if bearer == "" {
+	if bearer == "" && fc != nil {
 		bearer = fc.Token
-	}
-	if bearer == "" {
-		return nil, nil, errors.New("no cloudbox bearer cached — re-pair with `outpost register`")
 	}
 
 	knownHostsPath, err := conf.KnownHostsPath()
@@ -86,6 +82,7 @@ func dialSSHTargetChain(ctx context.Context, name, jumpOverride string) (*sshcli
 	outer := chain[0]
 	var (
 		outerTransport net.Conn
+		outerAuth      []ssh.AuthMethod
 		dialErr        error
 	)
 	if outer.Direct {
@@ -97,7 +94,16 @@ func dialSSHTargetChain(ctx context.Context, name, jumpOverride string) (*sshcli
 		if dialErr != nil {
 			return nil, nil, fmt.Errorf("lan-direct dial %s:%d: %w", outer.Host, port, dialErr)
 		}
+		// No cloudbox vouching on a plain TCP leg — the remote runs
+		// its OS-password gate, so give the client a password method.
+		outerAuth = sshPasswordAuth(outer.User, fmt.Sprintf("%s:%d", outer.Host, port))
 	} else {
+		if fc == nil || fc.ServerAddr == "" {
+			return nil, nil, errors.New("local outpost is not paired with cloudbox yet — run `outpost register` first (Direct targets added with `outpost ssh add --direct` don't need cloudbox)")
+		}
+		if bearer == "" {
+			return nil, nil, errors.New("no cloudbox bearer cached — re-pair with `outpost register`")
+		}
 		wsURL, err := sshclient.BuildWSURL(fc.ServerAddr, fc.ServerPort, fc.Protocol, outer.Host)
 		if err != nil {
 			return nil, nil, err
@@ -137,6 +143,7 @@ func dialSSHTargetChain(ctx context.Context, name, jumpOverride string) (*sshcli
 		HostAlias:       sshclient.HostAliasForHost(outer.Host),
 		User:            outer.User,
 		HostKeyCallback: hostKeyCB,
+		Auth:            outerAuth,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("ssh handshake to %s: %w", outer.Host, err)
@@ -168,6 +175,11 @@ func dialSSHTargetChain(ctx context.Context, name, jumpOverride string) (*sshcli
 			HostAlias:       sshclient.HostAliasForHost(hop.Host),
 			User:            hop.User,
 			HostKeyCallback: hopCB,
+			// Hop legs land on the destination's own SSH server with
+			// no vouching of their own — a password method lets the
+			// inner OS-password gate be satisfied in-band (no-op when
+			// the destination is NoClientAuth-vouched).
+			Auth: sshPasswordAuth(hop.User, fmt.Sprintf("%s:%d", hop.Host, port)),
 		})
 		if err != nil {
 			closeAll()

@@ -81,7 +81,7 @@ Surface:
   outpost ssh connect <name> [--jump <alias>]
   outpost ssh tunnel <name> [--jump <alias>] -L <local>:<remote-host>:<remote-port>
   outpost ssh sftp <name> [--jump <alias>] (get|put|ls) ...
-  outpost ssh [user@]<host> [cmd args...]  # ad-hoc; LAN-direct if reachable
+  outpost ssh [user@]<host>[:port] [cmd args...]  # ad-hoc; LAN-direct if reachable
 
 Ad-hoc shorthand:
   'outpost ssh foo' or 'outpost ssh user@foo cmd args...' connects
@@ -90,6 +90,16 @@ Ad-hoc shorthand:
   at cloudbox for a short-lived peer ticket and dials LAN-direct;
   otherwise falls back to the cloudbox-tunneled path. Passwordless
   after the first 'outpost connect'.
+
+No cloudbox needed (LAN / bootstrap):
+  An explicit port ('outpost ssh user@192.168.1.5:2222') dials plain
+  TCP to that address — the server side is 'outpost sshd' (default
+  port 2222) or a daemon with ssh_listen_addr. Auth is the remote
+  OS password (TTY prompt, or $OUTPOST_SSH_PASSWORD for agents).
+  An unpaired machine takes this LAN path automatically: mDNS lookup
+  of the name's advertised lan-ssh endpoint, else host:2222. A
+  paired machine also falls back to it when the cloudbox flow fails
+  (e.g. internet down).
 
 Hop/jump:
   Attach --via <alias> at add time (or --jump <alias> per-call) to
