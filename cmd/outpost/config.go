@@ -102,6 +102,10 @@ func configSetCmd() *cobra.Command {
 		sshListenAddr           string
 		discoveryHTTPListenAddr string
 		peerTrustPolicy         string
+
+		// Intra-home distributed-inference (cluster) backend.
+		clusterLLMEndpoint string
+		clusterLLMAPIKey   string
 	)
 	cmd := &cobra.Command{
 		Use:   "set",
@@ -193,6 +197,22 @@ Examples:
 				params.PeerTrustPolicy = &v
 				set = true
 			}
+			if cmd.Flags().Changed("cluster-llm-endpoint") {
+				v := clusterLLMEndpoint
+				if v == "<clear>" {
+					v = ""
+				}
+				params.ClusterLLMEndpoint = &v
+				set = true
+			}
+			if cmd.Flags().Changed("cluster-llm-api-key") {
+				v := clusterLLMAPIKey
+				if v == "<clear>" {
+					v = ""
+				}
+				params.ClusterLLMAPIKey = &v
+				set = true
+			}
 			if !set {
 				return fmt.Errorf("nothing to do — pass at least one flag (`outpost config set --help`)")
 			}
@@ -254,6 +274,20 @@ Examples:
 				}
 				payload["peer_trust_policy"] = v
 			}
+			if params.ClusterLLMEndpoint != nil {
+				v := *params.ClusterLLMEndpoint
+				if v == "" {
+					v = "<clear>"
+				}
+				payload["cluster_llm_endpoint"] = v
+			}
+			if params.ClusterLLMAPIKey != nil {
+				v := *params.ClusterLLMAPIKey
+				if v == "" {
+					v = "<clear>"
+				}
+				payload["cluster_llm_api_key"] = v
+			}
 			var out struct {
 				RestartPending bool `json:"restart_pending"`
 			}
@@ -279,6 +313,9 @@ Examples:
 	cmd.Flags().StringVar(&sshListenAddr, "ssh-listen-addr", "", "LAN TCP bind for the in-process SSH server (e.g. 0.0.0.0:2222). Pass '<clear>' to disable.")
 	cmd.Flags().StringVar(&discoveryHTTPListenAddr, "discovery-http-listen-addr", "", "LAN bind for /api/v1/discover/* (e.g. 0.0.0.0:17778). Pass '<clear>' to disable.")
 	cmd.Flags().StringVar(&peerTrustPolicy, "peer-trust-policy", "", "Peer trust policy: same-owner | same-cloudbox | tofu-allow")
+	// Intra-home distributed-inference (cluster) backend.
+	cmd.Flags().StringVar(&clusterLLMEndpoint, "cluster-llm-endpoint", "", "Base URL of an intra-home distributed-inference backend (GPUStack), e.g. http://127.0.0.1:18080. Pass '<clear>' to disable. Restarts the daemon.")
+	cmd.Flags().StringVar(&clusterLLMAPIKey, "cluster-llm-api-key", "", "Optional Bearer key for the cluster backend's management API (unlocks worker/VRAM aggregation). Pass '<clear>' to remove.")
 	return cmd
 }
 

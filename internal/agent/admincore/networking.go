@@ -1,6 +1,7 @@
 package admincore
 
 import (
+	"net/url"
 	"strings"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
@@ -36,6 +37,15 @@ type NetworkingParams struct {
 	// PeerTrustPolicy is one of "same-owner" / "same-cloudbox" /
 	// "tofu-allow". Validated server-side.
 	PeerTrustPolicy *string `json:"peer_trust_policy,omitempty"`
+
+	// ClusterLLMEndpoint is the base URL of an intra-home
+	// distributed-inference backend (GPUStack). Empty disables detection.
+	// Validated as an http(s) URL. Read once at boot (the detector is
+	// built in main.go), so a change restarts like the bind fields.
+	ClusterLLMEndpoint *string `json:"cluster_llm_endpoint,omitempty"`
+	// ClusterLLMAPIKey is the optional Bearer key for that backend's
+	// management API. Empty to clear.
+	ClusterLLMAPIKey *string `json:"cluster_llm_api_key,omitempty"`
 }
 
 // NetworkingResult reports what changed. RestartPending is true
@@ -105,6 +115,27 @@ func (s *Server) SetNetworking(p NetworkingParams) (NetworkingResult, error) {
 		}
 		if v != fc.PeerTrustPolicy {
 			fc.PeerTrustPolicy = v
+			changed = true
+		}
+	}
+	if p.ClusterLLMEndpoint != nil {
+		v := strings.TrimSpace(*p.ClusterLLMEndpoint)
+		if v != "" {
+			u, perr := url.Parse(v)
+			if perr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return NetworkingResult{}, badRequest("cluster_llm_endpoint must be an http(s) URL")
+			}
+			v = strings.TrimRight(v, "/")
+		}
+		if v != fc.ClusterLLMEndpoint {
+			fc.ClusterLLMEndpoint = v
+			changed = true
+		}
+	}
+	if p.ClusterLLMAPIKey != nil {
+		v := strings.TrimSpace(*p.ClusterLLMAPIKey)
+		if v != fc.ClusterLLMAPIKey {
+			fc.ClusterLLMAPIKey = v
 			changed = true
 		}
 	}

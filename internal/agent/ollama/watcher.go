@@ -41,6 +41,17 @@ type CapacitySource interface {
 	Snapshot() CapacityReport
 }
 
+// ClusterSource is what the watcher calls to learn whether an intra-home
+// distributed-inference backend (GPUStack first; see ClusterCapacity)
+// fronts this host. Returns nil when no cluster is detected — the common
+// single-machine case — so the registry push omits the cluster
+// substruct. Decoupled from the clusterllm probe the same way
+// CapacitySource is decoupled from Counter: main.go wires the concrete
+// detector, tests plug a stub, and a nil Config.Cluster disables it.
+type ClusterSource interface {
+	ClusterSnapshot() *ClusterCapacity
+}
+
 // Config is the wiring the watcher needs at construction time. All
 // fields are required except the optional intervals/clients/logger
 // which fall back to package defaults.
@@ -70,6 +81,13 @@ type Config struct {
 	// CapacityReport from this source so cloudbox can avoid
 	// over-scheduling.
 	Capacity CapacitySource
+
+	// Cluster is optional. When non-nil and it reports a detected
+	// backend, each push includes a ClusterCapacity substruct so
+	// cloudbox's tier-0 router can route a too-big-for-one-node model to
+	// this home. Nil (or a source that returns nil) keeps the push
+	// byte-identical to the single-machine shape.
+	Cluster ClusterSource
 
 	// PollInterval overrides the /api/tags poll cadence. Zero → default.
 	PollInterval time.Duration
@@ -330,13 +348,21 @@ func (w *Watcher) tick(ctx context.Context, lastSnapshot *[]ModelInfo, lastPushe
 	// is logged at debug level and ignored — the rest of the tick must
 	// still run.
 	w.refreshLoaded(ctx)
-	currentHash := ContentHash(models)
+	// Snapshot the cluster descriptor once per tick (nil on every
+	// single-machine outpost) and fold it into the change-detection hash
+	// so a membership/backend change re-triggers a push + full cloudbox
+	// Replace even when the model list is unchanged.
+	var cluster *ClusterCapacity
+	if w.cfg.Cluster != nil {
+		cluster = w.cfg.Cluster.ClusterSnapshot()
+	}
+	currentHash := CombineHash(ContentHash(models), cluster)
 	changed := currentHash != *lastPushedHash
 	heartbeatDue := time.Since(*lastPushAt) >= w.cfg.HeartbeatInterval
 	if !changed && !heartbeatDue {
 		return nil
 	}
-	if err := w.push(ctx, models, currentHash); err != nil {
+	if err := w.push(ctx, models, currentHash, cluster); err != nil {
 		return err
 	}
 	*lastSnapshot = models
@@ -502,7 +528,9 @@ func (w *Watcher) fetchDetails(ctx context.Context, name string) modelDetails {
 // push POSTs the RegistryPushPayload to cloudbox. Returns
 // ErrAuthRevoked on HTTP 401 so the outer Run loop can stop; any other
 // non-2xx returns an error the outer loop will back off and retry on.
-func (w *Watcher) push(ctx context.Context, models []ModelInfo, contentHash string) error {
+// cluster is nil on single-machine outposts and is attached verbatim
+// (already folded into contentHash by the caller).
+func (w *Watcher) push(ctx context.Context, models []ModelInfo, contentHash string, cluster *ClusterCapacity) error {
 	capReport := CapacityReport{MaxParallel: defaultMaxParallel}
 	if w.cfg.Capacity != nil {
 		capReport = w.cfg.Capacity.Snapshot()
@@ -514,6 +542,7 @@ func (w *Watcher) push(ctx context.Context, models []ModelInfo, contentHash stri
 		Models:      models,
 		Capacity:    capReport,
 		ContentHash: contentHash,
+		Cluster:     cluster,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

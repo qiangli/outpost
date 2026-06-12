@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/qiangli/outpost/internal/agent"
+	"github.com/qiangli/outpost/internal/agent/clusterllm"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
 )
@@ -119,6 +120,15 @@ type Server struct {
 	// detector caches podman/ollama availability probes so repeated
 	// SafeView / Status reads don't hammer the local sockets.
 	detector *agent.BuiltinDetector
+
+	// clusterMu guards the lazily-built intra-home cluster-backend
+	// detector. Rebuilt when the configured endpoint/key changes so
+	// SafeView reflects current config (the endpoint change restarts the
+	// daemon, but a SafeView read between save and restart still wants the
+	// fresh detector). clusterDet caches probes for its own TTL.
+	clusterMu  sync.Mutex
+	clusterDet *clusterllm.Detector
+	clusterKey string
 }
 
 // New constructs an admincore.Server. Deps.ConfigPath is required; other

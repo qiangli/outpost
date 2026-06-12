@@ -496,6 +496,65 @@ func TestWatcher_PushIncludesCapacity(t *testing.T) {
 	}
 }
 
+// stubClusterSource is a fixed ClusterSource for the cluster-push test.
+type stubClusterSource struct{ c *ClusterCapacity }
+
+func (s stubClusterSource) ClusterSnapshot() *ClusterCapacity { return s.c }
+
+func TestWatcher_PushIncludesCluster(t *testing.T) {
+	tags := &stubTags{bodies: []string{`{"models":[]}`}}
+	reg := &capturingRegistry{}
+	w, _, _ := newTestWatcher(t, tags, reg, nil)
+	w.cfg.Cluster = stubClusterSource{&ClusterCapacity{
+		MaxModelBytes: 42 << 30,
+		MemberCount:   3,
+		Backend:       "gpustack",
+	}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_ = w.Run(ctx)
+
+	last, ok := reg.lastPayload()
+	if !ok {
+		t.Fatal("no payload")
+	}
+	if last.Cluster == nil {
+		t.Fatal("Cluster substruct missing from push")
+	}
+	if last.Cluster.MemberCount != 3 || last.Cluster.Backend != "gpustack" || last.Cluster.MaxModelBytes != 42<<30 {
+		t.Errorf("Cluster=%+v, want {42GiB,3,gpustack}", *last.Cluster)
+	}
+	// The cluster tag must change the content hash off the model-only
+	// value so a membership change re-triggers a full cloudbox Replace.
+	if last.ContentHash == ContentHash(nil) {
+		t.Errorf("content hash should differ from the model-only hash when a cluster is attached")
+	}
+}
+
+// A nil ClusterSource (single-machine outpost) must omit the substruct
+// and leave the content hash byte-identical to the pre-cluster shape.
+func TestWatcher_NoClusterIsSingleMachineShape(t *testing.T) {
+	tags := &stubTags{bodies: []string{`{"models":[]}`}}
+	reg := &capturingRegistry{}
+	w, _, _ := newTestWatcher(t, tags, reg, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_ = w.Run(ctx)
+
+	last, ok := reg.lastPayload()
+	if !ok {
+		t.Fatal("no payload")
+	}
+	if last.Cluster != nil {
+		t.Errorf("Cluster should be nil on a single-machine outpost, got %+v", *last.Cluster)
+	}
+	if last.ContentHash != ContentHash(nil) {
+		t.Errorf("content hash must equal the model-only hash with no cluster attached")
+	}
+}
+
 func TestWatcher_LoadedSnapshot_FromPS(t *testing.T) {
 	tags := &stubTags{bodies: []string{`{"models":[]}`}}
 	reg := &capturingRegistry{}

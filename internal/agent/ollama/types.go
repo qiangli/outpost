@@ -118,6 +118,32 @@ type psModel struct {
 	State     string    `json:"state,omitempty"`
 }
 
+// ClusterCapacity describes an intra-home distributed-inference cluster
+// fronting this outpost's Ollama surface — a backend (GPUStack first;
+// any runtime that later publishes the same OpenAI /v1 shape) that
+// tensor/pipeline-splits a single model across several member machines.
+// Present only when the outpost detects such a backend; nil/omitted
+// means "single machine," which is every outpost today. Additive to the
+// registry contract — a v1 cloudbox ignores the field, a non-cluster
+// outpost marshals nil.
+//
+//   - MaxModelBytes is the largest model (by byte size) the cluster can
+//     hold across all member nodes' aggregate VRAM/RAM. Cloudbox's
+//     tier-0 router filter drops this host for a requested model larger
+//     than this. Zero means "unknown" — the filter stays inert (treats
+//     the host as unconstrained) so an older/partial backend never hides
+//     models that would otherwise route here.
+//   - MemberCount is the number of worker nodes in the cluster (1 when a
+//     backend is up but reports a single worker, or when the worker-list
+//     probe is unavailable on an older backend).
+//   - Backend names the runtime ("gpustack", "distributed-llama", …) so
+//     a future swap doesn't need a cloudbox-side re-migration.
+type ClusterCapacity struct {
+	MaxModelBytes uint64 `json:"max_model_bytes,omitempty"`
+	MemberCount   int    `json:"member_count,omitempty"`
+	Backend       string `json:"backend,omitempty"`
+}
+
 // RegistryPushPayload is what the watcher POSTs to cloudbox's
 // /api/v1/llm/registry endpoint. The agent identifies itself via the
 // bearer access_token; AgentName is the convenience copy so cloudbox
@@ -134,6 +160,14 @@ type RegistryPushPayload struct {
 	HeartbeatAt time.Time      `json:"heartbeat_at"`
 	Models      []ModelInfo    `json:"models"`
 	Capacity    CapacityReport `json:"capacity"`
+
+	// Cluster is the optional intra-home distributed-inference descriptor
+	// (see ClusterCapacity). Nil on every single-machine outpost — the
+	// common case — so the field is omitted from the wire entirely. Folded
+	// into ContentHash via clusterHashTag so a membership/backend change
+	// re-triggers a full cloudbox Replace even when the model list is
+	// unchanged.
+	Cluster *ClusterCapacity `json:"cluster,omitempty"`
 
 	// ContentHash is sha256 over the stable fields of the model list
 	// (name, digest, size, family, parameter_size, quantization,

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"sort"
 )
 
@@ -68,5 +69,35 @@ func ContentHash(models []ModelInfo) string {
 		return ""
 	}
 	sum := sha256.Sum256(buf)
+	return hex.EncodeToString(sum[:])
+}
+
+// clusterHashTag projects a ClusterCapacity onto a short deterministic
+// string mixed into the registry push's content hash. Nil (the
+// single-machine common case) contributes nothing, so a non-cluster
+// outpost's hash is byte-identical to what it was before the cluster
+// field existed. When a cluster's membership, aggregate size, or backend
+// changes, the tag changes — which flips the combined hash and forces a
+// full cloudbox-side Replace even if the model list is unchanged (the
+// model-only hash would otherwise let cloudbox fast-path and skip
+// persisting the new cluster fields).
+func clusterHashTag(c *ClusterCapacity) string {
+	if c == nil {
+		return ""
+	}
+	return fmt.Sprintf("|cluster:%s:%d:%d", c.Backend, c.MemberCount, c.MaxModelBytes)
+}
+
+// CombineHash folds a cluster tag into the model-only ContentHash. When
+// cluster is nil it returns base unchanged (so single-machine outposts
+// keep emitting the exact same content_hash they always have); otherwise
+// it re-hashes base+tag so cloudbox observes a change whenever the
+// cluster descriptor changes.
+func CombineHash(base string, cluster *ClusterCapacity) string {
+	tag := clusterHashTag(cluster)
+	if tag == "" {
+		return base
+	}
+	sum := sha256.Sum256([]byte(base + tag))
 	return hex.EncodeToString(sum[:])
 }

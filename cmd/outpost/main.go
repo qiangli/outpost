@@ -31,6 +31,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/adminui"
 	"github.com/qiangli/outpost/internal/agent/backup"
 	"github.com/qiangli/outpost/internal/agent/certs"
+	"github.com/qiangli/outpost/internal/agent/clusterllm"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/heartbeat"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
@@ -275,6 +276,20 @@ func startCmd() *cobra.Command {
 				ollamaSvc *ollama.Service
 				ollamaURL string
 			)
+			// clusterDetector is the (cached) probe for an intra-home
+			// distributed-inference backend (GPUStack first). Constructed
+			// once when an endpoint is configured and shared by the
+			// registry-push watcher (advertises the cluster to cloudbox)
+			// and the admincore SafeView (renders it in the admin UI /
+			// `outpost status`). Nil when ClusterLLMEndpoint is empty —
+			// every single-machine outpost — so nothing probes.
+			var clusterDetector *clusterllm.Detector
+			if fc.ClusterLLMOn() {
+				clusterDetector = clusterllm.NewDetector(clusterllm.Config{
+					Endpoint: fc.ClusterLLMEndpoint,
+					APIKey:   fc.ClusterLLMAPIKey,
+				}, 0, nil)
+			}
 			if fc.OllamaOn() {
 				if bt := agent.DetectOllama(); bt.Available && bt.URL != "" {
 					ollamaURL = bt.URL
@@ -904,14 +919,23 @@ func startCmd() *cobra.Command {
 					// emit the same shape. Service.SetWatcher below closes
 					// the loop; Snapshot tolerates a nil watcher and just
 					// returns the counter snapshot until then.
-					w, werr := ollama.New(ollama.Config{
+					ocfg := ollama.Config{
 						AgentName:   cfg.AgentName,
 						Version:     agent.ReadBuildInfo().Short(),
 						OllamaURL:   ollamaURL,
 						CloudboxURL: cbBase,
 						AccessToken: fc.AccessToken,
 						Capacity:    ollamaSvc,
-					})
+					}
+					// When an intra-home cluster backend is configured,
+					// attach its descriptor source so each push advertises
+					// "this home can serve a model up to N bytes" to
+					// cloudbox's tier-0 router. Absent ⇒ single-machine
+					// push, unchanged.
+					if clusterDetector != nil {
+						ocfg.Cluster = clusterSourceAdapter{clusterDetector}
+					}
+					w, werr := ollama.New(ocfg)
 					if werr != nil {
 						slog.Warn("ollama pool: watcher init failed", "err", werr)
 					} else {
@@ -2062,5 +2086,29 @@ func stopCmd() *cobra.Command {
 			fmt.Printf("Force-killed outpost (pid %d) after SIGTERM timeout.\n", pid)
 			return nil
 		},
+	}
+}
+
+// clusterSourceAdapter bridges a clusterllm.Detector to the ollama
+// watcher's ClusterSource interface, mapping a detected backend onto the
+// registry-push ClusterCapacity. Returns nil unless a backend is actually
+// running, so a configured-but-down endpoint (or a single-machine
+// outpost) keeps the push byte-identical to the no-cluster shape. Uses a
+// background context — the detector bounds its own probes and caches the
+// result for a TTL, so the per-tick call is cheap.
+type clusterSourceAdapter struct{ d *clusterllm.Detector }
+
+func (a clusterSourceAdapter) ClusterSnapshot() *ollama.ClusterCapacity {
+	if a.d == nil {
+		return nil
+	}
+	info := a.d.Info(context.Background())
+	if info.State != clusterllm.StateRunning {
+		return nil
+	}
+	return &ollama.ClusterCapacity{
+		MaxModelBytes: info.AggregateVRAMBytes,
+		MemberCount:   info.MemberCount,
+		Backend:       info.Backend,
 	}
 }

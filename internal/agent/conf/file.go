@@ -171,6 +171,26 @@ type FileConfig struct {
 	// the most useful behavior for the typical operator.
 	OllamaPoolEnabled *bool `json:"ollama_pool_enabled,omitempty"`
 
+	// ClusterLLMEndpoint is the base URL of an intra-home
+	// distributed-inference backend (GPUStack first; any runtime that
+	// publishes the same OpenAI /v1-openai surface later) that this home
+	// runs to serve a model too large for any single machine. Empty (the
+	// default) disables detection entirely — the outpost stays a
+	// single-machine pool member. When set, the ollama watcher attaches a
+	// cluster descriptor to its registry push so cloudbox's tier-0 router
+	// can send a too-big-for-one-node model to this home. Detection is
+	// HTTP-probe only; outpost never launches the backend (the operator
+	// runs it as a container against the ycode-published podman socket).
+	ClusterLLMEndpoint string `json:"cluster_llm_endpoint,omitempty"`
+
+	// ClusterLLMAPIKey is the optional Bearer key for the backend's
+	// management API. Without it the backend is still detected as running
+	// (so the admin UI shows it), but the worker/VRAM aggregation that
+	// powers the cloudbox size filter needs the key — GPUStack's
+	// management API is auth-gated — so the filter stays inert until a key
+	// is supplied. Redacted from SafeView like other secrets.
+	ClusterLLMAPIKey string `json:"cluster_llm_api_key,omitempty"`
+
 	// OtelEnabled gates the observability built-in apps that proxy
 	// ycode's embedded Prometheus / Alertmanager / VictoriaLogs /
 	// Jaeger / Perses stack through the matrix tunnel. Off by default
@@ -875,6 +895,14 @@ func (fc *FileConfig) PodmanOn() bool { return fc != nil && fc.PodmanEnabled }
 
 // OllamaOn reports whether the built-in Ollama proxy is enabled.
 func (fc *FileConfig) OllamaOn() bool { return fc != nil && fc.OllamaEnabled }
+
+// ClusterLLMOn reports whether an intra-home distributed-inference
+// backend endpoint is configured, i.e. whether the outpost should probe
+// for a cluster and advertise it on the registry push. Detection is
+// purely opt-in via a non-empty ClusterLLMEndpoint.
+func (fc *FileConfig) ClusterLLMOn() bool {
+	return fc != nil && strings.TrimSpace(fc.ClusterLLMEndpoint) != ""
+}
 
 // YcodeOn reports whether outpost's ycode-aware features (share
 // surfaces, OTel wiring) are enabled. Detection-only — outpost

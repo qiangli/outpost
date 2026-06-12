@@ -282,6 +282,33 @@ bypass).
 Use `--admin-addr '<clear>'` (or empty string in the SPA) to revert
 a field to its default.
 
+### Intra-home distributed-inference backend (cluster LLM)
+
+| Field | File key | CLI | UI | MCP |
+|---|---|---|---|---|
+| Cluster backend endpoint | `cluster_llm_endpoint` | `config set --cluster-llm-endpoint URL` | Pair tab > Advanced | `outpost_set_networking` |
+| Cluster backend API key | `cluster_llm_api_key` | `config set --cluster-llm-api-key KEY` | Pair tab > Advanced | `outpost_set_networking` |
+
+When this home runs a distributed-inference backend (GPUStack first;
+any runtime that publishes the same OpenAI `/v1-openai` surface later)
+that tensor/pipeline-splits a single model across several machines, set
+`cluster_llm_endpoint` to its base URL (e.g. `http://127.0.0.1:18080`).
+The Ollama pool watcher then attaches a cluster descriptor to its
+registry push so cloudbox's router can send a model too large for any
+one machine to this home. Detection is HTTP-probe only — outpost never
+launches the backend (the operator runs it as a container against the
+ycode-published podman socket).
+
+`cluster_llm_api_key` is optional: without it the backend is still
+detected as running (the admin UI shows it), but the worker/VRAM
+aggregation that tells cloudbox "this cluster can hold an N-byte model"
+needs the key — GPUStack's management API is Bearer-gated — so the
+cloudbox size filter stays inert until a key is supplied. Empty
+`cluster_llm_endpoint` (the default) disables detection entirely: the
+outpost stays an ordinary single-machine pool member. Both are
+boot-time-bound (a change restarts the daemon). The key is redacted
+from `SafeView` like other secrets.
+
 ### Admin allowlist
 
 | Field | File key | CLI | UI | MCP |

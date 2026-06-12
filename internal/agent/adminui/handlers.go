@@ -186,11 +186,13 @@ func (s *Server) handleRestart(c *gin.Context) {
 // admin_users. Pointer-string semantics on the wire: absent field =
 // "leave alone"; explicit empty string = "revert to default at boot".
 type setNetworkingReq struct {
-	LocalAddr     *string  `json:"local_addr,omitempty"`
-	VNCAddr       *string  `json:"vnc_addr,omitempty"`
-	AdminAddr     *string  `json:"admin_addr,omitempty"`
-	AdminUsers    []string `json:"admin_users,omitempty"`
-	SetAdminUsers bool     `json:"set_admin_users,omitempty"`
+	LocalAddr          *string  `json:"local_addr,omitempty"`
+	VNCAddr            *string  `json:"vnc_addr,omitempty"`
+	AdminAddr          *string  `json:"admin_addr,omitempty"`
+	AdminUsers         []string `json:"admin_users,omitempty"`
+	SetAdminUsers      bool     `json:"set_admin_users,omitempty"`
+	ClusterLLMEndpoint *string  `json:"cluster_llm_endpoint,omitempty"`
+	ClusterLLMAPIKey   *string  `json:"cluster_llm_api_key,omitempty"`
 }
 
 func (s *Server) handleSetNetworking(c *gin.Context) {
@@ -200,9 +202,11 @@ func (s *Server) handleSetNetworking(c *gin.Context) {
 		return
 	}
 	params := admincore.NetworkingParams{
-		LocalAddr: req.LocalAddr,
-		VNCAddr:   req.VNCAddr,
-		AdminAddr: req.AdminAddr,
+		LocalAddr:          req.LocalAddr,
+		VNCAddr:            req.VNCAddr,
+		AdminAddr:          req.AdminAddr,
+		ClusterLLMEndpoint: req.ClusterLLMEndpoint,
+		ClusterLLMAPIKey:   req.ClusterLLMAPIKey,
 	}
 	if req.SetAdminUsers {
 		u := req.AdminUsers

@@ -820,6 +820,35 @@ function buildAdvancedSettingsSection(cfg) {
     }
   });
 
+  // --- Cluster LLM (intra-home distributed inference) ----------------------
+  const cl = cfg.cluster_llm || {};
+  const clForm = el('form', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.4rem 0.8rem;align-items:center'});
+  const clEndpointIn = el('input', {type: 'text', name: 'cluster_llm_endpoint', value: cl.endpoint || '', placeholder: 'http://127.0.0.1:18080 (empty = disabled)'});
+  const clKeyIn = el('input', {type: 'password', name: 'cluster_llm_api_key', value: '', placeholder: cl.has_api_key ? '•••••• (set — leave blank to keep)' : 'optional Bearer key for worker/VRAM data'});
+  clForm.append(
+    el('label', {for: 'cluster_llm_endpoint'}, el('code', {class: 'key-hint'}, 'cluster_llm_endpoint')), clEndpointIn,
+    el('label', {for: 'cluster_llm_api_key'}, el('code', {class: 'key-hint'}, 'cluster_llm_api_key')), clKeyIn,
+  );
+  const clBtn = el('button', {type: 'button'}, 'Save cluster LLM');
+  clBtn.addEventListener('click', async () => {
+    // Endpoint is always sent (empty clears/disables). The API key is
+    // sent only when the operator typed one — so a blank field keeps the
+    // existing key rather than wiping it. (Clear the key via the CLI:
+    // `outpost config set --cluster-llm-api-key '<clear>'`.)
+    const payload = {cluster_llm_endpoint: clEndpointIn.value.trim()};
+    if (clKeyIn.value !== '') payload.cluster_llm_api_key = clKeyIn.value.trim();
+    clBtn.disabled = true;
+    try {
+      const res = await api('POST', '/api/config/networking', payload);
+      msg('ok', 'Cluster LLM saved.');
+      noteRestartPending(res);
+    } catch (e) {
+      msg('err', e.message || 'Save failed');
+    } finally {
+      clBtn.disabled = false;
+    }
+  });
+
   // --- Admin users textarea ------------------------------------------------
   const adminUsersList = (cfg.admin_users || []).join('\n');
   const adminUsersIn = el('textarea', {rows: 3, placeholder: 'one email per line; empty = anyone with OS password is admin'}, adminUsersList);
@@ -845,6 +874,17 @@ function buildAdvancedSettingsSection(cfg) {
     el('p', {class: 'hint', style: 'margin-top:0.3rem'},
       'Leave a field empty to use the default shown as placeholder. ' +
       'admin_addr accepts 0.0.0.0:17777 for LAN binds (login always required).'),
+
+    el('h3', {style: 'margin:1.2rem 0 0.4rem;font-size:1rem'}, 'Cluster LLM (distributed inference)'),
+    clForm,
+    el('div', {style: 'margin-top:0.6rem'}, clBtn),
+    el('p', {class: 'hint', style: 'margin-top:0.3rem'},
+      'Point at an intra-home GPUStack (or compatible) backend to serve a model ' +
+      'too big for one machine across several. ' +
+      (cl.state && cl.state !== 'unconfigured'
+        ? ('State: ' + cl.state + (cl.member_count ? ' · ' + cl.member_count + ' node(s)' : '') +
+           (cl.aggregate_vram_bytes ? ' · ' + Math.round(cl.aggregate_vram_bytes / (1<<30)) + ' GiB aggregate' : ''))
+        : 'Empty endpoint = single-machine pool member. Outpost only probes; it never launches the backend.')),
 
     el('h3', {style: 'margin:1.2rem 0 0.4rem;font-size:1rem'}, 'Admin allowlist'),
     el('p', {class: 'hint'},

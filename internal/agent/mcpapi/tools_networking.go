@@ -33,6 +33,12 @@ type networkingIn struct {
 	SSHListenAddr           string `json:"ssh_listen_addr,omitempty" jsonschema:"LAN TCP bind for the in-process SSH server (e.g. 0.0.0.0:2222). Empty = leave unchanged; '<clear>' = disable."`
 	DiscoveryHTTPListenAddr string `json:"discovery_http_listen_addr,omitempty" jsonschema:"LAN bind for /api/v1/discover/* (e.g. 0.0.0.0:17778). Empty = leave unchanged; '<clear>' = disable."`
 	PeerTrustPolicy         string `json:"peer_trust_policy,omitempty" jsonschema:"One of same-owner / same-cloudbox / tofu-allow. Empty = leave unchanged; '<clear>' = revert to same-owner default."`
+
+	// Intra-home distributed-inference (cluster) backend wiring. Same
+	// partial-update semantics: empty = leave unchanged, '<clear>' =
+	// disable/clear.
+	ClusterLLMEndpoint string `json:"cluster_llm_endpoint,omitempty" jsonschema:"Base URL of an intra-home distributed-inference backend (GPUStack), e.g. http://127.0.0.1:18080, used to serve a model too big for one machine. Empty = leave unchanged; '<clear>' = disable detection. Changing this restarts the daemon."`
+	ClusterLLMAPIKey   string `json:"cluster_llm_api_key,omitempty" jsonschema:"Optional Bearer key for the cluster backend's management API (unlocks worker/VRAM aggregation). Empty = leave unchanged; '<clear>' = remove the key."`
 }
 
 type networkingOut struct {
@@ -106,6 +112,20 @@ func (s *Server) registerNetworkingTools() {
 				v = ""
 			}
 			params.PeerTrustPolicy = &v
+		}
+		if in.ClusterLLMEndpoint != "" {
+			v := in.ClusterLLMEndpoint
+			if v == clearSentinel {
+				v = ""
+			}
+			params.ClusterLLMEndpoint = &v
+		}
+		if in.ClusterLLMAPIKey != "" {
+			v := in.ClusterLLMAPIKey
+			if v == clearSentinel {
+				v = ""
+			}
+			params.ClusterLLMAPIKey = &v
 		}
 		res, err := s.core.SetNetworking(params)
 		if err != nil {

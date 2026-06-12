@@ -1,9 +1,13 @@
 package admincore
 
 import (
+	"context"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/qiangli/outpost/internal/agent"
+	"github.com/qiangli/outpost/internal/agent/clusterllm"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"github.com/qiangli/outpost/internal/agent/otel"
@@ -197,6 +201,7 @@ type SafeView struct {
 	YcodeShareSurfaces []YcodeShareSurfaceView `json:"ycode_share_surfaces"`
 	UpdateMode         string                  `json:"update_mode"`
 	LLMPool            LLMPoolStatusView       `json:"llm_pool"`
+	ClusterLLM         ClusterLLMView          `json:"cluster_llm"`
 	Cluster            ClusterView             `json:"cluster"`
 	Outbound           []agent.OutboundView    `json:"outbound"`
 	Defaults           map[string]string       `json:"defaults"`
@@ -275,6 +280,7 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		YcodeShareSurfaces:      toYcodeShareSurfacesView(fc.YcodeShareSurfaces),
 		UpdateMode:              fc.UpdateModeName(),
 		LLMPool:                 s.llmPoolStatusView(fc),
+		ClusterLLM:              s.clusterLLMView(fc),
 		Cluster:                 toClusterView(fc),
 		Outbound:                s.outboundList(),
 		Defaults: map[string]string{
@@ -298,6 +304,57 @@ func (s *Server) llmPoolStatusView(fc *conf.FileConfig) LLMPoolStatusView {
 	v := s.deps.LLMPoolStatus()
 	v.Enabled = fc.OllamaPoolOn()
 	return v
+}
+
+// ClusterLLMView is the operator-facing snapshot of the intra-home
+// distributed-inference backend (GPUStack first). State is one of
+// clusterllm's StateUnconfigured / Running / NotReachable. HasAPIKey
+// reflects whether a management key is set (the secret itself is never
+// surfaced); without it AggregateVRAMBytes stays 0 and the cloudbox size
+// filter is inert. MemberCount / AggregateVRAMBytes are the live cluster
+// shape the registry push advertises.
+type ClusterLLMView struct {
+	Configured         bool   `json:"configured"`
+	Backend            string `json:"backend,omitempty"`
+	State              string `json:"state"`
+	Endpoint           string `json:"endpoint,omitempty"`
+	Version            string `json:"version,omitempty"`
+	HasAPIKey          bool   `json:"has_api_key"`
+	MemberCount        int    `json:"member_count,omitempty"`
+	AggregateVRAMBytes uint64 `json:"aggregate_vram_bytes,omitempty"`
+}
+
+// clusterLLMView builds the ClusterLLMView, performing a (TTL-cached)
+// live probe of the configured backend. Unconfigured endpoints never
+// touch the network. The detector is rebuilt when the endpoint/key
+// changes so a save-then-poll between the restart sees fresh config.
+func (s *Server) clusterLLMView(fc *conf.FileConfig) ClusterLLMView {
+	endpoint := strings.TrimSpace(fc.ClusterLLMEndpoint)
+	if endpoint == "" {
+		return ClusterLLMView{State: string(clusterllm.StateUnconfigured)}
+	}
+	key := endpoint + "\x00" + fc.ClusterLLMAPIKey
+	s.clusterMu.Lock()
+	if s.clusterDet == nil || s.clusterKey != key {
+		s.clusterDet = clusterllm.NewDetector(clusterllm.Config{
+			Endpoint: endpoint,
+			APIKey:   fc.ClusterLLMAPIKey,
+		}, 5*time.Second, nil)
+		s.clusterKey = key
+	}
+	det := s.clusterDet
+	s.clusterMu.Unlock()
+	info := det.Info(context.Background())
+	return ClusterLLMView{
+		Configured:         true,
+		Backend:            info.Backend,
+		State:              string(info.State),
+		Endpoint:           info.Endpoint,
+		Version:            info.Version,
+		HasAPIKey:          fc.ClusterLLMAPIKey != "",
+		MemberCount:        info.MemberCount,
+		AggregateVRAMBytes: info.AggregateVRAMBytes,
+	}
 }
 
 // outboundList safely returns the outbound manager's view list (or an
