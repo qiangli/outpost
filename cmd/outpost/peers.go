@@ -20,11 +20,15 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/discovery"
+	"github.com/qiangli/outpost/internal/agent/peerstatus"
 )
 
 func peersCmd() *cobra.Command {
@@ -32,8 +36,77 @@ func peersCmd() *cobra.Command {
 		Use:   "peers",
 		Short: "Inspect the discovery cache, reachability history, and temporal predictions",
 	}
-	cmd.AddCommand(peersListCmd(), peersHistoryCmd(), peersPredictedCmd(), peersRouteToCmd(), peersHelpMintInviteCmd())
+	cmd.AddCommand(peersListCmd(), peersStatusCmd(), peersHistoryCmd(), peersPredictedCmd(), peersRouteToCmd(), peersHelpMintInviteCmd())
 	return cmd
+}
+
+// peersStatusCmd queries cloudbox's GET /api/v1/peers — the status board
+// over the hosts this account can see (owned + shared): online state, a
+// same-LAN/remote location hint, and the build/OS/arch details each host
+// last reported. Unlike the other `peers` subcommands (which read the
+// daemon's local discovery cache via MCP), this calls cloudbox directly
+// with the host's access_token, so it works from any paired machine.
+func peersStatusCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show cloudbox's status board for peers this account can see (online/location/version/os)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfgPath, err := conf.DefaultConfigPath()
+			if err != nil {
+				return err
+			}
+			fc, err := conf.LoadFile(cfgPath)
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+			peers, err := peerstatus.Fetch(cmd.Context(), cloudboxHTTPBase(fc), fc.AccessToken, nil)
+			if err != nil {
+				return err
+			}
+			if jsonOut {
+				b, _ := json.MarshalIndent(peers, "", "  ")
+				fmt.Println(string(b))
+				return nil
+			}
+			if len(peers) == 0 {
+				fmt.Println("No peers visible. Is this host paired (`outpost status`), and do you own or share any hosts?")
+				return nil
+			}
+			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+			fmt.Fprintln(w, "HOST\tONLINE\tLOCATION\tVERSION\tOS/ARCH\tMODE\tACCESS")
+			for _, p := range peers {
+				online := "offline"
+				if p.Online {
+					online = "online"
+				}
+				access := "owned"
+				if p.Shared {
+					access = "shared"
+				}
+				name := p.Host
+				if p.Alias != "" {
+					name = p.Alias + " (" + p.Host + ")"
+				}
+				osarch := p.OS
+				if p.Arch != "" {
+					osarch = p.OS + "/" + p.Arch
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+					name, online, orDash(p.Location), orDash(p.Version), orDash(osarch), orDash(p.UpdateMode), access)
+			}
+			return w.Flush()
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit JSON instead of a table")
+	return cmd
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // peersListCmd surfaces the daemon's live discovery cache via MCP

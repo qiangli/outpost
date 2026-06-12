@@ -4,11 +4,17 @@ import (
 	"context"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/qiangli/outpost/internal/agent/peerstatus"
 )
 
 type restartOut struct {
 	OK             bool `json:"ok"`
 	RestartPending bool `json:"restart_pending"`
+}
+
+type peersStatusOut struct {
+	Peers []peerstatus.Peer `json:"peers"`
 }
 
 type rotateMCPOut struct {
@@ -34,5 +40,16 @@ func (s *Server) registerLifecycleTools() {
 			return nil, rotateMCPOut{}, err
 		}
 		return nil, rotateMCPOut{OK: true, NewBearerToken: newTok}, nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_peers_status",
+		Description: "List the paired hosts this account can see (its owned hosts + hosts shared with it) with online status, a same-LAN/remote location hint (relative to this host's network), and the build/OS/arch details each host last reported. Queries cloudbox; only works on a paired host.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, peersStatusOut, error) {
+		peers, err := s.core.PeerStatus(ctx)
+		if err != nil {
+			return nil, peersStatusOut{}, err
+		}
+		return nil, peersStatusOut{Peers: peers}, nil
 	})
 }
