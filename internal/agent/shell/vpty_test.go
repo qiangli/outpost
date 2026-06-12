@@ -125,11 +125,14 @@ func TestVPTY_CloseUnblocksPeer(t *testing.T) {
 	_ = slave.Close()
 }
 
-// TestVPTY_InteractiveSession runs the full Windows-shaped session —
-// virtual pair + AssumeTTY readline — on whatever platform the tests
-// run on. This is the regression test for "sshd on windows: PTY not
-// supported on Windows v1": the same wiring NewSession produces on
-// Windows, driven the way the SSH server drives it.
+// TestVPTY_InteractiveSession runs the full Windows-shaped session — the
+// virtual pair + AssumeTTY path, which is driven by x/term's line editor
+// (not readline) — on whatever platform the tests run on. Because the vpty
+// is untagged, this exercises on unix the exact code that runs on the
+// console-less Windows daemon, where readline's ANSI-enable step hard-fails.
+// It is the regression test for two bugs: "sshd on windows: PTY not
+// supported on Windows v1" and "entered command is not echoed back on
+// Windows" (the echo assertion below).
 func TestVPTY_InteractiveSession(t *testing.T) {
 	master, slave, err := openVPTY()
 	if err != nil {
@@ -174,6 +177,16 @@ func TestVPTY_InteractiveSession(t *testing.T) {
 		t.Fatalf("write command: %v", err)
 	}
 	waitFor("windows-vpty-ok\r\n", "command output (with ONLCR ending)")
+
+	// The typed command must be echoed back by the line editor. This is the
+	// regression for "entered command is not echoed back" on Windows: the
+	// echo carries the full "echo " prefix, which the command's own output
+	// ("windows-vpty-ok") does not — so finding it proves the editor echoed
+	// the keystrokes rather than silently swallowing them (the readline
+	// fallback behavior on a console-less daemon).
+	if !strings.Contains(out.snapshot(), "echo windows-vpty-ok") {
+		t.Fatalf("typed command was not echoed back; output:\n%s", out.snapshot())
+	}
 
 	if _, err := io.WriteString(s.Master(), "exit\r"); err != nil {
 		t.Fatalf("write exit: %v", err)
