@@ -139,6 +139,7 @@ filter then leaves the caller's value untouched):
 | Sandbox max containers | `sandbox_max_containers` | advertised concurrency ceiling (capacity report) |
 | Sandbox image allowlist | `sandbox_allowed_images` | exact refs or `repo/*` wildcards; empty = any image |
 | Sandbox scratch dir | `sandbox_scratch_dir` | sole host path prefix under which bind mounts are allowed; empty = forbid host binds (named volumes/tmpfs always ok) |
+| Sandbox prewarm images | `sandbox_prewarm_images` | images the prewarmer keeps pulled so a remote create+start skips the pull cost; empty falls back to the concrete (non-wildcard) `sandbox_allowed_images` entries |
 
 These policy fields are edited in `agent.json` directly (or via
 `outpost_set_builtins` / the SPA); only the `sandbox_enabled` toggle has

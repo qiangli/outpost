@@ -20,6 +20,7 @@ type Service struct {
 	filter    *Filter
 	counter   *Counter
 	isolation string
+	prewarmer *Prewarmer
 }
 
 // NewService builds a Service from policy. The OCI isolation tier defaults
@@ -42,6 +43,12 @@ func (s *Service) SetIsolation(tier string) {
 	}
 }
 
+// SetPrewarmer attaches the image prewarmer so the capacity report can
+// surface how many base images are warm. Passing nil clears it. Mirrors
+// ollama.Service.SetWatcher — wired after construction in main.go once the
+// podman socket is resolved.
+func (s *Service) SetPrewarmer(p *Prewarmer) { s.prewarmer = p }
+
 // WrapProxy is the middleware factory passed to AppRegistry.SetProxyWrap.
 // The filter runs outermost so a denied create never increments the
 // in-flight counter, then the counter wraps the reverse proxy.
@@ -55,6 +62,10 @@ func (s *Service) WrapProxy(next http.Handler) http.Handler {
 func (s *Service) Snapshot() CapacityReport {
 	rep := s.counter.Snapshot()
 	rep.Isolation = s.isolation
+	if s.prewarmer != nil {
+		rep.WarmImages = s.prewarmer.Ready()
+		rep.PrewarmImages = s.prewarmer.Total()
+	}
 	return rep
 }
 

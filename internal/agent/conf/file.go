@@ -190,6 +190,13 @@ type FileConfig struct {
 	SandboxAllowedImages []string `json:"sandbox_allowed_images,omitempty"`
 	SandboxScratchDir    string   `json:"sandbox_scratch_dir,omitempty"`
 
+	// SandboxPrewarmImages is the set of images the prewarmer keeps pulled
+	// on the local podman daemon so a remote sandbox create+start skips the
+	// (dominant) image-pull cost. Empty falls back to the non-wildcard
+	// entries of SandboxAllowedImages — pre-pulling exactly what callers
+	// are allowed to run. Empty + no allowlist disables prewarming.
+	SandboxPrewarmImages []string `json:"sandbox_prewarm_images,omitempty"`
+
 	// OllamaPoolEnabled gates whether this outpost participates in
 	// cloudbox's virtual LLM pool — the watcher pushes the local
 	// /api/tags inventory to cloudbox and the /app/ollama/_pool/capacity

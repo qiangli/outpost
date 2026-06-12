@@ -44,10 +44,16 @@ type CapacityReport struct {
 	// pool tracks real running-container counts.
 	InFlight int `json:"in_flight"`
 	// PoolWarm / PoolWarming are the pre-warmed-container depth and the
-	// number currently being replenished. Reserved for the Phase-A warm
-	// pool; zero until then.
+	// number currently being replenished. Reserved for a future warm
+	// CONTAINER pool; zero today.
 	PoolWarm    int `json:"pool_warm"`
 	PoolWarming int `json:"pool_warming"`
+	// WarmImages / PrewarmImages report the image prewarmer's state: how
+	// many of the configured base images are pulled and ready vs. the
+	// total it manages. A remote create that targets a ready image skips
+	// the pull cost (the dominant cold-start latency).
+	WarmImages    int `json:"warm_images,omitempty"`
+	PrewarmImages int `json:"prewarm_images,omitempty"`
 	// Isolation names the OCI runtime tier this host enforces:
 	// "runc" (shared kernel, the Phase-A default), "gvisor", or "kata".
 	// cloudbox routes untrusted work only to hosts advertising a

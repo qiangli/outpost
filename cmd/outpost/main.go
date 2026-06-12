@@ -278,7 +278,9 @@ func startCmd() *cobra.Command {
 			// stays admin-only for trusted self-use. Decorated like the
 			// ollama mount: capability advertisement (so cloudbox can
 			// discover + pool sandbox hosts) + capacity intercept + the
-			// filter/counter proxy wrap.
+			// filter/counter proxy wrap. The prewarmer (started under the
+			// errgroup below) keeps the runnable images pulled.
+			var sbPrewarmer *sandbox.Prewarmer
 			if fc.SandboxOn() {
 				if bt := agent.DetectPodman(); bt.Available && bt.Socket != "" {
 					if err := apps.RegisterFromConfig(conf.AppConfig{
@@ -300,6 +302,14 @@ func startCmd() *cobra.Command {
 						apps.SetCapabilities(agent.BuiltinSandbox, &agent.AppCapabilities{Type: sandbox.CapabilityType})
 						apps.SetProxyWrap(agent.BuiltinSandbox, sbSvc.WrapProxy)
 						apps.AddIntercept(agent.BuiltinSandbox, "/_pool/capacity", sbSvc.CapacityHandler())
+						// Image prewarmer: pull the runnable images so a
+						// remote create+start skips the pull cost. Default
+						// to the allowlist when no explicit prewarm list is
+						// set — pre-pulling exactly what callers may run.
+						if imgs := sandboxPrewarmImages(fc); len(imgs) > 0 {
+							sbPrewarmer = sandbox.NewPrewarmer(bt.Socket, imgs)
+							sbSvc.SetPrewarmer(sbPrewarmer)
+						}
 					}
 				} else {
 					slog.Warn("sandbox builtin enabled but podman daemon not detected — skipping")
@@ -1011,6 +1021,19 @@ func startCmd() *cobra.Command {
 				}
 			}
 
+			// Sandbox image prewarmer — keeps the runnable images pulled so
+			// a remote sandbox create+start skips the pull cost. Started
+			// here under the errgroup; ctx cancellation stops it. Nil when
+			// the sandbox builtin is off or no images are configured.
+			if sbPrewarmer != nil {
+				g.Go(func() error {
+					if err := sbPrewarmer.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+						slog.Warn("sandbox prewarm: exited", "err", err)
+					}
+					return nil
+				})
+			}
+
 			// Roadmap #11: cloudbox-as-CA host cert refresh.
 			// Independent of cluster mode — every paired outpost
 			// benefits from cert-bound peer trust on the discovery
@@ -1265,6 +1288,28 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 		return nil
 	})
 	return nil
+}
+
+// sandboxPrewarmImages resolves the image set the prewarmer keeps pulled.
+// An explicit SandboxPrewarmImages wins; otherwise it falls back to the
+// concrete (non-wildcard) entries of the SandboxAllowedImages allowlist —
+// pre-pulling exactly the images a caller is permitted to run. A wildcard
+// allowlist entry ("repo/*") names no concrete image, so it's skipped.
+func sandboxPrewarmImages(fc *conf.FileConfig) []string {
+	if fc == nil {
+		return nil
+	}
+	if len(fc.SandboxPrewarmImages) > 0 {
+		return fc.SandboxPrewarmImages
+	}
+	var out []string
+	for _, img := range fc.SandboxAllowedImages {
+		if strings.Contains(img, "*") {
+			continue
+		}
+		out = append(out, img)
+	}
+	return out
 }
 
 // startClusterRunner validates fc.Cluster, detects the local podman
