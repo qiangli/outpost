@@ -82,6 +82,7 @@ func newLocalRunner(stdin io.Reader, stdout, stderr io.Writer) (*interp.Runner, 
 	runner, err := interp.New(
 		interp.StdIO(stdin, stdout, stderr),
 		interp.Env(env),
+		interp.ExecHandlers(CoreutilsExec), // PATH misses fall back to embedded coreutils (Windows!)
 		interp.WithBgPidCallback(func(pid int) {
 			_ = DefaultRegistry().Record(pid, "(detached)")
 		}),

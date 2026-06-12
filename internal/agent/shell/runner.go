@@ -119,6 +119,7 @@ func newSessionFrom(ptm, pts ptyFile, opts SessionOptions) (*Session, error) {
 	runner, err := interp.New(
 		interp.StdIO(stdin, pts, pts),
 		interp.Env(env), // outpost process env + user-shell-style PATH extras (+ TERM if hinted)
+		interp.ExecHandlers(CoreutilsExec), // PATH misses fall back to embedded coreutils (Windows!)
 		interp.WithBgPidCallback(func(pid int) {
 			// Cmd is "(detached)" because the fork's callback signature is
 			// (pid int) only; richer capture would need stmt threading in

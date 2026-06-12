@@ -167,3 +167,40 @@ func TestExchangeRequiresTitleWithAuthURL(t *testing.T) {
 		t.Error("portal was contacted; client-side validation should short-circuit")
 	}
 }
+
+// TestExchangeRetryPreservesFirstError reproduces the 2ivy pairing
+// incident: the portal redeems the one-time code, then 500s on a host-
+// name conflict; the retry hits "code already used" (401). Before the
+// firstErr plumbing, the surfaced error was ONLY the 401 — the root
+// cause was invisible. Both must be present in the final error.
+func TestExchangeRetryPreservesFirstError(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("Retry-After", "0")
+			http.Error(w, `{"error":"UNIQUE constraint failed: hosts.name"}`, http.StatusInternalServerError)
+			return
+		}
+		http.Error(w, `{"error":"code already used"}`, http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	_, err := Exchange(context.Background(), ExchangeRequest{
+		ServerURL: server.URL,
+		Code:      "c",
+		Name:      "dup",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("expected 2 attempts, got %d", calls.Load())
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "code already used") {
+		t.Errorf("error should carry the final attempt's failure, got: %s", msg)
+	}
+	if !strings.Contains(msg, "UNIQUE constraint failed") {
+		t.Errorf("error should preserve the first attempt's root cause, got: %s", msg)
+	}
+}

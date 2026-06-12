@@ -1446,6 +1446,7 @@ func runExecCommand(ctx context.Context, ch ssh.Channel, command string, envOver
 	runner, err := interp.New(
 		interp.StdIO(ch, ch, ch.Stderr()),
 		interp.Env(outshell.BuildEnvWith(envOverrides)),
+		interp.ExecHandlers(outshell.CoreutilsExec), // PATH misses fall back to embedded coreutils (Windows!)
 	)
 	if err != nil {
 		_, _ = io.WriteString(ch.Stderr(), err.Error()+"\n")

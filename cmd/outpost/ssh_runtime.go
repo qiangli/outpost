@@ -81,6 +81,16 @@ func dialOutpostHost(ctx context.Context, host, user string, port int) (*sshclie
 		return dialDirectSSH(ctx, host, port, user)
 	}
 
+	// Drop-in ssh semantics: `.local` names (mDNS-only per RFC 6762)
+	// and IP literals are LAN addresses — they can never be cloudbox
+	// host names, so the cloudbox-assisted flow below would only burn
+	// a round-trip (and a password prompt) before failing over anyway.
+	// Dial the machine directly, exactly like stock ssh would. Paired
+	// host names keep the full smart flow.
+	if isLANAddressLiteral(host) {
+		return dialLANFallback(ctx, host, user, nil)
+	}
+
 	var fc *conf.FileConfig
 	if cfgPath, _ := conf.DefaultConfigPath(); cfgPath != "" {
 		fc, _ = conf.LoadFile(cfgPath)
@@ -337,6 +347,18 @@ func dialLANFallback(ctx context.Context, host, user string, cause error) (*sshc
 	// Not mDNS-visible under that name — treat the string as an
 	// address and try the conventional `outpost sshd` port.
 	return dialDirectSSH(ctx, host, sshdDefaultPort, user)
+}
+
+// isLANAddressLiteral reports whether host can only be a LAN address:
+// an IP literal or an mDNS `.local` name (RFC 6762 reserves the TLD
+// for link-local resolution). Cloudbox host names are bare labels
+// chosen at register time, so neither form can name a paired host —
+// callers use this to skip the cloudbox-assisted dial entirely.
+func isLANAddressLiteral(host string) bool {
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	return strings.HasSuffix(strings.ToLower(host), ".local")
 }
 
 // sshdDefaultPort is the port `outpost sshd` binds by default and

@@ -97,6 +97,13 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 	client := &http.Client{Timeout: 30 * time.Second}
 	var respBody []byte
 	var lastErr error
+	// firstErr preserves the earliest failure across retries. The POST
+	// is not idempotent server-side (the portal redeems the one-time
+	// code before it can still fail on e.g. a host-name conflict), so
+	// a retry can fail for a different reason than the root cause —
+	// "code already used" masking the original error is the canonical
+	// case. Keeping the first error visible makes that diagnosable.
+	var firstErr error
 	for attempt := 1; attempt <= exchangeMaxAttempts; attempt++ {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
@@ -107,6 +114,9 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		resp, err := client.Do(httpReq)
 		if err != nil {
 			lastErr = fmt.Errorf("exchange: %w", err)
+			if firstErr == nil {
+				firstErr = lastErr
+			}
 		} else {
 			respBody, _ = io.ReadAll(resp.Body)
 			resp.Body.Close()
@@ -115,10 +125,13 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 				break
 			}
 			lastErr = fmt.Errorf("exchange failed (%d): %s", resp.StatusCode, bytes.TrimSpace(respBody))
+			if firstErr == nil {
+				firstErr = lastErr
+			}
 			// 4xx — caller's problem (bad code, name collision, etc.).
 			// Retrying won't help; surface the error immediately.
 			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-				return nil, lastErr
+				return nil, combineAttemptErrors(firstErr, lastErr)
 			}
 			// 5xx — honor Retry-After if present, else exp backoff.
 			if attempt < exchangeMaxAttempts {
@@ -147,7 +160,7 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		}
 	}
 	if lastErr != nil {
-		return nil, lastErr
+		return nil, combineAttemptErrors(firstErr, lastErr)
 	}
 
 	var ex struct {
@@ -328,6 +341,7 @@ func Reattach(ctx context.Context, req ReattachRequest) (*conf.FileConfig, error
 	client := &http.Client{Timeout: 30 * time.Second}
 	var respBody []byte
 	var lastErr error
+	var firstErr error // see Exchange: keep the root cause visible across retries
 	for attempt := 1; attempt <= exchangeMaxAttempts; attempt++ {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
@@ -339,6 +353,9 @@ func Reattach(ctx context.Context, req ReattachRequest) (*conf.FileConfig, error
 		resp, err := client.Do(httpReq)
 		if err != nil {
 			lastErr = fmt.Errorf("reattach: %w", err)
+			if firstErr == nil {
+				firstErr = lastErr
+			}
 		} else {
 			respBody, _ = io.ReadAll(resp.Body)
 			resp.Body.Close()
@@ -347,8 +364,11 @@ func Reattach(ctx context.Context, req ReattachRequest) (*conf.FileConfig, error
 				break
 			}
 			lastErr = fmt.Errorf("reattach failed (%d): %s", resp.StatusCode, bytes.TrimSpace(respBody))
+			if firstErr == nil {
+				firstErr = lastErr
+			}
 			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-				return nil, lastErr
+				return nil, combineAttemptErrors(firstErr, lastErr)
 			}
 			if attempt < exchangeMaxAttempts {
 				delay := time.Duration(1<<(attempt-1)) * time.Second
@@ -375,7 +395,7 @@ func Reattach(ctx context.Context, req ReattachRequest) (*conf.FileConfig, error
 		}
 	}
 	if lastErr != nil {
-		return nil, lastErr
+		return nil, combineAttemptErrors(firstErr, lastErr)
 	}
 
 	var ex struct {
@@ -440,4 +460,17 @@ func Reattach(ctx context.Context, req ReattachRequest) (*conf.FileConfig, error
 		fc.Cluster.TracesRemoteURL = ex.TracesRemoteURL
 	}
 	return fc, nil
+}
+
+// combineAttemptErrors returns last, annotated with the first attempt's
+// error when the two differ. The pairing POSTs are not idempotent
+// server-side (the one-time code is redeemed even when the request then
+// fails), so a retry can fail for a different reason than the root
+// cause — a later "code already used" would otherwise bury the original
+// "host name conflict" entirely.
+func combineAttemptErrors(first, last error) error {
+	if first == nil || last == nil || first.Error() == last.Error() {
+		return last
+	}
+	return fmt.Errorf("%w (first attempt: %v)", last, first)
 }
