@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	outgit "github.com/qiangli/outpost/internal/agent/git"
+	outgit "github.com/qiangli/coreutils/git"
 )
 
 // outpost git … — embedded git client. Pure-Go go-git backend so the
@@ -23,6 +23,13 @@ import (
 //
 // `outpost git ...` always resolves to this implementation regardless
 // of whether a system `git` is on PATH.
+
+func init() {
+	// Hint messages inside the shared git package ("run \"<CLIName>
+	// config user.name ...\"") should name our spelling of the command.
+	outgit.CLIName = "outpost git"
+}
+
 func gitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "git",
@@ -107,7 +114,7 @@ basic-auth password (with user "oauth2", which GitHub accepts).`,
 // with NO system git, so each hint leads with what you can do using
 // outpost git itself; conflict-resolution verbs are the unavoidable
 // gap. Keep in sync with the scope notes in the gitCmd Long help and
-// internal/agent/git's package comment.
+// the coreutils/git package comment.
 var unimplementedGitVerbs = map[string]string{
 	"rebase":      "it needs conflict resolution. Bring your branch up to date with \"outpost git merge <base>\" (fast-forward), or recreate it: checkout the base, \"checkout -b\" a fresh branch, and re-apply your changes",
 	"cherry-pick": "it needs conflict resolution. Re-apply the change by hand (\"outpost git show <commit>\" prints the patch) and commit",

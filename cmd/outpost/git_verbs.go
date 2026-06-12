@@ -7,13 +7,13 @@ import (
 
 	"github.com/spf13/cobra"
 
-	outgit "github.com/qiangli/outpost/internal/agent/git"
+	outgit "github.com/qiangli/coreutils/git"
 )
 
 // Parity verbs for `outpost git` beyond the original clone→push set:
 // merge, merge-base, rev-list, config, tag, reset, rm, ls-files,
 // blame, grep. Each is a thin cobra wrapper over the matching
-// internal/agent/git function — keep logic out of this file.
+// coreutils/git function — keep logic out of this file.
 
 func gitMergeCmd() *cobra.Command {
 	var (

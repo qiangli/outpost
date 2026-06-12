@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Ensure the sibling-path replace targets in go.mod (../sh) exist on
+# Ensure the sibling-path replace targets in go.mod (../sh,
+# ../coreutils) exist on
 # disk, by cloning the pinned commit from each upstream repo if the
 # sibling is missing.
 #
@@ -81,6 +82,7 @@ git_short_head() {
 repo_url() {
     case "$1" in
         sh) echo "https://github.com/qiangli/sh.git" ;;
+        coreutils) echo "https://github.com/qiangli/coreutils.git" ;;
         *) echo "bootstrap-siblings: no repo URL for '$1'" >&2; return 1 ;;
     esac
 }

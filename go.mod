@@ -9,8 +9,6 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/fatedier/frp v0.68.1
 	github.com/gin-gonic/gin v1.12.0
-	github.com/go-git/go-billy/v5 v5.9.0
-	github.com/go-git/go-git/v5 v5.19.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/hashicorp/mdns v1.0.6
 	github.com/hashicorp/memberlist v0.5.4
@@ -39,6 +37,11 @@ require (
 	k8s.io/client-go v0.35.0
 	mvdan.cc/sh/v3 v3.0.0-00010101000000-000000000000
 	sigs.k8s.io/controller-runtime v0.22.4
+)
+
+require (
+	github.com/go-git/go-billy/v5 v5.9.0 // indirect
+	github.com/go-git/go-git/v5 v5.19.1 // indirect
 )
 
 require (
@@ -126,6 +129,7 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.4 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
+	github.com/qiangli/coreutils v0.0.0
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.1 // indirect
 	github.com/sean-/seed v0.0.0-20170313163322-e2103e2c3529 // indirect
@@ -183,3 +187,5 @@ require (
 )
 
 replace mvdan.cc/sh/v3 => ../sh
+
+replace github.com/qiangli/coreutils => ../coreutils

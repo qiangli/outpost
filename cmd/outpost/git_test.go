@@ -10,7 +10,7 @@ import (
 
 // TestGitCommandWiring exercises the cobra wiring end-to-end against
 // an on-disk tempdir repo. The library logic is covered in
-// internal/agent/git/git_test.go; this test catches drift between the
+// coreutils/git; this test catches drift between the
 // cobra flags / arg shapes and the library API.
 func TestGitCommandWiring(t *testing.T) {
 	dir := t.TempDir()
@@ -171,7 +171,7 @@ func TestGitAddRequiresPathOrAllFlag(t *testing.T) {
 // TestGitParityVerbsWiring exercises the cobra wiring of the parity
 // verbs (merge, merge-base, rev-list, config, tag, reset, rm,
 // ls-files, blame, grep, diff <rev> <rev>, show --no-patch). The
-// behavior itself is covered in internal/agent/git; this catches
+// behavior itself is covered in coreutils/git; this catches
 // flag/arg drift.
 func TestGitParityVerbsWiring(t *testing.T) {
 	dir := t.TempDir()
