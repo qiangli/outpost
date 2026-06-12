@@ -928,6 +928,28 @@ func startCmd() *cobra.Command {
 					}
 				}
 			}
+			// Fleet-upgrade pull trigger — the catch-up half of the
+			// rollout. The push trigger (cloudbox POSTing /admin/upgrade
+			// during a release fan-out) only reaches hosts online at
+			// that moment; a host that was asleep or offline reconciles
+			// against the latest release on its next poll after the
+			// tunnel reconnects. Only spun up when paired (upgradeWorker
+			// is built solely when fc.AccessToken != ""); the puller
+			// respects update_mode via Worker.Apply, so a "manual" /
+			// "never" host polls but never self-upgrades.
+			if upgradeWorker != nil {
+				if cbBase := cloudboxHTTPBase(fc); cbBase != "" {
+					bi := agent.ReadBuildInfo()
+					puller := upgrade.PullerConfig{
+						CloudboxBase: cbBase,
+						AccessToken:  fc.AccessToken,
+						Platform:     bi.OS + "_" + bi.Arch,
+						Worker:       upgradeWorker,
+					}
+					g.Go(func() error { return puller.Run(gctx) })
+				}
+			}
+
 			// Roadmap #11: cloudbox-as-CA host cert refresh.
 			// Independent of cluster mode — every paired outpost
 			// benefits from cert-bound peer trust on the discovery
