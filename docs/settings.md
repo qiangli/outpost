@@ -184,7 +184,7 @@ Status codes the daemon returns to cloudbox:
 | HTTP | Status | Meaning |
 |---|---|---|
 | 202 | accepted | upgrade staged + worker goroutine running |
-| 200 | replay | same `release_id` already handled this run (idempotent) |
+| 200 | replay | same `release_id` already applied (idempotent; remembered across the post-swap restart via the upgrade ledger) |
 | 409 | in_flight | another upgrade is currently running |
 | 304 | same_commit | daemon is already at this commit |
 | 403 | disabled | operator set `update_mode` to `never` |

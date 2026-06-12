@@ -242,11 +242,17 @@ jobs:
           CLOUDBOX_BASE_URL: ${{ secrets.CLOUDBOX_BASE_URL }}
           CLOUDBOX_FLEET_UPGRADE_TOKEN: ${{ secrets.CLOUDBOX_FLEET_UPGRADE_TOKEN }}
         run: |
-          # Re-POST the same envelope but without the `hosts` filter —
-          # cloudbox fans out to every paired host owned by the caller.
-          # The canary host (already at envelope.commit) gets
-          # `code:304 same_commit` from its worker and that surfaces as
-          # `status:"ok"` in the aggregate response (no-op replay).
+          # Re-POST the same envelope to every paired host EXCEPT the
+          # canary. The canary must not be re-targeted: it restarted
+          # into the new binary seconds ago, and on a fresh worker the
+          # in-memory replay guard is empty — pre-v0.7.1 workers also
+          # mis-compared same_commit (version tag vs sha), so the
+          # fan-out re-applied on the canary and overwrote its
+          # <binary>.previous rollback copy with the new version (seen
+          # on dragon during the v0.7.0 rollout). v0.7.1+ workers
+          # defend receiver-side too (ledger-seeded replay guard +
+          # normalized same_commit), but the envelope shouldn't rely
+          # on the receiver being new enough.
           # Hosts of a different platform fail at the worker's probe
           # step (`<candidate> version --json` won't match the
           # envelope's commit because the binary is built for a
@@ -254,8 +260,18 @@ jobs:
           # and we surface them as a warning, not a failure — they're
           # the expected outcome for the mixed-platform case, not a
           # bug. The operator runs a per-platform POST follow-up.
-          envelope_fanout=$(echo '${{ steps.envelope.outputs.json }}' | jq 'del(.hosts)')
-          echo "fan-out envelope (hosts filter removed):"
+          canary="${{ steps.cfg.outputs.host }}"
+          others=$(curl -fsS \
+            -H "Authorization: Bearer $CLOUDBOX_FLEET_UPGRADE_TOKEN" \
+            "${CLOUDBOX_BASE_URL}/api/hosts" \
+            | jq --arg canary "$canary" '[.hosts[].name | select(. != $canary)]')
+          if [ "$(echo "$others" | jq 'length')" -eq 0 ]; then
+            echo "canary '$canary' is the entire fleet — nothing to fan out to"
+            exit 0
+          fi
+          envelope_fanout=$(echo '${{ steps.envelope.outputs.json }}' \
+            | jq --argjson hosts "$others" '.hosts = $hosts')
+          echo "fan-out envelope (canary '$canary' excluded):"
           echo "$envelope_fanout" | jq .
           resp=$(curl -fsS -X POST \
             -H "Authorization: Bearer $CLOUDBOX_FLEET_UPGRADE_TOKEN" \

@@ -110,6 +110,21 @@ func (b BuildInfo) Short() string {
 	return c
 }
 
+// ShortCommit returns the 7-char commit, or "" when the binary
+// carries no VCS info. Unlike Short() it never substitutes the
+// release tag — Short() is for human display; this is the value to
+// compare against an upgrade envelope's commit field. (On release
+// builds Short() returns "v0.7.0"-style tags, which can never match
+// a sha — the mixup that let the v0.7.0 fleet fan-out re-apply on
+// the canary host and overwrite its rollback copy.)
+func (b BuildInfo) ShortCommit() string {
+	c := b.Commit
+	if len(c) > 7 {
+		c = c[:7]
+	}
+	return c
+}
+
 // ReadBuildInfo returns the build metadata embedded in the running
 // binary. Returns zero values for the VCS fields if debug.ReadBuildInfo
 // fails (which it doesn't for any normal `go build`-produced binary).

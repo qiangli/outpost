@@ -29,9 +29,12 @@ type StateSnapshot struct {
 	// "auto", "manual", "never" (the conf.UpdateMode* constants;
 	// empty is treated as "auto"). See conf/file.go for the contract.
 	UpdateMode string
-	// CurrentCommit is the running daemon's short commit (e.g.
-	// "820e2e1"). Used for the same-commit short-circuit and the
-	// min_from precondition.
+	// CurrentCommit is the running daemon's commit — wire it from
+	// agent.ReadBuildInfo().ShortCommit(), NOT Short(): on release
+	// builds Short() returns the semver tag ("v0.7.0"), which can
+	// never equal an envelope's sha, silently disabling the
+	// same-commit and min_from guards. Short or full sha both work;
+	// Apply normalizes both sides to 7 chars before comparing.
 	CurrentCommit string
 	// BinaryPath is the live binary's on-disk location (os.Executable
 	// of the daemon). The worker stages "<BinaryPath>.upgrading" next
@@ -70,6 +73,13 @@ type Worker struct {
 	inFlight bool
 	// lastReleaseID is "most recently accepted-or-completed envelope
 	// ID." A second POST with the same ID returns StatusReplay.
+	// Seeded from the ledger's newest swap_done entry at construction
+	// — the daemon restarts as the final step of every successful
+	// upgrade, so a purely in-memory guard forgets exactly when the
+	// retry it defends against arrives (observed: the v0.7.0 fleet
+	// fan-out re-applied on the canary host seconds after its
+	// post-canary restart, re-swapping the binary over itself and
+	// overwriting <binary>.previous with the new version).
 	lastReleaseID string
 }
 
@@ -112,7 +122,32 @@ func NewWorker(opts Options) (*Worker, error) {
 	if w.verifier == nil {
 		w.verifier = NoopVerifier{}
 	}
+	w.lastReleaseID = seedLastReleaseID(w.ledger)
 	return w, nil
+}
+
+// seedLastReleaseID recovers the replay guard across daemon restarts:
+// the release_id of the newest swap_done ledger entry, i.e. the
+// upgrade this process is (presumably) the result of. A newer
+// rollback entry clears the seed — after a rollback the operator
+// must be able to re-apply the very release that was rolled back.
+// Failed attempts (stage_failed / probe_failed / swap_failed) don't
+// seed, so a cloudbox retry after a transient failure + restart is
+// still allowed through.
+func seedLastReleaseID(l *Ledger) string {
+	entries, err := l.Tail(100)
+	if err != nil {
+		return ""
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		switch entries[i].Step {
+		case "rollback":
+			return ""
+		case "swap_done":
+			return entries[i].ReleaseID
+		}
+	}
+	return ""
 }
 
 // Apply is the single entry point. The route handler calls this
@@ -159,11 +194,14 @@ func (w *Worker) Apply(ctx context.Context, env Envelope) Result {
 			ReleaseID: env.ReleaseID,
 		}
 	}
-	if st.CurrentCommit != "" && env.Commit == st.CurrentCommit {
+	// Normalize both sides to short commit, same as Probe: envelopes
+	// legitimately carry either shape (short from the CLI, full
+	// 40-char from the GH-Action release webhook).
+	if st.CurrentCommit != "" && shortCommit(env.Commit) == shortCommit(st.CurrentCommit) {
 		w.mu.Unlock()
 		return Result{Status: StatusSameCommit, Detail: "daemon is already at " + env.Commit, ReleaseID: env.ReleaseID, Commit: env.Commit}
 	}
-	if env.MinFrom != "" && st.CurrentCommit != "" && env.MinFrom != st.CurrentCommit {
+	if env.MinFrom != "" && st.CurrentCommit != "" && shortCommit(env.MinFrom) != shortCommit(st.CurrentCommit) {
 		// MinFrom is conservative: only the exact match is acceptable.
 		// We don't have an ordering between arbitrary git commits,
 		// and cloudbox already knows the fleet's commit distribution

@@ -428,3 +428,167 @@ func waitForInFlight(t *testing.T, w *Worker, want bool, timeout time.Duration) 
 // test reach: we forward to Status.HTTPStatus() so test asserts read
 // naturally without re-deriving the mapping.
 func (r Result) HTTPStatusForTest() int { return r.Status.HTTPStatus() }
+
+// --- v0.7.0 double-apply regression suite ---------------------------
+//
+// During the v0.7.0 rollout the fleet fan-out re-applied the upgrade
+// on the just-restarted canary host, re-swapping the binary over
+// itself and overwriting <binary>.previous (the rollback copy) with
+// the new version. Two independent guards both missed:
+//   (a) same_commit compared the envelope's full sha against
+//       BuildInfo.Short(), which returns the version TAG on release
+//       builds — shapes that can never match;
+//   (b) the in-memory replay guard died with the pre-swap process —
+//       and a successful upgrade always restarts, so the guard was
+//       gone exactly when the duplicate envelope arrived.
+// These tests pin the fixes: shape-normalized comparisons and a
+// ledger-seeded replay guard.
+
+func TestWorker_SameCommitMatchesAcrossShapes(t *testing.T) {
+	h := newHarness(t) // CurrentCommit is the short "abc1234"
+	// Manual mode keeps the test hermetic if the gate misses: the
+	// fall-through lands on pending_manual instead of a network fetch.
+	h.setState(func(s *StateSnapshot) { s.UpdateMode = "manual" })
+	r := h.worker.Apply(context.Background(), Envelope{
+		ReleaseID: "r1",
+		URL:       "https://example.com/x",
+		SHA256:    "deadbeef",
+		Commit:    "abc1234deadbeefdeadbeefdeadbeefdeadbeef0", // full sha, same first 7
+	})
+	if r.Status != StatusSameCommit {
+		t.Fatalf("full-sha envelope against short current commit: expected same_commit, got %v (%s)", r.Status, r.Detail)
+	}
+}
+
+func TestWorker_MinFromMatchesAcrossShapes(t *testing.T) {
+	h := newHarness(t)
+	h.setState(func(s *StateSnapshot) { s.UpdateMode = "manual" })
+	r := h.worker.Apply(context.Background(), Envelope{
+		ReleaseID: "r1",
+		URL:       "https://example.com/x",
+		SHA256:    "deadbeef",
+		Commit:    "def5678",
+		MinFrom:   "abc1234deadbeefdeadbeefdeadbeefdeadbeef0", // full sha matching current short
+	})
+	if r.Status == StatusMinFrom {
+		t.Fatalf("min_from refused despite matching current commit: %s", r.Detail)
+	}
+	if r.Status != StatusPendingManual {
+		t.Fatalf("expected pending_manual fall-through, got %v (%s)", r.Status, r.Detail)
+	}
+}
+
+func TestSeedLastReleaseID(t *testing.T) {
+	cases := []struct {
+		name  string
+		steps []LedgerEntry
+		want  string
+	}{
+		{"empty ledger", nil, ""},
+		{"swap_done seeds", []LedgerEntry{
+			{ReleaseID: "r1", Step: "received"},
+			{ReleaseID: "r1", Step: "swap_done"},
+		}, "r1"},
+		{"newest swap_done wins", []LedgerEntry{
+			{ReleaseID: "r1", Step: "swap_done"},
+			{ReleaseID: "r2", Step: "received"},
+			{ReleaseID: "r2", Step: "swap_done"},
+		}, "r2"},
+		{"rollback clears the seed", []LedgerEntry{
+			{ReleaseID: "r1", Step: "swap_done"},
+			{Step: "rollback"},
+		}, ""},
+		{"failed attempt does not seed", []LedgerEntry{
+			{ReleaseID: "r1", Step: "received"},
+			{ReleaseID: "r1", Step: "stage_failed"},
+		}, ""},
+		{"swap after rollback seeds again", []LedgerEntry{
+			{ReleaseID: "r1", Step: "swap_done"},
+			{Step: "rollback"},
+			{ReleaseID: "r2", Step: "swap_done"},
+		}, "r2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := NewLedger(filepath.Join(t.TempDir(), "upgrade.log"))
+			for _, e := range tc.steps {
+				if err := l.Append(e); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := seedLastReleaseID(l); got != tc.want {
+				t.Fatalf("seed = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if got := seedLastReleaseID(nil); got != "" {
+		t.Fatalf("nil ledger seed = %q, want empty", got)
+	}
+}
+
+func TestNewWorker_ReplayGuardSurvivesRestart(t *testing.T) {
+	h := newHarness(t)
+	// Simulate the post-upgrade restart: the prior process recorded
+	// swap_done for r9, then re-execed — i.e. a brand-new Worker
+	// constructed over the same ledger file.
+	for _, e := range []LedgerEntry{
+		{ReleaseID: "r9", Step: "received"},
+		{ReleaseID: "r9", Step: "swap_done"},
+	} {
+		if err := h.ledger.Append(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w2, err := NewWorker(Options{
+		State:   func() StateSnapshot { h.stateMu.Lock(); defer h.stateMu.Unlock(); return h.state },
+		Restart: func() {},
+		Ledger:  h.ledger,
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := w2.Apply(context.Background(), Envelope{
+		ReleaseID: "r9",
+		URL:       "https://example.com/x",
+		SHA256:    "deadbeef",
+		Commit:    "def5678",
+	})
+	if r.Status != StatusReplay {
+		t.Fatalf("duplicate envelope after restart: expected replay, got %v (%s)", r.Status, r.Detail)
+	}
+}
+
+func TestNewWorker_RollbackClearsReplaySeed(t *testing.T) {
+	h := newHarness(t)
+	for _, e := range []LedgerEntry{
+		{ReleaseID: "r9", Step: "swap_done"},
+		{Step: "rollback"},
+	} {
+		if err := h.ledger.Append(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.setState(func(s *StateSnapshot) { s.UpdateMode = "manual" }) // hermetic fall-through
+	w2, err := NewWorker(Options{
+		State:   func() StateSnapshot { h.stateMu.Lock(); defer h.stateMu.Unlock(); return h.state },
+		Restart: func() {},
+		Ledger:  h.ledger,
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := w2.Apply(context.Background(), Envelope{
+		ReleaseID: "r9",
+		URL:       "https://example.com/x",
+		SHA256:    "deadbeef",
+		Commit:    "def5678",
+	})
+	if r.Status == StatusReplay {
+		t.Fatal("rollback should clear the replay seed so the rolled-back release can be re-applied")
+	}
+	if r.Status != StatusPendingManual {
+		t.Fatalf("expected pending_manual, got %v (%s)", r.Status, r.Detail)
+	}
+}

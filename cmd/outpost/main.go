@@ -527,7 +527,7 @@ func startCmd() *cobra.Command {
 						}
 						return upgrade.StateSnapshot{
 							UpdateMode:    cur.UpdateModeName(),
-							CurrentCommit: agent.ReadBuildInfo().Short(),
+							CurrentCommit: agent.ReadBuildInfo().ShortCommit(),
 							BinaryPath:    exe,
 							PendingPath:   pendingPath,
 						}
