@@ -36,10 +36,10 @@ func sha256Sum(b []byte) string {
 type Candidate struct {
 	At      time.Time `json:"at"`
 	Folder  string    `json:"folder"`
-	Path    string    `json:"path"`            // absolute path of the picked file
-	SHA256  string    `json:"sha256"`          // hex-encoded content hash
-	Size    int64     `json:"size"`            // bytes
-	Mtime   time.Time `json:"mtime"`           // file modtime, UTC
+	Path    string    `json:"path"`              // absolute path of the picked file
+	SHA256  string    `json:"sha256"`            // hex-encoded content hash
+	Size    int64     `json:"size"`              // bytes
+	Mtime   time.Time `json:"mtime"`             // file modtime, UTC
 	Skipped bool      `json:"skipped,omitempty"` // true when SHA matched the previous candidate (no-op fire)
 	Error   string    `json:"error,omitempty"`
 

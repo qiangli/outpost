@@ -34,8 +34,8 @@ import (
 // scripting; any field addition must be additive.
 type ReachResult struct {
 	Host     string     `json:"host"`
-	Route    string     `json:"route"`            // "lan" | "cloudbox" | "offline"
-	RTTMs    int64      `json:"rtt_ms"`           // for lan + cloudbox; 0 on offline
+	Route    string     `json:"route"`              // "lan" | "cloudbox" | "offline"
+	RTTMs    int64      `json:"rtt_ms"`             // for lan + cloudbox; 0 on offline
 	Endpoint string     `json:"endpoint,omitempty"` // host:port for lan, scheme://host[:port] for cloudbox
 	LastSeen *time.Time `json:"last_seen,omitempty"`
 	Detail   string     `json:"detail,omitempty"` // why we landed on cloudbox/offline

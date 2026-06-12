@@ -19,16 +19,16 @@ import (
 // uploaded blob + form fields so tests can assert what the pusher
 // sent without spinning up the real handler.
 type fakeCloudbox struct {
-	srv         *httptest.Server
-	gotHost     string
-	gotApp      string
-	gotSHA      string
-	gotSize     string
-	gotKeyID    string
-	gotBlobLen  int
-	gotBearer   string
-	statusCode  int
-	responseID  string
+	srv        *httptest.Server
+	gotHost    string
+	gotApp     string
+	gotSHA     string
+	gotSize    string
+	gotKeyID   string
+	gotBlobLen int
+	gotBearer  string
+	statusCode int
+	responseID string
 }
 
 func newFakeCloudbox(t *testing.T) *fakeCloudbox {

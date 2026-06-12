@@ -585,9 +585,9 @@ func runTestSSHServer(conn net.Conn, cfg *ssh.ServerConfig, handle func(req *ssh
 // without this translator, bare \n staircases under the prompt column.
 func TestCRLFTranslator(t *testing.T) {
 	cases := []struct {
-		name  string
-		in    []string // chunks fed to Write in order
-		want  string
+		name string
+		in   []string // chunks fed to Write in order
+		want string
 	}{
 		{
 			name: "bare LF expands to CRLF",

@@ -13,7 +13,7 @@ import (
 // stubApplier records what was applied so tests can assert the
 // admincore→manager handoff without spinning up a real scheduler.
 type stubApplier struct {
-	applied *conf.BackupConfig
+	applied   *conf.BackupConfig
 	runCalled bool
 }
 
