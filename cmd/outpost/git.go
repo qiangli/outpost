@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -12,10 +13,13 @@ import (
 
 // outpost git … — embedded git client. Pure-Go go-git backend so the
 // command works without a system `git` binary, which is the load-
-// bearing case on Windows. Scope is the typical clone → edit → add →
-// commit → push lifecycle plus the read/inspect siblings; rebase,
-// stash, merge, tag, reset, blame, submodules, worktrees, reflog,
-// bisect are intentionally out of scope.
+// bearing case on Windows. Scope is the development cycle (clone →
+// edit → add → commit → push), the read/inspect verbs (status, diff,
+// log, branch, show, remote, fetch, merge-base, rev-list, ls-files,
+// blame, grep), and local writes (merge ff, tag, reset, rm, config).
+// Conflict-resolution machinery — rebase, stash, cherry-pick, apply,
+// submodules, worktrees, reflog, bisect — is intentionally out of
+// scope: a half-applied replay is worse than no support.
 //
 // `outpost git ...` always resolves to this implementation regardless
 // of whether a system `git` is on PATH.
@@ -24,16 +28,21 @@ func gitCmd() *cobra.Command {
 		Use:   "git",
 		Short: "Embedded git client (clone, pull, status, commit, push, …)",
 		Long: `outpost git is a small, self-contained git client for the typical
-development cycle: clone → edit → add → commit → push, plus the
-common read paths (status, diff, log, branch, show, remote, fetch)
-and pull (which writes into the working tree).
+development cycle: clone → edit → add → commit → push, the common
+read paths (status, diff, log, branch, show, remote, fetch,
+merge-base, rev-list, ls-files, blame, grep), and local writes
+(merge fast-forward, tag, reset, rm, config).
 
 It is implemented on top of go-git/v5 and does NOT require a system
 'git' binary — that's the point: outpost stays self-sufficient on
-Windows machines where setting up real git is painful.
+Windows machines where setting up real git is painful. Local-path
+remotes are served in-process too.
 
-Out of scope (use system git if you need them): rebase, stash, merge,
-tag, reset, blame, submodules, worktrees, reflog, bisect.
+pull and merge integrate fast-forwards only; local changes that don't
+conflict with the incoming commits survive, like real git. Diverged
+histories are an error — outpost git does not do conflict resolution.
+Also out of scope (use system git): rebase, stash, cherry-pick,
+apply, submodules, worktrees, reflog, bisect.
 
 Authentication for HTTPS remotes uses --username/--password when
 supplied, otherwise falls back to $GITHUB_TOKEN or $GIT_TOKEN as the
@@ -55,8 +64,66 @@ basic-auth password (with user "oauth2", which GitHub accepts).`,
 		gitRemoteCmd(),
 		gitShowCmd(),
 		gitRevParseCmd(),
+		gitMergeCmd(),
+		gitMergeBaseCmd(),
+		gitRevListCmd(),
+		gitConfigCmd(),
+		gitTagCmd(),
+		gitResetCmd(),
+		gitRmCmd(),
+		gitLsFilesCmd(),
+		gitBlameCmd(),
+		gitGrepCmd(),
 	)
+	// Runtime git errors (diverged pull, dirty merge, bad revision …)
+	// are conditions, not usage mistakes — don't dump help text after
+	// them. Same convention as connect/ssh/sshd.
+	cmd.SilenceUsage = true
+	for _, sub := range cmd.Commands() {
+		sub.SilenceUsage = true
+	}
+	// Unmatched subcommands land here. outpost git NEVER falls back to
+	// a system git binary — verbs we recognize but don't implement get
+	// a clear explanation instead of cobra's generic "unknown command".
+	cmd.Args = cobra.ArbitraryArgs
+	// Let flags meant for an unimplemented verb (e.g. `rebase -i`)
+	// reach the handler below instead of dying on flag parsing.
+	cmd.FParseErrWhitelist = cobra.FParseErrWhitelist{UnknownFlags: true}
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return cmd.Help()
+		}
+		verb := args[0]
+		if hint, ok := unimplementedGitVerbs[verb]; ok {
+			return fmt.Errorf("git %s is not implemented by outpost's pure-Go git (and outpost never shells out to a system git binary).\n%s", verb, hint)
+		}
+		return fmt.Errorf("unknown git subcommand %q — see \"outpost git --help\" for the supported set", verb)
+	}
 	return cmd
+}
+
+// unimplementedGitVerbs maps git verbs outpost deliberately does not
+// ship to a workaround hint. outpost git exists precisely for machines
+// with NO system git, so each hint leads with what you can do using
+// outpost git itself; conflict-resolution verbs are the unavoidable
+// gap. Keep in sync with the scope notes in the gitCmd Long help and
+// internal/agent/git's package comment.
+var unimplementedGitVerbs = map[string]string{
+	"rebase":      "it needs conflict resolution. Bring your branch up to date with \"outpost git merge <base>\" (fast-forward), or recreate it: checkout the base, \"checkout -b\" a fresh branch, and re-apply your changes",
+	"cherry-pick": "it needs conflict resolution. Re-apply the change by hand (\"outpost git show <commit>\" prints the patch) and commit",
+	"revert":      "it needs conflict resolution. Invert the change by hand (\"outpost git show <commit>\" prints the patch) and commit",
+	"stash":       "commit your work to a temporary branch instead: \"outpost git checkout -b wip && outpost git add -A && outpost git commit -m wip\"",
+	"apply":       "patch application needs conflict handling. Make the edits directly and commit",
+	"am":          "mailbox patch application is out of scope. Make the edits directly and commit",
+	"clean":       "\"outpost git ls-files -o\" lists untracked files; remove the ones you don't want with your shell",
+	"submodule":   "submodules are out of scope. Clone each submodule repo separately with \"outpost git clone\"",
+	"worktree":    "linked worktrees are out of scope. Make a second clone instead",
+	"reflog":      "go-git does not maintain a reflog. \"outpost git log\" shows reachable history",
+	"bisect":      "bisect is out of scope. \"outpost git checkout <commit>\" lets you test revisions manually",
+	"mergetool":   "interactive conflict resolution is out of scope",
+	"gc":          "object-store maintenance is unnecessary here — go-git repos work without it",
+	"fsck":        "object-store verification is out of scope",
+	"archive":     "archive export is out of scope. \"outpost git checkout <rev>\" then copy the tree",
 }
 
 func gitCloneCmd() *cobra.Command {
@@ -241,29 +308,33 @@ func gitStatusCmd() *cobra.Command {
 				fmt.Fprintln(out, result.Message)
 				return nil
 			}
-			var unstaged, staged []outgit.StatusEntry
+			var unstaged, staged, untracked []outgit.StatusEntry
 			for _, e := range entries {
-				if e.Staged {
+				switch {
+				case e.Status == "??":
+					untracked = append(untracked, e)
+				case e.Staged:
 					staged = append(staged, e)
-				} else {
+				default:
 					unstaged = append(unstaged, e)
 				}
 			}
-			if len(staged) > 0 {
-				fmt.Fprintln(out, "Changes to be committed:")
-				for _, e := range staged {
-					fmt.Fprintf(out, "  %s  %s\n", e.Status, e.File)
+			section := func(title string, list []outgit.StatusEntry, first bool) bool {
+				if len(list) == 0 {
+					return first
 				}
-			}
-			if len(unstaged) > 0 {
-				if len(staged) > 0 {
+				if !first {
 					fmt.Fprintln(out)
 				}
-				fmt.Fprintln(out, "Changes not staged for commit:")
-				for _, e := range unstaged {
+				fmt.Fprintln(out, title)
+				for _, e := range list {
 					fmt.Fprintf(out, "  %s  %s\n", e.Status, e.File)
 				}
+				return false
 			}
+			first := section("Changes to be committed:", staged, true)
+			first = section("Changes not staged for commit:", unstaged, first)
+			section("Untracked files:", untracked, first)
 			return nil
 		},
 	}
@@ -494,11 +565,29 @@ func gitCheckoutCmd() *cobra.Command {
 func gitDiffCmd() *cobra.Command {
 	var staged bool
 	cmd := &cobra.Command{
-		Use:   "diff",
-		Short: "Show changes (file-level summary)",
-		Example: `  outpost git diff
-  outpost git diff --staged`,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		Use:   "diff [rev1 [rev2]]",
+		Short: "Show changes (summary for the working tree, full patch between revisions)",
+		Args:  cobra.MaximumNArgs(2),
+		Example: `  outpost git diff                    # working-tree summary
+  outpost git diff --staged
+  outpost git diff HEAD~1 HEAD        # full patch between commits
+  outpost git diff main..feature-x`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Revision arguments switch to commit-to-commit patch mode.
+			if len(args) > 0 {
+				revA, revB := args[0], ""
+				if len(args) > 1 {
+					revB = args[1]
+				} else if parts := strings.SplitN(revA, "..", 2); len(parts) == 2 {
+					revA, revB = parts[0], strings.TrimPrefix(parts[1], ".")
+				}
+				patch, err := outgit.DiffCommits("", revA, revB)
+				if err != nil {
+					return err
+				}
+				fmt.Fprint(cmd.OutOrStdout(), patch)
+				return nil
+			}
 			_, entries, err := outgit.Status(".")
 			if err != nil {
 				return err
@@ -551,13 +640,14 @@ func gitRemoteCmd() *cobra.Command {
 }
 
 func gitShowCmd() *cobra.Command {
-	return &cobra.Command{
+	var noPatch bool
+	cmd := &cobra.Command{
 		Use:   "show [commit]",
-		Short: "Show details of a commit (defaults to HEAD)",
+		Short: "Show a commit: metadata, message, and the patch it introduced",
 		Args:  cobra.MaximumNArgs(1),
 		Example: `  outpost git show
   outpost git show HEAD~1
-  outpost git show v1.2.3`,
+  outpost git show --no-patch v1.2.3`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			commit := ""
 			if len(args) > 0 {
@@ -572,9 +662,14 @@ func gitShowCmd() *cobra.Command {
 			fmt.Fprintf(out, "Author: %s <%s>\n", info.Author, info.Email)
 			fmt.Fprintf(out, "Date:   %s\n\n", info.Date)
 			fmt.Fprintln(out, info.Message)
+			if !noPatch && info.Patch != "" {
+				fmt.Fprint(out, info.Patch)
+			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVarP(&noPatch, "no-patch", "s", false, "Suppress the patch output (metadata + message only)")
+	return cmd
 }
 
 // gitRevParseCmd implements the subset of `git rev-parse` outpost's

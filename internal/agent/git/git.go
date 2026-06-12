@@ -1,14 +1,20 @@
 // Package git is outpost's embedded git client. It wraps go-git/v5 to
-// provide the typical clone → edit → add → commit → push lifecycle
-// plus the common read/inspect verbs (status, log, diff, branch, show,
-// remote, fetch, pull). The whole point is to ship a usable git on
-// Windows hosts where setting up a system git binary + credentials is
-// painful — go-git is pure Go, no cgo, no shell-out, so the same code
-// path works on every platform outpost builds for.
+// provide the typical clone → edit → add → commit → push lifecycle,
+// the read/inspect verbs (status, log, diff, branch, show, remote,
+// fetch, merge-base, rev-list, ls-files, blame, grep), and the local
+// write verbs (merge fast-forward, tag, reset, rm, config). The whole
+// point is to ship a usable git on Windows hosts where setting up a
+// system git binary + credentials is painful — go-git is pure Go, no
+// cgo, no shell-out, so the same code path works on every platform
+// outpost builds for. Even local-path remotes go through go-git's
+// in-process server transport (see transport.go), not git-upload-pack.
 //
-// Scope intentionally stops at the simple-drop-in line: rebase, stash,
-// merge, tag, reset, blame, submodules, worktrees, reflog, bisect are
-// not implemented. Users who need those can install system git.
+// Pull and merge integrate fast-forwards only (preserving local
+// changes that don't conflict, like real git); histories that need
+// conflict resolution are an error by design. Still out of scope:
+// rebase, stash, cherry-pick, apply, submodules, worktrees, reflog,
+// bisect — half-applied conflict-resolution state is worse than no
+// support, and users who need those can install system git.
 package git
 
 import (
@@ -18,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
@@ -225,9 +232,12 @@ func Commit(opts CommitOptions) (*Result, error) {
 	}
 	commitOpts := &gogit.CommitOptions{All: opts.All, Amend: opts.Amend}
 	if opts.AuthorName != "" || opts.AuthorEmail != "" {
+		// go-git uses the signature verbatim — without When the commit
+		// is stamped at the Unix epoch.
 		commitOpts.Author = &object.Signature{
 			Name:  opts.AuthorName,
 			Email: opts.AuthorEmail,
+			When:  time.Now(),
 		}
 	}
 	if opts.Amend {
@@ -288,6 +298,13 @@ func Status(repoPath string) (*Result, []StatusEntry, error) {
 	}
 	var entries []StatusEntry
 	for file, s := range status {
+		// go-git marks untracked files in BOTH columns; without this
+		// they'd surface as "staged" and render under "Changes to be
+		// committed". Keep them as their own ?? bucket like real git.
+		if s.Worktree == gogit.Untracked || s.Staging == gogit.Untracked {
+			entries = append(entries, StatusEntry{File: file, Status: "??", Staged: false})
+			continue
+		}
 		if s.Staging == gogit.Unmodified && s.Worktree != gogit.Unmodified {
 			entries = append(entries, StatusEntry{File: file, Status: StatusCode(s.Worktree), Staged: false})
 		}
@@ -492,13 +509,25 @@ type PullOptions struct {
 	Auth     AuthConfig
 }
 
-// Pull pulls opts.Remote/opts.Branch into the working tree.
+// Pull fetches from the remote and fast-forwards the current branch,
+// mirroring `git pull --ff-only` semantics with git's friendlier
+// up-to-date behavior.
+//
+// Deliberately NOT a wrapper over go-git's Worktree.Pull, which gets
+// three things wrong against real `git pull`: it integrates the
+// remote's HEAD branch instead of the current branch's upstream when
+// no branch is given, it reports "non-fast-forward update" when the
+// local branch is merely ahead (real git says "Already up to date."),
+// and it refuses any unstaged change even when the incoming commits
+// don't touch the dirty files.
+//
+// Resolution order for what to integrate: explicit opts.Branch >
+// branch.<name>.merge from config (set by clone) > current branch
+// name on the remote. Diverged histories are an error — merging with
+// conflict resolution is out of scope.
 func Pull(opts PullOptions) (*Result, error) {
 	if opts.RepoPath == "" {
 		opts.RepoPath = "."
-	}
-	if opts.Remote == "" {
-		opts.Remote = "origin"
 	}
 	r, err := gogit.PlainOpen(opts.RepoPath)
 	if err != nil {
@@ -508,25 +537,79 @@ func Pull(opts PullOptions) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("worktree: %w", err)
 	}
+	headRef, err := r.Head()
+	if err != nil {
+		return nil, fmt.Errorf("pull: HEAD: %w", err)
+	}
+	if !headRef.Name().IsBranch() {
+		return nil, errors.New("pull: not on a branch (detached HEAD)")
+	}
+	branchName := headRef.Name().Short()
+
+	var branchCfg *config.Branch
+	if cfg, err := r.Config(); err == nil {
+		branchCfg = cfg.Branches[branchName]
+	}
+	remoteName := opts.Remote
+	if remoteName == "" && branchCfg != nil && branchCfg.Remote != "" {
+		remoteName = branchCfg.Remote
+	}
+	if remoteName == "" {
+		remoteName = "origin"
+	}
+	target := opts.Branch
+	if target == "" && opts.Remote == "" && branchCfg != nil && branchCfg.Merge != "" {
+		target = branchCfg.Merge.Short()
+	}
+	if target == "" {
+		target = branchName
+	}
+
 	auth, err := BuildAuthMethod(opts.Auth)
 	if err != nil {
 		return nil, fmt.Errorf("build auth: %w", err)
 	}
-	pullOpts := &gogit.PullOptions{
-		RemoteName: opts.Remote,
-		Auth:       auth,
+	err = r.Fetch(&gogit.FetchOptions{RemoteName: remoteName, Auth: auth})
+	if err != nil && !errors.Is(err, gogit.NoErrAlreadyUpToDate) {
+		return nil, fmt.Errorf("fetch %s: %w", remoteName, err)
 	}
-	if opts.Branch != "" {
-		pullOpts.ReferenceName = plumbing.NewBranchReferenceName(opts.Branch)
+
+	remoteRef, err := r.Reference(plumbing.NewRemoteReferenceName(remoteName, target), true)
+	if err != nil {
+		return nil, fmt.Errorf("pull: no %s/%s after fetching — does branch %q exist on remote %q?", remoteName, target, target, remoteName)
 	}
-	err = w.Pull(pullOpts)
-	if errors.Is(err, gogit.NoErrAlreadyUpToDate) {
+
+	headHash := headRef.Hash()
+	targetHash := remoteRef.Hash()
+	if headHash == targetHash {
 		return &Result{Success: true, Message: "Already up to date."}, nil
 	}
+	if behind, err := isAncestor(r, targetHash, headHash); err != nil {
+		return nil, err
+	} else if behind {
+		// Local branch is strictly ahead: nothing to integrate.
+		msg := "Already up to date."
+		if n, err := countRange(r, targetHash, headHash); err == nil && n > 0 {
+			msg = fmt.Sprintf("Already up to date. Your branch is ahead of %s/%s by %d commit(s) — use \"outpost git push\" to publish them.", remoteName, target, n)
+		}
+		return &Result{Success: true, Message: msg}, nil
+	}
+	ff, err := isAncestor(r, headHash, targetHash)
 	if err != nil {
+		return nil, err
+	}
+	if !ff {
+		ahead, _ := countRange(r, targetHash, headHash)
+		behind, _ := countRange(r, headHash, targetHash)
+		return nil, fmt.Errorf("pull: %s and %s/%s have diverged (%d local and %d remote commits) — outpost git cannot merge or rebase; push or discard local commits, or reconcile with system git", branchName, remoteName, target, ahead, behind)
+	}
+	if err := ffUpdate(r, w, headRef.Name(), headHash, targetHash); err != nil {
 		return nil, fmt.Errorf("pull: %w", err)
 	}
-	return &Result{Success: true, Message: fmt.Sprintf("Pulled from %s", opts.Remote)}, nil
+	return &Result{
+		Success: true,
+		Message: fmt.Sprintf("Updating %s..%s\nFast-forward", shortHash(headHash), shortHash(targetHash)),
+	}, nil
 }
 
 // FetchOptions configures a Fetch call.
@@ -708,13 +791,16 @@ type ShowOptions struct {
 	Commit   string
 }
 
-// ShowResult is the parsed view of one commit.
+// ShowResult is the parsed view of one commit. Patch is the unified
+// diff the commit introduced relative to its first parent (empty when
+// the diff could not be rendered, e.g. shallow-clone boundary).
 type ShowResult struct {
 	Hash    string
 	Author  string
 	Email   string
 	Date    string
 	Message string
+	Patch   string
 }
 
 // Show resolves opts.Commit (defaulting to HEAD) and returns its
@@ -750,11 +836,15 @@ func Show(opts ShowOptions) (*Result, *ShowResult, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("commit %s: %w", hash.String(), err)
 	}
+	// Patch rendering is best-effort: a shallow clone may not have the
+	// parent commit locally, and metadata is still useful without it.
+	patch, _ := commitPatch(commit)
 	return &Result{Success: true}, &ShowResult{
 		Hash:    commit.Hash.String(),
 		Author:  commit.Author.Name,
 		Email:   commit.Author.Email,
 		Date:    commit.Author.When.Format("Mon Jan 2 15:04:05 2006 -0700"),
 		Message: commit.Message,
+		Patch:   patch,
 	}, nil
 }

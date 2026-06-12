@@ -167,3 +167,191 @@ func TestGitAddRequiresPathOrAllFlag(t *testing.T) {
 		t.Errorf("expected error for bare 'add', got nil")
 	}
 }
+
+// TestGitParityVerbsWiring exercises the cobra wiring of the parity
+// verbs (merge, merge-base, rev-list, config, tag, reset, rm,
+// ls-files, blame, grep, diff <rev> <rev>, show --no-patch). The
+// behavior itself is covered in internal/agent/git; this catches
+// flag/arg drift.
+func TestGitParityVerbsWiring(t *testing.T) {
+	dir := t.TempDir()
+
+	run := func(t *testing.T, args ...string) (string, error) {
+		t.Helper()
+		root := gitCmd()
+		buf := &bytes.Buffer{}
+		root.SetOut(buf)
+		root.SetErr(buf)
+		root.SetArgs(args)
+		err := root.Execute()
+		return buf.String(), err
+	}
+
+	if out, err := run(t, "init", dir); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	prev, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(prev) })
+
+	commit := func(t *testing.T, file, content, msg string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", file, err)
+		}
+		if out, err := run(t, "add", file); err != nil {
+			t.Fatalf("add: %v\n%s", err, out)
+		}
+		if out, err := run(t, "commit", "-m", msg, "--author-name", "T", "--author-email", "t@e"); err != nil {
+			t.Fatalf("commit: %v\n%s", err, out)
+		}
+	}
+	commit(t, "a.txt", "line1\n", "first")
+	commit(t, "a.txt", "line1\nline2\n", "second")
+
+	// config set + get
+	if out, err := run(t, "config", "user.name", "Wire Test"); err != nil {
+		t.Fatalf("config set: %v\n%s", err, out)
+	}
+	out, err := run(t, "config", "user.name")
+	if err != nil || !strings.Contains(out, "Wire Test") {
+		t.Errorf("config get: %v\n%s", err, out)
+	}
+
+	// tag create + list + delete
+	if out, err := run(t, "tag", "v1.0.0"); err != nil {
+		t.Fatalf("tag: %v\n%s", err, out)
+	}
+	out, err = run(t, "tag")
+	if err != nil || !strings.Contains(out, "v1.0.0") {
+		t.Errorf("tag list: %v\n%s", err, out)
+	}
+	if out, err := run(t, "tag", "-d", "v1.0.0"); err != nil {
+		t.Fatalf("tag -d: %v\n%s", err, out)
+	}
+
+	// merge fast-forward via a feature branch
+	if out, err := run(t, "checkout", "-b", "feature"); err != nil {
+		t.Fatalf("checkout -b: %v\n%s", err, out)
+	}
+	commit(t, "feat.txt", "feature\n", "feature work")
+	if out, err := run(t, "checkout", "master"); err != nil {
+		// go-git default branch is master; fall back to main
+		if out2, err2 := run(t, "checkout", "main"); err2 != nil {
+			t.Fatalf("checkout default branch: %v %v\n%s%s", err, err2, out, out2)
+		}
+	}
+	out, err = run(t, "merge", "feature")
+	if err != nil || !strings.Contains(out, "Fast-forward") {
+		t.Fatalf("merge: %v\n%s", err, out)
+	}
+
+	// merge-base + rev-list --count
+	out, err = run(t, "merge-base", "HEAD", "feature")
+	if err != nil || len(strings.TrimSpace(out)) != 40 {
+		t.Errorf("merge-base: %v\n%s", err, out)
+	}
+	out, err = run(t, "rev-list", "--count", "HEAD")
+	if err != nil || strings.TrimSpace(out) != "3" {
+		t.Errorf("rev-list --count HEAD: %v\n%s", err, out)
+	}
+
+	// ls-files
+	out, err = run(t, "ls-files")
+	if err != nil || !strings.Contains(out, "a.txt") || !strings.Contains(out, "feat.txt") {
+		t.Errorf("ls-files: %v\n%s", err, out)
+	}
+
+	// blame with -L
+	out, err = run(t, "blame", "-L", "2,2", "a.txt")
+	if err != nil || !strings.Contains(out, "line2") {
+		t.Errorf("blame: %v\n%s", err, out)
+	}
+
+	// grep hit and miss (miss exits non-zero, like git grep)
+	out, err = run(t, "grep", "line2")
+	if err != nil || !strings.Contains(out, "a.txt:2:") {
+		t.Errorf("grep: %v\n%s", err, out)
+	}
+	if _, err = run(t, "grep", "no-such-string-anywhere"); err == nil {
+		t.Errorf("grep miss: expected non-zero")
+	}
+
+	// diff between revisions emits a real patch
+	out, err = run(t, "diff", "HEAD~2", "HEAD")
+	if err != nil || !strings.Contains(out, "+line2") {
+		t.Errorf("diff revs: %v\n%s", err, out)
+	}
+
+	// show includes the patch; --no-patch suppresses it
+	out, err = run(t, "show", "HEAD~1")
+	if err != nil || !strings.Contains(out, "+line2") {
+		t.Errorf("show with patch: %v\n%s", err, out)
+	}
+	out, err = run(t, "show", "--no-patch", "HEAD~1")
+	if err != nil || strings.Contains(out, "+line2") {
+		t.Errorf("show --no-patch: %v\n%s", err, out)
+	}
+
+	// rm --cached keeps the file on disk
+	if out, err := run(t, "rm", "--cached", "feat.txt"); err != nil {
+		t.Fatalf("rm --cached: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "feat.txt")); err != nil {
+		t.Errorf("rm --cached deleted the file: %v", err)
+	}
+
+	// reset --hard back to the tip (also re-tracks nothing; just wiring)
+	out, err = run(t, "reset", "--hard", "HEAD")
+	if err != nil || !strings.Contains(out, "HEAD is now at") {
+		t.Errorf("reset --hard: %v\n%s", err, out)
+	}
+}
+
+// TestGitUnimplementedVerbsError verifies that recognized-but-
+// unimplemented verbs produce a clear pure-Go explanation with a
+// workaround hint (never a fallback to system git), and that genuinely
+// unknown verbs get a pointer to --help.
+func TestGitUnimplementedVerbsError(t *testing.T) {
+	run := func(args ...string) (string, error) {
+		root := gitCmd()
+		buf := &bytes.Buffer{}
+		root.SetOut(buf)
+		root.SetErr(buf)
+		root.SetArgs(args)
+		err := root.Execute()
+		return buf.String(), err
+	}
+
+	for verb, wantHint := range map[string]string{
+		"rebase": "merge <base>",
+		"stash":  "checkout -b wip",
+		"clean":  "ls-files -o",
+	} {
+		_, err := run(verb)
+		if err == nil {
+			t.Fatalf("%s: expected error", verb)
+		}
+		if !strings.Contains(err.Error(), "pure-Go") || !strings.Contains(err.Error(), wantHint) {
+			t.Errorf("%s: error missing pure-Go note or hint %q:\n%v", verb, wantHint, err)
+		}
+	}
+
+	// Flags meant for the unimplemented verb don't derail the message.
+	if _, err := run("rebase", "-i", "main"); err == nil || !strings.Contains(err.Error(), "not implemented") {
+		t.Errorf("rebase -i: %v", err)
+	}
+
+	// Truly unknown verb.
+	if _, err := run("frobnicate"); err == nil || !strings.Contains(err.Error(), "unknown git subcommand") {
+		t.Errorf("frobnicate: %v", err)
+	}
+
+	// Bare `outpost git` prints help, no error.
+	out, err := run()
+	if err != nil || !strings.Contains(out, "self-contained git client") {
+		t.Errorf("bare git: err=%v out:\n%s", err, out)
+	}
+}
