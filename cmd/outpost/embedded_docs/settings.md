@@ -103,7 +103,8 @@ tool, or wipe `agent.json` by hand.
 | SSH `-A` agent-fwd | `ssh_allow_agent_forward` | `builtins set --ssh-allow-agent-forward` (alias: `--ssh-agent-fwd`) | Pair tab > Advanced | `outpost_set_builtins` | Restart |
 | SSH forward-sockets allowlist | `ssh_forward_sockets` | `builtins set --ssh-forward-socket /path ...` | Pair tab > Advanced | `outpost_set_builtins` | Restart |
 | SFTP subsystem | `sftp_enabled` | `builtins set --sftp` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
-| Podman daemon proxy | `podman_enabled` | `builtins set --podman` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
+| Podman daemon proxy (raw) | `podman_enabled` | `builtins set --podman` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
+| Container sandbox (filtered) | `sandbox_enabled` | `builtins set --sandbox` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Ollama daemon proxy | `ollama_enabled` | `builtins set --ollama` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Ollama LLM-pool participation | `ollama_pool_enabled` | `builtins set --ollama-pool` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Cluster join | `cluster.enabled` | `builtins set --cluster` | Inbound > Cluster | `outpost_set_builtins` | Restart |
@@ -111,8 +112,41 @@ tool, or wipe `agent.json` by hand.
 
 All built-in toggles default to ON when the JSON key is absent (old
 configs) so an upgrade doesn't silently disable features. The
-exceptions are `podman_enabled` / `ollama_enabled` which are plain
-`bool` (default off — explicit opt-in).
+exceptions are `podman_enabled` / `sandbox_enabled` / `ollama_enabled`
+which are plain `bool` (default off — explicit opt-in).
+
+### Container sandbox provider
+
+`sandbox_enabled` exposes a **filtered** container endpoint at
+`/app/sandbox/`, distinct from the raw `/app/podman/` passthrough. It
+shares the same podman socket `DetectPodman()` finds, but every
+`containers/create` and exec-create request is vetted: privileged
+containers, host network / PID / IPC / UTS / user / cgroup namespaces,
+host bind mounts (outside `sandbox_scratch_dir`), added capabilities,
+device passthrough, and confinement-disabling `security-opt` /
+`selinux_opt` are all rejected with a `403 {"message":"sandbox: …"}`.
+This is the mount a thin client or an untrusted tenant talks to;
+`/app/podman/` stays admin-only for trusted self-use.
+
+The optional resource policy (all default 0 = "no explicit limit", the
+filter then leaves the caller's value untouched):
+
+| Setting | File key | Meaning |
+|---|---|---|
+| Sandbox memory cap (MiB) | `sandbox_max_memory_mb` | per-container memory ceiling; clamps a larger request down |
+| Sandbox CPU cap (cores) | `sandbox_cpus` | per-container CPU cap (docker NanoCpus) |
+| Sandbox PIDs cap | `sandbox_pids_limit` | per-container process cap (fork-bomb defense) |
+| Sandbox max containers | `sandbox_max_containers` | advertised concurrency ceiling (capacity report) |
+| Sandbox image allowlist | `sandbox_allowed_images` | exact refs or `repo/*` wildcards; empty = any image |
+| Sandbox scratch dir | `sandbox_scratch_dir` | sole host path prefix under which bind mounts are allowed; empty = forbid host binds (named volumes/tmpfs always ok) |
+
+These policy fields are edited in `agent.json` directly (or via
+`outpost_set_builtins` / the SPA); only the `sandbox_enabled` toggle has
+a dedicated CLI flag. Like the other daemon proxies, flipping
+`sandbox_enabled` triggers a restart because it (un)registers an app at
+boot. Cloudbox discovers sandbox-bearing hosts via the `/apps`
+capability advertisement (`{type:"sandbox"}`) and can probe
+`/app/sandbox/_pool/capacity` for load-aware routing.
 
 `update_mode` is the only built-in setting with **Live** effect — the
 upgrade worker re-reads the FileConfig on each `POST /admin/upgrade`,

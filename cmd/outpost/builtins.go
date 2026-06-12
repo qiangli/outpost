@@ -52,6 +52,7 @@ func builtinsShowCmd() *cobra.Command {
 			row("ssh_allow_local_fwd", view.SSHAllowLocalForward)
 			row("sftp", view.SFTPEnabled)
 			row("podman", view.Podman.Enabled)
+			row("sandbox", view.Sandbox.Enabled)
 			row("ollama", view.Ollama.Enabled)
 			row("ollama_pool", view.OllamaPoolEnabled)
 			row("otel", view.OtelEnabled)
@@ -76,12 +77,12 @@ func builtinsShowCmd() *cobra.Command {
 
 func builtinsSetCmd() *cobra.Command {
 	var (
-		shell, desktop, clipboard, ssh, sshLocalFwd, sshRemoteFwd, sshAgentFwd, sftp, podman, ollama, ollamaPool, otel, otelPool, ycodeShare, ycodeShareRequireLogin, cluster string
-		clusterMode                                                                                                                                                           string
-		updateMode, autoUpgradeLegacy                                                                                                                                         string
-		sshForwardSockets                                                                                                                                                     []string
-		clearSSHForwardSockets                                                                                                                                                bool
-		ycodeShareSurfaces                                                                                                                                                    map[string]string
+		shell, desktop, clipboard, ssh, sshLocalFwd, sshRemoteFwd, sshAgentFwd, sftp, podman, sandbox, ollama, ollamaPool, otel, otelPool, ycodeShare, ycodeShareRequireLogin, cluster string
+		clusterMode                                                                                                                                                                    string
+		updateMode, autoUpgradeLegacy                                                                                                                                                  string
+		sshForwardSockets                                                                                                                                                              []string
+		clearSSHForwardSockets                                                                                                                                                         bool
+		ycodeShareSurfaces                                                                                                                                                             map[string]string
 	)
 	cmd := &cobra.Command{
 		Use:   "set",
@@ -119,6 +120,9 @@ func builtinsSetCmd() *cobra.Command {
 				return err
 			}
 			if params.Podman, err = parseToggle("podman", podman); err != nil {
+				return err
+			}
+			if params.Sandbox, err = parseToggle("sandbox", sandbox); err != nil {
 				return err
 			}
 			if params.Ollama, err = parseToggle("ollama", ollama); err != nil {
@@ -207,7 +211,8 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&sshAgentFwd, "ssh-agent-fwd", "", "deprecated alias for --ssh-allow-agent-forward")
 	_ = cmd.Flags().MarkDeprecated("ssh-agent-fwd", "use --ssh-allow-agent-forward")
 	cmd.Flags().StringVar(&sftp, "sftp", "", "on|off")
-	cmd.Flags().StringVar(&podman, "podman", "", "on|off")
+	cmd.Flags().StringVar(&podman, "podman", "", "on|off — raw admin-only podman passthrough")
+	cmd.Flags().StringVar(&sandbox, "sandbox", "", "on|off — filtered container sandbox (strips privileged/host-ns/binds/caps/devices; needs podman)")
 	cmd.Flags().StringVar(&ollama, "ollama", "", "on|off")
 	cmd.Flags().StringVar(&ollamaPool, "ollama-pool", "", "on|off — share local Ollama with cloudbox's pool")
 	cmd.Flags().StringVar(&otel, "otel", "", "on|off — expose ycode's embedded Prom/Alertmanager/VLogs/Jaeger as built-in apps")

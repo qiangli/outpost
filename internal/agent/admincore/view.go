@@ -187,6 +187,7 @@ type SafeView struct {
 	SFTPEnabled             bool             `json:"sftp_enabled"`
 	ClientOnly              bool             `json:"client_only"`
 	Podman                  BuiltinView      `json:"podman"`
+	Sandbox                 BuiltinView      `json:"sandbox"`
 	Ollama                  BuiltinView      `json:"ollama"`
 	OllamaPoolEnabled       bool             `json:"ollama_pool_enabled"`
 	OtelEnabled             bool             `json:"otel_enabled"`
@@ -270,19 +271,22 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		SFTPEnabled:             fc.SFTPOn(),
 		ClientOnly:              fc.ClientOnly,
 		Podman:                  toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
-		Ollama:                  toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
-		OllamaPoolEnabled:       fc.OllamaPoolOn(),
-		OtelEnabled:             fc.OtelOn(),
-		OtelPoolEnabled:         fc.OtelPoolOn(),
-		Ycode:                   toYcodeView(fc.YcodeOn(), ycode.Detect()),
-		YcodeShareEnabled:       fc.YcodeShareOn(),
-		YcodeShareRequireLogin:  fc.YcodeShareRequireLoginOn(),
-		YcodeShareSurfaces:      toYcodeShareSurfacesView(fc.YcodeShareSurfaces),
-		UpdateMode:              fc.UpdateModeName(),
-		LLMPool:                 s.llmPoolStatusView(fc),
-		ClusterLLM:              s.clusterLLMView(fc),
-		Cluster:                 toClusterView(fc),
-		Outbound:                s.outboundList(),
+		// Sandbox shares the podman socket — availability is the podman
+		// probe; enabled is its own toggle.
+		Sandbox:                toBuiltinView(fc.SandboxOn(), s.detector.Podman()),
+		Ollama:                 toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
+		OllamaPoolEnabled:      fc.OllamaPoolOn(),
+		OtelEnabled:            fc.OtelOn(),
+		OtelPoolEnabled:        fc.OtelPoolOn(),
+		Ycode:                  toYcodeView(fc.YcodeOn(), ycode.Detect()),
+		YcodeShareEnabled:      fc.YcodeShareOn(),
+		YcodeShareRequireLogin: fc.YcodeShareRequireLoginOn(),
+		YcodeShareSurfaces:     toYcodeShareSurfacesView(fc.YcodeShareSurfaces),
+		UpdateMode:             fc.UpdateModeName(),
+		LLMPool:                s.llmPoolStatusView(fc),
+		ClusterLLM:             s.clusterLLMView(fc),
+		Cluster:                toClusterView(fc),
+		Outbound:               s.outboundList(),
 		Defaults: map[string]string{
 			"server_url": "https://ai.dhnt.io",
 			"name":       defaultName,

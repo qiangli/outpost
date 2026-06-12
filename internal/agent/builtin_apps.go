@@ -31,6 +31,12 @@ type BuiltinTarget struct {
 const (
 	BuiltinPodman = "podman"
 	BuiltinOllama = "ollama"
+	// BuiltinSandbox is the filtered container-sandbox mount. It speaks to
+	// the same podman socket DetectPodman() finds (so availability is
+	// gated on podman being installed), but registers a SEPARATE app whose
+	// proxy is wrapped by the sandbox filter — distinct from the raw,
+	// admin-only BuiltinPodman passthrough.
+	BuiltinSandbox = "sandbox"
 )
 
 // DetectPodman probes the usual podman socket paths and returns a

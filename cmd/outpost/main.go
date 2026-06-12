@@ -41,6 +41,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
 	"github.com/qiangli/outpost/internal/agent/portal"
 	"github.com/qiangli/outpost/internal/agent/runtime"
+	"github.com/qiangli/outpost/internal/agent/sandbox"
 	"github.com/qiangli/outpost/internal/agent/selfcheck"
 	"github.com/qiangli/outpost/internal/agent/sysinfo"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
@@ -266,6 +267,42 @@ func startCmd() *cobra.Command {
 					}
 				} else {
 					slog.Warn("podman builtin enabled but daemon not detected — skipping")
+				}
+			}
+			// Filtered container "sandbox" proxy. Shares the podman socket
+			// with the raw passthrough above but registers a SEPARATE app
+			// whose proxy is wrapped by the sandbox filter (strips
+			// privileged / host namespaces / host binds / added caps /
+			// devices, injects resource caps). This is the mount a thin
+			// client or an untrusted tenant talks to; the raw /app/podman/
+			// stays admin-only for trusted self-use. Decorated like the
+			// ollama mount: capability advertisement (so cloudbox can
+			// discover + pool sandbox hosts) + capacity intercept + the
+			// filter/counter proxy wrap.
+			if fc.SandboxOn() {
+				if bt := agent.DetectPodman(); bt.Available && bt.Socket != "" {
+					if err := apps.RegisterFromConfig(conf.AppConfig{
+						Name: agent.BuiltinSandbox, Scheme: "unix", Socket: bt.Socket,
+						RequireLogin: true, Enabled: true,
+					}); err != nil {
+						slog.Warn("sandbox builtin: register", "err", err)
+					} else {
+						slog.Info("sandbox builtin: registered", "socket", bt.Socket)
+						policy := sandbox.Policy{
+							MaxMemoryBytes:    fc.SandboxMaxMemoryMB * 1024 * 1024,
+							NanoCPUs:          int64(fc.SandboxCPUs * 1e9),
+							PidsLimit:         fc.SandboxPidsLimit,
+							MaxContainers:     fc.SandboxMaxContainers,
+							AllowedImages:     fc.SandboxAllowedImages,
+							ScratchHostPrefix: fc.SandboxScratchDir,
+						}
+						sbSvc := sandbox.NewService(policy)
+						apps.SetCapabilities(agent.BuiltinSandbox, &agent.AppCapabilities{Type: sandbox.CapabilityType})
+						apps.SetProxyWrap(agent.BuiltinSandbox, sbSvc.WrapProxy)
+						apps.AddIntercept(agent.BuiltinSandbox, "/_pool/capacity", sbSvc.CapacityHandler())
+					}
+				} else {
+					slog.Warn("sandbox builtin enabled but podman daemon not detected — skipping")
 				}
 			}
 			// Ollama pool service, populated when the built-in ollama

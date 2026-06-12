@@ -21,7 +21,8 @@ type builtinsIn struct {
 	SSHAllowAgentForward   *bool           `json:"ssh_allow_agent_forward,omitempty" jsonschema:"Allow auth-agent-req channels (ssh -A)"`
 	SSHForwardSockets      []string        `json:"ssh_forward_sockets,omitempty" jsonschema:"Additional unix-socket paths to allow for direct-streamlocal forwards"`
 	SFTP                   *bool           `json:"sftp,omitempty" jsonschema:"Toggle the sftp subsystem (scp 8.8+ uses sftp)"`
-	Podman                 *bool           `json:"podman,omitempty" jsonschema:"Toggle the built-in podman proxy"`
+	Podman                 *bool           `json:"podman,omitempty" jsonschema:"Toggle the raw (admin-only) built-in podman passthrough proxy"`
+	Sandbox                *bool           `json:"sandbox,omitempty" jsonschema:"Toggle the filtered container sandbox proxy (strips privileged/host-ns/host-binds/caps/devices, injects resource caps; needs podman)"`
 	Ollama                 *bool           `json:"ollama,omitempty" jsonschema:"Toggle the built-in ollama proxy"`
 	OllamaPool             *bool           `json:"ollama_pool,omitempty" jsonschema:"Participate in cloudbox's multi-host LLM pool (requires Ollama on)"`
 	Otel                   *bool           `json:"otel,omitempty" jsonschema:"Expose ycode's embedded observability stack (Prom/Alertmanager/VictoriaLogs/Jaeger/Perses) as built-in apps"`
@@ -54,6 +55,7 @@ func (s *Server) registerBuiltinsTools() {
 			SSHForwardSockets:      in.SSHForwardSockets,
 			SFTP:                   in.SFTP,
 			Podman:                 in.Podman,
+			Sandbox:                in.Sandbox,
 			Ollama:                 in.Ollama,
 			OllamaPool:             in.OllamaPool,
 			Otel:                   in.Otel,

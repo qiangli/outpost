@@ -159,6 +159,37 @@ type FileConfig struct {
 	PodmanEnabled bool `json:"podman_enabled,omitempty"`
 	OllamaEnabled bool `json:"ollama_enabled,omitempty"`
 
+	// SandboxEnabled gates the safe-by-default container "sandbox" proxy
+	// — a FILTERED libpod/docker endpoint (strips privileged / host
+	// namespaces / host binds / added caps / devices, injects resource
+	// caps) distinct from the raw, admin-only /app/podman/ passthrough.
+	// This is the mount a thin client or an untrusted tenant talks to.
+	// Off by default like the other daemon proxies: it requires the same
+	// podman socket PodmanEnabled does, plus an explicit opt-in because
+	// it widens who can run containers on the host.
+	SandboxEnabled bool `json:"sandbox_enabled,omitempty"`
+
+	// Sandbox resource policy. Zero values mean "no explicit limit" — the
+	// filter then leaves the caller's value (or the daemon default)
+	// untouched. The escape knobs (privileged, host ns, …) are NOT
+	// tunable: the sandbox mount always strips them.
+	//
+	//   SandboxMaxMemoryMB    per-container memory ceiling, MiB (0 = off)
+	//   SandboxCPUs           per-container CPU cap, cores (0 = off)
+	//   SandboxPidsLimit      per-container process cap (0 = off)
+	//   SandboxMaxContainers  advertised concurrency ceiling (0 = unset)
+	//   SandboxAllowedImages  optional image allowlist (exact or repo/*;
+	//                         empty = any image)
+	//   SandboxScratchDir     single host path prefix under which bind
+	//                         mounts are allowed (empty = forbid host
+	//                         binds entirely; named volumes/tmpfs always ok)
+	SandboxMaxMemoryMB   int64    `json:"sandbox_max_memory_mb,omitempty"`
+	SandboxCPUs          float64  `json:"sandbox_cpus,omitempty"`
+	SandboxPidsLimit     int64    `json:"sandbox_pids_limit,omitempty"`
+	SandboxMaxContainers int      `json:"sandbox_max_containers,omitempty"`
+	SandboxAllowedImages []string `json:"sandbox_allowed_images,omitempty"`
+	SandboxScratchDir    string   `json:"sandbox_scratch_dir,omitempty"`
+
 	// OllamaPoolEnabled gates whether this outpost participates in
 	// cloudbox's virtual LLM pool — the watcher pushes the local
 	// /api/tags inventory to cloudbox and the /app/ollama/_pool/capacity
@@ -895,6 +926,11 @@ func (fc *FileConfig) PodmanOn() bool { return fc != nil && fc.PodmanEnabled }
 
 // OllamaOn reports whether the built-in Ollama proxy is enabled.
 func (fc *FileConfig) OllamaOn() bool { return fc != nil && fc.OllamaEnabled }
+
+// SandboxOn reports whether the filtered container sandbox proxy is
+// enabled. Off by default — it both needs the podman socket and widens
+// who can run containers, so it requires explicit opt-in.
+func (fc *FileConfig) SandboxOn() bool { return fc != nil && fc.SandboxEnabled }
 
 // ClusterLLMOn reports whether an intra-home distributed-inference
 // backend endpoint is configured, i.e. whether the outpost should probe

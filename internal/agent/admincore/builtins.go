@@ -23,6 +23,7 @@ type BuiltinsParams struct {
 	SSHForwardSockets      []string        `json:"ssh_forward_sockets,omitempty"`
 	SFTP                   *bool           `json:"sftp,omitempty"`
 	Podman                 *bool           `json:"podman,omitempty"`
+	Sandbox                *bool           `json:"sandbox,omitempty"`
 	Ollama                 *bool           `json:"ollama,omitempty"`
 	OllamaPool             *bool           `json:"ollama_pool,omitempty"`
 	Otel                   *bool           `json:"otel,omitempty"`
@@ -94,6 +95,9 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	if p.Podman != nil {
 		fc.PodmanEnabled = *p.Podman
 	}
+	if p.Sandbox != nil {
+		fc.SandboxEnabled = *p.Sandbox
+	}
 	if p.Ollama != nil {
 		fc.OllamaEnabled = *p.Ollama
 	}
@@ -148,7 +152,7 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Podman == nil && p.Ollama == nil && p.OllamaPool == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil
+	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil
 	if p.UpdateMode != nil {
 		if !conf.ValidUpdateMode(*p.UpdateMode) {
 			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")
