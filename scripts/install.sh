@@ -44,83 +44,6 @@ warn() { printf '%swarning:%s %s\n' "$bold" "$reset" "$*" >&2; }
 die() { printf '%serror:%s %s\n' "$red$bold" "$reset" "$*" >&2; exit 1; }
 ok() { printf '%s✓%s %s\n' "$green" "$reset" "$*"; }
 
-register_launchd() {
-    _target="$1"
-    _label="io.dhnt.outpost"
-    _plist="$HOME/Library/LaunchAgents/${_label}.plist"
-    info "registering launchd agent ($_label)"
-    mkdir -p "$HOME/Library/LaunchAgents"
-    cat >"$_plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key><string>${_label}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>${_target}</string>
-        <string>start</string>
-    </array>
-    <key>RunAtLoad</key><true/>
-    <key>KeepAlive</key><true/>
-    <key>ThrottleInterval</key><integer>10</integer>
-    <key>WorkingDirectory</key><string>${HOME}</string>
-</dict>
-</plist>
-EOF
-    _uid=$(id -u)
-    # bootout first so a re-install picks up the new ProgramArguments.
-    launchctl bootout "gui/${_uid}/${_label}" 2>/dev/null || true
-    if launchctl bootstrap "gui/${_uid}" "$_plist" 2>/dev/null; then
-        ok "launchd agent loaded (gui/${_uid}/${_label})"
-    else
-        warn "launchctl bootstrap failed; the plist is at $_plist — load manually with:"
-        say  "  launchctl bootstrap gui/${_uid} $_plist"
-    fi
-}
-
-register_systemd_user() {
-    _target="$1"
-    if ! command -v systemctl >/dev/null 2>&1; then
-        warn "systemctl not found — skipping service registration (start manually with: $_target start)"
-        return
-    fi
-    _unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-    _unit="$_unit_dir/outpost.service"
-    info "registering systemd --user unit ($_unit)"
-    mkdir -p "$_unit_dir"
-    cat >"$_unit" <<EOF
-[Unit]
-Description=outpost — home-host agent for ai.dhnt.io
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=${_target} start
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-EOF
-    systemctl --user daemon-reload || warn "systemctl --user daemon-reload failed"
-    if systemctl --user enable --now outpost.service 2>/dev/null; then
-        ok "outpost.service enabled + started"
-        say "  status: ${bold}systemctl --user status outpost${reset}"
-        say "  logs:   ${bold}journalctl --user -u outpost -f${reset}"
-    else
-        warn "systemctl --user enable failed; the unit is at $_unit"
-        say  "  enable manually with: systemctl --user enable --now outpost.service"
-    fi
-    # Headless boxes need linger so the user unit survives logout.
-    if [ ! -f "/var/lib/systemd/linger/$(id -un)" ]; then
-        say
-        say "  ${dim}For headless boxes (no graphical login), enable linger so the unit survives logout:${reset}"
-        say "    ${bold}sudo loginctl enable-linger $(id -un)${reset}"
-    fi
-}
-
 # ---- 1. detect OS / arch -------------------------------------------------
 
 uname_s=$(uname -s)
@@ -262,10 +185,16 @@ elif [ -z "$NO_SERVICE" ]; then
 fi
 
 if [ "$register_service" = "1" ]; then
-    case "$os" in
-        darwin) register_launchd "$target" ;;
-        linux)  register_systemd_user "$target" ;;
-    esac
+    # The binary owns the per-platform service definition now (launchd /
+    # systemd --user), registering `outpost supervisord` — the always-up
+    # parent that keeps the daemon alive. Single source of truth shared with
+    # `outpost service install` on already-installed hosts.
+    info "registering boot service (outpost supervisord)"
+    if "$target" service install; then
+        ok "service registered"
+    else
+        warn "service registration failed — register manually with: $target service install"
+    fi
 fi
 
 # ---- 7. final hint -------------------------------------------------------

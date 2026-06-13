@@ -91,6 +91,7 @@ func main() {
 		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), unpairCmd(), restartCmd(), mcpCmd(),
 		remoteCmd(),
 		docsCmd(), gitCmd(), shellCmd(), versionCmd(), upgradeCmd(), rollbackCmd(), buildCmd(),
+		supervisordCmd(), serviceCmd(),
 	)
 	// Wave 3A: LAN peer discovery + peer-assisted repair. Registered
 	// via a helper so main.go's root AddCommand block stays compact.
@@ -1996,6 +1997,16 @@ func isYes(s string) bool {
 // background process. The child writes logs to a cache-dir file and
 // outlives the register command — closing the terminal won't kill it.
 func execSelfStart() error {
+	// Under the supervisor (`outpost supervisord`), don't self-re-exec —
+	// just exit, and let the parent respawn us (with a freshly-swapped
+	// binary on the upgrade path). The callers already cleared the pidfile,
+	// so the respawned daemon claims it cleanly. This is the seam the
+	// future blue/green upgrade slots into. Standalone (no supervisor)
+	// keeps the detached self-re-exec below.
+	if os.Getenv(envSupervised) == "1" {
+		slog.Info("outpost: supervised — exiting for the supervisor to respawn")
+		os.Exit(0)
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("locate executable: %w", err)
