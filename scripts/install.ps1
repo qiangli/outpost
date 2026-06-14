@@ -180,21 +180,37 @@ try {
     }
 
     if ($registerService) {
-        # The binary owns the per-platform service definition now — a Task
-        # Scheduler logon entry registering `outpost supervisord` (the
-        # always-up parent that keeps the daemon alive), via the same
-        # COM-API Register-ScheduledTask path. Single source of truth shared
-        # with `outpost service install` on already-installed hosts.
-        Info 'registering boot service (outpost supervisord)'
-        & $target service install
-        if ($LASTEXITCODE -eq 0) {
-            Ok 'service registered (runs on logon)'
-            Write-Host '  status: outpost service status'
-            Write-Host '  remove: outpost service uninstall'
+        # The binary owns the per-platform service definition — a Task Scheduler
+        # entry registering `outpost supervisord` (the always-up parent that
+        # keeps the daemon alive). Single source of truth shared with
+        # `outpost service install` on already-installed hosts.
+        #
+        # Elevated → system service: -AtStartup, runs as the user via S4U (no
+        # stored password), starts at BOOT with no login. Non-elevated → the
+        # no-admin -AtLogOn fallback, with a hint for how to get boot-persistence.
+        $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+        if ($isAdmin) {
+            Info 'registering boot service (system — starts at boot, no login)'
+            & $target service install
+            if ($LASTEXITCODE -eq 0) {
+                Ok 'service registered (system; starts at boot)'
+            } else {
+                Warn 'service registration failed'
+                Write-Host "  Register manually from an elevated prompt: $target service install"
+            }
         } else {
-            Warn 'service registration failed'
-            Write-Host "  Register manually with: $target service install"
+            Info 'registering logon service (no admin)'
+            & $target service install --user
+            if ($LASTEXITCODE -eq 0) {
+                Ok 'service registered (per-user; starts at logon)'
+                Write-Host '  for start-at-boot without login, run elevated: outpost service install'
+            } else {
+                Warn 'service registration failed'
+                Write-Host "  Register manually with: $target service install --user"
+            }
         }
+        Write-Host '  status: outpost service status'
+        Write-Host '  remove: outpost service uninstall'
     }
 } finally {
     Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue

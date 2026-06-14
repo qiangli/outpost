@@ -185,15 +185,29 @@ elif [ -z "$NO_SERVICE" ]; then
 fi
 
 if [ "$register_service" = "1" ]; then
-    # The binary owns the per-platform service definition now (launchd /
-    # systemd --user), registering `outpost supervisord` — the always-up
-    # parent that keeps the daemon alive. Single source of truth shared with
-    # `outpost service install` on already-installed hosts.
-    info "registering boot service (outpost supervisord)"
-    if "$target" service install; then
-        ok "service registered"
+    # The binary owns the per-platform service definition (launchd / systemd),
+    # registering `outpost supervisord` — the always-up parent that keeps the
+    # daemon alive. Single source of truth shared with `outpost service install`
+    # on already-installed hosts.
+    #
+    # Privileged (root, e.g. `sudo -E sh`) → system service: starts at BOOT with
+    # no login, running as the invoking user (SUDO_USER). Unprivileged → the
+    # no-admin per-login fallback, with a hint for how to get boot-persistence.
+    if [ "$(id -u)" = "0" ]; then
+        info "registering boot service (system — starts at boot, no login)"
+        if "$target" service install; then
+            ok "service registered (system)"
+        else
+            warn "service registration failed — register manually with: sudo $target service install"
+        fi
     else
-        warn "service registration failed — register manually with: $target service install"
+        info "registering login service (no admin)"
+        if "$target" service install --user; then
+            ok "service registered (per-user; starts at login)"
+            say "  for start-at-boot without login: ${bold}sudo $target service install${reset}"
+        else
+            warn "service registration failed — register manually with: $target service install --user"
+        fi
     fi
 fi
 

@@ -5,50 +5,96 @@ import (
 	"testing"
 )
 
-func TestRenderLaunchdPlist(t *testing.T) {
-	got := renderLaunchdPlist("/opt/outpost", "/Users/lern")
-	for _, want := range []string{
+func assertContains(t *testing.T, what, got string, wants ...string) {
+	t.Helper()
+	for _, w := range wants {
+		if !strings.Contains(got, w) {
+			t.Errorf("%s missing %q\n%s", what, w, got)
+		}
+	}
+}
+
+func assertAbsent(t *testing.T, what, got string, unwanted ...string) {
+	t.Helper()
+	for _, u := range unwanted {
+		if strings.Contains(got, u) {
+			t.Errorf("%s unexpectedly contains %q\n%s", what, u, got)
+		}
+	}
+}
+
+// ---- system renders: start at BOOT, run as the target user ---------------
+
+func TestRenderLaunchDaemonPlist(t *testing.T) {
+	got := renderLaunchDaemonPlist("/opt/outpost", "dev", "/Users/dev")
+	assertContains(t, "launchd daemon plist", got,
 		"<string>io.dhnt.outpost</string>",
 		"<string>/opt/outpost</string>",
-		"<string>supervisord</string>", // launches the supervisor, not `start`
-		"<key>RunAtLoad</key><true/>",  // start at login
-		"<key>KeepAlive</key><true/>",  // auto-restart
-		"<string>/Users/lern</string>",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("launchd plist missing %q\n%s", want, got)
-		}
-	}
+		"<string>supervisord</string>",       // supervisor, not start
+		"<key>UserName</key><string>dev</string>", // drop to the regular user
+		"<key>RunAtLoad</key><true/>",              // start at boot
+		"<key>KeepAlive</key><true/>",              // auto-restart
+		"<key>HOME</key><string>/Users/dev</string>", // HOME for config/cache resolution
+	)
 }
 
-func TestRenderSystemdUnit(t *testing.T) {
-	got := renderSystemdUnit("/opt/outpost")
-	for _, want := range []string{
+func TestRenderSystemdSystemUnit(t *testing.T) {
+	got := renderSystemdSystemUnit("/opt/outpost", "dev")
+	assertContains(t, "systemd system unit", got,
 		"ExecStart=/opt/outpost supervisord",
+		"User=dev",                  // drop to the regular user
 		"Restart=on-failure",
-		"WantedBy=default.target",
+		"WantedBy=multi-user.target", // boot, before any login
 		"network-online.target",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("systemd unit missing %q\n%s", want, got)
-		}
-	}
+	)
 }
 
-func TestRenderWindowsRegisterCmd(t *testing.T) {
-	got := renderWindowsRegisterCmd(`C:\Users\Lern\AppData\Local\outpost\outpost.exe`, `2IVY\Lern`)
-	for _, want := range []string{
+func TestRenderWindowsStartupTask(t *testing.T) {
+	got := renderWindowsStartupTask(`C:\outpost.exe`, `EXAMPLE\Dev`)
+	assertContains(t, "windows startup task", got,
 		"Register-ScheduledTask",
 		"-TaskName 'outpost'",
-		`-Execute 'C:\Users\Lern\AppData\Local\outpost\outpost.exe'`,
-		"-Argument 'supervisord'", // supervisor, not start
+		`-Execute 'C:\outpost.exe'`,
+		"-Argument 'supervisord'",
+		"-AtStartup",            // boot, not logon
+		`-UserId 'EXAMPLE\Dev'`,
+		"-LogonType S4U",        // run as user, no stored password
+		"-RunLevel Limited",     // regular user, not elevated
+	)
+	assertAbsent(t, "windows startup task", got, "-AtLogOn", "Interactive")
+}
+
+// ---- user renders (--user fallback): start at LOGIN ----------------------
+
+func TestRenderLaunchAgentPlist(t *testing.T) {
+	got := renderLaunchAgentPlist("/opt/outpost", "/Users/dev")
+	assertContains(t, "launchd agent plist", got,
+		"<string>io.dhnt.outpost</string>",
+		"<string>supervisord</string>",
+		"<key>RunAtLoad</key><true/>",
+		"<key>KeepAlive</key><true/>",
+	)
+	assertAbsent(t, "launchd agent plist", got, "<key>UserName</key>") // per-user: no UserName
+}
+
+func TestRenderSystemdUserUnit(t *testing.T) {
+	got := renderSystemdUserUnit("/opt/outpost")
+	assertContains(t, "systemd --user unit", got,
+		"ExecStart=/opt/outpost supervisord",
+		"Restart=on-failure",
+		"WantedBy=default.target", // per-user: login scope
+	)
+	assertAbsent(t, "systemd --user unit", got, "User=") // per-user: no User=
+}
+
+func TestRenderWindowsLogonTask(t *testing.T) {
+	got := renderWindowsLogonTask(`C:\outpost.exe`, `EXAMPLE\Dev`)
+	assertContains(t, "windows logon task", got,
+		"-Argument 'supervisord'",
 		"-AtLogOn",
-		`-User '2IVY\Lern'`,       // space-safe principal
-		"-LogonType Interactive ", // cmdlet enum (NOT InteractiveToken); no password / no admin
+		`-User 'EXAMPLE\Dev'`,
+		"-LogonType Interactive ", // cmdlet enum (NOT InteractiveToken)
 		"-RunLevel Limited",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("windows register cmd missing %q\n%s", want, got)
-		}
-	}
+	)
+	assertAbsent(t, "windows logon task", got, "InteractiveToken", "-AtStartup")
 }

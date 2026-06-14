@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 const (
@@ -13,8 +14,7 @@ const (
 	schtasksExe = `C:\Windows\System32\schtasks.exe`
 )
 
-// windowsUserID is DOMAIN\User (or just User) — the principal the logon task
-// runs as. Matches install.ps1.
+// windowsUserID is DOMAIN\User (or just User) — the principal the task runs as.
 func windowsUserID() string {
 	if d := os.Getenv("USERDOMAIN"); d != "" {
 		return d + `\` + os.Getenv("USERNAME")
@@ -22,25 +22,42 @@ func windowsUserID() string {
 	return os.Getenv("USERNAME")
 }
 
-func installService(dryRun bool) error {
+func installService(opts installOpts) error {
 	self, err := serviceTarget()
 	if err != nil {
 		return err
 	}
-	body := renderWindowsRegisterCmd(self, windowsUserID())
-	if dryRun {
+	user := opts.RunAs
+	if user == "" {
+		user = windowsUserID()
+	}
+	var body, kind string
+	if opts.System {
+		body = renderWindowsStartupTask(self, user)
+		kind = "at boot"
+	} else {
+		body = renderWindowsLogonTask(self, user)
+		kind = "at logon"
+	}
+	if opts.DryRun {
 		fmt.Printf("# %s -NoProfile -Command \"%s\"\n", psExe, body)
 		return nil
+	}
+	if opts.System && !isWindowsAdmin() {
+		return fmt.Errorf("system service install needs Administrator — re-run from an elevated prompt:\n  Start-Process %s -ArgumentList 'service install' -Verb RunAs\n(or use --user for a no-admin per-logon install)", self)
 	}
 	out, err := exec.Command(psExe, "-NoProfile", "-Command", body).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("Register-ScheduledTask failed: %w\n%s", err, out)
 	}
-	fmt.Printf("registered Task Scheduler task %q — runs `outpost supervisord` at logon\n", windowsTask)
+	fmt.Printf("registered Task Scheduler task %q — runs `outpost supervisord` %s as %q\n", windowsTask, kind, user)
 	return nil
 }
 
-func uninstallService() error {
+func uninstallService(opts installOpts) error {
+	if opts.System && !isWindowsAdmin() {
+		return fmt.Errorf("system service uninstall needs Administrator — re-run from an elevated prompt")
+	}
 	out, err := exec.Command(schtasksExe, "/Delete", "/TN", windowsTask, "/F").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("schtasks /Delete failed: %w\n%s", err, out)
@@ -49,7 +66,7 @@ func uninstallService() error {
 	return nil
 }
 
-func statusService() error {
+func statusService(_ installOpts) error {
 	out, err := exec.Command(schtasksExe, "/Query", "/TN", windowsTask).CombinedOutput()
 	if err != nil {
 		fmt.Printf("Task Scheduler task %q: not registered\n", windowsTask)
@@ -57,4 +74,17 @@ func statusService() error {
 	}
 	fmt.Print(string(out))
 	return nil
+}
+
+// isWindowsAdmin reports whether the current process holds the Administrators
+// role (elevated token). Uses the .NET WindowsPrincipal check — no extra Go
+// dependency, matches the install.ps1 elevation probe.
+func isWindowsAdmin() bool {
+	const cmd = "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent())" +
+		".IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)"
+	out, err := exec.Command(psExe, "-NoProfile", "-Command", cmd).Output()
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(string(out)), "True")
 }
