@@ -220,6 +220,31 @@ func TestSSHHandlerRejectsWrongUsername(t *testing.T) {
 	}
 }
 
+// TestSSHHandlerAcceptsAlternateSpelling — a username that is a valid
+// alternate spelling of the OS user (here, a case variant) is accepted:
+// the OS verifies the submitted credentials and the canonical-name
+// fallback covers spellings the OS authenticator won't take verbatim.
+// This is what lets `ssh ALICE@host` / a bare SAM name work without the
+// operator quoting the exact `MACHINE\alice` form.
+func TestSSHHandlerAcceptsAlternateSpelling(t *testing.T) {
+	currentUser, err := hostauth.CurrentUser()
+	if err != nil || currentUser == "" {
+		t.Skip("cannot determine current OS user")
+	}
+	variant := strings.ToUpper(currentUser)
+	if variant == currentUser {
+		t.Skip("OS user has no distinct case variant to exercise the fallback")
+	}
+	auth := hostauth.StubAuth{Want: map[string]string{currentUser: "secret"}}
+	wsURL, hostKey := newTestSSHServer(t, auth)
+
+	client, err := dialSSHOverWS(t, wsURL, hostKey, variant, "secret")
+	if err != nil {
+		t.Fatalf("expected alternate-spelling username %q to be accepted, got: %v", variant, err)
+	}
+	_ = client.Close()
+}
+
 // TestSSHHandlerRejectsWrongPassword — Authenticator rejects → handshake
 // fails after MaxAuthTries (3).
 func TestSSHHandlerRejectsWrongPassword(t *testing.T) {

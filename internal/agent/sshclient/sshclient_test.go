@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -88,11 +89,13 @@ func TestDialWSGatewayStatusIsHostOffline(t *testing.T) {
 	}
 }
 
-// TestKnownHostsCallbackTOFU exercises the trust-on-first-use path:
+// TestKnownHostsCallbackTOFU exercises the trust-on-first-use path with
+// the lenient default (operator controls both ends):
 //  1. First connect with a fresh known_hosts file pins the key.
 //  2. Second connect with the same key passes.
-//  3. Connect with a different key for the same alias is rejected
-//     with the REMOTE HOST IDENTIFICATION HAS CHANGED message.
+//  3. Connect with a different key for the same alias re-pins the new
+//     key and continues (no hard failure), and a third connect with
+//     that new key now passes.
 func TestKnownHostsCallbackTOFU(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "known_hosts")
@@ -113,10 +116,49 @@ func TestKnownHostsCallbackTOFU(t *testing.T) {
 	if err := cb("informational-hostname", remote, key1.PublicKey()); err != nil {
 		t.Fatalf("second-contact (same key) rejected: %v", err)
 	}
-	// Second contact different key: hard reject.
+	// Changed key, lenient default: re-pin and continue.
+	if err := cb("informational-hostname", remote, key2.PublicKey()); err != nil {
+		t.Fatalf("changed key should re-pin (lenient default), got: %v", err)
+	}
+	// The new key is now the pinned one.
+	if err := cb("informational-hostname", remote, key2.PublicKey()); err != nil {
+		t.Fatalf("re-pinned key rejected on next contact: %v", err)
+	}
+	// The old key is now the mismatch — it re-pins back (still lenient).
+	if err := cb("informational-hostname", remote, key1.PublicKey()); err != nil {
+		t.Fatalf("lenient re-pin back to old key failed: %v", err)
+	}
+	// Exactly one entry per alias must remain after re-pins (no dupes).
+	data, rerr := os.ReadFile(path)
+	if rerr != nil {
+		t.Fatalf("read known_hosts: %v", rerr)
+	}
+	if n := strings.Count(string(data), alias+" "); n != 1 {
+		t.Errorf("expected exactly 1 entry for %q after re-pins, got %d:\n%s", alias, n, data)
+	}
+}
+
+// TestKnownHostsCallbackStrict covers OUTPOST_SSH_STRICT_HOST_KEY=1:
+// a changed key is a hard failure surfacing the well-known signal.
+func TestKnownHostsCallbackStrict(t *testing.T) {
+	t.Setenv(StrictHostKeyEnv, "1")
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "known_hosts")
+	alias := "outpost-myhost"
+
+	key1, key2 := makeTestHostKey(t), makeTestHostKey(t)
+	remote := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 22}
+
+	cb, err := KnownHostsCallbackTOFU(path, alias)
+	if err != nil {
+		t.Fatalf("build cb: %v", err)
+	}
+	if err := cb("informational-hostname", remote, key1.PublicKey()); err != nil {
+		t.Fatalf("first-contact TOFU rejected unexpectedly: %v", err)
+	}
 	err = cb("informational-hostname", remote, key2.PublicKey())
 	if err == nil {
-		t.Fatal("expected mismatch rejection, got nil")
+		t.Fatal("expected strict mismatch rejection, got nil")
 	}
 	if !strings.Contains(err.Error(), "REMOTE HOST IDENTIFICATION HAS CHANGED") {
 		t.Errorf("error message %q doesn't surface the well-known signal", err)

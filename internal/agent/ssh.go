@@ -108,9 +108,11 @@ type sshHandlerDeps struct {
 //   - The OS password is the gate. The SSH PasswordCallback delegates to
 //     the same hostauth.Authenticator that /auth uses — PAM on Linux,
 //     dscl on macOS, LogonUserW on Windows.
-//   - The submitted SSH username MUST equal the agent's running OS user
-//     (same constraint as /auth). Anything else is rejected before we
-//     touch PAM, so we never silently weaken the gate.
+//   - The submitted SSH username must resolve to the agent's running OS
+//     user (same constraint as /auth): the credentials are verified
+//     against the OS, and the authenticated account must be this host's
+//     own user. Any spelling the OS accepts works (SAM / bare / UPN);
+//     a different account is rejected with an operator-visible reason.
 func sshHandler(deps sshHandlerDeps) gin.HandlerFunc {
 	currentUser, _ := hostauth.CurrentUser()
 	authURL := strings.TrimSpace(deps.AuthURL)
@@ -255,19 +257,45 @@ func handleSSHConn(
 				return nil, nil
 			}
 
-			// OS path: username must equal the running OS user.
-			// SameUser accepts the bare form ("alice") against the
-			// qualified canonical ("MACHINE\alice" on Windows) so
-			// `ssh alice@host` works without quoting the SAM form;
-			// Authenticate below always runs against currentUser, so
-			// the widened match never changes WHO gets verified.
+			// OS path. The in-process session always runs as the
+			// daemon's own OS user, so that account is the only
+			// identity a session can actually have — only it may log
+			// in (a different valid local account would otherwise
+			// inherit the daemon user's shell, an escalation).
 			if currentUser == "" {
-				return nil, fmt.Errorf("cannot determine current user")
-			}
-			if !hostauth.SameUser(user, currentUser) {
+				slog.Warn("ssh: auth rejected — cannot determine this host's OS user",
+					"remote", remoteAddr)
 				return nil, fmt.Errorf("invalid credentials")
 			}
-			if err := deps.Auth.Authenticate(currentUser, string(password)); err != nil {
+
+			// Standard-sshd step: authenticate the *submitted*
+			// credentials against the OS, so any spelling the OS
+			// accepts works (SAM "MACHINE\\alice", bare "alice",
+			// UPN "alice@machine"). Fall back to the canonical name
+			// when the submitted form refers to this account but the
+			// OS won't take that exact spelling.
+			authErr := deps.Auth.Authenticate(user, string(password))
+			if authErr != nil && hostauth.SameUser(user, currentUser) {
+				authErr = deps.Auth.Authenticate(currentUser, string(password))
+			}
+			if authErr != nil {
+				slog.Warn("ssh: auth rejected",
+					"submitted_user", user,
+					"expected_user", currentUser,
+					"remote", remoteAddr,
+					"reason", authErr)
+				return nil, fmt.Errorf("invalid credentials")
+			}
+
+			// Privilege guard: the authenticated account must be this
+			// host's own OS user. A clear, operator-visible reason is
+			// the whole point — `ssh wronguser@host` should be
+			// diagnosable from the host's log, not a silent denial.
+			if !hostauth.SameUser(user, currentUser) {
+				slog.Warn("ssh: auth rejected — must log in as this host's OS user",
+					"submitted_user", user,
+					"expected_user", currentUser,
+					"remote", remoteAddr)
 				return nil, fmt.Errorf("invalid credentials")
 			}
 			return nil, nil
@@ -277,7 +305,12 @@ func handleSSHConn(
 
 	serverConn, chans, reqs, err := ssh.NewServerConn(conn, serverConfig)
 	if err != nil {
-		slog.Info("ssh handshake failed", "err", err, "remote", remoteAddr)
+		// After MaxAuthTries rejections the client disconnects, which
+		// surfaces here as EOF / "no auth passed yet" — i.e. usually a
+		// rejected login, not a transport fault. The PasswordCallback
+		// above logs the specific reason (wrong user vs. bad password).
+		slog.Info("ssh handshake failed (if EOF, likely an auth rejection — see the 'auth rejected' log above)",
+			"err", err, "remote", remoteAddr)
 		return
 	}
 	defer serverConn.Close()

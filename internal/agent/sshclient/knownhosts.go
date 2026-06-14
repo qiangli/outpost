@@ -27,6 +27,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -36,10 +37,33 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// StrictHostKeyEnv, when set to a truthy value (1/true/yes/on), makes a
+// changed host key a hard failure (classic OpenSSH StrictHostKeyChecking).
+// Default behavior is lenient: outpost is a personal-fleet tool where the
+// operator controls both ends, so a host that legitimately re-keys — a
+// re-install, a per-user host key (two outposts on one machine present
+// different keys on the same address), or key regeneration — should
+// silently re-pin and continue rather than block every command with
+// REMOTE HOST IDENTIFICATION HAS CHANGED.
+const StrictHostKeyEnv = "OUTPOST_SSH_STRICT_HOST_KEY"
+
+// strictHostKey reports whether a changed host key should abort. See
+// StrictHostKeyEnv.
+func strictHostKey() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(StrictHostKeyEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
 // KnownHostsCallbackTOFU returns an ssh.HostKeyCallback that:
 //   - on first contact for `hostAlias`, pins the presented key (TOFU);
 //   - on subsequent contact, verifies key bytes match the pinned entry;
-//   - on mismatch, fails hard with REMOTE HOST IDENTIFICATION HAS CHANGED.
+//   - on mismatch, by default re-pins the new key and continues (the
+//     operator controls both ends — see StrictHostKeyEnv); with
+//     OUTPOST_SSH_STRICT_HOST_KEY set, fails hard with REMOTE HOST
+//     IDENTIFICATION HAS CHANGED instead.
 //
 // `path` is created with mode 0600 on first pin. The parent directory
 // is created if missing.
@@ -66,11 +90,24 @@ func KnownHostsCallbackTOFU(path, hostAlias string) (ssh.HostKeyCallback, error)
 			if bytes.Equal(pinned, presented) {
 				return nil
 			}
-			return fmt.Errorf(
-				"REMOTE HOST IDENTIFICATION HAS CHANGED for %q: "+
-					"presented key %s does not match pinned entry — "+
-					"remove the line for %s from %s if this is expected",
-				hostAlias, ssh.FingerprintSHA256(key), hostAlias, path)
+			if strictHostKey() {
+				return fmt.Errorf(
+					"REMOTE HOST IDENTIFICATION HAS CHANGED for %q: "+
+						"presented key %s does not match pinned entry — "+
+						"remove the line for %s from %s if this is expected",
+					hostAlias, ssh.FingerprintSHA256(key), hostAlias, path)
+			}
+			// Lenient default: re-pin the new key and continue. The
+			// operator set up this host; blocking on a re-key is the
+			// annoyance, not the safety net.
+			if err := replaceKnownHost(path, hostAlias, key); err != nil {
+				return fmt.Errorf("re-pin changed host key for %q: %w", hostAlias, err)
+			}
+			slog.Warn("ssh: host key changed; re-pinned new key",
+				"host", hostAlias,
+				"new_fingerprint", ssh.FingerprintSHA256(key),
+				"hint", "set "+StrictHostKeyEnv+"=1 to reject instead")
+			return nil
 		}
 		// First contact — TOFU pin.
 		if err := appendKnownHost(path, hostAlias, key); err != nil {
@@ -138,6 +175,41 @@ func appendKnownHost(path, hostAlias string, key ssh.PublicKey) error {
 		return err
 	}
 	return nil
+}
+
+// replaceKnownHost rewrites path so the only entry for hostAlias is a
+// fresh pin of key, leaving every other host's entries untouched. Used
+// by the lenient (default) re-pin path when a host presents a new key.
+func replaceKnownHost(path, hostAlias string, key ssh.PublicKey) error {
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	var b bytes.Buffer
+	sc := bufio.NewScanner(bytes.NewReader(existing))
+	for sc.Scan() {
+		line := sc.Text()
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) >= 1 && fields[0] == hostAlias {
+			continue // drop the stale pin(s) for this alias
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	fmt.Fprintf(&b, "%s %s %s\n",
+		hostAlias, key.Type(),
+		base64.StdEncoding.EncodeToString(key.Marshal()),
+	)
+	// Rewrite via a temp file so a crash mid-write can't truncate the
+	// known_hosts to a partial state; 0600 to match appendKnownHost.
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b.Bytes(), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // HostAliasForHost is the canonical "outpost-<host>" alias used both
