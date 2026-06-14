@@ -1,9 +1,25 @@
 package main
 
 import (
+	"net"
 	"strings"
 	"testing"
 )
+
+func TestDaemonRunning(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OUTPOST_ADMIN_ADDR", ln.Addr().String())
+	if !daemonRunning() {
+		t.Error("daemonRunning() = false with a listener up; want true")
+	}
+	_ = ln.Close()
+	if daemonRunning() {
+		t.Error("daemonRunning() = true after listener closed; want false")
+	}
+}
 
 func assertContains(t *testing.T, what, got string, wants ...string) {
 	t.Helper()

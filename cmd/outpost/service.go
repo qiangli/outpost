@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -36,6 +38,7 @@ const (
 type installOpts struct {
 	System bool   // true = boot-time system service running as RunAs; false = per-user
 	DryRun bool   // print the definition + commands, apply nothing
+	Force  bool   // install even if a daemon under a foreign launcher is still running
 	RunAs  string // OS user the system service runs as ("" = invoking non-root user)
 }
 
@@ -49,7 +52,7 @@ func serviceCmd() *cobra.Command {
 }
 
 func serviceInstallCmd() *cobra.Command {
-	var dryRun, userMode bool
+	var dryRun, userMode, force bool
 	var runAs string
 	cmd := &cobra.Command{
 		Use:   "install",
@@ -61,13 +64,19 @@ regular (non-elevated) target user. Requires admin at install time — re-run wi
 sudo (macOS/Linux) or from an elevated prompt (Windows).
 
 --user: no-admin fallback. Registers under your login session; starts when you
-log in, not at boot.`,
+log in, not at boot.
+
+If an outpost daemon is already running, install takes over a prior registration
+made by this binary; if a daemon survives under a launcher it can't manage (a
+manual ` + "`outpost start`" + `, an ` + "`outpost run`" + ` job, etc.) it refuses rather than
+create two managers fighting over the pidfile — pass --force to override.`,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			return installService(installOpts{System: !userMode, DryRun: dryRun, RunAs: runAs})
+			return installService(installOpts{System: !userMode, DryRun: dryRun, Force: force, RunAs: runAs})
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the service definition + the commands that would run, without applying")
 	cmd.Flags().BoolVar(&userMode, "user", false, "Per-user mode (no admin): start at login instead of boot. Default is a system service that starts at boot.")
+	cmd.Flags().BoolVar(&force, "force", false, "Install even if a daemon under a launcher this command can't manage is still running")
 	cmd.Flags().StringVar(&runAs, "run-as", "", "OS user the system service runs as (default: the invoking non-root user)")
 	return cmd
 }
@@ -105,6 +114,57 @@ func serviceTarget() (string, error) {
 		return "", fmt.Errorf("locate executable: %w", err)
 	}
 	return self, nil
+}
+
+// daemonAdminAddr is the loopback admin endpoint a running daemon always binds
+// (`outpost start` brings it up unconditionally). Probing it is a launcher-
+// agnostic "is a daemon already running here?" check.
+func daemonAdminAddr() string {
+	if a := os.Getenv("OUTPOST_ADMIN_ADDR"); a != "" {
+		return a
+	}
+	return "127.0.0.1:17777"
+}
+
+func daemonRunning() bool {
+	c, err := net.DialTimeout("tcp", daemonAdminAddr(), 600*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = c.Close()
+	return true
+}
+
+// preflightTakeover makes the service being installed the SOLE daemon manager.
+// A second manager (a leftover --user agent, a manual `outpost start`, an
+// `outpost run` launchd/systemd job, …) would race the supervisor for outpost's
+// singleton pidfile and crash-loop it. So before bootstrapping:
+//
+//  1. if no daemon is running, there's nothing to reconcile;
+//  2. otherwise remove THIS binary's other-mode registration — if it was the
+//     manager, that stops the daemon and frees the port;
+//  3. if a daemon still survives, it's under a launcher we can't safely
+//     identify/disable — refuse with guidance (or proceed under --force).
+func preflightTakeover(opts installOpts) error {
+	if !daemonRunning() {
+		return nil
+	}
+	removeManagedRegistrations(opts) // best-effort, quiet — stops a daemon WE manage
+	time.Sleep(1500 * time.Millisecond)
+	if !daemonRunning() {
+		fmt.Println("note: replaced a prior outpost registration that this command manages")
+		return nil
+	}
+	if opts.Force {
+		fmt.Println("warning: an outpost daemon is still running under another launcher — proceeding due to --force.\n         You MUST stop that launcher, or the supervisor will conflict on the pidfile.")
+		return nil
+	}
+	return fmt.Errorf("an outpost daemon is already running (admin %s responding) under a launcher this command doesn't manage —\n"+
+		"a manual `outpost start`, an `outpost run` job, or a hand-written init entry.\n"+
+		"Stop it and disable that launcher first, then re-run; or pass --force to install anyway.\n"+
+		"  macOS:   launchctl list | grep -i outpost\n"+
+		"  Linux:   systemctl --user list-units 'outpost*'; systemctl list-units 'outpost*'\n"+
+		"  Windows: schtasks /Query | findstr /i outpost", daemonAdminAddr())
 }
 
 // ---- per-user (no-admin) renders — start at LOGIN -------------------------

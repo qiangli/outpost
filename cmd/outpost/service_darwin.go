@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 )
@@ -24,20 +25,23 @@ func installService(opts installOpts) error {
 		return err
 	}
 	if !opts.System {
-		return installLaunchAgent(self, opts.DryRun)
+		return installLaunchAgent(self, opts)
 	}
 	return installLaunchDaemon(self, opts)
 }
 
 // installLaunchAgent — per-user, no admin, starts at login.
-func installLaunchAgent(self string, dryRun bool) error {
+func installLaunchAgent(self string, opts installOpts) error {
 	plist := renderLaunchAgentPlist(self, os.Getenv("HOME"))
 	path := launchAgentPath()
 	uid := strconv.Itoa(os.Getuid())
-	if dryRun {
+	if opts.DryRun {
 		fmt.Printf("# (--user) write %s:\n%s\n# launchctl bootout gui/%s/%s   (ignore error)\n# launchctl bootstrap gui/%s %s\n",
 			path, plist, uid, launchdLabel, uid, path)
 		return nil
+	}
+	if err := preflightTakeover(opts); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("mkdir LaunchAgents: %w", err)
@@ -68,6 +72,9 @@ func installLaunchDaemon(self string, opts installOpts) error {
 	}
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("system service install needs root — re-run with sudo:\n  sudo %s service install --run-as %s\n(or use --user for a no-admin per-login install)", self, runUser)
+	}
+	if err := preflightTakeover(opts); err != nil {
+		return err
 	}
 	if err := os.WriteFile(path, []byte(plist), 0o644); err != nil {
 		return fmt.Errorf("write LaunchDaemon plist %s: %w", path, err)
@@ -101,6 +108,28 @@ func uninstallService(opts installOpts) error {
 	}
 	fmt.Printf("unregistered launchd daemon %s\n", launchdLabel)
 	return nil
+}
+
+// removeManagedRegistrations tears down BOTH launchd registrations this binary
+// owns (system LaunchDaemon + per-user LaunchAgent), so a fresh install OR a
+// re-install cleanly supersedes whatever was there. launchctl bootout also kills
+// the job's running process, freeing the singleton pidfile for the new
+// supervisor. Best-effort and quiet; system-domain ops no-op without root.
+func removeManagedRegistrations(opts installOpts) {
+	// system LaunchDaemon (needs root)
+	_ = exec.Command("launchctl", "bootout", "system/"+launchdLabel).Run()
+	_ = os.Remove(launchDaemonPath())
+	// per-user LaunchAgent — the run-as user under sudo, else the current user
+	if name, home, err := resolveRunAsUnix(opts.RunAs); err == nil {
+		if u, e := user.Lookup(name); e == nil {
+			_ = exec.Command("launchctl", "bootout", "gui/"+u.Uid+"/"+launchdLabel).Run()
+		}
+		_ = os.Remove(filepath.Join(home, "Library", "LaunchAgents", launchdLabel+".plist"))
+	} else {
+		uid := strconv.Itoa(os.Getuid())
+		_ = exec.Command("launchctl", "bootout", "gui/"+uid+"/"+launchdLabel).Run()
+		_ = os.Remove(launchAgentPath())
+	}
 }
 
 func statusService(opts installOpts) error {

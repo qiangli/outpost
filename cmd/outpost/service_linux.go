@@ -29,23 +29,26 @@ func installService(opts installOpts) error {
 		return err
 	}
 	if !opts.System {
-		return installSystemdUser(self, opts.DryRun)
+		return installSystemdUser(self, opts)
 	}
 	return installSystemdSystem(self, opts)
 }
 
 // installSystemdUser — per-user, no admin, starts at login (linger to survive
 // logout).
-func installSystemdUser(self string, dryRun bool) error {
+func installSystemdUser(self string, opts installOpts) error {
 	unit := renderSystemdUserUnit(self)
 	path := systemdUserUnitPath()
-	if dryRun {
+	if opts.DryRun {
 		fmt.Printf("# (--user) write %s:\n%s\n# systemctl --user daemon-reload\n# systemctl --user enable --now %s\n",
 			path, unit, systemdUnit)
 		return nil
 	}
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return fmt.Errorf("systemctl not found — cannot register a systemd --user service; run `outpost supervisord` under your init manager instead")
+	}
+	if err := preflightTakeover(opts); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("mkdir unit dir: %w", err)
@@ -87,6 +90,9 @@ func installSystemdSystem(self string, opts installOpts) error {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return fmt.Errorf("systemctl not found — cannot register a systemd system service")
 	}
+	if err := preflightTakeover(opts); err != nil {
+		return err
+	}
 	if err := os.WriteFile(path, []byte(unit), 0o644); err != nil {
 		return fmt.Errorf("write unit %s: %w", path, err)
 	}
@@ -118,6 +124,24 @@ func uninstallService(opts installOpts) error {
 	_ = exec.Command("systemctl", "daemon-reload").Run()
 	fmt.Printf("unregistered systemd system unit %s\n", systemdUnit)
 	return nil
+}
+
+// removeManagedRegistrations tears down BOTH systemd registrations this binary
+// owns (system unit + --user unit) and stops their daemon, so a fresh install OR
+// a re-install cleanly supersedes whatever was there and frees the singleton
+// pidfile. Best-effort and quiet; system-scope ops no-op without root.
+func removeManagedRegistrations(opts installOpts) {
+	// system unit (needs root)
+	_ = exec.Command("systemctl", "disable", "--now", systemdUnit).Run()
+	_ = os.Remove(systemdSystemUnitPath())
+	// --user unit — the run-as user under sudo (via runuser), else current user
+	if name, home, err := resolveRunAsUnix(opts.RunAs); err == nil {
+		_ = exec.Command("runuser", "-u", name, "--", "systemctl", "--user", "disable", "--now", systemdUnit).Run()
+		_ = os.Remove(filepath.Join(home, ".config", "systemd", "user", systemdUnit))
+	} else {
+		_ = exec.Command("systemctl", "--user", "disable", "--now", systemdUnit).Run()
+		_ = os.Remove(systemdUserUnitPath())
+	}
 }
 
 func statusService(opts installOpts) error {
