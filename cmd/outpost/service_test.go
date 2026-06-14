@@ -43,8 +43,8 @@ func TestRenderWindowsRegisterCmd(t *testing.T) {
 		`-Execute 'C:\Users\Lern\AppData\Local\outpost\outpost.exe'`,
 		"-Argument 'supervisord'", // supervisor, not start
 		"-AtLogOn",
-		`-User '2IVY\Lern'`, // space-safe principal
-		"InteractiveToken",  // no password / no admin
+		`-User '2IVY\Lern'`,       // space-safe principal
+		"-LogonType Interactive ", // cmdlet enum (NOT InteractiveToken); no password / no admin
 		"-RunLevel Limited",
 	} {
 		if !strings.Contains(got, want) {

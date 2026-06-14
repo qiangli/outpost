@@ -118,12 +118,20 @@ WantedBy=default.target
 
 // renderWindowsRegisterCmd returns the PowerShell -Command body that registers
 // the Task Scheduler entry running `<self> supervisord` at logon. Mirrors
-// install.ps1 (Register-ScheduledTask via the COM API — space-safe, no admin).
+// install.ps1 (Register-ScheduledTask cmdlets — space-safe, no admin).
+//
+// LogonType is `Interactive`, NOT `InteractiveToken`: the latter is the COM
+// API / Task Scheduler XML spelling, but the New-ScheduledTaskPrincipal cmdlet
+// enum (Microsoft.PowerShell.Cmdletization.GeneratedTypes.ScheduledTask.
+// LogonTypeEnum) only accepts None/Password/S4U/Interactive/Group/
+// ServiceAccount/InteractiveOrPassword. `Interactive` maps to the same
+// TASK_LOGON_INTERACTIVE_TOKEN — run only while the user is logged on, no
+// stored password, no admin.
 func renderWindowsRegisterCmd(self, userID string) string {
 	return fmt.Sprintf(
 		"$a = New-ScheduledTaskAction -Execute '%s' -Argument 'supervisord'; "+
 			"$t = New-ScheduledTaskTrigger -AtLogOn -User '%s'; "+
-			"$p = New-ScheduledTaskPrincipal -UserId '%s' -LogonType InteractiveToken -RunLevel Limited; "+
+			"$p = New-ScheduledTaskPrincipal -UserId '%s' -LogonType Interactive -RunLevel Limited; "+
 			"Register-ScheduledTask -TaskName '%s' -Action $a -Trigger $t -Principal $p -Force",
 		self, userID, userID, windowsTask)
 }
