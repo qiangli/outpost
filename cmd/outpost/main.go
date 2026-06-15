@@ -70,6 +70,13 @@ func main() {
 		// to that with the Go version appended so `outpost --version`
 		// stays a useful one-liner.
 		Version: build.Short(),
+		// Don't dump the usage block on operational RunE errors — those
+		// are runtime outcomes ("already at the latest release", "no
+		// route to host"), not the operator mis-invoking the command.
+		// The usage wall shadowed the real message. cobra still prints
+		// the "Error: <msg>" line (SilenceErrors stays false), and flag/
+		// arg help is one `--help` away.
+		SilenceUsage: true,
 	}
 	root.SetVersionTemplate("outpost version {{.Version}}\n")
 	// Persistent flags that target a remote outpost via MCP. Read by
