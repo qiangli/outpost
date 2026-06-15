@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -44,6 +45,8 @@ func upgradeCmd() *cobra.Command {
 		fromURL   string
 		localPath string
 		sha256Hex string
+		direct    bool
+		repo      string
 		force     bool
 		noRestart bool
 		waitFor   time.Duration
@@ -54,17 +57,38 @@ func upgradeCmd() *cobra.Command {
 		Long: `outpost upgrade replaces the running daemon's binary atomically and
 asks it to re-exec on the new build.
 
+Source modes (mutually exclusive):
+  --local PATH    copy a local candidate binary
+  --from URL      download a candidate from an HTTPS URL
+  --direct        resolve + download the latest GitHub release for this
+                  host's platform (no cloudbox/fleet involved)
+
+With no source flag the behavior depends on pairing:
+  - UNPAIRED host: defaults to --direct (GitHub is the only authority
+    available — there is no fleet to pull from).
+  - PAIRED host: refuses, because automatic upgrades for paired hosts
+    are governed by the cloudbox fleet (canary→fleet, update_mode,
+    min_from). Pass --direct to override and pull from GitHub anyway.
+
 Examples:
   outpost upgrade --local ./bin/outpost
   outpost upgrade --from https://releases.example.com/outpost-darwin-arm64
   outpost upgrade --from https://... --sha256 <hex>      # verify download
+  outpost upgrade --direct                               # latest GitHub release
   outpost upgrade --local ./bin/outpost --no-restart     # swap only
 
 The candidate binary is verified by exec'ing "<candidate> version --json"
-before the swap. Same-commit upgrades are a no-op unless --force is passed.`,
+before the swap. Same-commit upgrades are a no-op unless --force is passed.
+--direct honors $GITHUB_TOKEN / $GIT_TOKEN to lift the GitHub API rate limit.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if (fromURL == "") == (localPath == "") {
-				return errors.New("exactly one of --from or --local is required")
+			sources := 0
+			for _, set := range []bool{fromURL != "", localPath != "", direct} {
+				if set {
+					sources++
+				}
+			}
+			if sources > 1 {
+				return errors.New("--from, --local, and --direct are mutually exclusive")
 			}
 			ctx := cmd.Context()
 
@@ -77,6 +101,38 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.`,
 				return errors.New("daemon did not report binary_path — running an older outpost that predates `outpost upgrade`; please update by hand once")
 			}
 			fmt.Printf("running:  %s at %s\n", before.Build.Short(), before.BinaryPath)
+
+			// No source flag: an unpaired host defaults to the GitHub
+			// direct path (there is no fleet to govern it); a paired host
+			// is told to use the fleet, with --direct as the override.
+			if sources == 0 {
+				if before.Configured {
+					return errors.New("this host is paired — automatic upgrades come from the cloudbox fleet; pass --direct to pull the latest GitHub release now, or --from/--local for a specific build")
+				}
+				direct = true
+			}
+
+			// --direct: resolve the latest GitHub release for this
+			// platform into a download URL + sha256, then fall through to
+			// the same staging/probe/swap path --from uses.
+			if direct {
+				platform := before.Build.OS + "_" + before.Build.Arch
+				fmt.Printf("resolving: latest %s release for %s\n", repoOrDefault(repo), platform)
+				env, rerr := upgrade.GitHubSource{
+					Repo:     repo,
+					Platform: platform,
+					Token:    githubUpgradeToken(),
+				}.Resolve(ctx)
+				if rerr != nil {
+					return fmt.Errorf("resolve latest release: %w", rerr)
+				}
+				fmt.Printf("latest:   %s (%s)\n", env.ReleaseID, env.Commit)
+				if !force && env.Commit != "" && env.Commit == before.Build.ShortCommit() {
+					return fmt.Errorf("already at the latest release %s (%s) — pass --force to re-install", env.ReleaseID, env.Commit)
+				}
+				fromURL = env.URL
+				sha256Hex = env.SHA256
+			}
 
 			// Phase 2: stage the candidate at "<binary>.upgrading" on the same
 			// filesystem as the target so the final rename is atomic.
@@ -164,11 +220,35 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.`,
 	cmd.Flags().StringVar(&fromURL, "from", "", "HTTPS URL to download the candidate binary from")
 	cmd.Flags().StringVar(&localPath, "local", "", "Local path to a candidate outpost binary")
 	cmd.Flags().StringVar(&sha256Hex, "sha256", "", "Expected sha256 (hex) of the candidate — required-recommended for --from")
+	cmd.Flags().BoolVar(&direct, "direct", false, "Resolve + download the latest GitHub release for this platform (default on an unpaired host)")
+	cmd.Flags().StringVar(&repo, "repo", "", "GitHub owner/name to resolve --direct releases from (default "+upgrade.DefaultRepo+")")
 	cmd.Flags().BoolVar(&force, "force", false, "Swap even when candidate commit matches the running build")
 	cmd.Flags().BoolVar(&noRestart, "no-restart", false, "Swap binary on disk but do not trigger restart")
 	cmd.Flags().DurationVar(&waitFor, "wait", 30*time.Second, "Max time to wait for the daemon to come back on the new build")
 	cmd.AddCommand(upgradeHistoryCmd(), upgradeApplyCmd())
 	return cmd
+}
+
+// repoOrDefault echoes the --repo override for log lines, falling back
+// to the package default so the resolving message is always concrete.
+func repoOrDefault(repo string) string {
+	if strings.TrimSpace(repo) != "" {
+		return repo
+	}
+	return upgrade.DefaultRepo
+}
+
+// githubUpgradeToken reads an optional GitHub token from the environment
+// to lift the unauthenticated API rate limit. Same env vars `outpost
+// git` consults for HTTPS auth, so an operator who set one already gets
+// it here for free.
+func githubUpgradeToken() string {
+	for _, k := range []string{"GITHUB_TOKEN", "GIT_TOKEN"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // readStatus is a thin one-shot wrapper: dial MCP, read
