@@ -98,7 +98,7 @@ func main() {
 		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), unpairCmd(), restartCmd(), mcpCmd(),
 		remoteCmd(),
 		docsCmd(), gitCmd(), shellCmd(), versionCmd(), upgradeCmd(), rollbackCmd(), buildCmd(),
-		supervisordCmd(), serviceCmd(),
+		supervisordCmd(), serviceCmd(), doctorCmd(),
 	)
 	// Wave 3A: LAN peer discovery + peer-assisted repair. Registered
 	// via a helper so main.go's root AddCommand block stays compact.

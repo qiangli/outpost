@@ -299,13 +299,23 @@ func runSCPSafeUpload(ctx context.Context, localPath string, dst scpEndpoint, ke
 		if _, serr := sftpCli.Stat(remotePath); serr == nil {
 			previousPath := remotePath + ".previous"
 			if err := sftpCli.PosixRename(remotePath, previousPath); err != nil {
-				return fmt.Errorf("snapshot %s -> %s: %w", remotePath, previousPath, err)
+				if err2 := sftpCli.Rename(remotePath, previousPath); err2 != nil {
+					return fmt.Errorf("snapshot %s -> %s: posix-rename failed (%v) and plain rename failed (%w)", remotePath, previousPath, err, err2)
+				}
 			}
 		}
 	}
 
 	if err := sftpCli.PosixRename(stagingPath, remotePath); err != nil {
-		return fmt.Errorf("posix-rename %s -> %s: %w (SFTP server missing posix-rename@openssh.com?)", stagingPath, remotePath, err)
+		// Windows SFTP servers reject posix-rename@openssh.com ("Access is
+		// denied") — the atomic inode swap isn't supported there. Fall back to a
+		// plain rename: SSH_FXP_RENAME refuses an existing target on those
+		// servers, so remove the destination first (loses atomicity, the best
+		// available when posix-rename is unsupported).
+		_ = sftpCli.Remove(remotePath)
+		if err2 := sftpCli.Rename(stagingPath, remotePath); err2 != nil {
+			return fmt.Errorf("rename %s -> %s: posix-rename failed (%v) and plain rename failed (%w)", stagingPath, remotePath, err, err2)
+		}
 	}
 	stagingKept = true
 

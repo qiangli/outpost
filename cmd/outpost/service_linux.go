@@ -126,6 +126,17 @@ func uninstallService(opts installOpts) error {
 	return nil
 }
 
+// serviceDoctor reports the systemd boot-service state for `outpost doctor`.
+func serviceDoctor() []doctorCheck {
+	if systemctlShow(true, "is-enabled") == "enabled" {
+		return []doctorCheck{{"boot-service", "ok", "systemd system unit " + systemdUnit + " enabled — starts at boot; active=" + systemctlShow(true, "is-active")}}
+	}
+	if systemctlShow(false, "is-enabled") == "enabled" {
+		return []doctorCheck{{"boot-service", "warn", "only the --user unit is enabled — starts at LOGIN (boot only with linger); `sudo outpost service install` for boot persistence"}}
+	}
+	return []doctorCheck{{"boot-service", "warn", "no systemd registration — `sudo outpost service install`"}}
+}
+
 // removeManagedRegistrations tears down BOTH systemd registrations this binary
 // owns (system unit + --user unit) and stops their daemon, so a fresh install OR
 // a re-install cleanly supersedes whatever was there and frees the singleton

@@ -110,6 +110,21 @@ func uninstallService(opts installOpts) error {
 	return nil
 }
 
+// serviceDoctor reports the launchd boot-service state for `outpost doctor`.
+func serviceDoctor() []doctorCheck {
+	if exec.Command("launchctl", "print", "system/"+launchdLabel).Run() == nil {
+		return []doctorCheck{{"boot-service", "ok", "launchd system daemon " + launchdLabel + " loaded — starts at boot"}}
+	}
+	if _, err := os.Stat(launchDaemonPath()); err == nil {
+		return []doctorCheck{{"boot-service", "warn", "system plist present but not loaded: " + launchDaemonPath() + " — `sudo launchctl bootstrap system " + launchDaemonPath() + "`"}}
+	}
+	uid := strconv.Itoa(os.Getuid())
+	if exec.Command("launchctl", "print", "gui/"+uid+"/"+launchdLabel).Run() == nil {
+		return []doctorCheck{{"boot-service", "warn", "only the --user LaunchAgent is loaded — starts at LOGIN, not boot; `sudo outpost service install` for boot persistence"}}
+	}
+	return []doctorCheck{{"boot-service", "warn", "no launchd registration — `sudo outpost service install`"}}
+}
+
 // removeManagedRegistrations tears down BOTH launchd registrations this binary
 // owns (system LaunchDaemon + per-user LaunchAgent), so a fresh install OR a
 // re-install cleanly supersedes whatever was there. launchctl bootout also kills

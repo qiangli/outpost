@@ -6,6 +6,11 @@ turned what should be a one-command install into a multi-hour ordeal. Ordered
 by impact. See [windows-service.md](windows-service.md) for the current manual
 recipe and the Windows constraints these items address.
 
+**Shipped so far:** P0b (`schtasks /Run` → `Start-ScheduledTask`),
+`scp` posix-rename fallback, keep-awake on install, and
+`outpost doctor` / `service status --verbose`. Items below tagged
+**✅ shipped** are done; the rest remain open.
+
 ## P0 — install is effectively broken on Windows for run-as-a-different-user
 
 **Problem.** `outpost service install` (system mode) assumes an Administrator
@@ -26,7 +31,7 @@ never runs, and there's no signal it's broken (made worse by item P0b).
 - **self-test the registration with `Start-ScheduledTask`** and report whether
   the daemon actually came up.
 
-## P0b — never use `schtasks /Run`
+## P0b — never use `schtasks /Run` ✅ shipped
 
 `schtasks.exe /Run` returns a **false** `0xFFFFFFFF` and spawns nothing while the
 task is fine; `Start-ScheduledTask` runs it. Audit our service code, scripts,
@@ -42,7 +47,7 @@ hand-running PowerShell over the shell. The install logic should run **on the
 remote in its native, elevated context** over the existing tunnel/admin surface.
 This single feature collapses the bulk of the manual Windows pain.
 
-## P1 — `outpost doctor` / `service status --verbose`
+## P1 — `outpost doctor` / `service status --verbose` ✅ shipped
 
 A one-shot boot-readiness diagnostic that answers: is the boot task registered?
 **will it run** (probe via `Start-ScheduledTask`)? is the daemon up, as which
@@ -62,7 +67,7 @@ outpost apps add <name> --command '<exe>' --working-dir <dir> --env ... --manage
 One step → routed **and** reboot-surviving, with restart/backoff for free. This
 is the natural completion of the supervisord work.
 
-## P1 — `outpost scp` posix-rename fallback on Windows
+## P1 — `outpost scp` posix-rename fallback on Windows ✅ shipped
 
 `scp --safe` stages to `<dst>.new`, sha256-verifies, then atomically renames via
 `posix-rename@openssh.com`. The transfer + verify succeed on Windows but the
@@ -77,7 +82,7 @@ An outpost's SSH host key is meant to be stable across re-pair and self-upgrade
 `REMOTE HOST IDENTIFICATION HAS CHANGED`). A case was observed where it changed
 across upgrades. Investigate and add a regression guard.
 
-## P2 — keep-awake during install
+## P2 — keep-awake during install ✅ shipped
 
 A sleeping host defeats an always-on agent. On Windows, `service install` should
 offer to disable idle sleep/hibernate (`powercfg /change standby-timeout-* 0`,

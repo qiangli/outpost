@@ -95,15 +95,20 @@ func serviceUninstallCmd() *cobra.Command {
 }
 
 func serviceStatusCmd() *cobra.Command {
-	var userMode bool
+	var userMode, verbose bool
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Report whether the outpost supervisor service is registered + running",
 		RunE: func(_ *cobra.Command, _ []string) error {
+			if verbose {
+				runDoctor() // full boot-readiness diagnostic
+				return nil
+			}
 			return statusService(installOpts{System: !userMode})
 		},
 	}
 	cmd.Flags().BoolVar(&userMode, "user", false, "Report the per-user registration instead of the system service")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "Full boot-readiness diagnostic (same as `outpost doctor`)")
 	return cmd
 }
 
