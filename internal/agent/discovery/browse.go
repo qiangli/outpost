@@ -6,12 +6,22 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"net/netip"
 	"strings"
 	"time"
 
 	"github.com/hashicorp/mdns"
 )
+
+// quietMDNSLogger discards hashicorp/mdns's internal log output. The
+// library's default logger dumps the whole client struct on Close
+// ("[INFO] mdns: Closing client {true true 0x…}") and logs per-instance
+// query failures — noise for an operator running `outpost scan`. The
+// meaningful error is returned from mdns.Query and handled by the
+// caller, so dropping the library's chatter loses nothing.
+var quietMDNSLogger = log.New(io.Discard, "", 0)
 
 // BrowseOptions configures one query.
 type BrowseOptions struct {
@@ -28,11 +38,35 @@ type BrowseOptions struct {
 
 // Browse queries the LAN for outpost service instances and returns
 // the parsed Peer records. Blocks up to Timeout.
+//
+// It first queries dual-stack (IPv4 + IPv6). hashicorp/mdns aborts the
+// whole query if either multicast send fails, and IPv6 mDNS to ff02::fb
+// fails with "no route to host" on any host lacking an IPv6 multicast
+// route (common on macOS and IPv4-only LANs) — even though the IPv4
+// query (224.0.0.251, the workhorse) already went out fine. So on a
+// send failure we fall back to an IPv4-only query rather than surfacing
+// the IPv6 error. IPv6 is kept when it works.
 func Browse(ctx context.Context, opts BrowseOptions) ([]Peer, error) {
 	if opts.Timeout == 0 {
 		opts.Timeout = 3 * time.Second
 	}
 
+	peers, err := browseOnce(ctx, opts, false)
+	if err != nil && ctx.Err() == nil {
+		// Dual-stack send failed before we could listen (zero entries).
+		// Retry IPv4-only — degrades gracefully on hosts where IPv6
+		// multicast is unroutable. If IPv4 is the broken transport,
+		// this second attempt returns the IPv4 error to the caller.
+		if v4, v4err := browseOnce(ctx, opts, true); v4err == nil {
+			return v4, nil
+		}
+	}
+	return peers, err
+}
+
+// browseOnce runs a single mDNS query. disableIPv6 forces an IPv4-only
+// query (the fallback path).
+func browseOnce(ctx context.Context, opts BrowseOptions, disableIPv6 bool) ([]Peer, error) {
 	// hashicorp/mdns uses a channel + a Query goroutine; queue size
 	// 64 is generous for our LAN scale (rarely > 10 outposts at once).
 	entriesCh := make(chan *mdns.ServiceEntry, 64)
@@ -40,10 +74,12 @@ func Browse(ctx context.Context, opts BrowseOptions) ([]Peer, error) {
 
 	go func() {
 		params := &mdns.QueryParam{
-			Service: ServiceName,
-			Domain:  "local",
-			Timeout: opts.Timeout,
-			Entries: entriesCh,
+			Service:     ServiceName,
+			Domain:      "local",
+			Timeout:     opts.Timeout,
+			Entries:     entriesCh,
+			DisableIPv6: disableIPv6,
+			Logger:      quietMDNSLogger,
 		}
 		err := mdns.Query(params)
 		// Closing the channel signals the receiver that no more
