@@ -2346,17 +2346,11 @@ function renderMain(status, cfg) {
     });
     // Show a 🔒 pill when the app demands cloud-side login; show an
     // "/admin" pill when an IndexPath is set so the operator can tell
-    // the two virtual apps apart at a glance; show a "LAN-only: /a, /b"
-    // pill when the app has LAN-only path prefixes set (the gate that
-    // 404s those paths through cloudbox while leaving them reachable on
-    // the LAN — easy to forget once configured, so surface it).
+    // the two virtual apps apart at a glance.
     const pills = [];
     if (a.require_login) pills.push(el('span', {class: 'hint'}, '🔒 login'));
     if (a.trust_cloud_identity) pills.push(el('span', {class: 'hint'}, '🪪 SSO'));
     if (a.index_path)    pills.push(el('span', {class: 'hint'}, a.index_path));
-    if (Array.isArray(a.lan_only_paths) && a.lan_only_paths.length > 0) {
-      pills.push(el('span', {class: 'hint'}, 'LAN-only: ' + a.lan_only_paths.join(', ')));
-    }
     row.append(
       el('span', {class: 'label'}, a.name),
       targetEl,
@@ -2439,14 +2433,6 @@ function renderMain(status, cfg) {
     placeholder: '/ or /admin'});
   const appIndexLabel = el('label', {}, 'Index path (optional)', appIndexInput);
 
-  // LAN-only paths: one prefix per line. Outpost 404s on these when
-  // the request came via cloudbox (X-Forwarded-Prefix set). Direct
-  // LAN/loopback access keeps working — that's where kiosk-style
-  // public-but-local endpoints belong.
-  const appLanOnlyInput = el('textarea', {name: 'lan_only_paths', rows: '2',
-    placeholder: '/kiosk\n/internal'});
-  const appLanOnlyLabel = el('label', {}, 'LAN-only paths (one per line)', appLanOnlyInput);
-
   // Require login: cloudbox refuses to proxy this app without a valid
   // per-(host, app) matrix_elev cookie. Default on; flip off for
   // genuinely public surfaces (welcome page, status pings).
@@ -2468,7 +2454,6 @@ function renderMain(status, cfg) {
     appHostLabel,
     appPortLabel,
     appIndexLabel,
-    appLanOnlyLabel,
     el('label', {class: 'check'}, appRequireLoginInput, 'Require login'),
     el('label', {class: 'check'}, appTrustCloudInput,
       'Trust cloudbox identity (SSO + grant push)'),
@@ -2480,8 +2465,6 @@ function renderMain(status, cfg) {
     ev.preventDefault();
     const fd = new FormData(addForm);
     const scheme = (fd.get('scheme') || 'http').toString();
-    const lanOnly = (fd.get('lan_only_paths') || '').toString()
-      .split('\n').map(s => s.trim()).filter(s => s.length > 0);
     const body = {
       name: (fd.get('name') || '').toString().trim(),
       icon: (fd.get('icon') || '').toString().trim(),
@@ -2489,7 +2472,6 @@ function renderMain(status, cfg) {
       require_login: appRequireLoginInput.checked,
       trust_cloud_identity: appTrustCloudInput.checked,
       index_path: (fd.get('index_path') || '').toString().trim(),
-      lan_only_paths: lanOnly,
       enabled: addForm.enabled.checked,
     };
     body.host = (fd.get('host') || '').toString().trim(); // server defaults to 127.0.0.1
