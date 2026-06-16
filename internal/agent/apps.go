@@ -43,11 +43,16 @@ import (
 //     for everything else; omitted from JSON when nil (old cloudbox
 //     ignores the field).
 type AppEntry struct {
-	Name         string           `json:"name"`
-	Scheme       string           `json:"scheme,omitempty"`
-	RequireLogin bool             `json:"require_login"`
-	IndexPath    string           `json:"index_path,omitempty"`
-	Capabilities *AppCapabilities `json:"capabilities,omitempty"`
+	Name         string `json:"name"`
+	Scheme       string `json:"scheme,omitempty"`
+	RequireLogin bool   `json:"require_login"`
+	// ElevationRequired, when true, additionally demands the OS-password
+	// (PAM) elevation at cloudbox — only meaningful when RequireLogin is
+	// also true. Default false: a require_login app authenticates the
+	// caller (owner or sharee) without forcing the owner through PAM.
+	ElevationRequired bool             `json:"elevation_required,omitempty"`
+	IndexPath         string           `json:"index_path,omitempty"`
+	Capabilities      *AppCapabilities `json:"capabilities,omitempty"`
 }
 
 // AppCapabilities is a free-form typed-app descriptor. Type is the
@@ -79,6 +84,7 @@ type AppRegistry struct {
 	// name; entries kept in lockstep with `apps`/`proxy`/`tcp` by
 	// register/registerTCP/Unregister.
 	requireLogin       map[string]bool
+	elevationRequired  map[string]bool
 	lanOnly            map[string][]string
 	indexPath          map[string]string
 	capabilities       map[string]*AppCapabilities
@@ -158,6 +164,7 @@ func NewAppRegistry() *AppRegistry {
 		apps:               map[string]*url.URL{},
 		proxy:              map[string]*httputil.ReverseProxy{},
 		requireLogin:       map[string]bool{},
+		elevationRequired:  map[string]bool{},
 		lanOnly:            map[string][]string{},
 		indexPath:          map[string]string{},
 		capabilities:       map[string]*AppCapabilities{},
@@ -274,8 +281,11 @@ func (r *AppRegistry) SetProxyWrap(name string, wrap func(http.Handler) http.Han
 // and the simple Register helper pass a zero-value or a partial value.
 type AppMeta struct {
 	RequireLogin bool
-	LANOnlyPaths []string
-	IndexPath    string
+	// ElevationRequired demands OS-password (PAM) elevation in addition to
+	// authentication. Only consulted when RequireLogin is true.
+	ElevationRequired bool
+	LANOnlyPaths      []string
+	IndexPath         string
 	// Capabilities is the optional typed-app advertisement (e.g.
 	// {Type:"llm"} for the built-in ollama proxy). Nil for vanilla
 	// HTTP apps.
@@ -486,6 +496,7 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 	r.apps[name] = target
 	r.proxy[name] = rp
 	r.requireLogin[name] = meta.RequireLogin
+	r.elevationRequired[name] = meta.ElevationRequired
 	r.lanOnly[name] = append([]string(nil), meta.LANOnlyPaths...)
 	r.indexPath[name] = meta.IndexPath
 	r.capabilities[name] = meta.Capabilities
@@ -534,20 +545,22 @@ func (r *AppRegistry) Entries() []AppEntry {
 			scheme = "http"
 		}
 		out = append(out, AppEntry{
-			Name:         name,
-			Scheme:       scheme,
-			RequireLogin: r.requireLogin[name],
-			IndexPath:    r.indexPath[name],
-			Capabilities: r.capabilities[name],
+			Name:              name,
+			Scheme:            scheme,
+			RequireLogin:      r.requireLogin[name],
+			ElevationRequired: r.elevationRequired[name],
+			IndexPath:         r.indexPath[name],
+			Capabilities:      r.capabilities[name],
 		})
 	}
 	for name := range r.tcp {
 		out = append(out, AppEntry{
-			Name:         name,
-			Scheme:       "tcp",
-			RequireLogin: r.requireLogin[name],
-			IndexPath:    r.indexPath[name],
-			Capabilities: r.capabilities[name],
+			Name:              name,
+			Scheme:            "tcp",
+			RequireLogin:      r.requireLogin[name],
+			ElevationRequired: r.elevationRequired[name],
+			IndexPath:         r.indexPath[name],
+			Capabilities:      r.capabilities[name],
 		})
 	}
 	return out
@@ -575,6 +588,7 @@ func (r *AppRegistry) Unregister(name string) {
 	delete(r.apps, name)
 	delete(r.proxy, name)
 	delete(r.requireLogin, name)
+	delete(r.elevationRequired, name)
 	delete(r.lanOnly, name)
 	delete(r.indexPath, name)
 	delete(r.capabilities, name)
@@ -597,6 +611,7 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 	}
 	meta := AppMeta{
 		RequireLogin:       ac.RequireLogin,
+		ElevationRequired:  ac.ElevationRequired,
 		LANOnlyPaths:       ac.LANOnlyPaths,
 		IndexPath:          ac.IndexPath,
 		TrustCloudIdentity: ac.TrustCloudIdentity,
@@ -666,6 +681,7 @@ func (r *AppRegistry) registerTCP(name, addr string, meta AppMeta) error {
 	delete(r.proxy, name)
 	r.tcp[name] = addr
 	r.requireLogin[name] = meta.RequireLogin
+	r.elevationRequired[name] = meta.ElevationRequired
 	r.lanOnly[name] = append([]string(nil), meta.LANOnlyPaths...)
 	r.indexPath[name] = meta.IndexPath
 	r.capabilities[name] = meta.Capabilities

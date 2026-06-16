@@ -21,7 +21,8 @@ type upsertAppIn struct {
 	Port               int      `json:"port,omitempty"`
 	Socket             string   `json:"socket,omitempty" jsonschema:"Required for unix/npipe; ignored otherwise"`
 	Enabled            bool     `json:"enabled" jsonschema:"Whether the app proxy is mounted live"`
-	RequireLogin       bool     `json:"require_login,omitempty" jsonschema:"Refuse cloud requests that haven't cleared /elevate. Default false."`
+	RequireLogin       bool     `json:"require_login,omitempty" jsonschema:"Require an authenticated, authorized cloudbox user (owner or sharee). Default false."`
+	ElevationRequired  bool     `json:"elevation_required,omitempty" jsonschema:"Additionally require OS-password (PAM) elevation. Only meaningful with require_login. Default false."`
 	LANOnlyPaths       []string `json:"lan_only_paths,omitempty" jsonschema:"Path prefixes 404'd when X-Forwarded-Prefix is present"`
 	IndexPath          string   `json:"index_path,omitempty" jsonschema:"Landing sub-path the cloudbox SPA prepends"`
 	TrustCloudIdentity bool     `json:"trust_cloud_identity,omitempty" jsonschema:"Forward cloudbox-vouched identity as Remote-User / Remote-Email"`
@@ -89,6 +90,7 @@ func (s *Server) registerAppsTools() {
 				Socket:             in.Socket,
 				Enabled:            in.Enabled,
 				RequireLogin:       in.RequireLogin,
+				ElevationRequired:  in.ElevationRequired,
 				LANOnlyPaths:       in.LANOnlyPaths,
 				IndexPath:          in.IndexPath,
 				TrustCloudIdentity: in.TrustCloudIdentity,

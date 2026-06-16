@@ -137,6 +137,9 @@ the same data the SPA renders for that host's tiles.`,
 				if a.RequireLogin {
 					flags = append(flags, "login")
 				}
+				if a.ElevationRequired {
+					flags = append(flags, "elevation")
+				}
 				if a.TrustCloudIdentity {
 					flags = append(flags, "sso")
 				}
@@ -298,13 +301,13 @@ func fetchRemoteHostApps(ctx context.Context, server string, port int, protocol,
 
 func appsAddCmd() *cobra.Command {
 	var (
-		url, scheme, host, socket, indexPath, icon string
-		port                                       int
-		requireLogin, trustCloudIdentity           bool
-		lanOnly                                    []string
-		disabled                                   bool
-		offline                                    bool
-		jsonOut                                    bool
+		url, scheme, host, socket, indexPath, icon          string
+		port                                                int
+		requireLogin, trustCloudIdentity, elevationRequired bool
+		lanOnly                                             []string
+		disabled                                            bool
+		offline                                             bool
+		jsonOut                                             bool
 	)
 	cmd := &cobra.Command{
 		Use:   "add <name>",
@@ -321,6 +324,7 @@ func appsAddCmd() *cobra.Command {
 				IndexPath:          indexPath,
 				LANOnlyPaths:       lanOnly,
 				RequireLogin:       requireLogin,
+				ElevationRequired:  elevationRequired,
 				TrustCloudIdentity: trustCloudIdentity,
 				Enabled:            !disabled,
 			}
@@ -339,7 +343,8 @@ func appsAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&icon, "icon", "", "URL to an icon image shown next to the tile in cloudbox")
 	cmd.Flags().StringVar(&indexPath, "index-path", "", "Landing sub-path the cloudbox SPA prepends")
 	cmd.Flags().StringSliceVar(&lanOnly, "lan-only-path", nil, "Path prefix 404'd on cloud requests (repeatable)")
-	cmd.Flags().BoolVar(&requireLogin, "require-login", false, "Refuse cloud requests that haven't cleared /elevate")
+	cmd.Flags().BoolVar(&requireLogin, "require-login", false, "Require an authenticated, authorized cloudbox user (owner or sharee)")
+	cmd.Flags().BoolVar(&elevationRequired, "elevation-required", false, "Additionally require OS-password (PAM) elevation; only meaningful with --require-login")
 	cmd.Flags().BoolVar(&trustCloudIdentity, "trust-cloud-identity", false, "Forward cloudbox-vouched identity as Remote-User / Remote-Email")
 	cmd.Flags().BoolVar(&disabled, "disabled", false, "Persist the entry but skip live registration")
 	cmd.Flags().BoolVar(&offline, "offline", false, "Mutate the FileConfig directly without contacting the daemon (installer-script mode)")

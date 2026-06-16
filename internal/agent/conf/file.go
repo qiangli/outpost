@@ -724,6 +724,16 @@ type AppConfig struct {
 	// Replaces the legacy three-tier `role` field.
 	RequireLogin bool `json:"require_login"`
 
+	// ElevationRequired: when true, cloudbox additionally requires the
+	// OS-password (PAM) elevation before serving — the historic owner
+	// behavior. Only meaningful alongside RequireLogin. Default false:
+	// a require_login app authenticates the caller (owner or sharee)
+	// without forcing the owner through a second OS-password prompt; the
+	// app is expected to enforce its own authorization. Opt in for apps
+	// that genuinely want OS-level proof. The OS-password gate for
+	// builtins (shell/ssh/desktop) is independent of this flag.
+	ElevationRequired bool `json:"elevation_required,omitempty"`
+
 	// LANOnlyPaths lists path prefixes (e.g. "/kiosk") that must NOT
 	// be reachable through cloudbox. Outpost 404s when the inbound
 	// request carries X-Forwarded-Prefix (= came via cloud) AND its
