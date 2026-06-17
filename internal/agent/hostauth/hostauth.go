@@ -1,7 +1,10 @@
 // Package hostauth verifies the host OS's own credentials. The application
 // stores no passwords — every authentication goes through the OS subsystem
-// (Open Directory on macOS, PAM on Linux, SAM on Windows) so the same
-// password that unlocks the machine is what unlocks remote superadmin.
+// (Open Directory on macOS, the unix_chkpwd/shadow pair on Linux, SAM on
+// Windows) so the same password that unlocks the machine is what unlocks
+// remote superadmin. The Linux path is deliberately cgo-free so the
+// cross-compiled (CGO_ENABLED=0) release binary authenticates correctly —
+// see hostauth_linux.go.
 package hostauth
 
 import (
@@ -9,9 +12,9 @@ import (
 	"os/user"
 )
 
-// ErrNotImplemented is returned by the stub OS implementations until real
-// per-platform authenticators land (Linux PAM and Windows LogonUserW are
-// follow-up tasks; v1 ships macOS only).
+// ErrNotImplemented is reserved for any future OS that lacks a credential
+// authenticator. All currently-supported platforms (macOS, Linux, Windows)
+// have real implementations, so no live path returns this today.
 var ErrNotImplemented = errors.New("host auth not implemented on this OS")
 
 // ErrInvalidCredentials is returned when the OS rejects the supplied

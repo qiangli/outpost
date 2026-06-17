@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	filippo.io/age v1.3.1
+	github.com/GehirnInc/crypt v0.0.0-20230320061759-8cc1b52080c5
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
@@ -13,7 +14,6 @@ require (
 	github.com/hashicorp/mdns v1.0.6
 	github.com/hashicorp/memberlist v0.5.4
 	github.com/modelcontextprotocol/go-sdk v1.6.1
-	github.com/msteinert/pam/v2 v2.1.0
 	github.com/pkg/sftp v1.13.10
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.47.0

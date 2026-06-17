@@ -95,10 +95,10 @@ it).
 PLATFORMS="windows-arm64" ./scripts/build-all.sh   # subset
 ```
 
-Everything builds with `CGO_ENABLED=0` by default. The one exception
-worth knowing: Linux **PAM** auth needs a cgo build
-(`CGO_ENABLED=1` + `libpam-dev`) — see [`install.md`](install.md) for
-that recipe and for the prebuilt-release installers.
+Everything builds with `CGO_ENABLED=0` — no cgo on any platform. Linux
+OS-password auth is pure Go (the `unix_chkpwd`/`/etc/shadow` pair, see
+[`install.md`](install.md)), so the standard cross-compiled release
+authenticates correctly with no `libpam-dev` build dependency.
 
 ## Building inside the dhnt umbrella
 
