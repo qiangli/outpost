@@ -19,7 +19,38 @@ import (
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
+	"github.com/qiangli/outpost/internal/jitter"
 )
+
+// retryableStatus reports whether an HTTP status warrants a registration
+// retry: 429 (server backpressure — cloudbox admission control under a
+// reconnect storm) and any 5xx (transient, e.g. a portal-replica roll).
+// Other 4xx are the caller's problem and won't fix themselves.
+func retryableStatus(code int) bool {
+	return code == http.StatusTooManyRequests || (code >= 500 && code < 600)
+}
+
+// retryDelay is the wait before the next registration retry. It honors the
+// server's Retry-After hint when present (the 429/503 backpressure signal),
+// else exponential backoff — and ALWAYS adds jitter so a fleet of throttled
+// outposts don't retry in lockstep at the same hinted instant (the very
+// thundering herd admission control is trying to smooth). A nil resp (network
+// error) just gets jittered exponential backoff.
+func retryDelay(attempt int, resp *http.Response) time.Duration {
+	base := time.Duration(1<<(attempt-1)) * time.Second // 1s, 2s, 4s
+	if resp != nil {
+		if ra := strings.TrimSpace(resp.Header.Get("Retry-After")); ra != "" {
+			if secs, err := strconv.Atoi(ra); err == nil && secs >= 0 {
+				base = time.Duration(secs) * time.Second
+			}
+		}
+	}
+	window := base / 2
+	if window < 500*time.Millisecond {
+		window = 500 * time.Millisecond
+	}
+	return base + jitter.Full(window)
+}
 
 // exchangeMaxAttempts caps the number of POST tries before giving up.
 // With the 1s/2s/4s backoff below this is ~7 s of total wait — enough
@@ -128,34 +159,28 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 			if firstErr == nil {
 				firstErr = lastErr
 			}
-			// 4xx — caller's problem (bad code, name collision, etc.).
-			// Retrying won't help; surface the error immediately.
-			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			// Terminal 4xx (bad code, name collision, …) won't fix
+			// itself — surface immediately. 429 is the exception: it's
+			// server backpressure (admission control), retryable like 5xx.
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 && !retryableStatus(resp.StatusCode) {
 				return nil, combineAttemptErrors(firstErr, lastErr)
 			}
-			// 5xx — honor Retry-After if present, else exp backoff.
+			// Retryable (429 / 5xx): honor Retry-After with jitter.
 			if attempt < exchangeMaxAttempts {
-				delay := time.Duration(1<<(attempt-1)) * time.Second // 1s, 2s, 4s
-				if ra := resp.Header.Get("Retry-After"); ra != "" {
-					if secs, err := strconv.Atoi(ra); err == nil && secs >= 0 {
-						delay = time.Duration(secs) * time.Second
-					}
-				}
 				select {
 				case <-ctx.Done():
 					return nil, ctx.Err()
-				case <-time.After(delay):
+				case <-time.After(retryDelay(attempt, resp)):
 				}
 				continue
 			}
 		}
-		// Network error path — same backoff, but no Retry-After to read.
+		// Network error path — jittered backoff (no Retry-After to read).
 		if attempt < exchangeMaxAttempts {
-			delay := time.Duration(1<<(attempt-1)) * time.Second
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(delay):
+			case <-time.After(retryDelay(attempt, nil)):
 			}
 		}
 	}
@@ -367,30 +392,25 @@ func Reattach(ctx context.Context, req ReattachRequest) (*conf.FileConfig, error
 			if firstErr == nil {
 				firstErr = lastErr
 			}
-			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			// 429 is retryable backpressure (admission control); other
+			// 4xx are terminal.
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 && !retryableStatus(resp.StatusCode) {
 				return nil, combineAttemptErrors(firstErr, lastErr)
 			}
 			if attempt < exchangeMaxAttempts {
-				delay := time.Duration(1<<(attempt-1)) * time.Second
-				if ra := resp.Header.Get("Retry-After"); ra != "" {
-					if secs, err := strconv.Atoi(ra); err == nil && secs >= 0 {
-						delay = time.Duration(secs) * time.Second
-					}
-				}
 				select {
 				case <-ctx.Done():
 					return nil, ctx.Err()
-				case <-time.After(delay):
+				case <-time.After(retryDelay(attempt, resp)):
 				}
 				continue
 			}
 		}
 		if attempt < exchangeMaxAttempts {
-			delay := time.Duration(1<<(attempt-1)) * time.Second
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(delay):
+			case <-time.After(retryDelay(attempt, nil)):
 			}
 		}
 	}

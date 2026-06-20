@@ -117,6 +117,76 @@ func TestExchangeRetriesOn5xx(t *testing.T) {
 	}
 }
 
+// TestExchangeRetriesOn429 is the regression guard for the outpost half of
+// hub admission control: a 429 (registration throttled during a reconnect
+// storm) is backpressure, not a caller bug — Exchange must honor Retry-After
+// and retry, not treat it as a terminal 4xx. Before the fix, 429 fell into
+// the terminal-4xx bucket and pairing failed on the first throttle.
+func TestExchangeRetriesOn429(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n <= 2 {
+			w.Header().Set("Retry-After", "0") // keep the test fast
+			http.Error(w, "registration throttled", http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"agent_name":"ok","server_addr":"e","server_port":1,"protocol":"wss","token":"t","remote_port":1}`)
+	}))
+	defer server.Close()
+
+	start := time.Now()
+	fc, err := Exchange(context.Background(), ExchangeRequest{ServerURL: server.URL, Code: "c", Name: "n"})
+	if err != nil {
+		t.Fatalf("Exchange should retry through 429 backpressure: %v", err)
+	}
+	if calls.Load() != 3 {
+		t.Errorf("expected 3 attempts (429 is retryable), got %d", calls.Load())
+	}
+	if fc.AgentName != "ok" {
+		t.Errorf("fc.AgentName = %q, want ok", fc.AgentName)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("test took %s; Retry-After:0 should keep it fast", elapsed)
+	}
+}
+
+func TestRetryableStatus(t *testing.T) {
+	cases := []struct {
+		code int
+		want bool
+	}{
+		{http.StatusTooManyRequests, true}, {500, true}, {502, true}, {503, true},
+		{400, false}, {401, false}, {404, false}, {410, false}, {200, false},
+	}
+	for _, c := range cases {
+		if got := retryableStatus(c.code); got != c.want {
+			t.Errorf("retryableStatus(%d) = %v, want %v", c.code, got, c.want)
+		}
+	}
+}
+
+func TestRetryDelayHonorsRetryAfterWithJitter(t *testing.T) {
+	resp := &http.Response{Header: http.Header{}}
+	resp.Header.Set("Retry-After", "5")
+	for i := 0; i < 200; i++ {
+		d := retryDelay(1, resp)
+		// At least the server's 5s floor, at most 5s + the 2.5s jitter window.
+		if d < 5*time.Second || d >= 5*time.Second+2500*time.Millisecond {
+			t.Fatalf("retryDelay honoring Retry-After=5 out of bounds: %v", d)
+		}
+	}
+	// nil resp (network error) → jittered exponential base; attempt 2 = 2s
+	// floor + up to a 1s window.
+	for i := 0; i < 200; i++ {
+		d := retryDelay(2, nil)
+		if d < 2*time.Second || d >= 3*time.Second {
+			t.Fatalf("retryDelay(2,nil) out of bounds: %v", d)
+		}
+	}
+}
+
 // TestExchangeDoesNotRetryOn4xx: 4xx errors are caller bugs (bad code,
 // missing fields). Retrying would just waste cycles and produce
 // duplicate-looking server logs. Fail fast.

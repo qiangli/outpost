@@ -19,7 +19,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -157,30 +156,25 @@ func Recover(ctx context.Context, req RecoverRequest) (*conf.FileConfig, error) 
 				break
 			}
 			lastErr = fmt.Errorf("recover failed (%d): %s", resp.StatusCode, bytes.TrimSpace(respBody))
-			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			// 429 is retryable backpressure (admission control); other
+			// 4xx are terminal.
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 && !retryableStatus(resp.StatusCode) {
 				return nil, lastErr
 			}
 			if attempt < exchangeMaxAttempts {
-				delay := time.Duration(1<<(attempt-1)) * time.Second
-				if ra := resp.Header.Get("Retry-After"); ra != "" {
-					if secs, err := strconv.Atoi(ra); err == nil && secs >= 0 {
-						delay = time.Duration(secs) * time.Second
-					}
-				}
 				select {
 				case <-ctx.Done():
 					return nil, ctx.Err()
-				case <-time.After(delay):
+				case <-time.After(retryDelay(attempt, resp)):
 				}
 				continue
 			}
 		}
 		if attempt < exchangeMaxAttempts {
-			delay := time.Duration(1<<(attempt-1)) * time.Second
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(delay):
+			case <-time.After(retryDelay(attempt, nil)):
 			}
 		}
 	}
