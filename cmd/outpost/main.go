@@ -1806,6 +1806,20 @@ code" dialog usually only needs --code.`,
 				}
 			}
 
+			// A daemon may already be running unpaired (the installer
+			// brought it up, the operator pairs later). It holds the
+			// pre-pairing config in memory and owns the pidfile, so a plain
+			// `outpost start` / execSelfStart would refuse to boot over it.
+			// Signal it to restart through MCP — under a supervisor it exits
+			// and gets respawned, standalone it self-re-execs — so it
+			// re-reads the freshly-merged config and brings up the tunnel.
+			// The merge above preserved its MCP bearer token, so the call
+			// authenticates. handled=true means a daemon was present, so we
+			// skip our own start-now prompt.
+			if handled, _ := restartRunningDaemon(cmd.Context()); handled {
+				return nil
+			}
+
 			if scripted {
 				return nil
 			}
@@ -1920,10 +1934,11 @@ func doRecover(ctx context.Context, serverURL, recoveryCode, name, title, authUR
 		}
 		path = p
 	}
-	if err := conf.SaveFile(path, fc); err != nil {
+	merged := mergePairing(path, fc)
+	if err := conf.SaveFile(path, merged); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
-	fmt.Printf("Recovered as %q. Config saved to %s\n", fc.AgentName, path)
+	fmt.Printf("Recovered as %q. Config saved to %s\n", merged.AgentName, path)
 	return nil
 }
 
@@ -1951,11 +1966,103 @@ func doExchange(ctx context.Context, serverURL, code, name, title, authURL, out 
 		}
 		path = p
 	}
-	if err := conf.SaveFile(path, fc); err != nil {
+	merged := mergePairing(path, fc)
+	if err := conf.SaveFile(path, merged); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
-	fmt.Printf("Registered as %q. Config saved to %s\n", fc.AgentName, path)
+	fmt.Printf("Registered as %q. Config saved to %s\n", merged.AgentName, path)
 	return nil
+}
+
+// mergePairing overlays the portal-controlled fields from a fresh
+// exchange/recovery result onto the existing on-disk config at path,
+// preserving everything the operator or the running daemon owns: the SPA
+// session key and MCP bearer token (clobbering those breaks a running
+// daemon's auth), custom apps, outbound mounts, built-in toggles,
+// networking binds, and admin_users. Mirrors admincore.Pair so the
+// `register` CLI and the admin-UI / MCP pair path converge on identical
+// on-disk results instead of the CLI wholesale-overwriting the file.
+func mergePairing(path string, exchanged *conf.FileConfig) *conf.FileConfig {
+	merged := &conf.FileConfig{}
+	if existing, err := conf.LoadFile(path); err == nil && existing != nil {
+		merged = existing
+	}
+	merged.AgentName = exchanged.AgentName
+	merged.ServerAddr = exchanged.ServerAddr
+	merged.ServerPort = exchanged.ServerPort
+	merged.Protocol = exchanged.Protocol
+	merged.Token = exchanged.Token
+	merged.RemotePort = exchanged.RemotePort
+	merged.AuthURL = exchanged.AuthURL
+	merged.AccessToken = exchanged.AccessToken
+	merged.ClientOnly = exchanged.ClientOnly
+
+	// Cloudbox issues fresh cluster-join credentials at every pairing
+	// (node token / STCP secret / ports / overlay endpoints). Carry those
+	// forward but keep the operator-set cluster fields cloudbox never sends
+	// (Enabled / Mode / APIURL / Token / CA / NodeName).
+	if exchanged.Cluster != nil {
+		if merged.Cluster == nil {
+			merged.Cluster = exchanged.Cluster
+		} else {
+			prev := merged.Cluster
+			nc := *exchanged.Cluster
+			nc.Enabled = prev.Enabled
+			nc.Mode = prev.Mode
+			nc.APIURL = prev.APIURL
+			nc.Token = prev.Token
+			nc.CA = prev.CA
+			nc.NodeName = prev.NodeName
+			merged.Cluster = &nc
+		}
+	}
+	return merged
+}
+
+// runningDaemonPID returns the pid recorded in the daemon pidfile when
+// that process is currently alive, else (0, false).
+func runningDaemonPID() (int, bool) {
+	p, err := pidFilePath()
+	if err != nil {
+		return 0, false
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 || !processAlive(pid) {
+		return 0, false
+	}
+	return pid, true
+}
+
+// restartRunningDaemon triggers a clean restart of an already-running
+// local daemon (via the MCP outpost_restart tool) so it re-reads the
+// freshly-merged config. Returns handled=true when a daemon was detected —
+// the register flow then skips its own start-now prompt / execSelfStart,
+// which would otherwise collide on the pidfile. A best-effort MCP failure
+// is reported but still counts as handled: the operator can re-apply with
+// `outpost restart`, and we must not execSelfStart over the live daemon.
+func restartRunningDaemon(ctx context.Context) (bool, error) {
+	pid, ok := runningDaemonPID()
+	if !ok {
+		return false, nil
+	}
+	session, err := dialMCP(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"Paired, but the running daemon (pid %d) is unreachable over MCP (%v).\nRun `outpost restart` to apply the new pairing.\n", pid, err)
+		return true, err
+	}
+	defer session.close()
+	if err := session.callTool(ctx, "outpost_restart", map[string]any{}, nil); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"Paired, but triggering a restart of the running daemon (pid %d) failed: %v.\nRun `outpost restart` to apply the new pairing.\n", pid, err)
+		return true, err
+	}
+	fmt.Println("Paired. Restarting the running outpost to apply — poll `outpost status` until it reports configured.")
+	return true, nil
 }
 
 // promptDefault prints "label [def]: " and returns either the user's
