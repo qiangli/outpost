@@ -12,6 +12,8 @@ import (
 	"github.com/fatedier/frp/pkg/config/source"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/samber/lo"
+
+	"github.com/qiangli/outpost/internal/jitter"
 )
 
 // TunnelConfig is the minimal config for embedding the matrix-tunnel
@@ -230,22 +232,14 @@ func (t *Tunnel) Run(ctx context.Context) error {
 			// Back off to the cap and keep trying; an operator fix can
 			// land via a restart.
 			slog.Error("matrix-tunnel rebuild failed", "err", err)
-			backoff = growBackoff(backoff)
+			backoff = jitter.Backoff(backoff, reconnectInitialBackoff, reconnectMaxBackoff)
 			continue
 		}
 		t.mu.Lock()
 		t.svc = next
 		t.mu.Unlock()
-		backoff = growBackoff(backoff)
+		backoff = jitter.Backoff(backoff, reconnectInitialBackoff, reconnectMaxBackoff)
 	}
-}
-
-func growBackoff(cur time.Duration) time.Duration {
-	next := cur * 2
-	if next > reconnectMaxBackoff {
-		return reconnectMaxBackoff
-	}
-	return next
 }
 
 // Close releases client resources.

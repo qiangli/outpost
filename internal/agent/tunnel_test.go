@@ -4,26 +4,25 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/qiangli/outpost/internal/jitter"
 )
 
-func TestGrowBackoff(t *testing.T) {
+// The reconnect loop now uses decorrelated jitter (internal/jitter, with its
+// own tests). Here we just pin the integration: fed the tunnel's own bounds,
+// the backoff stays within [initial, max] across many iterations — so the
+// reconnect can never sleep longer than the cap or shorter than the floor.
+func TestReconnectBackoffBounds(t *testing.T) {
 	prev, prevMax := reconnectInitialBackoff, reconnectMaxBackoff
 	reconnectInitialBackoff = 100 * time.Millisecond
 	reconnectMaxBackoff = 800 * time.Millisecond
 	t.Cleanup(func() { reconnectInitialBackoff, reconnectMaxBackoff = prev, prevMax })
 
-	got := []time.Duration{reconnectInitialBackoff}
-	for i := 0; i < 6; i++ {
-		got = append(got, growBackoff(got[len(got)-1]))
-	}
-	want := []time.Duration{
-		100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond,
-		800 * time.Millisecond, 800 * time.Millisecond, 800 * time.Millisecond,
-		800 * time.Millisecond,
-	}
-	for i, w := range want {
-		if got[i] != w {
-			t.Fatalf("step %d: got %v want %v (sequence %v)", i, got[i], w, got)
+	b := reconnectInitialBackoff
+	for i := 0; i < 1000; i++ {
+		b = jitter.Backoff(b, reconnectInitialBackoff, reconnectMaxBackoff)
+		if b < reconnectInitialBackoff || b > reconnectMaxBackoff {
+			t.Fatalf("iter %d: backoff %v out of [%v,%v]", i, b, reconnectInitialBackoff, reconnectMaxBackoff)
 		}
 	}
 }

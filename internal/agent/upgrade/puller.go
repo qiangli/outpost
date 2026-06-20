@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/qiangli/outpost/internal/jitter"
 )
 
 // Puller is the pull half of fleet upgrade. On startup and periodically
@@ -30,9 +32,8 @@ import (
 // release-webhook-driven push.
 
 const (
-	defaultPullInterval     = 10 * time.Minute
-	defaultPullInitialDelay = 1 * time.Minute
-	pullRequestTimeout      = 20 * time.Second
+	defaultPullInterval = 10 * time.Minute
+	pullRequestTimeout  = 20 * time.Second
 )
 
 // PullerConfig configures and runs a Puller. CloudboxBase, AccessToken,
@@ -52,7 +53,8 @@ type PullerConfig struct {
 	// Interval between polls. <=0 → defaultPullInterval.
 	Interval time.Duration
 	// InitialDelay before the first poll (lets the tunnel settle after
-	// a fresh start or wake). <0 → defaultPullInitialDelay; 0 polls
+	// a fresh start or wake). <0 → a random delay in [0, Interval) so a
+	// fleet rebooted together doesn't poll in lockstep; 0 polls
 	// immediately (used by tests).
 	InitialDelay time.Duration
 	// HTTPClient is the client used for the target GET. nil →
@@ -77,7 +79,10 @@ func (p PullerConfig) Run(ctx context.Context) error {
 	}
 	delay := p.InitialDelay
 	if delay < 0 {
-		delay = defaultPullInitialDelay
+		// Default: smear the first poll across a full interval window so a
+		// fleet rebooted together (exactly the post-upgrade case) does not
+		// poll cloudbox in lockstep. Explicit positive = exact; 0 = now.
+		delay = jitter.Full(interval)
 	}
 
 	select {
@@ -91,7 +96,9 @@ func (p PullerConfig) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(interval):
+		// Jitter each tick over [interval/2, interval) so steady-state polls
+		// stay de-correlated across the fleet while keeping a sane min gap.
+		case <-time.After(interval/2 + jitter.Full(interval/2)):
 		}
 	}
 }

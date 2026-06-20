@@ -76,12 +76,3 @@ func (p *Program) env() []string {
 	}
 	return os.Environ()
 }
-
-// nextBackoff doubles d, capped at max.
-func nextBackoff(d, max time.Duration) time.Duration {
-	d *= 2
-	if d > max {
-		return max
-	}
-	return d
-}

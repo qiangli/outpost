@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"golang.org/x/sync/errgroup"
+
+	"github.com/qiangli/outpost/internal/jitter"
 )
 
 // gracefulStop is how long a child gets to exit after the platform stop
@@ -110,7 +112,7 @@ func (m *Manager) superviseOne(ctx context.Context, p *Program) error {
 			if !sleep(ctx, backoff) {
 				return nil
 			}
-			backoff = nextBackoff(backoff, p.maxBackoff())
+			backoff = jitter.Backoff(backoff, p.minBackoff(), p.maxBackoff())
 			continue
 		}
 		m.setRunning(p.Name, cmd.Process.Pid)
@@ -135,7 +137,7 @@ func (m *Manager) superviseOne(ctx context.Context, p *Program) error {
 			return nil
 		}
 		if ranFor < p.startSecs() {
-			backoff = nextBackoff(backoff, p.maxBackoff())
+			backoff = jitter.Backoff(backoff, p.minBackoff(), p.maxBackoff())
 		}
 	}
 }

@@ -71,16 +71,5 @@ func TestManager_StopsOnCancel(t *testing.T) {
 	}
 }
 
-// TestNextBackoff covers the doubling + cap.
-func TestNextBackoff(t *testing.T) {
-	cases := []struct{ in, max, want time.Duration }{
-		{1 * time.Second, 30 * time.Second, 2 * time.Second},
-		{20 * time.Second, 30 * time.Second, 30 * time.Second}, // capped
-		{30 * time.Second, 30 * time.Second, 30 * time.Second},
-	}
-	for _, c := range cases {
-		if got := nextBackoff(c.in, c.max); got != c.want {
-			t.Errorf("nextBackoff(%v,%v) = %v, want %v", c.in, c.max, got, c.want)
-		}
-	}
-}
+// Restart backoff is now decorrelated jitter (internal/jitter), exercised by
+// that package's own tests; the supervisor just feeds min/max bounds into it.
