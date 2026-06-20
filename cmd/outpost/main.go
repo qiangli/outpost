@@ -562,6 +562,15 @@ func startCmd() *cobra.Command {
 				return fmt.Errorf("admincore: %w", err)
 			}
 
+			// Persisted boot counter, reported to cloudbox each /apps
+			// poll so the fleet health-gate can detect a crash-loop
+			// (boot_count jumping > 1 inside a rollout bake window).
+			// Unconditional — crash-loop detection matters for every
+			// daemon, paired or not.
+			if bcDir, _ := conf.ResolveCacheDir(); bcDir != "" {
+				agent.InitBootCount(bcDir)
+			}
+
 			// Cloudbox-pushed self-upgrade worker + ledger. Constructed
 			// before mcpapi.New so the same Worker/Ledger feed both the
 			// MCP tools (outpost_rollback, outpost_upgrade_history) and
@@ -578,6 +587,16 @@ func startCmd() *cobra.Command {
 			if fc.AccessToken != "" {
 				cacheDir, _ := conf.ResolveCacheDir()
 				upgradeConfirmPath = upgrade.PendingConfirmPath(cacheDir)
+				// Report "healthy=false" to cloudbox while a self-upgrade
+				// is pending confirmation (the watchdog marker is present),
+				// so the fleet health-gate sees an unconfirmed host. Hooked
+				// (not a direct call) to avoid an agent→upgrade import cycle.
+				if cp := upgradeConfirmPath; cp != "" {
+					agent.HealthyProbe = func() bool {
+						pc, _ := upgrade.ReadPendingConfirm(cp)
+						return pc == nil
+					}
+				}
 				ledgerPath := ""
 				if cacheDir != "" {
 					ledgerPath = filepath.Join(cacheDir, "upgrade.log")

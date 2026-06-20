@@ -2,8 +2,10 @@ package agent
 
 import (
 	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +16,43 @@ import (
 // /apps poller can surface "running for N hours" without any threading
 // from main.go. Stable for the life of the process.
 var daemonStartedAt = time.Now()
+
+// bootCount is this daemon process's value of the persisted monotonic
+// boot counter (see InitBootCount). Reported to cloudbox in every /apps
+// poll so the fleet health-gate can detect a crash-loop: a value that
+// jumps by more than one between two polls inside a rollout bake window
+// means the host is restarting repeatedly. 0 until InitBootCount runs.
+var bootCount int
+
+// HealthyProbe, when set by main.go, reports whether this binary is
+// confirmed healthy — i.e. there is NO pending unconfirmed self-upgrade
+// (the auto-rollback watchdog marker is absent). Left as a hook so the
+// agent package doesn't import internal/agent/upgrade (which imports
+// agent — an import cycle). nil → assume healthy.
+var HealthyProbe func() bool
+
+// InitBootCount reads, increments, and persists the daemon boot counter
+// at <dir>/boot_count, storing the new value for this process's BuildInfo
+// reporting. Called once at daemon start. Best-effort: any IO error
+// leaves bootCount at 0 (reported as "unknown") without failing boot.
+func InitBootCount(dir string) {
+	if dir == "" {
+		return
+	}
+	p := filepath.Join(dir, "boot_count")
+	n := 0
+	if data, err := os.ReadFile(p); err == nil {
+		n, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+	}
+	n++
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	if err := os.WriteFile(p, []byte(strconv.Itoa(n)), 0o600); err != nil {
+		return
+	}
+	bootCount = n
+}
 
 // releaseTag is populated at link time via -ldflags:
 //
@@ -83,6 +122,18 @@ type BuildInfo struct {
 	// the first ReadBuildInfo call via the package-level var. Stable
 	// for the life of this daemon.
 	DaemonStartedAt time.Time `json:"daemon_started_at,omitempty"`
+
+	// BootCount is the persisted monotonic daemon-start counter. The
+	// fleet health-gate diffs it between polls to detect a crash-loop
+	// (a jump > 1 inside a rollout bake window). Omitted when 0 / not
+	// yet initialized — cloudbox treats absent as unknown.
+	BootCount int `json:"boot_count,omitempty"`
+
+	// Healthy reports whether this binary is confirmed healthy (no
+	// pending unconfirmed self-upgrade). Always emitted (no omitempty)
+	// so a genuine false is visible to cloudbox; defaults true when no
+	// HealthyProbe is wired (unpaired / pre-upgrade hosts).
+	Healthy bool `json:"healthy"`
 }
 
 // Short returns a one-line human-readable identifier. Prefers the
@@ -135,6 +186,8 @@ func ReadBuildInfo() BuildInfo {
 		Arch:            runtime.GOARCH,
 		OSVersion:       osversion.String(),
 		DaemonStartedAt: daemonStartedAt,
+		BootCount:       bootCount,
+		Healthy:         HealthyProbe == nil || HealthyProbe(),
 	}
 	if exe, err := os.Executable(); err == nil {
 		if st, err := os.Stat(exe); err == nil {
