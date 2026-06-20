@@ -94,6 +94,7 @@ const (
 	StatusDisabled      Status = "disabled"       // operator turned update_mode to "never"
 	StatusMinFrom       Status = "min_from"       // current commit is older than envelope.min_from
 	StatusPendingManual Status = "pending_manual" // envelope persisted; operator must apply via UI/CLI
+	StatusQuarantined   Status = "quarantined"    // release was auto-reverted on this host; refuse re-apply
 )
 
 // HTTPStatus maps an Apply outcome to the wire HTTP status. 202
@@ -115,6 +116,8 @@ func (s Status) HTTPStatus() int {
 		return 403
 	case StatusMinFrom:
 		return 412
+	case StatusQuarantined:
+		return 409
 	}
 	return 500
 }

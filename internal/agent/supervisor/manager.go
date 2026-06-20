@@ -81,6 +81,15 @@ func (m *Manager) superviseOne(ctx context.Context, p *Program) error {
 			return nil
 		}
 
+		// Watchdog hook: inspect/repair on-disk state before each launch
+		// (auto-rollback reverts a binary that failed to confirm). Advisory
+		// — an error is logged and we launch anyway, never wedging the host.
+		if p.PreStart != nil {
+			if err := p.PreStart(); err != nil {
+				slog.Warn("supervisor: pre-start hook", "program", p.Name, "err", err)
+			}
+		}
+
 		cmd := exec.CommandContext(ctx, p.Path, p.Args...)
 		cmd.Dir = p.Dir
 		cmd.Env = p.env()

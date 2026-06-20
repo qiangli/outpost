@@ -225,7 +225,57 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.
 	cmd.Flags().BoolVar(&force, "force", false, "Swap even when candidate commit matches the running build")
 	cmd.Flags().BoolVar(&noRestart, "no-restart", false, "Swap binary on disk but do not trigger restart")
 	cmd.Flags().DurationVar(&waitFor, "wait", 30*time.Second, "Max time to wait for the daemon to come back on the new build")
-	cmd.AddCommand(upgradeHistoryCmd(), upgradeApplyCmd())
+	cmd.AddCommand(upgradeHistoryCmd(), upgradeApplyCmd(), upgradeUnquarantineCmd())
+	return cmd
+}
+
+// upgradeUnquarantineCmd clears releases the auto-rollback watchdog reverted
+// on this host. Operates directly on the local quarantine file (no daemon
+// needed) — the Worker re-reads it on every Apply, so a running daemon picks
+// up the change immediately. With no args it lists the quarantine.
+func upgradeUnquarantineCmd() *cobra.Command {
+	var all bool
+	cmd := &cobra.Command{
+		Use:   "unquarantine [release_id]",
+		Short: "Clear an auto-reverted release from this host's quarantine (so it can be applied again)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			dir, err := conf.DefaultCacheDir()
+			if err != nil {
+				return err
+			}
+			q := upgrade.NewQuarantine(upgrade.QuarantinePath(dir))
+			switch {
+			case all:
+				if err := q.ClearAll(); err != nil {
+					return err
+				}
+				fmt.Println("Cleared all quarantined releases.")
+			case len(args) == 1:
+				if err := q.Clear(args[0]); err != nil {
+					return err
+				}
+				fmt.Printf("Cleared %q from quarantine.\n", args[0])
+			default:
+				list, err := q.List()
+				if err != nil {
+					return err
+				}
+				if len(list) == 0 {
+					fmt.Println("No quarantined releases.")
+					return nil
+				}
+				fmt.Println("Quarantined releases (auto-reverted on this host):")
+				for _, e := range list {
+					fmt.Printf("  %s  commit=%s  reverted=%s  reason=%s\n",
+						e.ReleaseID, e.Commit, e.RevertedAt.Format(time.RFC3339), e.Reason)
+				}
+				fmt.Println("Clear one with `outpost upgrade unquarantine <release_id>`, or all with --all.")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&all, "all", false, "clear all quarantined releases")
 	return cmd
 }
 

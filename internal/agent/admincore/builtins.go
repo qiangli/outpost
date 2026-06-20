@@ -44,6 +44,9 @@ type BuiltinsParams struct {
 	// unchanged"; non-nil with an invalid value is rejected by
 	// SetBuiltins with a 400-class APIError.
 	UpdateMode *string `json:"update_mode,omitempty"`
+	// AutoRollback arms the auto-rollback watchdog's DESTRUCTIVE revert
+	// (default off / observe-only). nil = leave unchanged.
+	AutoRollback *bool `json:"auto_rollback,omitempty"`
 }
 
 // BuiltinsResult reports what happened. RestartPending is true when
@@ -161,6 +164,9 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 		// Clear the legacy bool so it doesn't shadow the new field
 		// on the next round-trip through UpdateModeName.
 		fc.AutoUpgrade = nil
+	}
+	if p.AutoRollback != nil {
+		fc.AutoRollbackEnabled = p.AutoRollback
 	}
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		return BuiltinsResult{}, internalErr("%s", err.Error())

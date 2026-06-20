@@ -40,6 +40,14 @@ type Program struct {
 	// (appended). Empty = inherit the supervisor's stdout/stderr.
 	LogPath string
 
+	// PreStart, when set, runs in the supervisor process immediately before
+	// each launch of the child. It's the injection point for the
+	// auto-rollback watchdog: inspect/repair on-disk state (e.g. revert a
+	// binary that failed to confirm healthy) before the next boot. A
+	// non-nil error is logged and the launch proceeds anyway — PreStart is
+	// advisory, never a gate that could wedge the daemon down.
+	PreStart func() error
+
 	// StartSecs: a child that stays up at least this long is a healthy
 	// start and resets the restart backoff. Zero = DefaultStartSecs.
 	StartSecs time.Duration

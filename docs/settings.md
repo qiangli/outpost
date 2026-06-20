@@ -109,6 +109,7 @@ tool, or wipe `agent.json` by hand.
 | Ollama LLM-pool participation | `ollama_pool_enabled` | `builtins set --ollama-pool` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Cluster join | `cluster.enabled` | `builtins set --cluster` | Inbound > Cluster | `outpost_set_builtins` | Restart |
 | Cloudbox-pushed self-upgrade | `update_mode` | `builtins set --update=auto\|manual\|never` | Inbound > Built-ins | `outpost_set_builtins` | Live |
+| Auto-rollback watchdog (destructive revert) | `auto_rollback_enabled` | `builtins set --auto-rollback=on\|off` | Inbound > Built-ins | `outpost_set_builtins` | Live |
 
 All built-in toggles default to ON when the JSON key is absent (old
 configs) so an upgrade doesn't silently disable features. The
@@ -214,6 +215,24 @@ Rollback: `outpost rollback` swaps `<binary>.previous` back over the
 live binary and restarts. After rollback the previous file is gone —
 re-upgrade if you want to climb forward again.
 
+Auto-rollback watchdog (`auto_rollback_enabled`, default **off**): after
+a self-upgrade swap, the daemon leaves a confirmation marker
+(`upgrade-pending-confirm.json`). The new binary "confirms healthy" by
+simply **staying up** for a dwell period — a purely local signal that
+needs no cloudbox round-trip, so a good binary that boots during a WAN
+outage still self-confirms and is never falsely reverted. If instead the
+new binary crash-loops (never stays up long enough), the supervisor —
+the always-up parent that survives a crash-loop — reverts
+`<binary>.previous` on the next respawn and **quarantines** the bad
+`release_id` so the pull-trigger doesn't re-apply it (clear with `outpost
+upgrade unquarantine`). The destructive revert is gated by
+`auto_rollback_enabled`: when **off** (the default), the watchdog only
+*observes* — it logs `watchdog: WOULD auto-rollback …` so you can
+validate the signal on a canary before arming it fleet-wide. A revert is
+refused (binary left in place) if `<binary>.previous` itself fails to
+probe, so a double-brick never makes things worse. Ledger steps:
+`confirm_ok`, `auto_rollback`, `auto_rollback_failed`.
+
 Status codes the daemon returns to cloudbox:
 
 | HTTP | Status | Meaning |
@@ -224,6 +243,7 @@ Status codes the daemon returns to cloudbox:
 | 304 | same_commit | daemon is already at this commit |
 | 403 | disabled | operator set `update_mode` to `never` |
 | 412 | min_from | daemon's current commit is older than `min_from` requires |
+| 409 | quarantined | this `release_id` was auto-reverted on this host; refused until cleared or superseded |
 | 400 | (invalid envelope) | required field missing or `url` is not https |
 
 ### Apps (live)

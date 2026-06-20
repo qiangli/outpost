@@ -75,6 +75,12 @@ func runSupervisord(ctx context.Context) error {
 		Env:     append(os.Environ(), envSupervised+"=1"),
 		LogPath: logPath,
 	}
+	// Auto-rollback watchdog: before each (re)launch, revert a just-upgraded
+	// binary that failed to confirm healthy. No-op without a pending upgrade;
+	// the destructive revert is gated by auto_rollback_enabled (default off).
+	if dir, derr := conf.DefaultCacheDir(); derr == nil {
+		daemon.PreStart = watchdogPreStart(dir)
+	}
 
 	// Translate SIGINT/SIGTERM into a context cancel so the supervisor
 	// gracefully stops the daemon before we exit.

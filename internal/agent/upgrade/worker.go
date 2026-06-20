@@ -69,6 +69,14 @@ type Worker struct {
 	logger   *slog.Logger
 	verifier ArtifactVerifier
 
+	// confirmPath is where run() writes the auto-rollback watchdog marker
+	// after a swap (see pending_confirm.go). Empty disables the marker
+	// (e.g. no cache dir).
+	confirmPath string
+	// quarantine blocks re-applying a release_id the watchdog auto-reverted
+	// on this host. Nil disables the guard.
+	quarantine *Quarantine
+
 	mu       sync.Mutex
 	inFlight bool
 	// lastReleaseID is "most recently accepted-or-completed envelope
@@ -92,6 +100,12 @@ type Options struct {
 	Client   *http.Client
 	Logger   *slog.Logger
 	Verifier ArtifactVerifier // nil → NoopVerifier (today's cloudbox-as-root-of-trust)
+	// ConfirmPath is where run() writes the auto-rollback watchdog marker
+	// after a swap. Empty disables the marker.
+	ConfirmPath string
+	// QuarantinePath backs the re-apply guard for auto-reverted releases.
+	// Empty disables the guard.
+	QuarantinePath string
 }
 
 // NewWorker constructs a Worker. State and Restart are required —
@@ -106,12 +120,16 @@ func NewWorker(opts Options) (*Worker, error) {
 		return nil, errors.New("upgrade.NewWorker: Restart is required")
 	}
 	w := &Worker{
-		state:    opts.State,
-		restart:  opts.Restart,
-		ledger:   opts.Ledger,
-		client:   opts.Client,
-		logger:   opts.Logger,
-		verifier: opts.Verifier,
+		state:       opts.State,
+		restart:     opts.Restart,
+		ledger:      opts.Ledger,
+		client:      opts.Client,
+		logger:      opts.Logger,
+		verifier:    opts.Verifier,
+		confirmPath: opts.ConfirmPath,
+	}
+	if opts.QuarantinePath != "" {
+		w.quarantine = NewQuarantine(opts.QuarantinePath)
 	}
 	if w.client == nil {
 		w.client = http.DefaultClient
@@ -156,6 +174,14 @@ func seedLastReleaseID(l *Ledger) string {
 func (w *Worker) Apply(ctx context.Context, env Envelope) Result {
 	if err := env.Validate(); err != nil {
 		return Result{Status: "invalid", Detail: err.Error(), ReleaseID: env.ReleaseID}
+	}
+
+	// Quarantine short-circuits BOTH the push and the pull path: a release
+	// the watchdog auto-reverted on this host must not be re-applied (the
+	// puller would otherwise re-pull /fleet/target, re-brick, re-revert in a
+	// slow flap). Cleared only by an operator or a newer release_id.
+	if w.quarantine != nil && w.quarantine.Has(env.ReleaseID) {
+		return Result{Status: StatusQuarantined, Detail: "release was auto-reverted on this host; cleared by operator (`outpost upgrade unquarantine`) or a newer release", ReleaseID: env.ReleaseID, Commit: env.Commit}
 	}
 
 	w.mu.Lock()
@@ -297,9 +323,11 @@ func (w *Worker) run(ctx context.Context, env Envelope, binaryPath, fromSHA, pen
 	}
 
 	previous := binaryPath + ".previous"
+	retained := true
 	if err := RetainPrevious(binaryPath, previous); err != nil {
 		// Rollback won't be available for this upgrade — but the
 		// upgrade itself can still proceed. The ledger records why.
+		retained = false
 		_ = w.appendLedger(LedgerEntry{
 			ReleaseID: env.ReleaseID,
 			Step:      "previous_unavailable",
@@ -321,6 +349,18 @@ func (w *Worker) run(ctx context.Context, env Envelope, binaryPath, fromSHA, pen
 		ToSHA:     agent.BuildInfo{Commit: build.Commit, Dirty: build.Dirty}.Short(),
 		Detail:    "binary swapped; scheduling restart",
 	})
+
+	// Arm the auto-rollback watchdog: leave a marker the new binary must
+	// confirm (by staying up — see pending_confirm.go) or the supervisor
+	// reverts. Only when we actually retained a .previous to revert to —
+	// no rollback target ⇒ no watchdog. Marker write is best-effort; a
+	// failure just means no auto-rollback for this upgrade.
+	if retained && w.confirmPath != "" {
+		if err := WritePendingConfirm(w.confirmPath,
+			NewPendingConfirm(env.ReleaseID, fromSHA, build.Commit, binaryPath, previous)); err != nil {
+			w.logger.Warn("upgrade: writing confirm marker", "err", err)
+		}
+	}
 
 	// Consume the pending file if this run was Force-driven and the
 	// release_id matches what was queued. Mismatches leave the file

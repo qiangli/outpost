@@ -32,6 +32,7 @@ type builtinsIn struct {
 	YcodeShareSurfaces     map[string]bool `json:"ycode_share_surfaces,omitempty" jsonschema:"Per-surface opt-in overlay for the ycode-share catalog. Keys: ycode, ycode-canvas, ycode-ollama, ycode-git, ycode-memos, ycode-graph. Absent keys fall back to catalog defaults (only 'ycode' is default-on). Partial maps are merged into the persisted overlay; not a full replace."`
 	Cluster                *bool           `json:"cluster,omitempty" jsonschema:"Join the cloudbox virtual-podman cluster as a node"`
 	UpdateMode             *string         `json:"update_mode,omitempty" jsonschema:"Per-host policy for cloudbox-pushed self-upgrades — one of 'auto' (default; stage+swap+restart on push), 'manual' (persist envelope, operator applies), 'never' (refuse)"`
+	AutoRollback           *bool           `json:"auto_rollback,omitempty" jsonschema:"Arm the auto-rollback watchdog's destructive revert: when a self-upgrade's new binary fails to confirm healthy, the supervisor reverts to the previous binary. Default off (observe-only — logs 'would auto-rollback')."`
 }
 
 type setBuiltinsOut struct {
@@ -65,6 +66,7 @@ func (s *Server) registerBuiltinsTools() {
 			YcodeShareSurfaces:     in.YcodeShareSurfaces,
 			Cluster:                in.Cluster,
 			UpdateMode:             in.UpdateMode,
+			AutoRollback:           in.AutoRollback,
 		})
 		if err != nil {
 			return apiErrResult[setBuiltinsOut](err)

@@ -571,11 +571,13 @@ func startCmd() *cobra.Command {
 			// for cloudbox to authenticate with, and the MCP tools
 			// won't register either (they check s.upgrader != nil).
 			var (
-				upgradeWorker *upgrade.Worker
-				upgradeLedger *upgrade.Ledger
+				upgradeWorker      *upgrade.Worker
+				upgradeLedger      *upgrade.Ledger
+				upgradeConfirmPath string
 			)
 			if fc.AccessToken != "" {
 				cacheDir, _ := conf.ResolveCacheDir()
+				upgradeConfirmPath = upgrade.PendingConfirmPath(cacheDir)
 				ledgerPath := ""
 				if cacheDir != "" {
 					ledgerPath = filepath.Join(cacheDir, "upgrade.log")
@@ -602,8 +604,10 @@ func startCmd() *cobra.Command {
 							PendingPath:   pendingPath,
 						}
 					},
-					Restart: core.ScheduleRestart,
-					Ledger:  upgradeLedger,
+					Restart:        core.ScheduleRestart,
+					Ledger:         upgradeLedger,
+					ConfirmPath:    upgradeConfirmPath,
+					QuarantinePath: upgrade.QuarantinePath(cacheDir),
 				})
 				if err != nil {
 					return fmt.Errorf("upgrade worker: %w", err)
@@ -1026,6 +1030,17 @@ func startCmd() *cobra.Command {
 						Worker:       upgradeWorker,
 					}
 					g.Go(func() error { return puller.Run(gctx) })
+				}
+				// Auto-rollback confirm half: if this boot is a just-upgraded
+				// binary, ArmConfirm clears the watchdog marker once we've
+				// stayed up long enough (declaring the upgrade healthy). A
+				// crash before then leaves the marker for the supervisor to
+				// act on. No-op when there's no pending upgrade.
+				if upgradeConfirmPath != "" {
+					g.Go(func() error {
+						upgrade.ArmConfirm(gctx, upgradeConfirmPath, agent.ReadBuildInfo().ShortCommit(), upgradeLedger)
+						return nil
+					})
 				}
 			}
 
