@@ -1,0 +1,67 @@
+# Runs the Go test suite on every PR and every push to main. Until this
+# existed, NOTHING ran `go test` before a release tag — a broken binary
+# could be tagged and fanned out to the whole fleet with the tests never
+# having executed. This is the gate that closes that hole; `release.yml`
+# (tag-triggered) and `rollout.yml` (canary→fleet) sit downstream of it.
+#
+# Two known test-environment caveats (see CLAUDE.md "Build & test"):
+#   - internal/agent/shell drives ergochat/readline against a real PTY;
+#     without a controlling TTY the readline goroutine blocks and the
+#     test hangs. The main gate therefore EXCLUDES that package and runs
+#     it separately under a PTY (`script`) as a non-blocking step.
+#   - cloudbox/hub's Linux-container requirement is a different repo and
+#     does not apply here — every outpost package builds on linux/amd64.
+
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel an in-progress run when a newer commit lands on the same ref.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: go test + vet (linux/amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # full history so vcs.revision stamps in version tests
+
+      - name: Bootstrap sibling deps (../sh, ../coreutils)
+        run: ./scripts/bootstrap-siblings.sh
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      # The headless-safe gate: every package EXCEPT the PTY-bound shell
+      # package. A failure here blocks the merge / the eventual release.
+      - name: go test (headless-safe subset)
+        run: |
+          set -euo pipefail
+          pkgs=$(go list ./... | grep -v '/internal/agent/shell$')
+          go test -short -count=1 $pkgs
+
+      # The shell package needs a controlling TTY. `script` allocates a
+      # PTY so the readline-driven tests can run in CI. Marked advisory
+      # (continue-on-error) because they are sensitive to the runner's
+      # PTY width / cwd length (see MEMORY: arrowkey-test-cwd-sensitive);
+      # the canonical run is on a real dev machine. Surfaces signal
+      # without making the gate flaky.
+      - name: go test (shell package, under a PTY — advisory)
+        continue-on-error: true
+        run: |
+          script -q -e -c "go test -count=1 ./internal/agent/shell/..." /dev/null

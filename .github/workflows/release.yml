@@ -82,12 +82,9 @@ jobs:
             -trimpath \
             -o "${out}" \
             ./cmd/outpost
-          # Sanity-check the binary self-reports the right tag. For
-          # cross-arch builds we can only check on a native runner;
-          # the linux/amd64 case is one such pairing.
-          if [ "${GOOS}/${GOARCH}" = "linux/amd64" ]; then
-            "${out}" version --json
-          fi
+          # NOTE: the cross-compiled binary is NOT executed here (this is
+          # an amd64 runner). Every platform's binary is boot-smoked on a
+          # native runner in the `smoke` job below, which gates `publish`.
 
       - name: sha256
         run: |
@@ -102,9 +99,69 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  smoke:
+    # Boot-smoke EVERY published binary on a NATIVE runner before the
+    # release is allowed to publish. The build job cross-compiles on
+    # amd64 Linux, so without this the darwin/windows/arm artifacts ship
+    # having never been executed — a build-tag regression, a
+    # platform-specific nil-deref (e.g. the Windows vpty path), or a bad
+    # cross-link would reach the fleet undetected. This job downloads the
+    # exact artifact and runs it, so `publish` (and therefore the
+    # canary→fleet rollout) can only proceed if every platform boots.
+    name: smoke ${{ matrix.os }}/${{ matrix.arch }}
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - os: darwin
+            arch: arm64
+            runner: macos-latest      # Apple Silicon
+          - os: darwin
+            arch: amd64
+            runner: macos-13           # Intel
+          - os: windows
+            arch: amd64
+            runner: windows-latest
+          - os: windows
+            arch: arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: outpost-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist
+
+      - name: boot smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          bin="dist/outpost-${tag}-${{ matrix.os }}-${{ matrix.arch }}"
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            bin="${bin}.exe"
+          fi
+          chmod +x "$bin" 2>/dev/null || true
+          echo "== version --json (boots + self-reports the right tag) =="
+          out=$("$bin" version --json)
+          echo "$out"
+          echo "$out" | grep -q "$tag" || { echo "::error::version did not report tag $tag"; exit 1; }
+          echo "== --help (initializes the full cobra command tree) =="
+          "$bin" --help >/dev/null
+          echo "== docs settings (reads the embedded FS) =="
+          "$bin" docs settings >/dev/null
+          echo "boot smoke OK: ${{ matrix.os }}/${{ matrix.arch }}"
+
   publish:
     name: publish release + webhook
-    needs: build
+    needs: [build, smoke]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
