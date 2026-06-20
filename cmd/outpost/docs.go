@@ -33,6 +33,7 @@ var docsManifest = []struct {
 	Title       string
 	Description string
 }{
+	{"pairing", "Pairing runbook", "End-to-end: mint a code, register (local or over LAN ssh), verify online, make it reboot-durable; platform + troubleshooting notes."},
 	{"install", "Install guide", "Three install paths (curl-pipe sh, PowerShell, go install), uninstall steps, Windows Defender notes."},
 	{"building", "Build from source", "Per-platform build recipes (build.sh, build.ps1, `outpost build`), sibling bootstrap, cross-compile matrix."},
 	{"settings", "Settings reference", "Every persistable setting: file key, CLI flag, UI location, MCP tool, side-effects."},

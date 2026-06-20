@@ -2,11 +2,11 @@
 
 Outpost ships as a single self-contained binary (`outpost`). There are three supported install paths — pick the one that matches your environment.
 
-| Path | Audience | Auto-update | Linux PAM auth |
-|------|----------|-------------|----------------|
-| `install.sh` (curl-pipe) | macOS / Linux, anyone | cloudbox push | no (CGO disabled in releases) |
+| Path | Audience | Auto-update | Linux OS-password auth |
+|------|----------|-------------|------------------------|
+| `install.sh` (curl-pipe) | macOS / Linux, anyone | cloudbox push | yes (pure-Go unix_chkpwd/shadow, no CGO) |
 | `install.ps1` (PowerShell) | Windows | cloudbox push | n/a |
-| `go install` | developers on any OS | manual rebuild | yes with `CGO_ENABLED=1` on Linux |
+| `go install` | developers on any OS | manual rebuild | yes (no CGO needed) |
 
 The pre-built binary releases live on [GitHub Releases](https://github.com/qiangli/outpost/releases). Every release ships six artifacts (`darwin/linux/windows × arm64/amd64`) plus a matching `.sha256` sidecar per artifact.
 
@@ -86,12 +86,15 @@ go install github.com/qiangli/outpost/cmd/outpost@v0.3.0
 
 The resulting binary lands in `$GOBIN` (or `$GOPATH/bin`, or `$HOME/go/bin`) — make sure that directory is on `PATH`.
 
-**Linux PAM authentication**: the official releases are built with `CGO_ENABLED=0`, which means the Linux PAM auth code path is stubbed out and only `AUTH_URL`-mode authentication works. To get PAM auth, source-build with CGO + libpam:
-
-```sh
-sudo apt install libpam0g-dev    # or your distro's equivalent
-CGO_ENABLED=1 go install github.com/qiangli/outpost/cmd/outpost@latest
-```
+**Linux OS-password authentication**: works out of the box in the official
+`CGO_ENABLED=0` releases — no source build, no `libpam-dev`, no CGO. The Linux
+authenticator is pure Go: it shells out to the setuid `unix_chkpwd` PAM helper
+and, if that rejects a valid password (Ubuntu 26.04 / PAM 1.7.0 ship a broken
+one), falls back to reading `/etc/shadow` and verifying the crypt(3) hash
+directly. The shadow fallback needs the outpost process to be able to read
+`/etc/shadow` (shadow-group membership, or running as root); when it can't,
+only the `unix_chkpwd` path is available. Accounts backed by LDAP/SSSD/AD
+rather than local `/etc/shadow` should use `AUTH_URL`-mode authentication.
 
 `go install` builds do not include the `releaseTag` ldflag stamp that GitHub Releases bake in, so `outpost version` will report the commit short-sha rather than `vX.Y.Z`. Use `outpost version --json` for the full provenance.
 
