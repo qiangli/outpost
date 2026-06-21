@@ -236,6 +236,39 @@ jobs:
           echo "::error::canary host '$host' did not converge to commit $target_short within 2 minutes"
           exit 1
 
+      - name: Health-gate the canary before fan-out
+        if: steps.cfg.outputs.dry_run != 'true'
+        env:
+          CLOUDBOX_BASE_URL: ${{ secrets.CLOUDBOX_BASE_URL }}
+          CLOUDBOX_FLEET_UPGRADE_TOKEN: ${{ secrets.CLOUDBOX_FLEET_UPGRADE_TOKEN }}
+          # Bake past the outpost auto-rollback watchdog's confirm dwell
+          # (default 3m) so a HEALTHY canary has flipped healthy=true by the
+          # time we check — and a crash-looping one is still healthy=false.
+          BAKE_SECONDS: "240"
+        run: |
+          # Convergence (above) only proves the canary re-execed onto the new
+          # commit; it does NOT prove the new binary is STABLE. Right after
+          # the canary upgrade it's the only host on the target commit, so
+          # cloudbox's /fleet/health `unhealthy` count is exactly "is the
+          # canary crash-looping / unconfirmed". A non-zero count (or a
+          # 'fail' verdict) means the new build is bad — abort before it
+          # hits the fleet. The endpoint also AUTO-TRIPS the global kill
+          # switch on 'fail', so even a dead job can't let a bad wave roll.
+          target="${{ steps.envelope.outputs.commit }}"
+          echo "baking ${BAKE_SECONDS}s for the canary to confirm (auto-rollback dwell)…"
+          sleep "${BAKE_SECONDS}"
+          health=$(curl -fsS \
+            -H "Authorization: Bearer $CLOUDBOX_FLEET_UPGRADE_TOKEN" \
+            "${CLOUDBOX_BASE_URL}/api/v1/fleet/health?commit=${target}")
+          echo "$health" | jq .
+          verdict=$(echo "$health" | jq -r .verdict)
+          unhealthy=$(echo "$health" | jq -r '.unhealthy // 0')
+          if [ "$verdict" = "fail" ] || [ "${unhealthy:-0}" -gt 0 ]; then
+            echo "::error::canary is unhealthy after bake (verdict=$verdict, unhealthy=$unhealthy) — rollout HALTED. The global kill switch was auto-tripped; clear it with POST /api/v1/fleet/pause {\"paused\":false} once the build is fixed."
+            exit 1
+          fi
+          echo "✓ canary healthy after bake (verdict=$verdict) — proceeding to fan-out"
+
       - name: Fan-out to remaining fleet
         if: steps.cfg.outputs.dry_run != 'true'
         env:
@@ -279,6 +312,13 @@ jobs:
             "${CLOUDBOX_BASE_URL}/api/v1/fleet/upgrade" \
             --data-binary "$envelope_fanout")
           echo "$resp" | jq .
+          # If the global kill switch is on (e.g. an earlier wave auto-
+          # tripped it), cloudbox returns a single "paused" result and
+          # dispatches nothing — treat that as a halt, not a success.
+          if echo "$resp" | jq -e '.results[]? | select(.status == "paused")' >/dev/null; then
+            echo "::error::fleet upgrades are PAUSED (kill switch) — fan-out skipped. Clear with POST /api/v1/fleet/pause {\"paused\":false}."
+            exit 1
+          fi
           ok=$(echo "$resp" | jq -r .ok)
           total=$(echo "$resp" | jq -r .total)
           rejected=$(echo "$resp" | jq -r '[.results[] | select(.status != "ok")] | length')
