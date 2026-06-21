@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/filebrowser/filebrowser/v2/fbembed"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
@@ -741,6 +742,55 @@ func startCmd() *cobra.Command {
 				slog.Info("outpost: admin ui listening", "url", adminSrv.URL())
 				return adminSrv.Serve(gctx)
 			})
+
+			// Files builtin — embedded File Browser (GUI sibling of /shell +
+			// /ssh). In-process handler on a random loopback port, registered
+			// as the "files" http app so it rides the existing per-app gate
+			// (require_login, lan_only_paths, identity stamping). Read-only +
+			// download-only unless files_allow_write is set. Registered here
+			// (not in the boot builtin block above) because it needs a
+			// listener whose lifetime is tied to the errgroup context.
+			if fc.FilesOn() {
+				scope := fc.FilesScope
+				if scope == "" {
+					if home, herr := os.UserHomeDir(); herr == nil {
+						scope = home
+					}
+				}
+				dbPath := filepath.Join(filesDBDir(), "filebrowser.db")
+				if h, closer, ferr := fbembed.New(fbembed.Options{
+					Scope: scope, AllowWrite: fc.FilesAllowWrite, DBPath: dbPath,
+				}); ferr != nil {
+					slog.Warn("files builtin: init", "err", ferr)
+				} else if ln, lerr := net.Listen("tcp", "127.0.0.1:0"); lerr != nil {
+					slog.Warn("files builtin: listen", "err", lerr)
+					_ = closer()
+				} else {
+					port := ln.Addr().(*net.TCPAddr).Port
+					filesSrv := &http.Server{Handler: h}
+					g.Go(func() error {
+						if serr := filesSrv.Serve(ln); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
+							return serr
+						}
+						return nil
+					})
+					g.Go(func() error {
+						<-gctx.Done()
+						sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer cancel()
+						_ = filesSrv.Shutdown(sctx)
+						return closer()
+					})
+					if rerr := apps.RegisterFromConfig(conf.AppConfig{
+						Name: agent.BuiltinFiles, Scheme: "http", Host: "127.0.0.1", Port: port,
+						RequireLogin: true, IndexPath: "/", Enabled: true,
+					}); rerr != nil {
+						slog.Warn("files builtin: register", "err", rerr)
+					} else {
+						slog.Info("files builtin: registered", "scope", scope, "write", fc.FilesAllowWrite, "port", port)
+					}
+				}
+			}
 			// Folder-watcher scheduler. Runs whether or not Backup
 			// is enabled — Apply with a nil/disabled config just
 			// keeps the cron with no entries; the admin UI can
@@ -1337,6 +1387,16 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 // concrete (non-wildcard) entries of the SandboxAllowedImages allowlist —
 // pre-pulling exactly the images a caller is permitted to run. A wildcard
 // allowlist entry ("repo/*") names no concrete image, so it's skipped.
+// filesDBDir returns the directory holding the embedded File Browser's
+// self-managed Bolt store (<UserCacheDir>/outpost). Falls back to the OS
+// temp dir if the cache dir can't be resolved — fbembed creates the file.
+func filesDBDir() string {
+	if dir, err := conf.DefaultCacheDir(); err == nil {
+		return dir
+	}
+	return os.TempDir()
+}
+
 func sandboxPrewarmImages(fc *conf.FileConfig) []string {
 	if fc == nil {
 		return nil

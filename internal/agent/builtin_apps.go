@@ -37,6 +37,11 @@ const (
 	// proxy is wrapped by the sandbox filter — distinct from the raw,
 	// admin-only BuiltinPodman passthrough.
 	BuiltinSandbox = "sandbox"
+	// BuiltinFiles is the embedded File Browser mount — an in-process HTTP
+	// handler (not an external daemon), the GUI sibling of /shell + /ssh
+	// for remote view/download. Registered as a normal "http" app so it
+	// flows through the existing per-app gate.
+	BuiltinFiles = "files"
 )
 
 // DetectPodman probes the usual podman socket paths and returns a

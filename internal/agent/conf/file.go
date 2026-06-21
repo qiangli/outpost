@@ -105,6 +105,18 @@ type FileConfig struct {
 	ClipboardEnabled *bool `json:"clipboard_enabled,omitempty"`
 	SSHEnabled       *bool `json:"ssh_enabled,omitempty"`
 
+	// Files builtin — embedded File Browser, the GUI sibling of /shell +
+	// /ssh for remote view/download. Default ON like the other
+	// outpost-owned route builtins above (it serves an in-process handler,
+	// not an external daemon). Read-only + download-only by default;
+	// FilesAllowWrite flips every write op (create/upload, modify, rename,
+	// delete) together and is meant to be a LAN/admin-plane decision.
+	// FilesScope is the root directory the browser is confined to (empty =
+	// the OS user's home).
+	FilesEnabled    *bool  `json:"files_enabled,omitempty"`
+	FilesScope      string `json:"files_scope,omitempty"`
+	FilesAllowWrite bool   `json:"files_allow_write,omitempty"`
+
 	// SSHAllowLocalForward gates whether the built-in /ssh server accepts
 	// `direct-tcpip` channels — the primitive behind stock `ssh -L` /
 	// `ssh -D`. Default-on (matches pre-toggle behavior was rejection;
@@ -921,6 +933,10 @@ func (fc *FileConfig) ClipboardOn() bool {
 // SSHOn reports whether the built-in /ssh route (real SSH server reached
 // over WebSocket through the matrix tunnel) should be mounted.
 func (fc *FileConfig) SSHOn() bool { return fc == nil || fc.SSHEnabled == nil || *fc.SSHEnabled }
+
+// FilesOn reports whether the embedded File Browser builtin should mount.
+// Default-on like the other outpost-owned route builtins.
+func (fc *FileConfig) FilesOn() bool { return fc == nil || fc.FilesEnabled == nil || *fc.FilesEnabled }
 
 // SSHAllowLocalForwardOn reports whether the SSH server should honor
 // `direct-tcpip` channel-open requests (stock `ssh -L` / `ssh -D`).

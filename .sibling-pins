@@ -1,5 +1,5 @@
 # Pinned commit SHAs for sibling-path replace targets in go.mod
-# (../sh, ../coreutils).
+# (../sh, ../coreutils, ../filebrowser).
 # scripts/bootstrap-siblings.sh reads this file and clones each missing
 # sibling at the listed SHA, so standalone clones of outpost build
 # without external setup.
@@ -13,3 +13,4 @@
 # automates this.
 sh=a946158a7320c384a3d14ef3fbde727f4120935b
 coreutils=37debc81ed0223ea986480a29a74815cd2e7644c
+filebrowser=edcde68df9e7e085949559e348c50ccf041d2816
