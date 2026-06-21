@@ -257,6 +257,11 @@ func (w *Worker) Apply(ctx context.Context, env Envelope) Result {
 		return Result{Status: StatusPendingManual, Detail: "update queued; operator must run `outpost upgrade apply` or click Apply in cloudbox UI", ReleaseID: env.ReleaseID, Commit: env.Commit}
 	}
 
+	// Remember the prior guard value so a run that FAILS before the swap
+	// can restore it (see run's defer). Setting lastReleaseID now keeps a
+	// concurrent retry during the run on the inFlight (409) path; only a
+	// successful swap makes it stick.
+	prevReleaseID := w.lastReleaseID
 	w.inFlight = true
 	w.lastReleaseID = env.ReleaseID
 	binaryPath := st.BinaryPath
@@ -266,6 +271,7 @@ func (w *Worker) Apply(ctx context.Context, env Envelope) Result {
 	if binaryPath == "" {
 		w.mu.Lock()
 		w.inFlight = false
+		w.lastReleaseID = prevReleaseID // never started; un-poison the guard
 		w.mu.Unlock()
 		return Result{Status: "invalid", Detail: "daemon has no binary_path; cannot stage candidate", ReleaseID: env.ReleaseID}
 	}
@@ -278,7 +284,7 @@ func (w *Worker) Apply(ctx context.Context, env Envelope) Result {
 		URL:       env.URL,
 	})
 
-	go w.run(context.WithoutCancel(ctx), env, binaryPath, st.CurrentCommit, pendingPath)
+	go w.run(context.WithoutCancel(ctx), env, binaryPath, st.CurrentCommit, pendingPath, prevReleaseID)
 	return Result{Status: StatusAccepted, Detail: "staging candidate", ReleaseID: env.ReleaseID, Commit: env.Commit}
 }
 
@@ -291,10 +297,19 @@ func (w *Worker) Apply(ctx context.Context, env Envelope) Result {
 // is consuming — if Force was true and there's a pending envelope
 // for this release_id, the file is removed on success so the next
 // "Apply" UI click doesn't see a stale entry.
-func (w *Worker) run(ctx context.Context, env Envelope, binaryPath, fromSHA, pendingPath string) {
+func (w *Worker) run(ctx context.Context, env Envelope, binaryPath, fromSHA, pendingPath, prevReleaseID string) {
+	swapped := false
 	defer func() {
 		w.mu.Lock()
 		w.inFlight = false
+		if !swapped {
+			// Failed before the swap (stage/probe/verify/swap error — e.g. a
+			// cross-platform candidate that probe-rejected). Restore the
+			// replay guard so the puller can retry the SAME release_id with
+			// the correct-platform artifact, instead of being StatusReplay'd
+			// and wedged on the old binary until a daemon restart.
+			w.lastReleaseID = prevReleaseID
+		}
 		w.mu.Unlock()
 	}()
 
@@ -341,6 +356,10 @@ func (w *Worker) run(ctx context.Context, env Envelope, binaryPath, fromSHA, pen
 		w.fail(env, "swap_failed", fromSHA, err)
 		return
 	}
+	// The swap landed — this release IS now applied, so the replay guard
+	// (set in Apply) must STICK to defend the restart window (v0.7.0). The
+	// defer above only restores it on a pre-swap failure.
+	swapped = true
 
 	_ = w.appendLedger(LedgerEntry{
 		ReleaseID: env.ReleaseID,

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"time"
 
 	"github.com/qiangli/outpost/internal/agent"
@@ -36,6 +37,20 @@ func Probe(path, expectedCommit string) (agent.BuildInfo, error) {
 	}
 	if b.GoVersion == "" {
 		return agent.BuildInfo{}, errors.New("version --json output had no go_version field; not an outpost binary?")
+	}
+	// Platform guard: the candidate must be built for THIS host's
+	// os/arch. Both values are compile-time-baked (runtime.GOOS/GOARCH),
+	// so this is authoritative — and it rejects a wrong-platform binary
+	// even when the arch can still EXEC under a translation layer
+	// (darwin-amd64 under Rosetta on darwin-arm64), which the implicit
+	// "exec format error" cannot catch. Empty fields = a pre-os/arch
+	// legacy binary; fall through (a true arch mismatch there still fails
+	// to exec above). See ErrPlatformMismatch.
+	if b.OS != "" && b.OS != runtime.GOOS {
+		return b, fmt.Errorf("%w: candidate is %s, host is %s", ErrPlatformMismatch, b.OS, runtime.GOOS)
+	}
+	if b.Arch != "" && b.Arch != runtime.GOARCH {
+		return b, fmt.Errorf("%w: candidate is %s/%s, host is %s/%s", ErrPlatformMismatch, b.OS, b.Arch, runtime.GOOS, runtime.GOARCH)
 	}
 	// Normalize both sides to short commit. The envelope's Commit
 	// field can legitimately arrive in two shapes — short ("6e498ea",

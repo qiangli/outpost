@@ -274,26 +274,62 @@ func TestWorker_RejectsMinFromMismatch(t *testing.T) {
 
 func TestWorker_DedupsByReleaseID(t *testing.T) {
 	h := newHarness(t)
-	// First call passes validation and gets to "accepted" (the stage
-	// will subsequently fail on the bogus URL, but the dedup tracking
-	// happens at Apply time, before that).
-	env := Envelope{
-		ReleaseID: "r1",
-		URL:       "https://localhost-no-server.invalid/x",
-		SHA256:    "deadbeef",
-		Commit:    "def5678",
-	}
+	// The dedup guard defends the restart window after a SUCCESSFUL swap
+	// (v0.7.0): a cloudbox retry of the just-applied release must be a
+	// no-op. So the first apply has to actually succeed.
+	candidate := fakeOutpostBinary(t, `{"commit":"def56781234","go_version":"go1.26.0"}`, 0)
+	url, sha, _ := h.serveBinary(candidate)
+	h.worker.client = h.srvClient
+	env := Envelope{ReleaseID: "r1", URL: url, SHA256: sha, Commit: "def5678"}
+
 	r1 := h.worker.Apply(context.Background(), env)
 	if r1.Status != StatusAccepted {
 		t.Fatalf("first call: expected accepted, got %v", r1.Status)
 	}
-	// Wait for the goroutine to finish so inFlight clears; then the
-	// second call should hit the dedup branch (replay), not in_flight.
-	waitForInFlight(t, h.worker, false, time.Second)
+	waitForInFlight(t, h.worker, false, 5*time.Second)
+	if h.restarts != 1 {
+		t.Fatalf("first apply should have swapped+restarted, got %d restarts", h.restarts)
+	}
+	// Second call with the same release_id → replay (restart-window defense).
 	r2 := h.worker.Apply(context.Background(), env)
 	if r2.Status != StatusReplay {
-		t.Fatalf("second call: expected replay, got %v", r2.Status)
+		t.Fatalf("second call after success: expected replay, got %v", r2.Status)
 	}
+}
+
+// TestWorker_FailedApplyDoesNotDedup is the cross-platform-wedge fix: an
+// apply that fails BEFORE the swap (here a probe-rejected candidate — the
+// same pre-swap failure path a cross-platform probe_failed takes) must NOT
+// leave the replay guard set. Otherwise the puller's later poll for the same
+// release_id (with the correct-platform artifact) is StatusReplay'd and the
+// host wedges on the old binary until a manual restart — exactly what
+// happened to lern on the v0.9.0 rollout.
+func TestWorker_FailedApplyDoesNotDedup(t *testing.T) {
+	h := newHarness(t)
+	// Candidate self-reports a commit different from the envelope → probe
+	// rejects it (stand-in for the cross-platform probe_failed).
+	candidate := fakeOutpostBinary(t, `{"commit":"99999999999","go_version":"go1.26.0"}`, 0)
+	url, sha, _ := h.serveBinary(candidate)
+	h.worker.client = h.srvClient
+	env := Envelope{ReleaseID: "r-fail", URL: url, SHA256: sha, Commit: "def5678"}
+
+	r1 := h.worker.Apply(context.Background(), env)
+	if r1.Status != StatusAccepted {
+		t.Fatalf("first call: expected accepted, got %v", r1.Status)
+	}
+	waitForInFlight(t, h.worker, false, 5*time.Second)
+	if h.restarts != 0 {
+		t.Fatalf("a probe-failed apply must not restart, got %d", h.restarts)
+	}
+	// Same release_id again → must NOT dedup (the failed attempt didn't
+	// poison the guard), so the puller can re-attempt with a correct binary.
+	r2 := h.worker.Apply(context.Background(), env)
+	if r2.Status == StatusReplay {
+		t.Fatalf("after a FAILED apply the same release_id must not replay-dedup; got replay (regression: poisoned guard)")
+	}
+	// r2 was Accepted → it spawned a second run goroutine; drain it before
+	// the test returns so t.TempDir cleanup doesn't race its candidate write.
+	waitForInFlight(t, h.worker, false, 5*time.Second)
 }
 
 // failingVerifier is a test ArtifactVerifier that always refuses.

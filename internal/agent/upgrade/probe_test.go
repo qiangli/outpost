@@ -2,9 +2,34 @@ package upgrade
 
 import (
 	"errors"
+	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// TestProbe_RejectsPlatformMismatch is the cross-platform guard: a candidate
+// that self-reports an os/arch different from this host's is rejected, even
+// though the fake "binary" execs fine (it's built for the test runner). This
+// is the case the implicit "exec format error" can't catch (e.g. Rosetta).
+func TestProbe_RejectsPlatformMismatch(t *testing.T) {
+	// plan9/mips64 is no CI runner, so this always mismatches the host.
+	bin := fakeOutpostBinary(t, `{"commit":"abc1234567","go_version":"go1.26.0","os":"plan9","arch":"mips64"}`, 0)
+	_, err := Probe(bin, "")
+	if !errors.Is(err, ErrPlatformMismatch) {
+		t.Fatalf("Probe err = %v, want ErrPlatformMismatch", err)
+	}
+}
+
+// TestProbe_AcceptsMatchingPlatform: a candidate reporting THIS host's
+// os/arch passes the platform guard.
+func TestProbe_AcceptsMatchingPlatform(t *testing.T) {
+	body := fmt.Sprintf(`{"commit":"abc1234567","go_version":"go1.26.0","os":%q,"arch":%q}`, runtime.GOOS, runtime.GOARCH)
+	bin := fakeOutpostBinary(t, body, 0)
+	if _, err := Probe(bin, ""); err != nil {
+		t.Fatalf("matching-platform candidate rejected: %v", err)
+	}
+}
 
 func TestProbe_Valid(t *testing.T) {
 	bin := fakeOutpostBinary(t, `{"commit":"abc1234567","vcs_time":"2026-05-26T16:00:00Z","dirty":false,"go_version":"go1.26.0"}`, 0)

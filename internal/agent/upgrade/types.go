@@ -139,6 +139,16 @@ type Result struct {
 // to swap a binary that doesn't identify as the release we expected.
 var ErrShortCommit = errors.New("candidate binary does not self-report the expected commit")
 
+// ErrPlatformMismatch is returned by Probe when the candidate's
+// self-reported os/arch (its compile-time runtime.GOOS/GOARCH, in
+// version --json) doesn't match the running host's. This is the
+// definitive cross-platform guard: it rejects a wrong-platform binary
+// even when the arch can still EXEC (e.g. a darwin-amd64 build running
+// under Rosetta on darwin-arm64), which the incidental "exec format
+// error" check cannot. Both sides are compile-time-baked truth, so a
+// genuine binary can never misreport.
+var ErrPlatformMismatch = errors.New("candidate binary is built for a different platform than this host")
+
 func shortCommit(full string) string {
 	if len(full) > 7 {
 		return full[:7]
