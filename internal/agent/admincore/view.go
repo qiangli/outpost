@@ -185,6 +185,9 @@ type SafeView struct {
 	SSHAllowAgentForward    bool             `json:"ssh_allow_agent_forward"`
 	SSHForwardSockets       []string         `json:"ssh_forward_sockets"`
 	SFTPEnabled             bool             `json:"sftp_enabled"`
+	FilesEnabled            bool             `json:"files_enabled"`
+	FilesAllowWrite         bool             `json:"files_allow_write"`
+	FilesScope              string           `json:"files_scope"`
 	ClientOnly              bool             `json:"client_only"`
 	Podman                  BuiltinView      `json:"podman"`
 	Sandbox                 BuiltinView      `json:"sandbox"`
@@ -269,6 +272,9 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		SSHAllowAgentForward:    fc.SSHAllowAgentForwardOn(),
 		SSHForwardSockets:       sshSockets,
 		SFTPEnabled:             fc.SFTPOn(),
+		FilesEnabled:            fc.FilesOn(),
+		FilesAllowWrite:         fc.FilesAllowWrite,
+		FilesScope:              fc.FilesScope,
 		ClientOnly:              fc.ClientOnly,
 		Podman:                  toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
 		// Sandbox shares the podman socket — availability is the podman

@@ -784,6 +784,13 @@ func startCmd() *cobra.Command {
 					if rerr := apps.RegisterFromConfig(conf.AppConfig{
 						Name: agent.BuiltinFiles, Scheme: "http", Host: "127.0.0.1", Port: port,
 						RequireLogin: true, IndexPath: "/", Enabled: true,
+						// Fence the perm-change endpoint to the LAN: the
+						// authoritative write switch is files_allow_write on the
+						// loopback admin plane, but the embedded SPA also has an
+						// in-app "enable editing" card that PUTs /api/users. 404
+						// it from the cloud so write can never be enabled through
+						// the cloud surface — only on the LAN.
+						LANOnlyPaths: []string{"/api/users"},
 					}); rerr != nil {
 						slog.Warn("files builtin: register", "err", rerr)
 					} else {

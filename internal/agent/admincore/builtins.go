@@ -13,15 +13,25 @@ import (
 // SSHForwardSockets exist in FileConfig but the SPA has no toggle for
 // them. MCP / CLI callers can drive them directly.
 type BuiltinsParams struct {
-	Shell                  *bool           `json:"shell,omitempty"`
-	Desktop                *bool           `json:"desktop,omitempty"`
-	Clipboard              *bool           `json:"clipboard,omitempty"`
-	SSH                    *bool           `json:"ssh,omitempty"`
-	SSHAllowLocalForward   *bool           `json:"ssh_allow_local_forward,omitempty"`
-	SSHAllowRemoteForward  *bool           `json:"ssh_allow_remote_forward,omitempty"`
-	SSHAllowAgentForward   *bool           `json:"ssh_allow_agent_forward,omitempty"`
-	SSHForwardSockets      []string        `json:"ssh_forward_sockets,omitempty"`
-	SFTP                   *bool           `json:"sftp,omitempty"`
+	Shell                 *bool    `json:"shell,omitempty"`
+	Desktop               *bool    `json:"desktop,omitempty"`
+	Clipboard             *bool    `json:"clipboard,omitempty"`
+	SSH                   *bool    `json:"ssh,omitempty"`
+	SSHAllowLocalForward  *bool    `json:"ssh_allow_local_forward,omitempty"`
+	SSHAllowRemoteForward *bool    `json:"ssh_allow_remote_forward,omitempty"`
+	SSHAllowAgentForward  *bool    `json:"ssh_allow_agent_forward,omitempty"`
+	SSHForwardSockets     []string `json:"ssh_forward_sockets,omitempty"`
+	SFTP                  *bool    `json:"sftp,omitempty"`
+	// Files builtin (embedded File Browser). Files toggles the mount;
+	// FilesAllowWrite flips read-only⇄read-write (all write ops together);
+	// FilesScope sets the confined root (nil = leave unchanged, empty
+	// string = the OS user's home). FilesAllowWrite is intentionally only
+	// settable here on the loopback admin plane — the cloud-facing surface
+	// has no path to it, which is what keeps "read-only by default" a real
+	// guarantee rather than a default.
+	Files                  *bool           `json:"files,omitempty"`
+	FilesAllowWrite        *bool           `json:"files_allow_write,omitempty"`
+	FilesScope             *string         `json:"files_scope,omitempty"`
 	Podman                 *bool           `json:"podman,omitempty"`
 	Sandbox                *bool           `json:"sandbox,omitempty"`
 	Ollama                 *bool           `json:"ollama,omitempty"`
@@ -95,6 +105,15 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	if p.SFTP != nil {
 		fc.SFTPEnabled = p.SFTP
 	}
+	if p.Files != nil {
+		fc.FilesEnabled = p.Files
+	}
+	if p.FilesAllowWrite != nil {
+		fc.FilesAllowWrite = *p.FilesAllowWrite
+	}
+	if p.FilesScope != nil {
+		fc.FilesScope = *p.FilesScope
+	}
 	if p.Podman != nil {
 		fc.PodmanEnabled = *p.Podman
 	}
@@ -155,7 +174,7 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil
+	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil
 	if p.UpdateMode != nil {
 		if !conf.ValidUpdateMode(*p.UpdateMode) {
 			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")

@@ -1063,6 +1063,68 @@ function buildSSHSubBlock(parent, cfg, status) {
   parent.append(sockHint, sockInput, el('div', {style: 'margin-top:0.4rem'}, sockBtn));
 }
 
+// buildFilesSubBlock populates the children behind the File Browser
+// twister: the write-enable toggle (read-only by default) and the
+// confined-root scope. Both gate on cfg.files_enabled. files_allow_write
+// is deliberately only settable here on the loopback admin plane — it is
+// the LAN-gated control that keeps "read-only by default" a real
+// guarantee, so we surface a warning next to it.
+function buildFilesSubBlock(parent, cfg, status) {
+  const filesOn = !!cfg.files_enabled;
+
+  // write-enable toggle
+  const wrow = el('div', {class: 'item-row' + (!filesOn ? ' dim' : '')});
+  const wsw = switchEl({checked: !!cfg.files_allow_write && filesOn, disabled: !filesOn});
+  wsw.input.addEventListener('change', async () => {
+    const newVal = wsw.input.checked;
+    wsw.input.disabled = true;
+    try {
+      const res = await api('POST', '/api/config/builtins', {files_allow_write: newVal});
+      msg('ok', `File editing ${newVal ? 'enabled' : 'disabled'}.`);
+      noteRestartPending(res);
+      wsw.input.disabled = !filesOn;
+    } catch (e) {
+      wsw.input.checked = !newVal;
+      wsw.input.disabled = !filesOn;
+      msg('err', e.message || 'Save failed');
+    }
+  });
+  wrow.append(
+    wsw.wrap,
+    el('span', {class: 'label'}, 'Allow editing (upload/edit/rename/delete) ', el('code', {class: 'key-hint'}, 'files_allow_write')),
+  );
+  if (!filesOn) wrow.append(el('span', {class: 'hint'}, '(enable File Browser first)'));
+  parent.append(wrow);
+  parent.append(el('p', {class: 'hint', style: 'margin:0.1rem 0 0.5rem'},
+    'Off = read-only + download-only (recommended). This switch lives only on this local admin plane, so a cloud-vouched user cannot enable writes remotely.'));
+
+  // scope (confined root)
+  parent.append(el('h4', {}, 'Scope ', el('code', {class: 'key-hint'}, 'files_scope')));
+  const scopeHint = el('p', {class: 'hint', style: 'margin:0.1rem 0 0.3rem'},
+    'Root directory the browser is confined to. Empty = the OS user’s home.');
+  const scopeInput = el('input', {
+    type: 'text',
+    value: cfg.files_scope || '',
+    placeholder: '(home)',
+    disabled: !filesOn,
+    style: !filesOn ? 'opacity:0.6' : '',
+  });
+  const scopeBtn = el('button', {type: 'button', disabled: !filesOn}, 'Save scope');
+  scopeBtn.addEventListener('click', async () => {
+    scopeBtn.disabled = true;
+    try {
+      const res = await api('POST', '/api/config/builtins', {files_scope: scopeInput.value.trim()});
+      msg('ok', 'Scope saved.');
+      noteRestartPending(res);
+    } catch (e) {
+      msg('err', e.message || 'Save failed');
+    } finally {
+      scopeBtn.disabled = !filesOn;
+    }
+  });
+  parent.append(scopeHint, scopeInput, el('div', {style: 'margin-top:0.4rem'}, scopeBtn));
+}
+
 // buildPodmanSubBlock populates the children behind the Podman
 // twister: cluster status banner + cluster toggle + kubeconfig YAML
 // editor + node-name + Save/Save+Join/Leave buttons. The cluster
@@ -2228,6 +2290,8 @@ function renderMain(status, cfg) {
     {key: 'clipboard', fileKey: 'clipboard_enabled', label: 'Clipboard', enabled: cfg.clipboard_enabled},
     {key: 'ssh',       fileKey: 'ssh_enabled',       label: 'SSH',       enabled: cfg.ssh_enabled,
      subBlock: buildSSHSubBlock},
+    {key: 'files',     fileKey: 'files_enabled',     label: 'File Browser', enabled: cfg.files_enabled,
+     subBlock: buildFilesSubBlock},
   ];
   const agenticRows = [
     // ycode is supervised differently from podman/ollama: the row is

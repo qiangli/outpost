@@ -51,6 +51,13 @@ func builtinsShowCmd() *cobra.Command {
 			row("ssh", view.SSHEnabled)
 			row("ssh_allow_local_fwd", view.SSHAllowLocalForward)
 			row("sftp", view.SFTPEnabled)
+			row("files", view.FilesEnabled)
+			row("files_allow_write", view.FilesAllowWrite)
+			scope := view.FilesScope
+			if scope == "" {
+				scope = "(home)"
+			}
+			fmt.Printf("  %-22s  %s\n", "files_scope", scope)
 			row("podman", view.Podman.Enabled)
 			row("sandbox", view.Sandbox.Enabled)
 			row("ollama", view.Ollama.Enabled)
@@ -78,6 +85,7 @@ func builtinsShowCmd() *cobra.Command {
 func builtinsSetCmd() *cobra.Command {
 	var (
 		shell, desktop, clipboard, ssh, sshLocalFwd, sshRemoteFwd, sshAgentFwd, sftp, podman, sandbox, ollama, ollamaPool, otel, otelPool, ycodeShare, ycodeShareRequireLogin, cluster string
+		files, filesAllowWrite, filesScope                                                                                                                                             string
 		clusterMode                                                                                                                                                                    string
 		updateMode, autoUpgradeLegacy, autoRollback                                                                                                                                    string
 		sshForwardSockets                                                                                                                                                              []string
@@ -118,6 +126,15 @@ func builtinsSetCmd() *cobra.Command {
 			}
 			if params.SFTP, err = parseToggle("sftp", sftp); err != nil {
 				return err
+			}
+			if params.Files, err = parseToggle("files", files); err != nil {
+				return err
+			}
+			if params.FilesAllowWrite, err = parseToggle("files-allow-write", filesAllowWrite); err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("files-scope") {
+				params.FilesScope = &filesScope
 			}
 			if params.Podman, err = parseToggle("podman", podman); err != nil {
 				return err
@@ -214,6 +231,9 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&sshAgentFwd, "ssh-agent-fwd", "", "deprecated alias for --ssh-allow-agent-forward")
 	_ = cmd.Flags().MarkDeprecated("ssh-agent-fwd", "use --ssh-allow-agent-forward")
 	cmd.Flags().StringVar(&sftp, "sftp", "", "on|off")
+	cmd.Flags().StringVar(&files, "files", "", "on|off — built-in File Browser (remote view/download)")
+	cmd.Flags().StringVar(&filesAllowWrite, "files-allow-write", "", "on|off — allow upload/edit/rename/delete in File Browser (default off = read-only; LAN-gated control)")
+	cmd.Flags().StringVar(&filesScope, "files-scope", "", "root directory File Browser is confined to (empty = OS user home)")
 	cmd.Flags().StringVar(&podman, "podman", "", "on|off — raw admin-only podman passthrough")
 	cmd.Flags().StringVar(&sandbox, "sandbox", "", "on|off — filtered container sandbox (strips privileged/host-ns/binds/caps/devices; needs podman)")
 	cmd.Flags().StringVar(&ollama, "ollama", "", "on|off")

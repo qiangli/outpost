@@ -21,6 +21,9 @@ type builtinsIn struct {
 	SSHAllowAgentForward   *bool           `json:"ssh_allow_agent_forward,omitempty" jsonschema:"Allow auth-agent-req channels (ssh -A)"`
 	SSHForwardSockets      []string        `json:"ssh_forward_sockets,omitempty" jsonschema:"Additional unix-socket paths to allow for direct-streamlocal forwards"`
 	SFTP                   *bool           `json:"sftp,omitempty" jsonschema:"Toggle the sftp subsystem (scp 8.8+ uses sftp)"`
+	Files                  *bool           `json:"files,omitempty" jsonschema:"Toggle the built-in File Browser (embedded; GUI for remote view/download)"`
+	FilesAllowWrite        *bool           `json:"files_allow_write,omitempty" jsonschema:"Allow write ops in File Browser (upload/edit/rename/delete); default off = read-only + download-only. Loopback-admin-plane only — this is the LAN-gated control."`
+	FilesScope             *string         `json:"files_scope,omitempty" jsonschema:"Root directory File Browser is confined to (empty = the OS user's home)"`
 	Podman                 *bool           `json:"podman,omitempty" jsonschema:"Toggle the raw (admin-only) built-in podman passthrough proxy"`
 	Sandbox                *bool           `json:"sandbox,omitempty" jsonschema:"Toggle the filtered container sandbox proxy (strips privileged/host-ns/host-binds/caps/devices, injects resource caps; needs podman)"`
 	Ollama                 *bool           `json:"ollama,omitempty" jsonschema:"Toggle the built-in ollama proxy"`
@@ -43,7 +46,7 @@ type setBuiltinsOut struct {
 func (s *Server) registerBuiltinsTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "outpost_set_builtins",
-		Description: "Toggle built-in routes (shell/desktop/clipboard/ssh/sftp), the SSH-channel allow flags, and optional local-daemon proxies (podman/ollama, plus the LLM pool / cluster opt-ins). Only fields present in the call are modified.",
+		Description: "Toggle built-in routes (shell/desktop/clipboard/ssh/sftp/files), the SSH-channel allow flags, the File Browser scope + write switch, and optional local-daemon proxies (podman/ollama, plus the LLM pool / cluster opt-ins). Only fields present in the call are modified.",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in builtinsIn) (*mcp.CallToolResult, setBuiltinsOut, error) {
 		res, err := s.core.SetBuiltins(admincore.BuiltinsParams{
 			Shell:                  in.Shell,
@@ -55,6 +58,9 @@ func (s *Server) registerBuiltinsTools() {
 			SSHAllowAgentForward:   in.SSHAllowAgentForward,
 			SSHForwardSockets:      in.SSHForwardSockets,
 			SFTP:                   in.SFTP,
+			Files:                  in.Files,
+			FilesAllowWrite:        in.FilesAllowWrite,
+			FilesScope:             in.FilesScope,
 			Podman:                 in.Podman,
 			Sandbox:                in.Sandbox,
 			Ollama:                 in.Ollama,

@@ -103,6 +103,9 @@ tool, or wipe `agent.json` by hand.
 | SSH `-A` agent-fwd | `ssh_allow_agent_forward` | `builtins set --ssh-allow-agent-forward` (alias: `--ssh-agent-fwd`) | Pair tab > Advanced | `outpost_set_builtins` | Restart |
 | SSH forward-sockets allowlist | `ssh_forward_sockets` | `builtins set --ssh-forward-socket /path ...` | Pair tab > Advanced | `outpost_set_builtins` | Restart |
 | SFTP subsystem | `sftp_enabled` | `builtins set --sftp` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
+| File Browser | `files_enabled` | `builtins set --files` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
+| File Browser write access | `files_allow_write` | `builtins set --files-allow-write` | Inbound > Built-ins > File Browser | `outpost_set_builtins` | Restart |
+| File Browser scope (root) | `files_scope` | `builtins set --files-scope <path>` | Inbound > Built-ins > File Browser | `outpost_set_builtins` | Restart |
 | Podman daemon proxy (raw) | `podman_enabled` | `builtins set --podman` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Container sandbox (filtered) | `sandbox_enabled` | `builtins set --sandbox` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Ollama daemon proxy | `ollama_enabled` | `builtins set --ollama` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
@@ -149,6 +152,20 @@ a dedicated CLI flag. Like the other daemon proxies, flipping
 boot. Cloudbox discovers sandbox-bearing hosts via the `/apps`
 capability advertisement (`{type:"sandbox"}`) and can probe
 `/app/sandbox/_pool/capacity` for load-aware routing.
+
+The **File Browser** builtin (`files_enabled`, default **on**) embeds a
+File Browser SPA in-process — the GUI sibling of `/shell` and `/ssh` for
+browsing and downloading files — registered as the `files` app so it
+rides the same per-app gate (`require_login` + cloudbox elevation). It is
+**read-only + download-only by default**: `files_allow_write` flips every
+write op (upload/edit/rename/delete) together. That switch is deliberately
+reachable only from this **loopback admin plane** (SPA/CLI/MCP), and the
+in-SPA perm endpoint is pinned LAN-only, so a cloud-vouched user can never
+turn a read-only browser into a writable one — write-enable is a physical-
+LAN decision. `files_scope` confines the browser to a directory (empty =
+the OS user's home). The Bolt store is auto-managed at
+`<UserCacheDir>/outpost/filebrowser.db`. All three flip a restart (the
+handler mounts at boot).
 
 `update_mode` is the only built-in setting with **Live** effect — the
 upgrade worker re-reads the FileConfig on each `POST /admin/upgrade`,
