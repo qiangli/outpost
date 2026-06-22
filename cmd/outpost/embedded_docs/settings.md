@@ -158,14 +158,17 @@ File Browser SPA in-process — the GUI sibling of `/shell` and `/ssh` for
 browsing and downloading files — registered as the `files` app so it
 rides the same per-app gate (`require_login` + cloudbox elevation). It is
 **read-only + download-only by default**: `files_allow_write` flips every
-write op (upload/edit/rename/delete) together. That switch is deliberately
-reachable only from this **loopback admin plane** (SPA/CLI/MCP), and the
-in-SPA perm endpoint is pinned LAN-only, so a cloud-vouched user can never
-turn a read-only browser into a writable one — write-enable is a physical-
-LAN decision. `files_scope` confines the browser to a directory (empty =
-the OS user's home). The Bolt store is auto-managed at
-`<UserCacheDir>/outpost/filebrowser.db`. All three flip a restart (the
-handler mounts at boot).
+write op (upload/edit/rename/delete) together. The embed is **single-user
+and stateless** — no database. Scope and write mode come from config; every
+write to the in-process user no-ops, so a cloud-vouched user can never turn
+a read-only browser into a writable one (write-enable is a config/LAN
+decision, not an in-app one). `files_scope` confines the browser to a
+directory (empty = the OS user's home). Per-user UI preferences (view mode,
+hide-dotfiles, language, …) are kept **in the browser's localStorage**, so
+they are per-device and never shared between users of a shared instance.
+`files_signing_key` is the only persisted File Browser state (see the
+daemon-internal secrets table). All flip a restart (the handler mounts at
+boot).
 
 `update_mode` is the only built-in setting with **Live** effect — the
 upgrade worker re-reads the FileConfig on each `POST /admin/upgrade`,
@@ -404,6 +407,7 @@ and never need operator input under normal use.
 |---|---|---|---|
 | Admin UI session HMAC key | `admin_session_key` (`[]byte`) | (auto on first boot; persists across restarts) | Signs the SPA's session cookies |
 | MCP bearer token | `mcp_bearer_token` (hex) | `mcp rotate-token` / `outpost_rotate_mcp_token` / SPA "Rotate" button | Auth for the MCP server at `/mcp/*` |
+| File Browser signing key | `files_signing_key` (`[]byte`) | (auto on first use; persists across restarts) | Signs the stateless File Browser embed's session JWTs so sessions survive a daemon restart |
 
 The MCP bearer is shown to the operator (it's what they paste into
 `.mcp.json`). The admin-UI session key is never exposed — only the
