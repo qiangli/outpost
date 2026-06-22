@@ -757,9 +757,17 @@ func startCmd() *cobra.Command {
 						scope = home
 					}
 				}
-				dbPath := filepath.Join(filesDBDir(), "filebrowser.db")
+				// The embedded File Browser is stateless (no DB): scope +
+				// write mode come from config, and UI prefs live in the
+				// user's browser (localStorage). The only state worth keeping
+				// is the session signing key — persisted in agent.json so
+				// File Browser sessions survive a daemon restart.
+				signingKey, kerr := conf.EnsureFilesSigningKey(cfgPath, fc)
+				if kerr != nil {
+					slog.Warn("files builtin: signing key", "err", kerr)
+				}
 				if h, closer, ferr := fbembed.New(fbembed.Options{
-					Scope: scope, AllowWrite: fc.FilesAllowWrite, DBPath: dbPath,
+					Scope: scope, AllowWrite: fc.FilesAllowWrite, SigningKey: signingKey,
 				}); ferr != nil {
 					slog.Warn("files builtin: init", "err", ferr)
 				} else if ln, lerr := net.Listen("tcp", "127.0.0.1:0"); lerr != nil {
@@ -784,13 +792,12 @@ func startCmd() *cobra.Command {
 					if rerr := apps.RegisterFromConfig(conf.AppConfig{
 						Name: agent.BuiltinFiles, Scheme: "http", Host: "127.0.0.1", Port: port,
 						RequireLogin: true, IndexPath: "/", Enabled: true,
-						// No /api/users LAN-fence: fbembed.sanitizeUserWrites
-						// now rewrites every per-user update to touch only
-						// benign display prefs (view mode, dotfiles, theme…),
-						// dropping perm/scope changes. So write can't be
-						// enabled from any client, and the view switcher /
-						// "hide dotfiles" persist normally through the cloud
-						// (the blunt fence used to 404 those — the bug).
+						// No /api/users LAN-fence needed: the embed is stateless
+						// (no DB). Perm/scope come from config and every write to
+						// the in-memory user no-ops, so a client can't enable
+						// write or change scope. UI prefs (view mode, dotfiles,
+						// theme…) persist in the user's browser (localStorage),
+						// not server-side, so they're naturally per-device.
 					}); rerr != nil {
 						slog.Warn("files builtin: register", "err", rerr)
 					} else {
@@ -1394,16 +1401,6 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 // concrete (non-wildcard) entries of the SandboxAllowedImages allowlist —
 // pre-pulling exactly the images a caller is permitted to run. A wildcard
 // allowlist entry ("repo/*") names no concrete image, so it's skipped.
-// filesDBDir returns the directory holding the embedded File Browser's
-// self-managed Bolt store (<UserCacheDir>/outpost). Falls back to the OS
-// temp dir if the cache dir can't be resolved — fbembed creates the file.
-func filesDBDir() string {
-	if dir, err := conf.DefaultCacheDir(); err == nil {
-		return dir
-	}
-	return os.TempDir()
-}
-
 func sandboxPrewarmImages(fc *conf.FileConfig) []string {
 	if fc == nil {
 		return nil

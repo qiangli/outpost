@@ -116,6 +116,12 @@ type FileConfig struct {
 	FilesEnabled    *bool  `json:"files_enabled,omitempty"`
 	FilesScope      string `json:"files_scope,omitempty"`
 	FilesAllowWrite bool   `json:"files_allow_write,omitempty"`
+	// FilesSigningKey is the JWT signing key the embedded (stateless,
+	// DB-less) File Browser uses for its session tokens. Persisted here so
+	// the key is stable across daemon restarts — otherwise every restart
+	// would invalidate open File Browser sessions. Auto-generated on first
+	// use via EnsureFilesSigningKey.
+	FilesSigningKey []byte `json:"files_signing_key,omitempty"`
 
 	// SSHAllowLocalForward gates whether the built-in /ssh server accepts
 	// `direct-tcpip` channels — the primitive behind stock `ssh -L` /
@@ -1324,6 +1330,32 @@ func EnsureAdminSessionKey(path string, fc *FileConfig) ([]byte, error) {
 		}
 	}
 	return fc.AdminSessionKey, nil
+}
+
+// EnsureFilesSigningKey returns fc.FilesSigningKey, generating a fresh
+// 64-byte random key (and persisting it via SaveFile at path) if the
+// field is empty. Same shape as EnsureAdminSessionKey. The embedded File
+// Browser is stateless (no database), so this is the only File Browser
+// secret that must outlive the process — keeping its session JWTs valid
+// across daemon restarts.
+func EnsureFilesSigningKey(path string, fc *FileConfig) ([]byte, error) {
+	if fc == nil {
+		return nil, fmt.Errorf("nil FileConfig")
+	}
+	if len(fc.FilesSigningKey) >= 32 {
+		return fc.FilesSigningKey, nil
+	}
+	var b [64]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return nil, fmt.Errorf("generate files signing key: %w", err)
+	}
+	fc.FilesSigningKey = b[:]
+	if path != "" {
+		if err := SaveFile(path, fc); err != nil {
+			return nil, fmt.Errorf("save files signing key: %w", err)
+		}
+	}
+	return fc.FilesSigningKey, nil
 }
 
 // EnsureMCPBearerToken returns fc.MCPBearerToken, generating a fresh
