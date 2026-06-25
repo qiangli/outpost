@@ -40,6 +40,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/otel"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
+	"github.com/qiangli/outpost/internal/agent/peerplane"
 	"github.com/qiangli/outpost/internal/agent/portal"
 	"github.com/qiangli/outpost/internal/agent/runtime"
 	"github.com/qiangli/outpost/internal/agent/sandbox"
@@ -810,6 +811,27 @@ func startCmd() *cobra.Command {
 			// keeps the cron with no entries; the admin UI can
 			// enable it without a restart.
 			g.Go(func() error { return backupSched.Run(gctx) })
+
+			// Peer-plane locality service (opt-in, OFF by default —
+			// PeerPlaneOn()). Announces interface candidates to cloudbox's
+			// signaler, runs a probe responder, and measures RTT to peers to
+			// classify TP/LAN/WAN tiers (measure, don't guess). Self-disables
+			// when unpaired (no access token).
+			if fc.PeerPlaneOn() && fc.AccessToken != "" {
+				if cbBase := cloudboxHTTPBase(fc); cbBase != "" {
+					pp := peerplane.New(peerplane.Config{
+						AgentName:   cfg.AgentName,
+						CloudboxURL: cbBase,
+						AccessToken: fc.AccessToken,
+					})
+					g.Go(func() error {
+						if err := pp.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+							slog.Warn("peerplane: exited", "err", err)
+						}
+						return nil
+					})
+				}
+			}
 
 			if cfg.AgentName == "" {
 				fmt.Fprintln(os.Stderr, "Not yet configured — open the Admin UI to pair this host with the portal.")

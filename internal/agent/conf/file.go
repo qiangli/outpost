@@ -227,6 +227,13 @@ type FileConfig struct {
 	// the most useful behavior for the typical operator.
 	OllamaPoolEnabled *bool `json:"ollama_pool_enabled,omitempty"`
 
+	// PeerPlaneEnabled opts this outpost into the p2p peer-plane locality
+	// service: announce interface candidates to cloudbox's signaler, run a
+	// probe responder, and measure RTT to peers to classify TP/LAN/WAN
+	// tiers (the "measure, don't guess" signal that finds the dedicated
+	// LAN/hub path cloudbox's egress-IP heuristic misses). Default OFF.
+	PeerPlaneEnabled *bool `json:"peer_plane_enabled,omitempty"`
+
 	// ClusterLLMEndpoint is the base URL of an intra-home
 	// distributed-inference backend (GPUStack first; any runtime that
 	// publishes the same OpenAI /v1-openai surface later) that this home
@@ -1178,6 +1185,14 @@ func (fc *FileConfig) OllamaPoolOn() bool {
 		return true
 	}
 	return *fc.OllamaPoolEnabled
+}
+
+// PeerPlaneOn reports whether this outpost runs the p2p peer-plane locality
+// service: announce interface candidates to cloudbox's signaler, run a probe
+// responder, and measure RTT to peers to classify TP/LAN/WAN tiers. Opt-in
+// (default OFF) — gated on PeerPlaneEnabled=true AND a paired access token.
+func (fc *FileConfig) PeerPlaneOn() bool {
+	return fc != nil && fc.PeerPlaneEnabled != nil && *fc.PeerPlaneEnabled
 }
 
 // OtelOn reports whether the built-in observability proxies are enabled.

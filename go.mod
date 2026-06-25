@@ -46,6 +46,7 @@ require (
 	github.com/asticode/go-astikit v0.59.0 // indirect
 	github.com/asticode/go-astisub v0.40.0 // indirect
 	github.com/asticode/go-astits v1.15.0 // indirect
+	github.com/benhoyt/goawk v1.31.0 // indirect
 	github.com/bodgit/plumbing v1.3.0 // indirect
 	github.com/bodgit/sevenzip v1.6.4 // indirect
 	github.com/bodgit/windows v1.0.1 // indirect
