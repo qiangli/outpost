@@ -69,6 +69,12 @@ type Deps struct {
 	// type so admincore doesn't import the ollama package.
 	LLMPoolStatus func() LLMPoolStatusView
 
+	// PeerTiers, when set, returns the latest measured peer-locality tiers
+	// (the p2p peer-plane probe's ground truth — TP/LAN/WAN per peer).
+	// Closure so admincore doesn't import the peerplane package. Nil when
+	// the service isn't wired.
+	PeerTiers func() []PeerTierView
+
 	// Upgrader + UpgradeLedger feed the Update tab on the admin UI
 	// and the corresponding MCP tools. Nil on unpaired hosts (the
 	// route falls back to a graceful 404 — see handlers/server.go
@@ -99,6 +105,29 @@ type LLMPoolStatusView struct {
 	InFlight    int       `json:"in_flight"`
 	CloudboxURL string    `json:"cloudbox_url,omitempty"`
 	OllamaURL   string    `json:"ollama_url,omitempty"`
+}
+
+// PeerTierView is one peer's measured locality (rendered into SafeView + the
+// outpost_peer_tiers MCP tool). Tier is GROUND TRUTH (measured RTT: "tp" <=2ms
+// wired/dedicated, "lan" pipeline, "wan"/"unreached"); EgressSameLANHint is
+// cloudbox's egress-IP guess, surfaced so operators see where the heuristic
+// disagrees with the measurement.
+type PeerTierView struct {
+	Host              string    `json:"host"`
+	Tier              string    `json:"tier"`
+	RTTms             float64   `json:"rtt_ms"`
+	Addr              string    `json:"addr,omitempty"`
+	EgressSameLANHint bool      `json:"egress_same_lan_hint"`
+	At                time.Time `json:"at,omitzero"`
+}
+
+// PeerTiers returns the latest measured peer-locality tiers, or nil when the
+// peer-plane service isn't wired.
+func (s *Server) PeerTiers() []PeerTierView {
+	if s.deps.PeerTiers == nil {
+		return nil
+	}
+	return s.deps.PeerTiers()
 }
 
 // Server is the stateful object that the HTTP layers share. Holds the

@@ -5,6 +5,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/peerstatus"
 )
 
@@ -15,6 +16,10 @@ type restartOut struct {
 
 type peersStatusOut struct {
 	Peers []peerstatus.Peer `json:"peers"`
+}
+
+type peerTiersOut struct {
+	Tiers []admincore.PeerTierView `json:"tiers"`
 }
 
 type rotateMCPOut struct {
@@ -51,5 +56,12 @@ func (s *Server) registerLifecycleTools() {
 			return nil, peersStatusOut{}, err
 		}
 		return nil, peersStatusOut{Peers: peers}, nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_peer_tiers",
+		Description: "The p2p peer-plane's MEASURED locality per peer (ground truth): for each peer this host has probed, its tier (tp = sub-2ms dedicated/wired LAN, tensor-parallel eligible; lan = pipeline-parallel; wan/unreached = relay), measured RTT, and the address used. egress_same_lan_hint shows cloudbox's egress-IP guess so you can see where the heuristic disagrees with the measurement. Empty unless peer_plane_enabled is on and the daemon has run a probe cycle.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, peerTiersOut, error) {
+		return nil, peerTiersOut{Tiers: s.core.PeerTiers()}, nil
 	})
 }

@@ -546,6 +546,35 @@ func startCmd() *cobra.Command {
 				}
 			}
 
+			// Peer-plane locality service (opt-in, OFF by default). Created
+			// here so its measured-tier snapshot can render into SafeView +
+			// the outpost_peer_tiers MCP tool; started in the errgroup below.
+			// Self-disables when unpaired.
+			var peerPlaneSvc *peerplane.Service
+			if fc.PeerPlaneOn() && fc.AccessToken != "" {
+				if cb := cloudboxHTTPBase(fc); cb != "" {
+					peerPlaneSvc = peerplane.New(peerplane.Config{
+						AgentName:   cfg.AgentName,
+						CloudboxURL: cb,
+						AccessToken: fc.AccessToken,
+					})
+				}
+			}
+			peerTiers := func() []admincore.PeerTierView {
+				if peerPlaneSvc == nil {
+					return nil
+				}
+				snap := peerPlaneSvc.Snapshot()
+				out := make([]admincore.PeerTierView, 0, len(snap))
+				for _, t := range snap {
+					out = append(out, admincore.PeerTierView{
+						Host: t.Host, Tier: string(t.Tier), RTTms: t.RTT, Addr: t.Addr,
+						EgressSameLANHint: t.SameLANHint, At: t.At,
+					})
+				}
+				return out
+			}
+
 			// Construct the shared business-logic layer first. The same
 			// admincore.Server instance feeds adminui (human SPA) and
 			// — soon — mcpapi (agent tools), so the file-save mutex and
@@ -559,6 +588,7 @@ func startCmd() *cobra.Command {
 				CloudboxAccessToken: fc.AccessToken,
 				AgentName:           fc.AgentName,
 				LLMPoolStatus:       llmPoolStatus,
+				PeerTiers:           peerTiers,
 			})
 			if err != nil {
 				return fmt.Errorf("admincore: %w", err)
@@ -812,25 +842,16 @@ func startCmd() *cobra.Command {
 			// enable it without a restart.
 			g.Go(func() error { return backupSched.Run(gctx) })
 
-			// Peer-plane locality service (opt-in, OFF by default —
-			// PeerPlaneOn()). Announces interface candidates to cloudbox's
-			// signaler, runs a probe responder, and measures RTT to peers to
-			// classify TP/LAN/WAN tiers (measure, don't guess). Self-disables
-			// when unpaired (no access token).
-			if fc.PeerPlaneOn() && fc.AccessToken != "" {
-				if cbBase := cloudboxHTTPBase(fc); cbBase != "" {
-					pp := peerplane.New(peerplane.Config{
-						AgentName:   cfg.AgentName,
-						CloudboxURL: cbBase,
-						AccessToken: fc.AccessToken,
-					})
-					g.Go(func() error {
-						if err := pp.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
-							slog.Warn("peerplane: exited", "err", err)
-						}
-						return nil
-					})
-				}
+			// Peer-plane locality service: start the probe loop. The service
+			// itself was created above (before admincore.New) so its measured-
+			// tier snapshot feeds SafeView + the outpost_peer_tiers MCP tool.
+			if peerPlaneSvc != nil {
+				g.Go(func() error {
+					if err := peerPlaneSvc.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+						slog.Warn("peerplane: exited", "err", err)
+					}
+					return nil
+				})
 			}
 
 			if cfg.AgentName == "" {

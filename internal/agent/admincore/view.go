@@ -205,6 +205,7 @@ type SafeView struct {
 	YcodeShareSurfaces []YcodeShareSurfaceView `json:"ycode_share_surfaces"`
 	UpdateMode         string                  `json:"update_mode"`
 	LLMPool            LLMPoolStatusView       `json:"llm_pool"`
+	PeerTiers          []PeerTierView          `json:"peer_tiers,omitempty"`
 	ClusterLLM         ClusterLLMView          `json:"cluster_llm"`
 	Cluster            ClusterView             `json:"cluster"`
 	Outbound           []agent.OutboundView    `json:"outbound"`
@@ -290,6 +291,7 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		YcodeShareSurfaces:     toYcodeShareSurfacesView(fc.YcodeShareSurfaces),
 		UpdateMode:             fc.UpdateModeName(),
 		LLMPool:                s.llmPoolStatusView(fc),
+		PeerTiers:              s.PeerTiers(),
 		ClusterLLM:             s.clusterLLMView(fc),
 		Cluster:                toClusterView(fc),
 		Outbound:               s.outboundList(),
