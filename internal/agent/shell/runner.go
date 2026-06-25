@@ -24,6 +24,8 @@ import (
 	"mvdan.cc/sh/v3/interactive"
 	"mvdan.cc/sh/v3/interp"
 	"mvdan.cc/sh/v3/syntax"
+
+	"github.com/qiangli/coreutils/pkg/jobs"
 )
 
 // ptyFile is one end of the session's terminal pair: a real PTY *os.File
@@ -124,7 +126,7 @@ func newSessionFrom(ptm, pts ptyFile, opts SessionOptions) (*Session, error) {
 			// Cmd is "(detached)" because the fork's callback signature is
 			// (pid int) only; richer capture would need stmt threading in
 			// publishBgPid. See docs/matrix-shell-outpost-handoff.md.
-			_ = DefaultRegistry().Record(pid, "(detached)")
+			_ = jobs.DefaultRegistry().Record(pid, "(detached)")
 		}),
 	)
 	if err != nil {

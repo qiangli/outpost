@@ -10,6 +10,8 @@ import (
 	"mvdan.cc/sh/v3/interactive"
 	"mvdan.cc/sh/v3/interp"
 	"mvdan.cc/sh/v3/syntax"
+
+	"github.com/qiangli/coreutils/pkg/jobs"
 )
 
 // RunLocal runs an interactive shell against the caller's stdio. No
@@ -84,7 +86,7 @@ func newLocalRunner(stdin io.Reader, stdout, stderr io.Writer) (*interp.Runner, 
 		interp.Env(env),
 		interp.ExecHandlers(CoreutilsExec), // PATH misses fall back to embedded coreutils (Windows!)
 		interp.WithBgPidCallback(func(pid int) {
-			_ = DefaultRegistry().Record(pid, "(detached)")
+			_ = jobs.DefaultRegistry().Record(pid, "(detached)")
 		}),
 	)
 	if err != nil {
