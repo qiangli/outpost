@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"context"
@@ -117,7 +117,7 @@ func (c *Client) CreateContainer(ctx context.Context, spec *SpecGenerator) (*Cre
 	}
 	var out CreateResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("vkpodman: decode create response: %w", err)
+		return nil, fmt.Errorf("vknode: decode create response: %w", err)
 	}
 	return &out, nil
 }
@@ -238,7 +238,7 @@ func (c *Client) InspectContainer(ctx context.Context, id string) (*InspectConta
 	}
 	var out InspectContainer
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("vkpodman: decode inspect: %w", err)
+		return nil, fmt.Errorf("vknode: decode inspect: %w", err)
 	}
 	return &out, nil
 }
@@ -273,7 +273,7 @@ func (c *Client) ListContainers(ctx context.Context, all bool, labelFilter map[s
 		}
 		raw, err := json.Marshal(filt)
 		if err != nil {
-			return nil, fmt.Errorf("vkpodman: encode list filter: %w", err)
+			return nil, fmt.Errorf("vknode: encode list filter: %w", err)
 		}
 		q.Set("filters", string(raw))
 	}
@@ -287,7 +287,7 @@ func (c *Client) ListContainers(ctx context.Context, all bool, labelFilter map[s
 	}
 	var out []ListContainerItem
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("vkpodman: decode list: %w", err)
+		return nil, fmt.Errorf("vknode: decode list: %w", err)
 	}
 	return out, nil
 }
@@ -324,7 +324,7 @@ func (c *Client) CreateVolume(ctx context.Context, name string, labels map[strin
 		if strings.Contains(string(b), "already exists") {
 			return nil
 		}
-		return fmt.Errorf("vkpodman: create volume: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		return fmt.Errorf("vknode: create volume: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	default:
 		return statusErr("create volume", resp)
 	}
@@ -377,10 +377,10 @@ func (c *Client) PullImage(ctx context.Context, reference string) error {
 			if err == io.EOF {
 				break
 			}
-			return fmt.Errorf("vkpodman: pull stream: %w", err)
+			return fmt.Errorf("vknode: pull stream: %w", err)
 		}
 		if line.Error != "" {
-			return fmt.Errorf("vkpodman: pull image %q: %s", reference, strings.TrimSpace(line.Error))
+			return fmt.Errorf("vknode: pull image %q: %s", reference, strings.TrimSpace(line.Error))
 		}
 	}
 	return nil

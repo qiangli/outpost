@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"context"
@@ -35,7 +35,7 @@ const defaultProbeTimeout = time.Second
 //     block traffic on a probe shape we can't evaluate.
 //
 // The host port we probe is the auto-allocated (or operator-set)
-// hostPort that vkpodman published — same surface cloudbox reaches
+// hostPort that vknode published — same surface cloudbox reaches
 // via /h/<node>/app/vk-…/. That way readiness reflects what cloudbox
 // will actually see; a container that LISTENS only on a different
 // pod-internal port (e.g. behind a sidecar) would fail the probe,
@@ -130,7 +130,7 @@ func tcpReadinessProbe(ctx context.Context, h *corev1.TCPSocketAction, c corev1.
 
 // resolveProbePort converts the spec's IntOrString port into a TCP
 // port the dialer can actually reach. K8s probe semantics treat the
-// number as a containerPort — but vkpodman pods are reached on
+// number as a containerPort — but vknode pods are reached on
 // the published hostPort (containerPort lives inside libpod's network
 // namespace, unreachable from the host where we run the probe).
 //

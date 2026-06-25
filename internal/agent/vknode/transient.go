@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"fmt"
@@ -8,14 +8,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// TransientApps is the minimal surface vkpodman needs to publish
+// TransientApps is the minimal surface vknode needs to publish
 // running pods into the outpost's local app router so cloudbox can
 // reach them through the existing matrix tunnel + /h/<host>/app/<name>
 // proxy.
 //
 // Implemented by *internal/agent.AppRegistry (adapter in cmd/outpost/
-// main.go). Kept as an interface here so vkpodman doesn't import
-// internal/agent (which would cycle through agent → vkpodman).
+// main.go). Kept as an interface here so vknode doesn't import
+// internal/agent (which would cycle through agent → vknode).
 type TransientApps interface {
 	// Register associates name with the loopback URL (e.g.
 	// "http://127.0.0.1:31080"). Returns an error if the name is
@@ -64,11 +64,11 @@ func publishPod(apps TransientApps, pod *corev1.Pod) {
 			name := transientAppNameForPort(pod, int(p.HostPort))
 			target := fmt.Sprintf("http://127.0.0.1:%d", p.HostPort)
 			if err := apps.Register(name, target); err != nil {
-				slog.Warn("vkpodman: transient app register failed",
+				slog.Warn("vknode: transient app register failed",
 					"name", name, "target", target, "err", err)
 				continue
 			}
-			slog.Info("vkpodman: registered transient app",
+			slog.Info("vknode: registered transient app",
 				"name", name, "target", target,
 				"pod", podKey(pod.Namespace, pod.Name))
 		}
@@ -87,7 +87,7 @@ func unpublishPod(apps TransientApps, pod *corev1.Pod) {
 			}
 			name := transientAppNameForPort(pod, int(p.HostPort))
 			apps.Unregister(name)
-			slog.Info("vkpodman: unregistered transient app",
+			slog.Info("vknode: unregistered transient app",
 				"name", name, "pod", podKey(pod.Namespace, pod.Name))
 		}
 	}

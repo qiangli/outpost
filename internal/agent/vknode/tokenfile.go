@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"fmt"
@@ -19,18 +19,18 @@ import (
 // it seeing a partial write.
 func WriteTokenFile(path, token string) error {
 	if path == "" {
-		return fmt.Errorf("vkpodman: empty token-file path")
+		return fmt.Errorf("vknode: empty token-file path")
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("vkpodman: mkdir token-file dir: %w", err)
+		return fmt.Errorf("vknode: mkdir token-file dir: %w", err)
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(token), 0o600); err != nil {
-		return fmt.Errorf("vkpodman: write token-file tmp: %w", err)
+		return fmt.Errorf("vknode: write token-file tmp: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
-		return fmt.Errorf("vkpodman: rename token-file: %w", err)
+		return fmt.Errorf("vknode: rename token-file: %w", err)
 	}
 	return nil
 }

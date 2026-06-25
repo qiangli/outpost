@@ -48,7 +48,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/sysinfo"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
 	"github.com/qiangli/outpost/internal/agent/userkube"
-	"github.com/qiangli/outpost/internal/agent/vkpodman"
+	"github.com/qiangli/outpost/internal/agent/vknode"
 	"github.com/qiangli/outpost/internal/scheduler"
 	"github.com/qiangli/outpost/internal/telemetry"
 )
@@ -1462,7 +1462,7 @@ func sandboxPrewarmImages(fc *conf.FileConfig) []string {
 }
 
 // startClusterRunner validates fc.Cluster, detects the local podman
-// socket, and launches vkpodman.Run on g. Setup errors return; the
+// socket, and launches vknode.Run on g. Setup errors return; the
 // long-running loop's errors flow through the errgroup the same way
 // the tunnel's do.
 //
@@ -1492,7 +1492,7 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 	cloudboxBase := cloudboxHTTPBase(fc)
 	if shouldFetchKubeconfig(fc) && fc.AccessToken != "" && cloudboxBase != "" {
 		slog.Info("cluster mode: fetching kubeconfig from cloudbox", "node", nodeName, "cloudbox", cloudboxBase)
-		fetched, err := vkpodman.FetchKubeconfig(ctx, cloudboxBase, fc.AccessToken, nodeName)
+		fetched, err := vknode.FetchKubeconfig(ctx, cloudboxBase, fc.AccessToken, nodeName)
 		if err != nil {
 			if fc.Cluster == nil || fc.Cluster.Token == "" {
 				return fmt.Errorf("cluster mode: fetch kubeconfig: %w", err)
@@ -1512,15 +1512,15 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 	// Write the live bearer token to a file so client-go's transport
 	// re-reads it across rotations. Path stays under the agent's
 	// cache dir (mode 0600 — same locality as the pidfile + logs).
-	tokenFile, err := vkpodman.DefaultTokenFilePath()
+	tokenFile, err := vknode.DefaultTokenFilePath()
 	if err != nil {
 		return fmt.Errorf("cluster mode: token-file path: %w", err)
 	}
-	if err := vkpodman.WriteTokenFile(tokenFile, cc.Token); err != nil {
+	if err := vknode.WriteTokenFile(tokenFile, cc.Token); err != nil {
 		return fmt.Errorf("cluster mode: write token-file: %w", err)
 	}
 
-	kubeCfg, err := vkpodman.ConfigFromCluster(cc.APIURL, tokenFile, cc.CA)
+	kubeCfg, err := vknode.ConfigFromCluster(cc.APIURL, tokenFile, cc.CA)
 	if err != nil {
 		return err
 	}
@@ -1533,11 +1533,11 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 	// JWT (e.g. very old paired outposts, before the JWT format) —
 	// log loudly and let the runner proceed in permissive mode so
 	// the cluster path still works for legacy installs.
-	var access *vkpodman.Access
+	var access *vknode.Access
 	if fc.AccessToken != "" {
-		if owner, err := vkpodman.OwnerEmailFromAccessToken(fc.AccessToken); err == nil {
-			ns := vkpodman.NamespaceForEmail(owner)
-			access = vkpodman.NewAccess(ns)
+		if owner, err := vknode.OwnerEmailFromAccessToken(fc.AccessToken); err == nil {
+			ns := vknode.NamespaceForEmail(owner)
+			access = vknode.NewAccess(ns)
 			slog.Info("cluster mode: namespace access gate", "owner", owner, "namespace", ns)
 		} else {
 			slog.Warn("cluster mode: could not derive owner from access_token; namespace check disabled (legacy token?)", "err", err)
@@ -1546,7 +1546,7 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 
 	g.Go(func() error {
 		slog.Info("cluster mode: joining", "node", nodeName, "apiserver", cc.APIURL, "podman_socket", bt.Socket)
-		if err := vkpodman.Run(ctx, vkpodman.RunOptions{
+		if err := vknode.Run(ctx, vknode.RunOptions{
 			NodeName:      nodeName,
 			PodmanSocket:  bt.Socket,
 			Kube:          kubeCfg,
@@ -1563,12 +1563,12 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 	// pasted a kubeconfig for a non-cloudbox cluster, leave the token
 	// alone — they're responsible for replacing it before expiry.
 	if fc.AccessToken != "" && cloudboxBase != "" {
-		refresher := vkpodman.NewRefresher(vkpodman.RefreshDeps{
+		refresher := vknode.NewRefresher(vknode.RefreshDeps{
 			CloudboxBase:  cloudboxBase,
 			AccessToken:   fc.AccessToken,
 			NodeName:      nodeName,
 			TokenFilePath: tokenFile,
-			OnRotation: func(p *vkpodman.ParsedKubeconfig) {
+			OnRotation: func(p *vknode.ParsedKubeconfig) {
 				persistClusterCredential(fc, cfgPath, p)
 			},
 		})
@@ -1585,7 +1585,7 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 	// up: the owner-only set stays in place until the next successful
 	// fetch (see access_refresh.go for the backoff policy).
 	if access != nil && fc.AccessToken != "" && cloudboxBase != "" {
-		if resp, err := vkpodman.FetchAccess(ctx, cloudboxBase, fc.AccessToken, nodeName); err == nil {
+		if resp, err := vknode.FetchAccess(ctx, cloudboxBase, fc.AccessToken, nodeName); err == nil {
 			access.Set(resp.AllowedNamespaces...)
 			slog.Info("cluster mode: initial access refresh",
 				"node", nodeName, "namespaces", resp.AllowedNamespaces)
@@ -1593,7 +1593,7 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 			slog.Warn("cluster mode: initial access fetch failed (will retry on loop)",
 				"node", nodeName, "err", err)
 		}
-		accessRefresher := vkpodman.NewAccessRefresher(vkpodman.AccessRefreshDeps{
+		accessRefresher := vknode.NewAccessRefresher(vknode.AccessRefreshDeps{
 			CloudboxBase: cloudboxBase,
 			AccessToken:  fc.AccessToken,
 			NodeName:     nodeName,
@@ -1615,7 +1615,7 @@ func shouldFetchKubeconfig(fc *conf.FileConfig) bool {
 	if fc.Cluster == nil || fc.Cluster.Token == "" {
 		return true
 	}
-	exp := vkpodman.TokenExpiry(fc.Cluster.Token)
+	exp := vknode.TokenExpiry(fc.Cluster.Token)
 	if exp.IsZero() {
 		// Non-JWT token (e.g. pasted from a non-cloudbox cluster).
 		// Don't auto-fetch — that path is operator-managed.
@@ -1629,7 +1629,7 @@ func shouldFetchKubeconfig(fc *conf.FileConfig) bool {
 // future outpost restart starts from the rotated state without
 // re-fetching. Best-effort: a save failure logs but doesn't undo the
 // in-memory rotation (the next refresh tick will try again).
-func persistClusterCredential(fc *conf.FileConfig, cfgPath string, p *vkpodman.ParsedKubeconfig) {
+func persistClusterCredential(fc *conf.FileConfig, cfgPath string, p *vknode.ParsedKubeconfig) {
 	if fc.Cluster == nil {
 		fc.Cluster = &conf.ClusterConfig{Enabled: true}
 	}
@@ -1793,7 +1793,7 @@ func cloudboxHTTPBase(fc *conf.FileConfig) string {
 	return scheme + "://" + fc.ServerAddr + port
 }
 
-// appsAsTransient bridges *agent.AppRegistry to vkpodman.TransientApps.
+// appsAsTransient bridges *agent.AppRegistry to vknode.TransientApps.
 // Each transient pod registration uses RequireLogin: false because
 // cluster-mode auth happens at cloudbox's /api/cluster/svc/* entry
 // point (TokenReview-gated), not via the per-app elevation cookie

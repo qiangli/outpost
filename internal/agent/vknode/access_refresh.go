@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"context"
@@ -36,13 +36,13 @@ type AccessResponse struct {
 // network error.
 func FetchAccess(ctx context.Context, cloudboxBase, accessToken, nodeName string) (*AccessResponse, error) {
 	if strings.TrimSpace(cloudboxBase) == "" {
-		return nil, errors.New("vkpodman: empty cloudboxBase")
+		return nil, errors.New("vknode: empty cloudboxBase")
 	}
 	if strings.TrimSpace(accessToken) == "" {
-		return nil, errors.New("vkpodman: empty accessToken")
+		return nil, errors.New("vknode: empty accessToken")
 	}
 	if strings.TrimSpace(nodeName) == "" {
-		return nil, errors.New("vkpodman: empty nodeName")
+		return nil, errors.New("vknode: empty nodeName")
 	}
 	q := url.Values{"node_name": []string{nodeName}}
 	u := strings.TrimRight(cloudboxBase, "/") + AccessEndpointPath + "?" + q.Encode()
@@ -54,7 +54,7 @@ func FetchAccess(ctx context.Context, cloudboxBase, accessToken, nodeName string
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("vkpodman: dial cloudbox access: %w", err)
+		return nil, fmt.Errorf("vknode: dial cloudbox access: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -71,7 +71,7 @@ func FetchAccess(ctx context.Context, cloudboxBase, accessToken, nodeName string
 	}
 	var out AccessResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("vkpodman: decode access response: %w", err)
+		return nil, fmt.Errorf("vknode: decode access response: %w", err)
 	}
 	return &out, nil
 }
@@ -113,7 +113,7 @@ type AccessRefreshDeps struct {
 
 // AccessRefresher polls cloudbox at a fixed cadence and pushes the
 // resulting allow-list into the live Access gate. Single instance per
-// outpost process; constructed once and Run()-ed inside the vkpodman
+// outpost process; constructed once and Run()-ed inside the vknode
 // errgroup alongside the token Refresher.
 type AccessRefresher struct {
 	deps AccessRefreshDeps
@@ -141,7 +141,7 @@ func (r *AccessRefresher) Run(ctx context.Context) error {
 			if errors.Is(err, context.Canceled) {
 				return nil
 			}
-			slog.Warn("vkpodman: access refresh failed",
+			slog.Warn("vknode: access refresh failed",
 				"err", err, "retry_in", accessRefreshFailureBackoff.String(),
 				"node", r.deps.NodeName)
 			wait = accessRefreshFailureBackoff
@@ -149,12 +149,12 @@ func (r *AccessRefresher) Run(ctx context.Context) error {
 			before := r.deps.Access.Snapshot()
 			r.deps.Access.Set(resp.AllowedNamespaces...)
 			if diff := namespaceDiff(before, resp.AllowedNamespaces); diff != "" {
-				slog.Info("vkpodman: access refresh applied",
+				slog.Info("vknode: access refresh applied",
 					"node", r.deps.NodeName,
 					"namespaces", resp.AllowedNamespaces,
 					"change", diff)
 			} else {
-				slog.Debug("vkpodman: access refresh unchanged",
+				slog.Debug("vknode: access refresh unchanged",
 					"node", r.deps.NodeName, "count", len(resp.AllowedNamespaces))
 			}
 		}

@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"context"
@@ -128,7 +128,7 @@ func BuildNode(nodeName string, extraLabels map[string]string) *corev1.Node {
 			NodeInfo: corev1.NodeSystemInfo{
 				OperatingSystem: runtime.GOOS,
 				Architecture:    runtime.GOARCH,
-				KubeletVersion:  "v0.1.0-vkpodman",
+				KubeletVersion:  "v0.1.0-vknode",
 			},
 			Capacity: corev1.ResourceList{
 				corev1.ResourceCPU:    cpuQty,
@@ -144,7 +144,7 @@ func BuildNode(nodeName string, extraLabels map[string]string) *corev1.Node {
 				Type:               corev1.NodeReady,
 				Status:             corev1.ConditionTrue,
 				Reason:             "KubeletReady",
-				Message:            "outpost vkpodman is ready",
+				Message:            "outpost vknode is ready",
 				LastHeartbeatTime:  now,
 				LastTransitionTime: now,
 			}},

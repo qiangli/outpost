@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"context"
@@ -52,7 +52,7 @@ type RefreshDeps struct {
 
 // Refresher runs a loop that re-fetches the SA token before it expires
 // and writes the new value to TokenFilePath. Single instance per
-// outpost process; constructed once and Run()-ed inside the vkpodman
+// outpost process; constructed once and Run()-ed inside the vknode
 // errgroup.
 type Refresher struct {
 	deps RefreshDeps
@@ -75,7 +75,7 @@ func NewRefresher(deps RefreshDeps) *Refresher { return &Refresher{deps: deps} }
 func (r *Refresher) Run(ctx context.Context, currentToken string) error {
 	for {
 		wait := nextRefreshDelay(currentToken, time.Now())
-		slog.Info("vkpodman: refresh scheduled",
+		slog.Info("vknode: refresh scheduled",
 			"in", wait.String(), "node", r.deps.NodeName)
 
 		select {
@@ -94,13 +94,13 @@ func (r *Refresher) Run(ctx context.Context, currentToken string) error {
 			// so an operator notices. Both end up in the same backoff
 			// path because there's nothing else useful to do from
 			// here.
-			slog.Warn("vkpodman: refresh failed",
+			slog.Warn("vknode: refresh failed",
 				"err", err, "retry_in", minRefreshInterval.String())
 			currentToken = "" // force the next iteration to retry quickly
 			continue
 		}
 		if err := WriteTokenFile(r.deps.TokenFilePath, fetched.Token); err != nil {
-			slog.Warn("vkpodman: refresh wrote new token but file update failed",
+			slog.Warn("vknode: refresh wrote new token but file update failed",
 				"err", err, "path", r.deps.TokenFilePath)
 			// Keep going — client-go is still using the old in-memory
 			// token until it re-reads the file; we'll try again next
@@ -111,7 +111,7 @@ func (r *Refresher) Run(ctx context.Context, currentToken string) error {
 			r.deps.OnRotation(fetched)
 		}
 		currentToken = fetched.Token
-		slog.Info("vkpodman: refresh ok",
+		slog.Info("vknode: refresh ok",
 			"node", r.deps.NodeName, "next_exp", TokenExpiry(fetched.Token).Format(time.RFC3339))
 	}
 }

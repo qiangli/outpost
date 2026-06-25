@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 )
 
 // Provider implements virtual-kubelet's node.PodLifecycleHandler on top
@@ -25,9 +24,10 @@ import (
 // distinct pods to begin with, since the pod UID makes container names
 // unique).
 type Provider struct {
-	client *Client
-	access *Access       // nil = no namespace check (single-tenant dev)
-	apps   TransientApps // nil = don't publish pods into the outpost's app router
+	backend Backend       // substrate that realizes Pods (podman today; native next)
+	client  *Client       // retained only for Client() — NodeProvider shares the socket
+	access  *Access       // nil = no namespace check (single-tenant dev)
+	apps    TransientApps // nil = don't publish pods into the outpost's app router
 
 	mu   sync.RWMutex
 	pods map[string]*corev1.Pod // namespace/name → cached Pod
@@ -38,15 +38,16 @@ type Provider struct {
 // agent.DetectPodman). Call Reconcile once after construction to
 // repopulate the in-memory pod cache from containers podman is already
 // running with the outpost.io/managed label — this is what makes
-// vkpodman survive a crash without forgetting what it owns.
+// vknode survive a crash without forgetting what it owns.
 func NewProvider(podmanSocket string) (*Provider, error) {
 	c, err := NewClient(podmanSocket)
 	if err != nil {
 		return nil, err
 	}
 	return &Provider{
-		client: c,
-		pods:   make(map[string]*corev1.Pod),
+		backend: &podmanBackend{client: c},
+		client:  c,
+		pods:    make(map[string]*corev1.Pod),
 	}, nil
 }
 
@@ -86,100 +87,24 @@ func podKey(namespace, name string) string { return namespace + "/" + name }
 // modes where the operator hasn't wired Access yet.
 func (p *Provider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	if !p.access.Allowed(pod.Namespace) {
-		slog.Warn("vkpodman: rejecting CreatePod for unauthorized namespace",
+		slog.Warn("vknode: rejecting CreatePod for unauthorized namespace",
 			"pod", podKey(pod.Namespace, pod.Name), "allowed", p.access.Snapshot())
-		return fmt.Errorf("vkpodman: namespace %q is not permitted to schedule on this outpost", pod.Namespace)
+		return fmt.Errorf("vknode: namespace %q is not permitted to schedule on this outpost", pod.Namespace)
 	}
 	// Allocate ports for any containerPort the Pod manifest left without
 	// an explicit hostPort. Mutates the in-memory pod in place so the
-	// later BuildSpec, the labels we stamp on the container, and the
-	// transient app publish all agree on the resolved port set.
+	// backend's spec build, the labels it stamps, and the transient app
+	// publish below all agree on the resolved port set. Substrate-
+	// agnostic, so it stays Provider-side ahead of Ensure.
 	if _, err := AllocateMissingHostPorts(pod); err != nil {
 		return err
 	}
-	spec, err := BuildSpec(pod)
-	if err != nil {
+	// Realize the workload on the substrate (create+start or adopt).
+	// Ensure may mutate pod to hydrate resolved host ports.
+	if err := p.backend.Ensure(ctx, pod); err != nil {
 		return err
 	}
-	// Source-canonical build: if the pod carries build-source
-	// annotations, ensure the target image is available locally
-	// (either by building now or confirming it's already cached).
-	// skipPull is true when EnsureImageBuilt produced or found a
-	// local image — we then bypass the PullImage step below, since
-	// a localhost-tagged image can't be resolved against any
-	// external registry.
-	skipPull, err := p.EnsureImageBuilt(ctx, pod)
-	if err != nil {
-		return fmt.Errorf("vkpodman: build for pod %s: %w", podKey(pod.Namespace, pod.Name), err)
-	}
-
-	// Pre-materialize HostPath / EmptyDir named volumes before any
-	// container start — both the first-create and the daemon-restart
-	// adopt path need the volumes to exist. Libpod's
-	// /containers/create does not auto-create named volumes referenced
-	// via mounts (only the `podman run -v` CLI shortcut does); without
-	// this, a container created in a previous outpost incarnation
-	// fails to start on adoption with crun's "No such device".
-	if err := EnsureVolumesForPod(ctx, p.client, pod); err != nil {
-		return fmt.Errorf("vkpodman: ensure volumes for pod %s: %w", podKey(pod.Namespace, pod.Name), err)
-	}
-
-	// Look for an existing container that already belongs to this Pod
-	// UID. If found, we own it from a prior incarnation — just make sure
-	// it's running and cache the spec.
-	existing, err := p.findContainerByPodUID(ctx, string(pod.UID))
-	if err != nil {
-		return fmt.Errorf("vkpodman: lookup existing container for pod %s: %w", podKey(pod.Namespace, pod.Name), err)
-	}
-	if existing != "" {
-		// Container survived a prior daemon run — read the host-port
-		// labels we stamped at original-create time so the in-memory
-		// pod (and the subsequent publishPod) sees the SAME hostPort
-		// the original allocation chose. Without this, daemon restart
-		// can leave a Running container reachable on port X while
-		// vkpodman's view still says HostPort=0 and the transient
-		// AppRegistry entry never gets created.
-		if ins, ierr := p.client.InspectContainer(ctx, existing); ierr == nil && ins != nil {
-			HydratePodPortsFromLabels(pod, ins.Config.Labels)
-		} else if ierr != nil {
-			slog.Warn("vkpodman: inspect existing container for port hydration",
-				"container", existing, "err", ierr)
-		}
-		if err := p.client.StartContainer(ctx, existing); err != nil && !IsConflict(err) {
-			return fmt.Errorf("vkpodman: start existing container %s: %w", existing, err)
-		}
-		p.cachePod(pod)
-		slog.Info("vkpodman: adopted existing container",
-			"pod", podKey(pod.Namespace, pod.Name), "container", existing)
-		publishPod(p.apps, pod)
-		return nil
-	}
-
-	// First time we've seen this pod (or libpod lost the container).
-	// Pull the image opportunistically — failures here are fatal because
-	// the next create will just fail with "no such image". Skipped when
-	// EnsureImageBuilt has confirmed the image is available locally
-	// (build-source workloads have no upstream registry to pull from).
-	if !skipPull {
-		if err := p.client.PullImage(ctx, spec.Image); err != nil {
-			return fmt.Errorf("vkpodman: pull image %q: %w", spec.Image, err)
-		}
-	}
-
-	created, err := p.client.CreateContainer(ctx, spec)
-	if err != nil {
-		return fmt.Errorf("vkpodman: create container for pod %s: %w", podKey(pod.Namespace, pod.Name), err)
-	}
-	for _, w := range created.Warnings {
-		slog.Warn("vkpodman: libpod create warning",
-			"pod", podKey(pod.Namespace, pod.Name), "warning", w)
-	}
-	if err := p.client.StartContainer(ctx, created.ID); err != nil {
-		return fmt.Errorf("vkpodman: start container %s: %w", created.ID, err)
-	}
 	p.cachePod(pod)
-	slog.Info("vkpodman: created container",
-		"pod", podKey(pod.Namespace, pod.Name), "container", created.ID, "image", spec.Image)
 	publishPod(p.apps, pod)
 	return nil
 }
@@ -191,22 +116,16 @@ func (p *Provider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 // are an apiserver concern; the container is unaffected.)
 func (p *Provider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 	// The apiserver-side spec never sees our auto-allocated
-	// hostPorts (mutation in CreatePod is local-only). Merge the
-	// allocated values back in from the libpod container labels so
-	// the cached pod's Spec.Containers[*].Ports reflects what the
-	// outpost actually published. Without this, the readinessProbe
-	// resolver would see HostPort=0 on every UpdatePod and fall
-	// back to the wrong port — pods stay PodReady=False forever
-	// even though they're absolutely serving.
-	if cid, lerr := p.findContainerByPodUID(ctx, string(pod.UID)); lerr == nil && cid != "" {
-		if ins, ierr := p.client.InspectContainer(ctx, cid); ierr == nil && ins != nil {
-			HydratePodPortsFromLabels(pod, ins.Config.Labels)
-		}
-	}
+	// hostPorts (mutation in CreatePod is local-only). Ask the backend
+	// to merge the resolved values back onto the cached pod's
+	// Spec.Containers[*].Ports so the readinessProbe resolver doesn't
+	// see HostPort=0 and fall back to the wrong port — best-effort,
+	// a missing workload is a no-op.
+	_ = p.backend.HydratePorts(ctx, pod)
 	p.cachePod(pod)
 	// Republish the transient app registration. UpdatePod is the
 	// PodController's first call for each pod on daemon restart
-	// (vkpodman.Reconcile's adopt path only builds a port-less
+	// (vknode.Reconcile's adopt path only builds a port-less
 	// skeleton, so publishPod from CreatePod's adopt branch would
 	// be a no-op there). With this, transient apps survive a daemon
 	// restart even when libpod still owns the container.
@@ -220,30 +139,11 @@ func (p *Provider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 // against the reconcile path: a missing container (already cleaned up
 // by a prior delete that crashed mid-flight) is not an error.
 func (p *Provider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
-	cid, err := p.findContainerByPodUID(ctx, string(pod.UID))
-	if err != nil {
-		return fmt.Errorf("vkpodman: lookup container for pod %s: %w", podKey(pod.Namespace, pod.Name), err)
-	}
-	if cid != "" {
-		// Force=true → stop then remove in one call. Volumes=true →
-		// drop anonymous tmpfs/emptyDir volumes; named volumes from a
-		// future PVC implementation must stay.
-		if err := p.client.RemoveContainer(ctx, cid, true, true); err != nil && !IsNotFound(err) {
-			return fmt.Errorf("vkpodman: remove container %s: %w", cid, err)
-		}
+	if err := p.backend.Delete(ctx, pod); err != nil {
+		return err
 	}
 	unpublishPod(p.apps, pod)
-	// Reap per-pod EmptyDir-backed libpod volumes. Best-effort — a
-	// leftover volume is inspectable via `podman volume ls` (outpost-ed-*
-	// prefix) and the operator can drop it manually; it isn't a
-	// correctness issue.
-	if err := RemoveEmptyDirsForPod(ctx, p.client, pod); err != nil {
-		slog.Warn("vkpodman: remove emptyDir volumes",
-			"pod", podKey(pod.Namespace, pod.Name), "err", err)
-	}
 	p.forgetPod(pod.Namespace, pod.Name)
-	slog.Info("vkpodman: deleted pod",
-		"pod", podKey(pod.Namespace, pod.Name), "container", cid)
 	return nil
 }
 
@@ -271,23 +171,19 @@ func (p *Provider) GetPodStatus(ctx context.Context, namespace, name string) (*c
 	if err != nil {
 		return nil, err
 	}
-	cid, err := p.findContainerByPodUID(ctx, string(pod.UID))
+	st, err := p.backend.Status(ctx, pod)
 	if err != nil {
 		return nil, err
 	}
-	if cid == "" {
-		// Container vanished underneath us — surface as Pending so the
+	if st == nil {
+		// Workload vanished underneath us — surface as Pending so the
 		// reconciler will call CreatePod next time around.
 		return &corev1.PodStatus{
 			Phase:  corev1.PodPending,
 			Reason: "ContainerMissing",
 		}, nil
 	}
-	inspect, err := p.client.InspectContainer(ctx, cid)
-	if err != nil {
-		return nil, err
-	}
-	return inspectToPodStatus(ctx, pod, inspect), nil
+	return st, nil
 }
 
 // GetPods returns every Pod we currently know about. Used by the
@@ -316,81 +212,24 @@ func (p *Provider) GetPods(_ context.Context) ([]*corev1.Pod, error) {
 // for the full spec; the PodController will issue an UpdatePod with
 // the real Pod as soon as it lists the apiserver, refreshing the cache.
 func (p *Provider) Reconcile(ctx context.Context) error {
-	items, err := p.client.ListContainers(ctx, true, map[string]string{ManagedLabel: "true"})
+	pods, err := p.backend.List(ctx)
 	if err != nil {
-		return fmt.Errorf("vkpodman: list managed containers: %w", err)
+		return err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for _, item := range items {
-		ns := item.Labels[PodNamespaceLabel]
-		name := item.Labels[PodNameLabel]
-		uid := item.Labels[PodUIDLabel]
-		cname := item.Labels[ContainerNameLabel]
-		if ns == "" || name == "" || uid == "" {
-			slog.Warn("vkpodman: managed container missing identity labels",
-				"container", item.ID, "labels", item.Labels)
-			continue
-		}
-		skeleton := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace: ns,
-				Name:      name,
-				UID:       types.UID(uid),
-			},
-			Spec: corev1.PodSpec{
-				Containers: []corev1.Container{{
-					Name:  cname,
-					Image: item.Image,
-					Ports: portsFromLabels(item.Labels),
-				}},
-			},
-		}
-		p.pods[podKey(ns, name)] = skeleton
+	for _, skeleton := range pods {
+		p.pods[podKey(skeleton.Namespace, skeleton.Name)] = skeleton
 		// Republish the transient AppRegistry entry from the labels
 		// stamped at original-create time. Without this, there's a
-		// window after daemon restart where libpod containers are
-		// running but cloudbox /api/cluster/svc/* responds with
-		// "unknown app" until PodController's first UpdatePod fires
-		// (seconds-to-minutes depending on apiserver responsiveness).
-		// Idempotent — Register overwrites entries.
+		// window after daemon restart where workloads are running but
+		// cloudbox /api/cluster/svc/* responds with "unknown app"
+		// until PodController's first UpdatePod fires. Idempotent —
+		// Register overwrites entries.
 		publishPod(p.apps, skeleton)
 	}
-	slog.Info("vkpodman: reconcile complete", "containers", len(items), "pods_cached", len(p.pods))
+	slog.Info("vknode: reconcile complete", "pods_cached", len(p.pods))
 	return nil
-}
-
-// findContainerByPodUID returns the libpod container ID for the given
-// pod UID, or "" if no managed container matches. Errors only on
-// list-level failures (network, etc.) — empty result is a normal "not
-// here yet / already gone" signal.
-func (p *Provider) findContainerByPodUID(ctx context.Context, podUID string) (string, error) {
-	if podUID == "" {
-		return "", nil
-	}
-	items, err := p.client.ListContainers(ctx, true, map[string]string{
-		ManagedLabel: "true",
-		PodUIDLabel:  podUID,
-	})
-	if err != nil {
-		return "", err
-	}
-	if len(items) == 0 {
-		return "", nil
-	}
-	if len(items) > 1 {
-		// Shouldn't happen — ContainerName is deterministic per podUID.
-		// Pick the first running one if any, else the first; log it so
-		// we can investigate.
-		slog.Warn("vkpodman: multiple containers match pod UID",
-			"pod_uid", podUID, "count", len(items))
-		for _, it := range items {
-			if it.State == "running" {
-				return it.ID, nil
-			}
-		}
-	}
-	return items[0].ID, nil
 }
 
 func (p *Provider) cachePod(pod *corev1.Pod) {
@@ -416,7 +255,7 @@ type errNotFound struct {
 }
 
 func (e errNotFound) Error() string {
-	return fmt.Sprintf("vkpodman: pod %s/%s not found", e.Namespace, e.Name)
+	return fmt.Sprintf("vknode: pod %s/%s not found", e.Namespace, e.Name)
 }
 func (e errNotFound) NotFound() {}
 
@@ -484,7 +323,7 @@ func inspectToPodStatus(ctx context.Context, pod *corev1.Pod, ins *InspectContai
 		readyReason = "ContainersNotReady"
 	}
 	if libpodReady && len(pod.Spec.Containers) > 0 {
-		// First container's readinessProbe applies — vkpodman is a
+		// First container's readinessProbe applies — vknode is a
 		// one-container-per-pod provider today (BuildSpec rejects
 		// multi-container specs); when that changes the probe loop
 		// here should iterate all containers and AND their results.

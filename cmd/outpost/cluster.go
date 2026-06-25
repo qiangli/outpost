@@ -11,7 +11,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/runtime"
 	"github.com/qiangli/outpost/internal/agent/userkube"
-	"github.com/qiangli/outpost/internal/agent/vkpodman"
+	"github.com/qiangli/outpost/internal/agent/vknode"
 )
 
 // clusterCmd is the `outpost cluster <subcommand>` group. Currently
@@ -195,7 +195,7 @@ admin UI's Cluster section.`,
 			}
 
 			if stdoutFlag {
-				parsed, err := vkpodman.FetchKubeconfig(cmd.Context(), cloudboxBase, fc.AccessToken, node)
+				parsed, err := vknode.FetchKubeconfig(cmd.Context(), cloudboxBase, fc.AccessToken, node)
 				if err != nil {
 					return fmt.Errorf("fetch kubeconfig: %w", err)
 				}

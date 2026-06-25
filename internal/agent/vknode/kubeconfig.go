@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"encoding/base64"
@@ -30,30 +30,30 @@ type ParsedKubeconfig struct {
 // uncommon for cluster-join tokens, and adding them later is additive.
 func ParseKubeconfig(raw []byte) (*ParsedKubeconfig, error) {
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("vkpodman: empty kubeconfig")
+		return nil, fmt.Errorf("vknode: empty kubeconfig")
 	}
 	cfg, err := clientcmd.Load(raw)
 	if err != nil {
-		return nil, fmt.Errorf("vkpodman: parse kubeconfig: %w", err)
+		return nil, fmt.Errorf("vknode: parse kubeconfig: %w", err)
 	}
 	ctxName := strings.TrimSpace(cfg.CurrentContext)
 	if ctxName == "" {
-		return nil, fmt.Errorf("vkpodman: kubeconfig has no current-context")
+		return nil, fmt.Errorf("vknode: kubeconfig has no current-context")
 	}
 	kctx, ok := cfg.Contexts[ctxName]
 	if !ok {
-		return nil, fmt.Errorf("vkpodman: kubeconfig current-context %q not defined", ctxName)
+		return nil, fmt.Errorf("vknode: kubeconfig current-context %q not defined", ctxName)
 	}
 	cluster, ok := cfg.Clusters[kctx.Cluster]
 	if !ok {
-		return nil, fmt.Errorf("vkpodman: cluster %q referenced by context not defined", kctx.Cluster)
+		return nil, fmt.Errorf("vknode: cluster %q referenced by context not defined", kctx.Cluster)
 	}
 	user, ok := cfg.AuthInfos[kctx.AuthInfo]
 	if !ok {
-		return nil, fmt.Errorf("vkpodman: user %q referenced by context not defined", kctx.AuthInfo)
+		return nil, fmt.Errorf("vknode: user %q referenced by context not defined", kctx.AuthInfo)
 	}
 	if strings.TrimSpace(cluster.Server) == "" {
-		return nil, fmt.Errorf("vkpodman: cluster %q has empty server URL", kctx.Cluster)
+		return nil, fmt.Errorf("vknode: cluster %q has empty server URL", kctx.Cluster)
 	}
 	if err := rejectUnsupportedAuth(user, kctx.AuthInfo); err != nil {
 		return nil, err
@@ -63,7 +63,7 @@ func ParseKubeconfig(raw []byte) (*ParsedKubeconfig, error) {
 		return nil, err
 	}
 	if token == "" {
-		return nil, fmt.Errorf("vkpodman: kubeconfig user %q has no token", kctx.AuthInfo)
+		return nil, fmt.Errorf("vknode: kubeconfig user %q has no token", kctx.AuthInfo)
 	}
 	ca, err := caFromCluster(cluster)
 	if err != nil {
@@ -78,14 +78,14 @@ func ParseKubeconfig(raw []byte) (*ParsedKubeconfig, error) {
 
 func rejectUnsupportedAuth(user *clientcmdapi.AuthInfo, name string) error {
 	if user.AuthProvider != nil {
-		return fmt.Errorf("vkpodman: kubeconfig user %q uses auth-provider — only bearer-token credentials are supported in v1", name)
+		return fmt.Errorf("vknode: kubeconfig user %q uses auth-provider — only bearer-token credentials are supported in v1", name)
 	}
 	if user.Exec != nil {
-		return fmt.Errorf("vkpodman: kubeconfig user %q uses exec-plugin auth — only bearer-token credentials are supported in v1", name)
+		return fmt.Errorf("vknode: kubeconfig user %q uses exec-plugin auth — only bearer-token credentials are supported in v1", name)
 	}
 	if user.ClientCertificate != "" || len(user.ClientCertificateData) > 0 ||
 		user.ClientKey != "" || len(user.ClientKeyData) > 0 {
-		return fmt.Errorf("vkpodman: kubeconfig user %q uses client-certificate — only bearer-token credentials are supported in v1", name)
+		return fmt.Errorf("vknode: kubeconfig user %q uses client-certificate — only bearer-token credentials are supported in v1", name)
 	}
 	return nil
 }
@@ -100,7 +100,7 @@ func tokenFromUser(user *clientcmdapi.AuthInfo) (string, error) {
 	if user.TokenFile != "" {
 		data, err := os.ReadFile(user.TokenFile)
 		if err != nil {
-			return "", fmt.Errorf("vkpodman: read kubeconfig token file %s: %w", user.TokenFile, err)
+			return "", fmt.Errorf("vknode: read kubeconfig token file %s: %w", user.TokenFile, err)
 		}
 		return strings.TrimSpace(string(data)), nil
 	}

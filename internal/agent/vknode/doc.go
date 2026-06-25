@@ -1,4 +1,4 @@
-// Package vkpodman is the per-outpost half of the cloudbox cluster: it
+// Package vknode is the per-outpost half of the cloudbox cluster: it
 // joins a cloud-side Kubernetes API server as a virtual node and runs
 // scheduled Pods as podman containers on the host.
 //
@@ -28,4 +28,4 @@
 // The cluster-side details (k3s in cloudbox, RBAC, sharing) live in the
 // plan at ~/.claude/plans/pooling-podman-containers-registered-wit-steady-reef.md
 // and in the separate cloudbox repo.
-package vkpodman
+package vknode

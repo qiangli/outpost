@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"context"
@@ -19,7 +19,7 @@ import (
 	"k8s.io/client-go/tools/record"
 )
 
-// RunOptions configures one vkpodman cluster-join lifetime. Callers
+// RunOptions configures one vknode cluster-join lifetime. Callers
 // build it from either a kubeconfig file (the cmd/outpost-vk PoC) or
 // from the persisted conf.ClusterConfig (the main outpost startCmd
 // path); the runner doesn't care which.
@@ -41,7 +41,7 @@ type RunOptions struct {
 	// Useful for nodeSelector targeting (e.g. {"outpost.dhnt.io/gpu":"true"}).
 	ExtraNodeLabels map[string]string
 
-	// Access, when non-nil, is the namespace-allow gate vkpodman's
+	// Access, when non-nil, is the namespace-allow gate vknode's
 	// CreatePod will consult before scheduling each pod. Pass nil to
 	// disable the check (dev/single-tenant escape hatch). Production
 	// agents build this from the outpost owner's email +
@@ -70,13 +70,13 @@ type RunOptions struct {
 // or runtime error the caller should surface.
 func Run(ctx context.Context, opts RunOptions) error {
 	if opts.NodeName == "" {
-		return errors.New("vkpodman: NodeName required")
+		return errors.New("vknode: NodeName required")
 	}
 	if opts.PodmanSocket == "" {
-		return errors.New("vkpodman: PodmanSocket required")
+		return errors.New("vknode: PodmanSocket required")
 	}
 	if opts.Kube == nil {
-		return errors.New("vkpodman: Kube REST config required")
+		return errors.New("vknode: Kube REST config required")
 	}
 
 	prov, err := NewProvider(opts.PodmanSocket)
@@ -143,17 +143,17 @@ func Run(ctx context.Context, opts RunOptions) error {
 		return nil
 	})
 	g.Go(func() error {
-		slog.Info("vkpodman: starting node controller", "node", opts.NodeName)
+		slog.Info("vknode: starting node controller", "node", opts.NodeName)
 		err := nc.Run(gctx)
 		if err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("vkpodman: node controller exited", "err", err)
+			slog.Error("vknode: node controller exited", "err", err)
 			return err
 		}
-		slog.Info("vkpodman: node controller exited")
+		slog.Info("vknode: node controller exited")
 		return nil
 	})
 	g.Go(func() error {
-		slog.Info("vkpodman: starting pod controller", "node", opts.NodeName)
+		slog.Info("vknode: starting pod controller", "node", opts.NodeName)
 		// The pod controller can't safely act until the node has
 		// registered with the apiserver — block on the node
 		// controller's Ready signal before starting the workers.
@@ -162,17 +162,17 @@ func Run(ctx context.Context, opts RunOptions) error {
 		case <-gctx.Done():
 			return nil
 		}
-		slog.Info("vkpodman: node ready, starting pod controller workers")
+		slog.Info("vknode: node ready, starting pod controller workers")
 		err := pc.Run(gctx, 1)
 		if err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("vkpodman: pod controller exited", "err", err)
+			slog.Error("vknode: pod controller exited", "err", err)
 			return err
 		}
-		slog.Info("vkpodman: pod controller exited")
+		slog.Info("vknode: pod controller exited")
 		return nil
 	})
 
-	slog.Info("vkpodman: running",
+	slog.Info("vknode: running",
 		"node", opts.NodeName,
 		"podman_socket", opts.PodmanSocket,
 		"apiserver", opts.Kube.Host)
@@ -195,10 +195,10 @@ func Run(ctx context.Context, opts RunOptions) error {
 // rotation); only the main agent path goes through this builder.
 func ConfigFromCluster(apiURL, tokenFile string, caPEM []byte) (*rest.Config, error) {
 	if apiURL == "" {
-		return nil, errors.New("vkpodman: empty cluster APIURL")
+		return nil, errors.New("vknode: empty cluster APIURL")
 	}
 	if tokenFile == "" {
-		return nil, errors.New("vkpodman: empty cluster tokenFile path")
+		return nil, errors.New("vknode: empty cluster tokenFile path")
 	}
 	cfg := &rest.Config{
 		Host:            apiURL,
@@ -218,7 +218,7 @@ func newEventRecorder(events typedcorev1.EventsGetter) record.EventRecorder {
 	b := record.NewBroadcaster()
 	b.StartStructuredLogging(0)
 	b.StartRecordingToSink(&apiserverEventSink{events: events})
-	return b.NewRecorder(scheme.Scheme, corev1.EventSource{Component: "outpost-vkpodman"})
+	return b.NewRecorder(scheme.Scheme, corev1.EventSource{Component: "outpost-vknode"})
 }
 
 // apiserverEventSink forwards recorded events to core/v1 Events. The

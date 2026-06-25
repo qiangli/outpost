@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"crypto/sha256"
@@ -10,7 +10,7 @@ import (
 	"sync"
 )
 
-// Access is the security gate vkpodman.CreatePod consults before
+// Access is the security gate vknode.CreatePod consults before
 // scheduling a pod on this outpost. It holds the set of Kubernetes
 // namespace names that are permitted to schedule workloads here —
 // derived from the outpost's owner (always) and the outpost's
@@ -117,7 +117,7 @@ func NamespaceForEmail(email string) string {
 func OwnerEmailFromAccessToken(token string) (string, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return "", errors.New("vkpodman: access_token is not a JWT")
+		return "", errors.New("vknode: access_token is not a JWT")
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
@@ -133,7 +133,7 @@ func OwnerEmailFromAccessToken(token string) (string, error) {
 		return "", err
 	}
 	if claims.Email == "" {
-		return "", errors.New("vkpodman: access_token has no email claim")
+		return "", errors.New("vknode: access_token has no email claim")
 	}
 	return claims.Email, nil
 }

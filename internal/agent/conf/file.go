@@ -377,7 +377,7 @@ type FileConfig struct {
 	// Cluster, when present and Enabled, opts this outpost into the
 	// cloudbox virtual-podman cluster: vkpodman joins a cloud-side k3s
 	// API server as a virtual node and runs scheduled Pods as local
-	// podman containers. See internal/agent/vkpodman. Off by default.
+	// podman containers. See internal/agent/vknode. Off by default.
 	Cluster *ClusterConfig `json:"cluster,omitempty"`
 
 	// LAN peer discovery + LAN-direct dial (Wave 3A). All default off

@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
-// TestIntegration_PodLifecycle runs vkpodman.Run against a real
+// TestIntegration_PodLifecycle runs vknode.Run against a real
 // kube-apiserver (envtest) and our existing fake libpod, then asserts
 // the full control loop: node registers, Pod create → CreateContainer +
 // StartContainer hit libpod, Pod delete → RemoveContainer.
@@ -26,7 +26,7 @@ import (
 // then run the test with:
 //
 //	KUBEBUILDER_ASSETS="$(setup-envtest use 1.30.0 -p path)" \
-//	  go test ./internal/agent/vkpodman/ -run TestIntegration -v
+//	  go test ./internal/agent/vknode/ -run TestIntegration -v
 //
 // We keep the test in the default package (no build tag) so it always
 // compiles and so the CI signal for "did this even build against
@@ -49,7 +49,7 @@ func TestIntegration_PodLifecycle(t *testing.T) {
 	fake := newFakeLibpod()
 	sock := startFakeLibpod(t, fake.handler(t))
 
-	// Run vkpodman in a goroutine; we cancel it at the end of the test
+	// Run vknode in a goroutine; we cancel it at the end of the test
 	// so envtest's Stop sees a clean disconnect rather than a leaked
 	// watcher.
 	runCtx, cancelRun := context.WithCancel(context.Background())
@@ -112,7 +112,7 @@ func TestIntegration_PodLifecycle(t *testing.T) {
 		t.Fatalf("create pod: %v", err)
 	}
 
-	// Step 3: vkpodman's CreatePod fires → fake libpod sees a container
+	// Step 3: vknode's CreatePod fires → fake libpod sees a container
 	// in the running state.
 	waitForCondition(t, 30*time.Second, "container created and running", func() bool {
 		fake.mu.Lock()
@@ -125,7 +125,7 @@ func TestIntegration_PodLifecycle(t *testing.T) {
 		return false
 	})
 
-	// Step 4: Delete the pod → vkpodman's DeletePod fires → fake libpod
+	// Step 4: Delete the pod → vknode's DeletePod fires → fake libpod
 	// drops the container.
 	if err := client.CoreV1().Pods("default").Delete(context.Background(), "hello", metav1.DeleteOptions{}); err != nil {
 		t.Fatalf("delete pod: %v", err)

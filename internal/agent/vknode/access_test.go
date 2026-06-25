@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"crypto/sha256"

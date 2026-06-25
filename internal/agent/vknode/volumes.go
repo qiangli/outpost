@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"context"
@@ -99,7 +99,7 @@ func EnsureVolumesForPod(ctx context.Context, c *Client, pod *corev1.Pod) error 
 				"outpost.io/hostpath":  v.HostPath.Path,
 			}
 			if err := c.CreateVolume(ctx, name, labels); err != nil {
-				return fmt.Errorf("vkpodman: ensure hostPath volume %q: %w", name, err)
+				return fmt.Errorf("vknode: ensure hostPath volume %q: %w", name, err)
 			}
 		case v.EmptyDir != nil:
 			if v.EmptyDir.Medium == corev1.StorageMediumMemory {
@@ -114,7 +114,7 @@ func EnsureVolumesForPod(ctx context.Context, c *Client, pod *corev1.Pod) error 
 				"outpost.io/volume-name": v.Name,
 			}
 			if err := c.CreateVolume(ctx, name, labels); err != nil {
-				return fmt.Errorf("vkpodman: ensure emptyDir volume %q: %w", name, err)
+				return fmt.Errorf("vknode: ensure emptyDir volume %q: %w", name, err)
 			}
 		}
 	}
@@ -145,7 +145,7 @@ func RemoveEmptyDirsForPod(ctx context.Context, c *Client, pod *corev1.Pod) erro
 		}
 		name := emptyDirVolumeName(string(pod.UID), v.Name)
 		if err := c.RemoveVolume(ctx, name, true); err != nil {
-			slog.Warn("vkpodman: remove emptyDir volume",
+			slog.Warn("vknode: remove emptyDir volume",
 				"pod", pod.Namespace+"/"+pod.Name, "volume", v.Name, "name", name, "err", err)
 		}
 	}

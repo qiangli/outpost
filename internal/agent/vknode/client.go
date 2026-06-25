@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"bytes"
@@ -39,7 +39,7 @@ type Client struct {
 // typically obtain its path from agent.DetectPodman().
 func NewClient(socket string) (*Client, error) {
 	if strings.TrimSpace(socket) == "" {
-		return nil, errors.New("vkpodman: empty podman socket path")
+		return nil, errors.New("vknode: empty podman socket path")
 	}
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -83,7 +83,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	if body != nil {
 		buf, err := json.Marshal(body)
 		if err != nil {
-			return nil, fmt.Errorf("vkpodman: marshal %s body: %w", path, err)
+			return nil, fmt.Errorf("vknode: marshal %s body: %w", path, err)
 		}
 		reqBody = bytes.NewReader(buf)
 	}
@@ -130,7 +130,7 @@ func (e *APIError) Error() string {
 	if e == nil {
 		return "<nil APIError>"
 	}
-	return fmt.Sprintf("vkpodman: %s: HTTP %d: %s", e.Op, e.Status, e.Message)
+	return fmt.Sprintf("vknode: %s: HTTP %d: %s", e.Op, e.Status, e.Message)
 }
 
 // IsNotFound reports whether err describes a libpod 404 (container or

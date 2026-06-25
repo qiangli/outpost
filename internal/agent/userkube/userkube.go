@@ -26,7 +26,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qiangli/outpost/internal/agent/vkpodman"
+	"github.com/qiangli/outpost/internal/agent/vknode"
 )
 
 // DefaultFilename is what kubectl-readable kubeconfig gets written
@@ -113,7 +113,7 @@ func FetchAndWrite(ctx context.Context, cloudboxBase, accessToken, nodeName, out
 		return outPath, err
 	}
 
-	parsed, err := vkpodman.FetchKubeconfig(ctx, cloudboxBase, accessToken, nodeName)
+	parsed, err := vknode.FetchKubeconfig(ctx, cloudboxBase, accessToken, nodeName)
 	if err != nil {
 		recordStatus(outPath, nodeName, "", fmt.Errorf("fetch: %w", err))
 		return outPath, fmt.Errorf("fetch kubeconfig: %w", err)
@@ -136,7 +136,7 @@ func FetchAndWrite(ctx context.Context, cloudboxBase, accessToken, nodeName, out
 //
 // String built by hand to keep the surface tiny + the import set
 // light — no sigs.k8s.io/yaml dep just to emit four stanzas.
-func Render(contextName string, p *vkpodman.ParsedKubeconfig) string {
+func Render(contextName string, p *vknode.ParsedKubeconfig) string {
 	clusterName := "outpost-cluster"
 	userName := "outpost-" + contextName
 	caField := ""

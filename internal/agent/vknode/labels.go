@@ -1,6 +1,6 @@
-package vkpodman
+package vknode
 
-// Well-known container labels vkpodman stamps onto every container it
+// Well-known container labels vknode stamps onto every container it
 // creates. Reconcile uses ManagedLabel as the boundary between
 // outpost-cluster-owned containers and everything else the user runs
 // locally with podman — we never touch a container that lacks it.

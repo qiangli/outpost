@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"fmt"
@@ -28,17 +28,17 @@ import (
 // so reconcile and `podman ps` both stay informative.
 func BuildSpec(pod *corev1.Pod) (*SpecGenerator, error) {
 	if pod == nil {
-		return nil, fmt.Errorf("vkpodman: nil Pod")
+		return nil, fmt.Errorf("vknode: nil Pod")
 	}
 	if len(pod.Spec.InitContainers) > 0 {
-		return nil, fmt.Errorf("vkpodman: initContainers not supported in v1")
+		return nil, fmt.Errorf("vknode: initContainers not supported in v1")
 	}
 	if n := len(pod.Spec.Containers); n != 1 {
-		return nil, fmt.Errorf("vkpodman: v1 supports exactly one container per Pod (got %d)", n)
+		return nil, fmt.Errorf("vknode: v1 supports exactly one container per Pod (got %d)", n)
 	}
 	c := pod.Spec.Containers[0]
 	if c.Image == "" {
-		return nil, fmt.Errorf("vkpodman: container %q has empty image", c.Name)
+		return nil, fmt.Errorf("vknode: container %q has empty image", c.Name)
 	}
 
 	spec := &SpecGenerator{
@@ -70,7 +70,7 @@ func BuildSpec(pod *corev1.Pod) (*SpecGenerator, error) {
 		spec.Env = env
 	}
 	if len(c.EnvFrom) > 0 {
-		return nil, fmt.Errorf("vkpodman: envFrom (configMap/secret refs) not supported in v1")
+		return nil, fmt.Errorf("vknode: envFrom (configMap/secret refs) not supported in v1")
 	}
 
 	if len(c.VolumeMounts) > 0 {
@@ -154,7 +154,7 @@ func buildEnv(envs []corev1.EnvVar) (map[string]string, error) {
 	out := make(map[string]string, len(envs))
 	for _, e := range envs {
 		if e.ValueFrom != nil {
-			return nil, fmt.Errorf("vkpodman: env %q uses valueFrom (configMap/secret/fieldRef) — not supported in v1", e.Name)
+			return nil, fmt.Errorf("vknode: env %q uses valueFrom (configMap/secret/fieldRef) — not supported in v1", e.Name)
 		}
 		out[e.Name] = e.Value
 	}
@@ -205,13 +205,13 @@ func buildMounts(pod *corev1.Pod, vms []corev1.VolumeMount) ([]Mount, []NamedVol
 		}
 		v, ok := volByName[vm.Name]
 		if !ok {
-			return nil, nil, fmt.Errorf("vkpodman: volumeMount %q references unknown volume", vm.Name)
+			return nil, nil, fmt.Errorf("vknode: volumeMount %q references unknown volume", vm.Name)
 		}
 		switch {
 		case v.HostPath != nil:
 			src := v.HostPath.Path
 			if !filepath.IsAbs(src) {
-				return nil, nil, fmt.Errorf("vkpodman: hostPath %q must be absolute", src)
+				return nil, nil, fmt.Errorf("vknode: hostPath %q must be absolute", src)
 			}
 			nv := NamedVolume{
 				Name: hostPathVolumeName(pod.Namespace, src),
@@ -239,7 +239,7 @@ func buildMounts(pod *corev1.Pod, vms []corev1.VolumeMount) ([]Mount, []NamedVol
 			}
 			namedVols = append(namedVols, nv)
 		default:
-			return nil, nil, fmt.Errorf("vkpodman: volume %q has unsupported type in v1 (only hostPath and emptyDir)", vm.Name)
+			return nil, nil, fmt.Errorf("vknode: volume %q has unsupported type in v1 (only hostPath and emptyDir)", vm.Name)
 		}
 	}
 	return mounts, namedVols, nil

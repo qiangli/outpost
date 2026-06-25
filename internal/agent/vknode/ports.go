@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"fmt"
@@ -11,7 +11,7 @@ import (
 )
 
 // HostPortLabelPrefix is the libpod-container label namespace
-// vkpodman stamps to record auto-allocated host ports. One label per
+// vknode stamps to record auto-allocated host ports. One label per
 // containerPort: `outpost.io/host-port-<containerPort>` → host port
 // the container is actually published on. Used on daemon restart
 // (Reconcile path) to re-derive the same in-memory pod.Spec.HostPort
@@ -46,11 +46,11 @@ func AllocateMissingHostPorts(pod *corev1.Pod) (int, error) {
 			}
 			port, err := pickFreeTCPPort()
 			if err != nil {
-				return count, fmt.Errorf("vkpodman: allocate host port for %s/%s container=%s port=%d: %w",
+				return count, fmt.Errorf("vknode: allocate host port for %s/%s container=%s port=%d: %w",
 					pod.Namespace, pod.Name, c.Name, p.ContainerPort, err)
 			}
 			p.HostPort = int32(port)
-			slog.Info("vkpodman: auto-allocated host port",
+			slog.Info("vknode: auto-allocated host port",
 				"pod", podKey(pod.Namespace, pod.Name),
 				"container", c.Name,
 				"containerPort", p.ContainerPort,
@@ -141,7 +141,7 @@ func portsFromLabels(labels map[string]string) []corev1.ContainerPort {
 //
 // Pre-existing HostPort values (explicit hostPort in the Pod spec)
 // are left alone — the labels are only authoritative for ports that
-// vkpodman allocated.
+// vknode allocated.
 func HydratePodPortsFromLabels(pod *corev1.Pod, labels map[string]string) {
 	if pod == nil {
 		return

@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"archive/tar"
@@ -20,10 +20,10 @@ import (
 )
 
 // Build-source annotation namespace. When BuildSourceAnnotation is
-// present on a Pod, vkpodman.CreatePod treats the spec image as a
+// present on a Pod, vknode.CreatePod treats the spec image as a
 // *target* tag (the image to produce) rather than a registry
 // reference to pull. If that tag isn't already in the local podman
-// image store, vkpodman clones the source, tars the build context,
+// image store, vknode clones the source, tars the build context,
 // and POSTs it to the libpod build endpoint. No cloudbox-side state
 // is involved — the source URL is the source of truth.
 //
@@ -71,7 +71,7 @@ const (
 //
 // Idempotent: subsequent CreatePods for an already-cached image
 // short-circuit on the ImageExists probe without re-cloning.
-func (p *Provider) EnsureImageBuilt(ctx context.Context, pod *corev1.Pod) (skipPull bool, err error) {
+func (b *podmanBackend) EnsureImageBuilt(ctx context.Context, pod *corev1.Pod) (skipPull bool, err error) {
 	if pod == nil || pod.Annotations == nil {
 		return false, nil
 	}
@@ -80,14 +80,14 @@ func (p *Provider) EnsureImageBuilt(ctx context.Context, pod *corev1.Pod) (skipP
 		return false, nil
 	}
 	if len(pod.Spec.Containers) == 0 || strings.TrimSpace(pod.Spec.Containers[0].Image) == "" {
-		return false, errors.New("vkpodman: build-source annotation set but no container image specified")
+		return false, errors.New("vknode: build-source annotation set but no container image specified")
 	}
 	image := pod.Spec.Containers[0].Image
 
 	// Image already present? Skip the build AND the pull — a
 	// locally-built tag has no upstream registry to resolve.
-	if exists, eerr := p.client.ImageExists(ctx, image); eerr != nil {
-		slog.Warn("vkpodman: image-exists probe failed (will attempt build)", "image", image, "err", eerr)
+	if exists, eerr := b.client.ImageExists(ctx, image); eerr != nil {
+		slog.Warn("vknode: image-exists probe failed (will attempt build)", "image", image, "err", eerr)
 	} else if exists {
 		return true, nil
 	}
@@ -107,31 +107,31 @@ func (p *Provider) EnsureImageBuilt(ctx context.Context, pod *corev1.Pod) (skipP
 
 	tmp, err := os.MkdirTemp("", "outpost-build-*")
 	if err != nil {
-		return false, fmt.Errorf("vkpodman: mkdtemp: %w", err)
+		return false, fmt.Errorf("vknode: mkdtemp: %w", err)
 	}
 	defer os.RemoveAll(tmp)
 
-	slog.Info("vkpodman: building image from source",
+	slog.Info("vknode: building image from source",
 		"image", image, "git", cloneURL, "ref", ref,
 		"dockerfile", dockerfile, "context", contextSub,
 		"workdir", tmp)
 
 	if err := gitClone(ctx, cloneURL, ref, tmp); err != nil {
-		return false, fmt.Errorf("vkpodman: git clone %s: %w", cloneURL, err)
+		return false, fmt.Errorf("vknode: git clone %s: %w", cloneURL, err)
 	}
 
 	ctxDir := filepath.Join(tmp, contextSub)
 	if _, err := os.Stat(ctxDir); err != nil {
-		return false, fmt.Errorf("vkpodman: build context %q not in repo: %w", contextSub, err)
+		return false, fmt.Errorf("vknode: build context %q not in repo: %w", contextSub, err)
 	}
 	if _, err := os.Stat(filepath.Join(ctxDir, dockerfile)); err != nil {
-		return false, fmt.Errorf("vkpodman: Dockerfile %q not in context: %w", dockerfile, err)
+		return false, fmt.Errorf("vknode: Dockerfile %q not in context: %w", dockerfile, err)
 	}
 
-	if err := p.client.BuildImage(ctx, ctxDir, dockerfile, image); err != nil {
-		return false, fmt.Errorf("vkpodman: build %s: %w", image, err)
+	if err := b.client.BuildImage(ctx, ctxDir, dockerfile, image); err != nil {
+		return false, fmt.Errorf("vknode: build %s: %w", image, err)
 	}
-	slog.Info("vkpodman: build complete", "image", image)
+	slog.Info("vknode: build complete", "image", image)
 	return true, nil
 }
 

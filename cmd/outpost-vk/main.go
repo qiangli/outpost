@@ -6,7 +6,7 @@
 // This binary is intentionally separate from `outpost`: it lets us
 // validate the virtual-kubelet + libpod plumbing end-to-end against a
 // real k3s server without touching the existing agent's start path or
-// admin UI. The actual lifecycle lives in vkpodman.Run; this binary is
+// admin UI. The actual lifecycle lives in vknode.Run; this binary is
 // just flag parsing + signal handling around it.
 package main
 
@@ -23,7 +23,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/qiangli/outpost/internal/agent"
-	"github.com/qiangli/outpost/internal/agent/vkpodman"
+	"github.com/qiangli/outpost/internal/agent/vknode"
 )
 
 func main() {
@@ -67,7 +67,7 @@ func run(kubeconfig, nodeName, podmanSock string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	return vkpodman.Run(ctx, vkpodman.RunOptions{
+	return vknode.Run(ctx, vknode.RunOptions{
 		NodeName:     nodeName,
 		PodmanSocket: podmanSock,
 		Kube:         kubeCfg,

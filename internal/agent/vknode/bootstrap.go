@@ -1,4 +1,4 @@
-package vkpodman
+package vknode
 
 import (
 	"bytes"
@@ -51,18 +51,18 @@ type FetchResponse struct {
 // surface in the error message.
 func FetchKubeconfig(ctx context.Context, cloudboxBase, accessToken, nodeName string) (*ParsedKubeconfig, error) {
 	if strings.TrimSpace(cloudboxBase) == "" {
-		return nil, errors.New("vkpodman: empty cloudboxBase")
+		return nil, errors.New("vknode: empty cloudboxBase")
 	}
 	if strings.TrimSpace(accessToken) == "" {
-		return nil, errors.New("vkpodman: empty accessToken")
+		return nil, errors.New("vknode: empty accessToken")
 	}
 	if strings.TrimSpace(nodeName) == "" {
-		return nil, errors.New("vkpodman: empty nodeName")
+		return nil, errors.New("vknode: empty nodeName")
 	}
 	url := strings.TrimRight(cloudboxBase, "/") + FetchEndpointPath
 	body, err := json.Marshal(FetchRequest{NodeName: nodeName})
 	if err != nil {
-		return nil, fmt.Errorf("vkpodman: marshal fetch request: %w", err)
+		return nil, fmt.Errorf("vknode: marshal fetch request: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -73,7 +73,7 @@ func FetchKubeconfig(ctx context.Context, cloudboxBase, accessToken, nodeName st
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("vkpodman: dial cloudbox: %w", err)
+		return nil, fmt.Errorf("vknode: dial cloudbox: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -90,21 +90,21 @@ func FetchKubeconfig(ctx context.Context, cloudboxBase, accessToken, nodeName st
 	}
 	var out FetchResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("vkpodman: decode fetch response: %w", err)
+		return nil, fmt.Errorf("vknode: decode fetch response: %w", err)
 	}
 	var ca []byte
 	if out.CAData != "" {
 		decoded, derr := base64.StdEncoding.DecodeString(out.CAData)
 		if derr != nil {
-			return nil, fmt.Errorf("vkpodman: decode ca_data base64: %w", derr)
+			return nil, fmt.Errorf("vknode: decode ca_data base64: %w", derr)
 		}
 		ca = decoded
 	}
 	if strings.TrimSpace(out.APIURL) == "" {
-		return nil, errors.New("vkpodman: cloudbox response missing api_url")
+		return nil, errors.New("vknode: cloudbox response missing api_url")
 	}
 	if strings.TrimSpace(out.Token) == "" {
-		return nil, errors.New("vkpodman: cloudbox response missing token")
+		return nil, errors.New("vknode: cloudbox response missing token")
 	}
 	return &ParsedKubeconfig{
 		APIURL: out.APIURL,
@@ -126,7 +126,7 @@ func (e *FetchError) Error() string {
 	if e == nil {
 		return "<nil FetchError>"
 	}
-	return fmt.Sprintf("vkpodman: cloudbox fetch: HTTP %d: %s", e.Status, e.Message)
+	return fmt.Sprintf("vknode: cloudbox fetch: HTTP %d: %s", e.Status, e.Message)
 }
 
 // IsClusterDisabled reports whether err is a 503 from cloudbox,
