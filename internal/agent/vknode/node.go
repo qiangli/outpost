@@ -4,11 +4,23 @@ import (
 	"context"
 	"maps"
 	"runtime"
+	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/qiangli/outpost/internal/agent/sysinfo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+const (
+	labelGPU      = "outpost.dhnt.io/gpu"
+	labelGPUKind  = "outpost.dhnt.io/gpu-kind"
+	labelGPUModel = "outpost.dhnt.io/gpu-model"
+
+	resourceMetalVRAM = corev1.ResourceName("dhnt.io/metal-vram")
+	resourceNVIDIAGPU = corev1.ResourceName("nvidia.com/gpu")
 )
 
 // NodeProvider implements virtual-kubelet's node.NodeProvider on top of
@@ -84,27 +96,28 @@ func (np *NodeProvider) runStatusLoop(ctx context.Context, cb func(*corev1.Node)
 // will show; labels merge with the well-known kubernetes.io/*
 // platform labels.
 //
-// Capacity/Allocatable use runtime.NumCPU() and the system memory
-// detected via the local libpod /info endpoint (TODO — for v1 we
-// report a placeholder so registration succeeds; the scheduler can
-// still place workloads based on nodeSelector rather than resource
-// requests until we wire the real numbers).
+// Capacity/Allocatable come from the local sysinfo probe.
 func BuildNode(nodeName string, extraLabels map[string]string) *corev1.Node {
+	return BuildNodeFromInfo(nodeName, extraLabels, sysinfo.Collect(""))
+}
+
+// BuildNodeFromInfo constructs the initial Node object from already-collected
+// host capability info. It is kept separate from BuildNode so tests and future
+// callers can feed peer-provided sysinfo without probing the local machine.
+func BuildNodeFromInfo(nodeName string, extraLabels map[string]string, info sysinfo.Info) *corev1.Node {
+	osName := firstNonEmpty(info.OS, runtime.GOOS)
+	arch := firstNonEmpty(info.Arch, runtime.GOARCH)
 	labels := map[string]string{
 		corev1.LabelHostname:   nodeName,
-		corev1.LabelOSStable:   runtime.GOOS,
-		corev1.LabelArchStable: runtime.GOARCH,
+		corev1.LabelOSStable:   osName,
+		corev1.LabelArchStable: arch,
 		"type":                 "virtual-kubelet",
 		"outpost.dhnt.io/host": nodeName,
 	}
+	addGPULabels(labels, info.GPUs)
 	maps.Copy(labels, extraLabels)
 
-	// Placeholder capacity. Real values land when we wire libpod
-	// /info into NewNodeProvider — until then, we advertise enough
-	// for the scheduler to consider the node and let nodeSelector be
-	// the practical placement signal.
-	cpuQty := *resource.NewQuantity(int64(runtime.NumCPU()), resource.DecimalSI)
-	memQty := *resource.NewQuantity(8*1024*1024*1024, resource.BinarySI) // 8 GiB placeholder
+	capacity := capacityFromInfo(info)
 
 	now := metav1.NewTime(time.Now())
 	return &corev1.Node{
@@ -126,20 +139,12 @@ func BuildNode(nodeName string, extraLabels map[string]string) *corev1.Node {
 		},
 		Status: corev1.NodeStatus{
 			NodeInfo: corev1.NodeSystemInfo{
-				OperatingSystem: runtime.GOOS,
-				Architecture:    runtime.GOARCH,
+				OperatingSystem: osName,
+				Architecture:    arch,
 				KubeletVersion:  "v0.1.0-vknode",
 			},
-			Capacity: corev1.ResourceList{
-				corev1.ResourceCPU:    cpuQty,
-				corev1.ResourceMemory: memQty,
-				corev1.ResourcePods:   *resource.NewQuantity(110, resource.DecimalSI),
-			},
-			Allocatable: corev1.ResourceList{
-				corev1.ResourceCPU:    cpuQty,
-				corev1.ResourceMemory: memQty,
-				corev1.ResourcePods:   *resource.NewQuantity(110, resource.DecimalSI),
-			},
+			Capacity:    capacity,
+			Allocatable: maps.Clone(capacity),
 			Conditions: []corev1.NodeCondition{{
 				Type:               corev1.NodeReady,
 				Status:             corev1.ConditionTrue,
@@ -156,4 +161,90 @@ func BuildNode(nodeName string, extraLabels map[string]string) *corev1.Node {
 			},
 		},
 	}
+}
+
+func capacityFromInfo(info sysinfo.Info) corev1.ResourceList {
+	cpuCount := info.CPUCount
+	if cpuCount <= 0 {
+		cpuCount = runtime.NumCPU()
+	}
+
+	capacity := corev1.ResourceList{
+		corev1.ResourceCPU:    *resource.NewQuantity(int64(cpuCount), resource.DecimalSI),
+		corev1.ResourceMemory: *resource.NewQuantity(uint64ToInt64(info.MemTotalBytes), resource.BinarySI),
+		corev1.ResourcePods:   *resource.NewQuantity(110, resource.DecimalSI),
+	}
+
+	var metalVRAM uint64
+	var nvidiaGPUs int64
+	for _, gpu := range info.GPUs {
+		switch gpu.Kind {
+		case "apple-silicon":
+			metalVRAM += gpu.VRAMTotalBytes
+		case "nvidia":
+			if gpu.Count > 0 {
+				nvidiaGPUs += int64(gpu.Count)
+			}
+		}
+	}
+	if metalVRAM > 0 {
+		capacity[resourceMetalVRAM] = *resource.NewQuantity(uint64ToInt64(metalVRAM), resource.BinarySI)
+	}
+	if nvidiaGPUs > 0 {
+		capacity[resourceNVIDIAGPU] = *resource.NewQuantity(nvidiaGPUs, resource.DecimalSI)
+	}
+	return capacity
+}
+
+func addGPULabels(labels map[string]string, gpus []sysinfo.GPU) {
+	for _, gpu := range gpus {
+		if gpu.Kind == "" && gpu.Model == "" {
+			continue
+		}
+		labels[labelGPU] = "true"
+		if kind := sanitizeLabelValue(gpu.Kind); kind != "" {
+			labels[labelGPUKind] = kind
+		}
+		if model := sanitizeLabelValue(gpu.Model); model != "" {
+			labels[labelGPUModel] = model
+		}
+		return
+	}
+}
+
+func sanitizeLabelValue(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-_.")
+	for len(out) > 63 {
+		_, size := utf8.DecodeLastRuneInString(out)
+		out = out[:len(out)-size]
+		out = strings.TrimRight(out, "-_.")
+	}
+	return out
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+func uint64ToInt64(n uint64) int64 {
+	const maxInt64 = uint64(^uint64(0) >> 1)
+	if n > maxInt64 {
+		return int64(maxInt64)
+	}
+	return int64(n)
 }
