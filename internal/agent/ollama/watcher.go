@@ -52,6 +52,14 @@ type ClusterSource interface {
 	ClusterSnapshot() *ClusterCapacity
 }
 
+// ClusterModelSource is the optional extension for a ClusterSource that can
+// also inventory the serving models exposed by the cluster's OpenAI /v1 API.
+// Kept separate so older tests/stubs that only care about capacity do not
+// need to implement a no-op model method.
+type ClusterModelSource interface {
+	ClusterModels() []ModelInfo
+}
+
 // Config is the wiring the watcher needs at construction time. All
 // fields are required except the optional intervals/clients/logger
 // which fall back to package defaults.
@@ -355,6 +363,9 @@ func (w *Watcher) tick(ctx context.Context, lastSnapshot *[]ModelInfo, lastPushe
 	var cluster *ClusterCapacity
 	if w.cfg.Cluster != nil {
 		cluster = w.cfg.Cluster.ClusterSnapshot()
+		if src, ok := w.cfg.Cluster.(ClusterModelSource); ok {
+			models = mergeModels(models, src.ClusterModels())
+		}
 	}
 	currentHash := CombineHash(ContentHash(models), cluster)
 	changed := currentHash != *lastPushedHash
@@ -470,6 +481,36 @@ func (w *Watcher) fetchModels(ctx context.Context) ([]ModelInfo, error) {
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
 	return models, nil
+}
+
+func mergeModels(base, extra []ModelInfo) []ModelInfo {
+	if len(extra) == 0 {
+		return base
+	}
+	merged := make([]ModelInfo, 0, len(base)+len(extra))
+	seen := map[string]int{}
+	for _, m := range base {
+		if strings.TrimSpace(m.Name) == "" {
+			continue
+		}
+		seen[m.Name] = len(merged)
+		merged = append(merged, m)
+	}
+	for _, m := range extra {
+		if strings.TrimSpace(m.Name) == "" {
+			continue
+		}
+		if i, ok := seen[m.Name]; ok {
+			if merged[i].Size == 0 && m.Size > 0 {
+				merged[i].Size = m.Size
+			}
+			continue
+		}
+		seen[m.Name] = len(merged)
+		merged = append(merged, m)
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Name < merged[j].Name })
+	return merged
 }
 
 // detailsFor returns the cached or freshly-fetched details for one

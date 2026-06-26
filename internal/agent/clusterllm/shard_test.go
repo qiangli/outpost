@@ -2,8 +2,11 @@ package clusterllm
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -87,6 +90,56 @@ func TestDetect_LlamaCPP_HealthOnly(t *testing.T) {
 	}
 }
 
+func TestDetect_LlamaCPP_OpenAIModelsEndpointWithSize(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"llama-70b-q4","size":424242}]}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	got := Detect(context.Background(), Config{Endpoint: srv.URL + "/v1"}, srv.Client())
+	if got.State != StateRunning {
+		t.Fatalf("want Running, got %q", got.State)
+	}
+	if got.Backend != BackendLlamaCPP {
+		t.Fatalf("want backend %q from OpenAI /v1/models, got %q", BackendLlamaCPP, got.Backend)
+	}
+	if len(got.Models) != 1 {
+		t.Fatalf("models=%v, want one model", got.Models)
+	}
+	if got.Models[0].Name != "llama-70b-q4" || got.Models[0].Size != 424242 {
+		t.Fatalf("model=%+v, want name llama-70b-q4 size 424242", got.Models[0])
+	}
+}
+
+func TestDetect_LlamaCPP_ModelSizeFromLocalPropsPath(t *testing.T) {
+	modelPath := filepath.Join(t.TempDir(), "model.gguf")
+	if err := os.WriteFile(modelPath, []byte("real-model-bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"local-gguf"}]}`))
+	})
+	mux.HandleFunc("/props", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total_slots":2,"model_path":` + strconvQuote(modelPath) + `}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	got := Detect(context.Background(), Config{Endpoint: srv.URL + "/v1"}, srv.Client())
+	if len(got.Models) != 1 {
+		t.Fatalf("models=%v, want one model", got.Models)
+	}
+	if got.Models[0].Size != int64(len("real-model-bytes")) {
+		t.Fatalf("model size=%d, want stat size %d", got.Models[0].Size, len("real-model-bytes"))
+	}
+}
+
 func TestDetect_GPUStack_NotRetaggedAsLlamaCPP(t *testing.T) {
 	// A reachable GPUStack server (OpenAI alias only, no /health|/props) must
 	// keep the gpustack tag — the llama.cpp fallback demands a positive
@@ -96,4 +149,9 @@ func TestDetect_GPUStack_NotRetaggedAsLlamaCPP(t *testing.T) {
 	if got.Backend != BackendGPUStack {
 		t.Fatalf("GPUStack must not be retagged llamacpp; got %q", got.Backend)
 	}
+}
+
+func strconvQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

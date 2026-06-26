@@ -501,6 +501,14 @@ type stubClusterSource struct{ c *ClusterCapacity }
 
 func (s stubClusterSource) ClusterSnapshot() *ClusterCapacity { return s.c }
 
+type stubClusterModelSource struct {
+	c      *ClusterCapacity
+	models []ModelInfo
+}
+
+func (s stubClusterModelSource) ClusterSnapshot() *ClusterCapacity { return s.c }
+func (s stubClusterModelSource) ClusterModels() []ModelInfo        { return s.models }
+
 func TestWatcher_PushIncludesCluster(t *testing.T) {
 	tags := &stubTags{bodies: []string{`{"models":[]}`}}
 	reg := &capturingRegistry{}
@@ -529,6 +537,45 @@ func TestWatcher_PushIncludesCluster(t *testing.T) {
 	// value so a membership change re-triggers a full cloudbox Replace.
 	if last.ContentHash == ContentHash(nil) {
 		t.Errorf("content hash should differ from the model-only hash when a cluster is attached")
+	}
+}
+
+func TestWatcher_PushIncludesClusterModels(t *testing.T) {
+	tags := &stubTags{bodies: []string{`{"models":[{"name":"local","digest":"d1","size":100}]}`}}
+	reg := &capturingRegistry{}
+	w, _, _ := newTestWatcher(t, tags, reg, nil)
+	w.cfg.Cluster = stubClusterModelSource{
+		c: &ClusterCapacity{
+			MaxModelBytes: 80 << 30,
+			MemberCount:   2,
+			Backend:       "llamacpp",
+		},
+		models: []ModelInfo{{Name: "llama-70b-q4", Size: 424242}},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_ = w.Run(ctx)
+
+	last, ok := reg.lastPayload()
+	if !ok {
+		t.Fatal("no payload")
+	}
+	if last.Cluster == nil || last.Cluster.Backend != "llamacpp" {
+		t.Fatalf("cluster=%+v, want llamacpp cluster", last.Cluster)
+	}
+	if len(last.Models) != 2 {
+		t.Fatalf("models=%+v, want local + cluster model", last.Models)
+	}
+	got := map[string]int64{}
+	for _, m := range last.Models {
+		got[m.Name] = m.Size
+	}
+	if got["local"] != 100 || got["llama-70b-q4"] != 424242 {
+		t.Fatalf("model sizes=%v, want local=100 llama-70b-q4=424242", got)
+	}
+	if last.ContentHash != CombineHash(ContentHash(last.Models), last.Cluster) {
+		t.Fatalf("content hash did not include merged cluster models and cluster tag")
 	}
 }
 
