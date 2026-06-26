@@ -23,3 +23,31 @@ const (
 	// future version a pure-additive change.
 	ContainerNameLabel = "outpost.io/container-name"
 )
+
+// Well-known Node labels vknode stamps or accepts through RunOptions.
+// These are Kubernetes scheduling surface, so keep names centralized
+// instead of sprinkling string literals through callers.
+const (
+	NodeHostLabel          = "outpost.dhnt.io/host"
+	NodeLocalityLANLabel   = "outpost.dhnt.io/lan-group"
+	NodeLocalityTierLabel  = "outpost.dhnt.io/tier"
+	NodeLocalityTierTP     = "tp"
+	NodeLocalityTierLAN    = "lan"
+	NodeLocalityTierWAN    = "wan"
+	NodeLocalityTierRemote = "remote"
+)
+
+// NodeLocalityLabels returns the non-empty locality labels for a Node.
+// Values are normalized to Kubernetes label-value syntax; empty or fully
+// trimmed values are omitted. Callers should only pass measured or
+// cloudbox-issued locality data; per-host names are not a LAN group.
+func NodeLocalityLabels(lanGroup, tier string) map[string]string {
+	labels := map[string]string{}
+	if v := sanitizeLabelValue(lanGroup); v != "" {
+		labels[NodeLocalityLANLabel] = v
+	}
+	if v := sanitizeLabelValue(tier); v != "" {
+		labels[NodeLocalityTierLabel] = v
+	}
+	return labels
+}

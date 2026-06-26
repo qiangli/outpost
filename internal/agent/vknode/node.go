@@ -112,7 +112,7 @@ func BuildNodeFromInfo(nodeName string, extraLabels map[string]string, info sysi
 		corev1.LabelOSStable:   osName,
 		corev1.LabelArchStable: arch,
 		"type":                 "virtual-kubelet",
-		"outpost.dhnt.io/host": nodeName,
+		NodeHostLabel:          nodeName,
 	}
 	addGPULabels(labels, info.GPUs)
 	maps.Copy(labels, extraLabels)

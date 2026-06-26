@@ -26,7 +26,7 @@ func TestBuildNode_BasicShape(t *testing.T) {
 	if n.Labels["outpost.dhnt.io/gpu"] != "true" {
 		t.Errorf("extra label not merged: %+v", n.Labels)
 	}
-	if n.Labels["outpost.dhnt.io/host"] != "home-mini" {
+	if n.Labels[NodeHostLabel] != "home-mini" {
 		t.Errorf("outpost.dhnt.io/host label missing: %+v", n.Labels)
 	}
 	// Must carry the virtual-kubelet taint so DaemonSets stay off.
@@ -139,6 +139,42 @@ func TestBuildNodeFromInfo_ExtraLabelsOverrideGenerated(t *testing.T) {
 
 	if n.Labels[labelGPUKind] != "manual" {
 		t.Errorf("extra label did not override generated label: %+v", n.Labels)
+	}
+}
+
+func TestNodeLocalityLabels(t *testing.T) {
+	labels := NodeLocalityLabels("Home LAN!", NodeLocalityTierTP)
+
+	if labels[NodeLocalityLANLabel] != "Home-LAN" {
+		t.Errorf("lan group label = %q", labels[NodeLocalityLANLabel])
+	}
+	if labels[NodeLocalityTierLabel] != NodeLocalityTierTP {
+		t.Errorf("tier label = %q", labels[NodeLocalityTierLabel])
+	}
+}
+
+func TestNodeLocalityLabels_OmitsEmptyValues(t *testing.T) {
+	labels := NodeLocalityLabels("...", "")
+
+	if len(labels) != 0 {
+		t.Errorf("labels = %+v, want empty", labels)
+	}
+}
+
+func TestBuildNodeFromInfo_LocalityLabels(t *testing.T) {
+	extra := NodeLocalityLabels("rack-a", NodeLocalityTierLAN)
+	n := BuildNodeFromInfo("lan-host", extra, sysinfo.Info{
+		OS:            "linux",
+		Arch:          "amd64",
+		CPUCount:      4,
+		MemTotalBytes: 8 * 1024 * 1024 * 1024,
+	})
+
+	if n.Labels[NodeLocalityLANLabel] != "rack-a" {
+		t.Errorf("lan group label missing: %+v", n.Labels)
+	}
+	if n.Labels[NodeLocalityTierLabel] != NodeLocalityTierLAN {
+		t.Errorf("tier label missing: %+v", n.Labels)
 	}
 }
 
