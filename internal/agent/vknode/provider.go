@@ -29,6 +29,14 @@ type Provider struct {
 	access  *Access       // nil = no namespace check (single-tenant dev)
 	apps    TransientApps // nil = don't publish pods into the outpost's app router
 
+	// requireExplicitAccess selects the access-gate mode. When false
+	// (podman), nil Access means "allow all namespaces" — the
+	// single-tenant dev escape hatch. When true (native/trusted
+	// backend), nil Access means "reject all" — the backend runs
+	// workloads directly on the host and must have explicit
+	// namespace grants.
+	requireExplicitAccess bool
+
 	mu   sync.RWMutex
 	pods map[string]*corev1.Pod // namespace/name → cached Pod
 }
@@ -44,11 +52,24 @@ func NewProvider(podmanSocket string) (*Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	p := NewProviderWithBackend(&podmanBackend{client: c})
+	p.client = c
+	p.requireExplicitAccess = false
+	return p, nil
+}
+
+// NewProviderWithBackend returns a Provider that realizes Pods on the
+// given Backend. It sets requireExplicitAccess to true so the
+// native/trusted access gate is active: nil Access rejects CreatePod,
+// and non-nil Access requires namespace grants. Callers using a
+// podman-like substrate that should keep the single-tenant escape hatch
+// can call SetRequireExplicitAccess(false) after construction.
+func NewProviderWithBackend(b Backend) *Provider {
 	return &Provider{
-		backend: &podmanBackend{client: c},
-		client:  c,
-		pods:    make(map[string]*corev1.Pod),
-	}, nil
+		backend:               b,
+		requireExplicitAccess: true,
+		pods:                  make(map[string]*corev1.Pod),
+	}
 }
 
 // Client returns the underlying libpod client. Exported so the
@@ -71,6 +92,11 @@ func (p *Provider) SetAccess(a *Access) { p.access = a }
 // on the node's LAN.
 func (p *Provider) SetTransientApps(a TransientApps) { p.apps = a }
 
+// SetRequireExplicitAccess switches the access-gate mode. When true
+// (native/trusted backends), nil Access rejects CreatePod. When false
+// (podman), nil Access means "allow all namespaces".
+func (p *Provider) SetRequireExplicitAccess(v bool) { p.requireExplicitAccess = v }
+
 func podKey(namespace, name string) string { return namespace + "/" + name }
 
 // CreatePod creates and starts the container for pod. Idempotent: if a
@@ -86,6 +112,11 @@ func podKey(namespace, name string) string { return namespace + "/" + name }
 // happened. nil p.access means "no check"; used in dev/single-tenant
 // modes where the operator hasn't wired Access yet.
 func (p *Provider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
+	if p.requireExplicitAccess && p.access == nil {
+		slog.Warn("vknode: rejecting CreatePod — native backend requires explicit access",
+			"pod", podKey(pod.Namespace, pod.Name))
+		return fmt.Errorf("vknode: access is nil; native backend requires explicit namespace access")
+	}
 	if !p.access.Allowed(pod.Namespace) {
 		slog.Warn("vknode: rejecting CreatePod for unauthorized namespace",
 			"pod", podKey(pod.Namespace, pod.Name), "allowed", p.access.Snapshot())
