@@ -457,6 +457,90 @@ func TestProvider_CreatePod_NilAccessAcceptsAnything(t *testing.T) {
 	}
 }
 
+// fakeBackend is a minimal Backend stub for testing Provider
+// access-gate and delegation logic without spinning up an HTTP libpod
+// server. Tracks the pods that were passed to Ensure/Delete.
+type fakeBackend struct {
+	ensured []string
+	deleted []string
+}
+
+func (f *fakeBackend) Ensure(_ context.Context, pod *corev1.Pod) error {
+	f.ensured = append(f.ensured, pod.Namespace+"/"+pod.Name)
+	return nil
+}
+
+func (f *fakeBackend) Delete(_ context.Context, pod *corev1.Pod) error {
+	f.deleted = append(f.deleted, pod.Namespace+"/"+pod.Name)
+	return nil
+}
+
+func (f *fakeBackend) Status(_ context.Context, pod *corev1.Pod) (*corev1.PodStatus, error) {
+	return &corev1.PodStatus{Phase: corev1.PodRunning}, nil
+}
+
+func (f *fakeBackend) List(_ context.Context) ([]*corev1.Pod, error) { return nil, nil }
+
+func (f *fakeBackend) HydratePorts(_ context.Context, pod *corev1.Pod) error { return nil }
+
+func TestProvider_PodmanStyle_NilAccessAccepts(t *testing.T) {
+	b := &fakeBackend{}
+	p := NewProviderWithBackend(b)
+	p.SetRequireExplicitAccess(false)
+	pod := newTestPod("hello", "uid-podman-nil")
+	pod.Namespace = "any-ns"
+
+	if err := p.CreatePod(context.Background(), pod); err != nil {
+		t.Fatalf("podman-style nil Access should accept: %v", err)
+	}
+	if len(b.ensured) != 1 {
+		t.Errorf("expected 1 Ensure call, got %d", len(b.ensured))
+	}
+}
+
+func TestProvider_NativeBackend_NilAccessRejects(t *testing.T) {
+	b := &fakeBackend{}
+	p := NewProviderWithBackend(b)
+	pod := newTestPod("hello", "uid-native-nil")
+	pod.Namespace = "any-ns"
+
+	err := p.CreatePod(context.Background(), pod)
+	if err == nil {
+		t.Fatal("native backend with nil Access should reject CreatePod")
+	}
+	if !strings.Contains(err.Error(), "native backend requires explicit namespace access") {
+		t.Errorf("error should mention native backend: %v", err)
+	}
+	if len(b.ensured) != 0 {
+		t.Errorf("Ensure must not be called on rejection; got %d calls", len(b.ensured))
+	}
+}
+
+func TestProvider_NativeBackend_WithAccessAcceptsAndDelegates(t *testing.T) {
+	b := &fakeBackend{}
+	p := NewProviderWithBackend(b)
+	p.SetAccess(NewAccess("user-mine"))
+
+	pod := newTestPod("hello", "uid-native-allowed")
+	pod.Namespace = "user-mine"
+
+	if err := p.CreatePod(context.Background(), pod); err != nil {
+		t.Fatalf("native backend with matching Access should accept: %v", err)
+	}
+	if len(b.ensured) != 1 || b.ensured[0] != "user-mine/hello" {
+		t.Errorf("Ensure not delegated correctly: %+v", b.ensured)
+	}
+
+	// Verify the pod is cached after a successful CreatePod.
+	got, err := p.GetPod(context.Background(), "user-mine", "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "hello" {
+		t.Errorf("cached pod name: %q", got.Name)
+	}
+}
+
 func TestProvider_UpdatePod_RefreshesCache(t *testing.T) {
 	p, _ := newProviderWithFake(t)
 	pod := newTestPod("hello", "uid-update")
