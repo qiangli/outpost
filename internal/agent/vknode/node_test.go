@@ -218,3 +218,30 @@ func TestNodeProvider_NotifyNodeStatus_PushesAtLeastOnce(t *testing.T) {
 		t.Errorf("Ready condition has no heartbeat: %+v", ready)
 	}
 }
+
+func TestNodeProvider_Ping_NilClient(t *testing.T) {
+	np := NewNodeProvider(nil, BuildNode("native-node", nil))
+	if err := np.Ping(context.Background()); err != nil {
+		t.Fatalf("nil-client Ping should return nil (default healthy pinger): %v", err)
+	}
+}
+
+func TestNodeProvider_SetPinger(t *testing.T) {
+	np := NewNodeProvider(nil, BuildNode("native-node", nil))
+	// Default: always healthy.
+	if err := np.Ping(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Replace with a failing pinger.
+	np.SetPinger(func(_ context.Context) error {
+		return context.DeadlineExceeded
+	})
+	if err := np.Ping(context.Background()); err == nil {
+		t.Fatal("expected error from custom pinger")
+	}
+	// Restore to healthy.
+	np.SetPinger(func(_ context.Context) error { return nil })
+	if err := np.Ping(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

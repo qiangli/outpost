@@ -29,8 +29,16 @@ type RunOptions struct {
 	NodeName string
 
 	// PodmanSocket is the unix socket path to the local libpod daemon.
-	// Callers usually obtain it from agent.DetectPodman().
+	// Callers usually obtain it from agent.DetectPodman(). Only used
+	// when Backend is nil (default podman path).
 	PodmanSocket string
+
+	// Backend, when non-nil, replaces the default podman substrate.
+	// When set the PodmanSocket field is ignored — the caller is
+	// responsible for constructing the right Backend (e.g.
+	// NewOllamaBackend). When nil the runner creates a podmanBackend
+	// from PodmanSocket.
+	Backend Backend
 
 	// Kube is the already-built kube REST config. Caller is responsible
 	// for plumbing the bearer token / CA — see ConfigFromCluster or
@@ -48,6 +56,11 @@ type RunOptions struct {
 	// (eventually) the share-receivers list cloudbox advertises.
 	Access *Access
 
+	// AllowAnyNamespace disables the native-backend fail-closed access
+	// mode. This is only for standalone dev/PoC runners that are pointed
+	// at a trusted kubeconfig and have no cloudbox-derived Access set.
+	AllowAnyNamespace bool
+
 	// TransientApps, when non-nil, is the local app router each
 	// Running pod gets published into so cloudbox can reach it via
 	// the existing /h/<node>/app/<name>/ proxy. nil = don't publish
@@ -59,11 +72,12 @@ type RunOptions struct {
 // Run blocks until ctx is canceled (or any sub-controller errors out),
 // running:
 //
-//   - the libpod-backed Provider,
+//   - the Provider (podman or native-process backend, selected via
+//     opts.Backend),
 //   - the virtual-kubelet NodeController (drives the Node lease /
 //     status updates),
 //   - the virtual-kubelet PodController (watches Pods assigned to this
-//     node and translates them to libpod calls),
+//     node and translates them to the chosen backend),
 //   - the SharedInformerFactories backing the controllers.
 //
 // Returns nil on a clean ctx-canceled shutdown; non-nil for any setup
@@ -72,16 +86,27 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if opts.NodeName == "" {
 		return errors.New("vknode: NodeName required")
 	}
-	if opts.PodmanSocket == "" {
-		return errors.New("vknode: PodmanSocket required")
+	if opts.Backend == nil && opts.PodmanSocket == "" {
+		return errors.New("vknode: PodmanSocket required when no Backend is set")
 	}
 	if opts.Kube == nil {
 		return errors.New("vknode: Kube REST config required")
 	}
 
-	prov, err := NewProvider(opts.PodmanSocket)
-	if err != nil {
-		return fmt.Errorf("provider: %w", err)
+	var (
+		prov    *Provider
+		provErr error
+	)
+	if opts.Backend != nil {
+		prov = NewProviderWithBackend(opts.Backend)
+	} else {
+		prov, provErr = NewProvider(opts.PodmanSocket)
+	}
+	if provErr != nil {
+		return fmt.Errorf("provider: %w", provErr)
+	}
+	if opts.AllowAnyNamespace {
+		prov.SetRequireExplicitAccess(false)
 	}
 	prov.SetAccess(opts.Access)
 	prov.SetTransientApps(opts.TransientApps)
@@ -172,10 +197,17 @@ func Run(ctx context.Context, opts RunOptions) error {
 		return nil
 	})
 
-	slog.Info("vknode: running",
-		"node", opts.NodeName,
-		"podman_socket", opts.PodmanSocket,
-		"apiserver", opts.Kube.Host)
+	if opts.Backend != nil {
+		slog.Info("vknode: running",
+			"node", opts.NodeName,
+			"backend", "native",
+			"apiserver", opts.Kube.Host)
+	} else {
+		slog.Info("vknode: running",
+			"node", opts.NodeName,
+			"podman_socket", opts.PodmanSocket,
+			"apiserver", opts.Kube.Host)
+	}
 	err = g.Wait()
 	if err != nil && !errors.Is(err, context.Canceled) {
 		return err
