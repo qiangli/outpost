@@ -74,12 +74,13 @@ func (c Config) backend() string {
 // it onto the registry push's ClusterCapacity.MaxModelBytes, and the admin
 // UI renders the whole struct.
 type Info struct {
-	Backend            string `json:"backend,omitempty"`
-	State              State  `json:"state"`
-	Endpoint           string `json:"endpoint,omitempty"`
-	Version            string `json:"version,omitempty"`
-	MemberCount        int    `json:"member_count,omitempty"`
-	AggregateVRAMBytes uint64 `json:"aggregate_vram_bytes,omitempty"`
+	Backend            string      `json:"backend,omitempty"`
+	State              State       `json:"state"`
+	Endpoint           string      `json:"endpoint,omitempty"`
+	Version            string      `json:"version,omitempty"`
+	MemberCount        int         `json:"member_count,omitempty"`
+	AggregateVRAMBytes uint64      `json:"aggregate_vram_bytes,omitempty"`
+	Models             []ModelInfo `json:"models,omitempty"`
 }
 
 // DefaultEndpoint is the conventional loopback port operators publish a
@@ -131,6 +132,7 @@ func Detect(ctx context.Context, cfg Config, client *http.Client) Info {
 		if v, ok := probeLlamaCPP(ctx, client, endpoint); ok {
 			info.Version = v
 		}
+		info.Models = listLlamaCPPModels(ctx, client, endpoint)
 		return info
 	}
 
@@ -157,6 +159,12 @@ func Detect(ctx context.Context, cfg Config, client *http.Client) Info {
 	if v, ok := probeLlamaCPP(ctx, client, endpoint); ok {
 		info.Backend = BackendLlamaCPP
 		info.Version = v
+		info.Models = listLlamaCPPModels(ctx, client, endpoint)
+		return info
+	}
+	if models := listOpenAIModels(ctx, client, endpoint); len(models) > 0 {
+		info.Backend = BackendLlamaCPP
+		info.Models = models
 	}
 	return info
 }

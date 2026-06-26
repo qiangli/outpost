@@ -2504,3 +2504,21 @@ func (a clusterSourceAdapter) ClusterSnapshot() *ollama.ClusterCapacity {
 		Backend:       info.Backend,
 	}
 }
+
+func (a clusterSourceAdapter) ClusterModels() []ollama.ModelInfo {
+	if a.d == nil {
+		return nil
+	}
+	info := a.d.Info(context.Background())
+	if info.State != clusterllm.StateRunning || len(info.Models) == 0 {
+		return nil
+	}
+	models := make([]ollama.ModelInfo, 0, len(info.Models))
+	for _, m := range info.Models {
+		models = append(models, ollama.ModelInfo{
+			Name: m.Name,
+			Size: m.Size,
+		})
+	}
+	return models
+}
