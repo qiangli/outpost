@@ -122,14 +122,41 @@ func Detect(ctx context.Context, cfg Config, client *http.Client) Info {
 	info.State = StateRunning
 	info.MemberCount = 1 // a reachable backend is at least one node
 
-	// Aggregate worker/VRAM data — best-effort, key-gated. Any failure
-	// leaves MemberCount=1, AggregateVRAMBytes=0 (filter stays inert).
+	// An operator who explicitly tagged the endpoint a llama.cpp shard
+	// skips the GPUStack management probe entirely — a shard exposes no such
+	// API, so trying it would only burn a round-trip before the inert
+	// fallback. Version is cosmetic; reachability already flipped Running.
+	if strings.TrimSpace(cfg.Backend) == BackendLlamaCPP {
+		info.Backend = BackendLlamaCPP
+		if v, ok := probeLlamaCPP(ctx, client, endpoint); ok {
+			info.Version = v
+		}
+		return info
+	}
+
+	// Default (GPUStack) path: aggregate worker/VRAM data — best-effort,
+	// key-gated. Any failure leaves MemberCount=1, AggregateVRAMBytes=0
+	// (filter stays inert).
 	if agg, ok := aggregateGPUStack(ctx, client, endpoint, cfg.APIKey); ok {
+		info.Backend = BackendGPUStack
 		if agg.members > 0 {
 			info.MemberCount = agg.members
 		}
 		info.AggregateVRAMBytes = agg.vramBytes
 		info.Version = agg.version
+		return info
+	}
+
+	// GPUStack aggregation was unavailable (no key, auth-rejected, or this
+	// simply isn't a GPUStack server). Before falling back to the inert
+	// GPUStack tag, see if the endpoint positively identifies as a llama.cpp
+	// shard leader — the vk-ollama shard-init topology — so the home is
+	// advertised under the right backend instead of being mislabeled. The
+	// probe demands a positive llama.cpp signal, so a real GPUStack server
+	// (which 404s these paths) is never retagged.
+	if v, ok := probeLlamaCPP(ctx, client, endpoint); ok {
+		info.Backend = BackendLlamaCPP
+		info.Version = v
 	}
 	return info
 }
