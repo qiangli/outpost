@@ -292,6 +292,77 @@ func TestSSHHandlerExec(t *testing.T) {
 	}
 }
 
+func TestSSHHandlerExecDetachedOutputDoesNotHoldChannel(t *testing.T) {
+	currentUser, err := hostauth.CurrentUser()
+	if err != nil || currentUser == "" {
+		t.Skip("cannot determine current OS user")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("test executable: %v", err)
+	}
+	marker := filepath.Join(t.TempDir(), "late-output-marker")
+	t.Setenv("OUTPOST_SSH_HELPER_DELAYED_OUTPUT", "1")
+	t.Setenv("OUTPOST_SSH_HELPER_MARKER", marker)
+
+	auth := hostauth.StubAuth{Want: map[string]string{currentUser: "secret"}}
+	wsURL, hostKey := newTestSSHServer(t, auth)
+
+	client, err := dialSSHOverWS(t, wsURL, hostKey, currentUser, "secret")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("new session: %v", err)
+	}
+	defer session.Close()
+
+	var stdout, stderr bytes.Buffer
+	session.Stdout = &stdout
+	session.Stderr = &stderr
+	command := strconv.Quote(exe) + " -test.run=" + strconv.Quote("^TestSSHHelperDelayedOutput$") + " -- & echo parent"
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- session.Run(command)
+	}()
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("exec: %v\nstdout=%q\nstderr=%q", err, stdout.String(), stderr.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("detached child held SSH exec channel open\nstdout=%q\nstderr=%q", stdout.String(), stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "parent" {
+		t.Fatalf("stdout = %q, want only parent output", stdout.String())
+	}
+	if strings.Contains(stderr.String(), "late stderr") {
+		t.Fatalf("detached stderr reached SSH channel: %q", stderr.String())
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("exec returned only after detached helper reached delayed output")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat marker: %v", err)
+	}
+}
+
+func TestSSHHelperDelayedOutput(t *testing.T) {
+	if os.Getenv("OUTPOST_SSH_HELPER_DELAYED_OUTPUT") != "1" {
+		return
+	}
+	time.Sleep(3 * time.Second)
+	if marker := os.Getenv("OUTPOST_SSH_HELPER_MARKER"); marker != "" {
+		_ = os.WriteFile(marker, []byte("late"), 0o600)
+	}
+	_, _ = os.Stdout.Write([]byte("late stdout\n"))
+	_, _ = os.Stderr.Write([]byte("late stderr\n"))
+	os.Exit(0)
+}
+
 // TestSSHHandlerExecPTY runs `tty` via the SSH exec channel after a
 // pty-req — the `ssh -tt host cmd` shape. Asserts the command saw a
 // real /dev/ttysNN AND that we received the output (regression: an

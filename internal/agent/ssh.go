@@ -1476,8 +1476,16 @@ func runExecCommand(ctx context.Context, ch ssh.Channel, command string, envOver
 		_, _ = io.WriteString(ch.Stderr(), err.Error()+"\n")
 		return 127
 	}
+	stdout, stdoutDone := execOutputPipe(ch)
+	stderr, stderrDone := execOutputPipe(ch.Stderr())
+	defer func() {
+		_ = stdout.Close()
+		_ = stderr.Close()
+		<-stdoutDone
+		<-stderrDone
+	}()
 	runner, err := interp.New(
-		interp.StdIO(ch, ch, ch.Stderr()),
+		interp.StdIO(ch, stdout, stderr),
 		interp.Env(outshell.BuildEnvWith(envOverrides)),
 		interp.ExecHandlers(outshell.CoreutilsExec), // PATH misses fall back to embedded coreutils (Windows!)
 	)
@@ -1494,6 +1502,24 @@ func runExecCommand(ctx context.Context, ch ssh.Channel, command string, envOver
 		return 1
 	}
 	return 0
+}
+
+// execOutputPipe gives a non-PTY SSH exec request a closeable stdout/stderr
+// boundary. Detached/background commands launched by the shell may inherit
+// the runner's writers; they must not inherit the SSH channel writer itself,
+// or a long-lived child can keep the exec channel's output side alive after
+// the requested command has returned. Closing the pipe writer below cuts off
+// any late detached output while still draining foreground output produced
+// before runner.Run completes.
+func execOutputPipe(dst io.Writer) (*io.PipeWriter, <-chan struct{}) {
+	pr, pw := io.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = io.Copy(dst, pr)
+		_ = pr.Close()
+	}()
+	return pw, done
 }
 
 // serveSFTP runs an SFTP server over the SSH channel. Filesystem access
