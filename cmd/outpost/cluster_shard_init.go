@@ -8,6 +8,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/qiangli/outpost/internal/agent/clusterllm"
 	"github.com/spf13/cobra"
 )
 
@@ -109,6 +110,7 @@ Example:
 			if outPath != "" {
 				fmt.Fprintf(os.Stderr, "wrote %s — apply with: kubectl apply -f %s\n", outPath, outPath)
 			}
+			fmt.Fprint(os.Stderr, shardAdvertiseHint(data))
 			return nil
 		},
 	}
@@ -227,6 +229,26 @@ func buildShardVars(in shardInput) (shardVars, error) {
 		RPCEndpoints: strings.Join(endpoints, ","),
 		WorkerCount:  len(ips),
 	}, nil
+}
+
+// shardAdvertiseHint returns the formation-time advisory printed after the
+// manifest: how to advertise the freshly-scaffolded shard to cloudbox
+// through the EXISTING cluster_llm_endpoint seam. The leader llama-server
+// serves the OpenAI/Ollama API on its host port; on the node it lands on,
+// pointing cluster_llm_endpoint at the loopback serving URL makes that
+// outpost's clusterllm detector recognize the llama.cpp shard leader and
+// publish it (backend=llamacpp) on the registry push, so cloudbox's tier-0
+// router can route to this home. No new config surface — it reuses the
+// GPUStack seam already wired through `outpost config set`.
+func shardAdvertiseHint(data shardVars) string {
+	endpoint := clusterllm.ShardEndpoint(data.Port)
+	var b strings.Builder
+	fmt.Fprintf(&b, "\nshard %q scaffolded: leader serves the OpenAI/Ollama API on :%d across %d nodes (1 leader + %d workers).\n",
+		data.Name, data.Port, data.WorkerCount+1, data.WorkerCount)
+	b.WriteString("To advertise this cluster to cloudbox through the existing cluster_llm seam, on the node running the leader run:\n")
+	fmt.Fprintf(&b, "  outpost config set --cluster-llm-endpoint %s\n", endpoint)
+	fmt.Fprintf(&b, "The outpost there detects the llama.cpp shard leader and advertises it (backend=%s).\n", clusterllm.BackendLlamaCPP)
+	return b.String()
 }
 
 func renderShardManifest(out io.Writer, data shardVars) error {
