@@ -471,15 +471,18 @@ type ClusterConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
 
 	// Mode selects which runtime joins the cluster on this outpost:
-	//   - "" or "vkpodman" — legacy v1 virtual-kubelet that translates
-	//     k8s Pods to local podman containers (per-outpost pod-shape
-	//     limits: no PodIP, PVC, init/sidecar containers, etc.)
+	//   - "" or "vkpodman" or "vk-podman" — v1 virtual-kubelet that
+	//     translates k8s Pods to local podman containers (per-outpost
+	//     pod-shape limits: no PodIP, PVC, init/sidecar containers, etc.)
+	//   - "vk-ollama" — virtual-kubelet with the native ollama backend:
+	//     Pods become native host processes (Metal/CUDA-capable).
 	//   - "agent" — real `k3s agent` subprocess that joins as a normal
 	//     kubelet via the matrix-tunnel STCP visitor (Phase 1 of the
 	//     "real shared k8s" plan; Linux-only).
-	// Default empty for backward compat. Cloudbox does not push a Mode
+	// The "" and "vkpodman" spellings are back-compat aliases for
+	// vk-podman — see NormalizeClusterMode. Cloudbox does not push a Mode
 	// at pairing time — operator sets this via `outpost builtins set
-	// --cluster-mode=agent`.
+	// --cluster-mode=vk-ollama`.
 	Mode string `json:"mode,omitempty"`
 
 	// APIURL is the cluster's apiserver — typically the cloudbox-proxied
@@ -590,30 +593,67 @@ type ClusterConfig struct {
 	CAPubkey string `json:"ca_pubkey,omitempty"`
 }
 
-// ClusterModeAgent reports whether the outpost should run the real
-// `k3s agent` path rather than the v1 vkpodman virtual-kubelet.
-// Centralized so future modes can be added without touching every
-// call site.
+// Canonical --cluster-mode values, after normalization. These are the
+// three modes the operator selects between:
 //
-// Semantics:
+//   - ClusterModeAgentMode  — real `k3s agent` subprocess (libpod-hosted
+//     kubelet) joining via the matrix-tunnel STCP visitor.
+//   - ClusterModeVKPodman   — v1 virtual-kubelet, Pods → local libpod
+//     containers (vknode podmanBackend).
+//   - ClusterModeVKOllama   — virtual-kubelet, Pods → native host
+//     processes (vknode ollamaBackend), for Metal/CUDA workloads the
+//     podman-in-a-VM substrate can't serve.
+const (
+	ClusterModeAgentMode = "agent"
+	ClusterModeVKPodman  = "vk-podman"
+	ClusterModeVKOllama  = "vk-ollama"
+)
+
+// NormalizeClusterMode canonicalizes a raw --cluster-mode flag value or
+// a persisted ClusterConfig.Mode into one of the ClusterMode* constants.
 //
-//   - Mode == "agent" → agent
-//   - Mode == "vkpodman" → vkpodman (explicit opt-out)
-//   - Mode == "" → agent (the default; the real k3s-agent path is
-//     canonical for 100% K8s compliance on every supported OS — agent
-//     mode runs k3s-agent inside the `outpost-runtime` container via
-//     podman, which works on Linux, macOS, and Windows hosts wherever
-//     podman is available).
-func (c *ClusterConfig) ClusterModeAgent() bool {
+// Back-compat aliases — the persisted wire value MUST keep working:
+//
+//   - ""         → vk-podman (legacy default before vk-ollama existed)
+//   - "vkpodman" → vk-podman (the original on-disk spelling)
+//
+// Unknown values are lower-cased/trimmed and returned as-is so callers
+// can detect and reject them; the canonical values round-trip unchanged.
+func NormalizeClusterMode(mode string) string {
+	switch m := strings.ToLower(strings.TrimSpace(mode)); m {
+	case "", "vkpodman", ClusterModeVKPodman:
+		return ClusterModeVKPodman
+	case ClusterModeAgentMode:
+		return ClusterModeAgentMode
+	case ClusterModeVKOllama:
+		return ClusterModeVKOllama
+	default:
+		return m
+	}
+}
+
+// ClusterMode returns the normalized cluster mode for this config —
+// always one of the ClusterMode* constants for a valid config. A nil
+// receiver normalizes the same way an empty Mode does (vk-podman).
+func (c *ClusterConfig) ClusterMode() string {
 	if c == nil {
-		return false
+		return ClusterModeVKPodman
 	}
-	switch c.Mode {
-	case "vkpodman":
-		return false
-	default: // "agent" or empty
-		return true
-	}
+	return NormalizeClusterMode(c.Mode)
+}
+
+// ClusterModeAgent reports whether the outpost should run the real
+// `k3s agent` path rather than a virtual-kubelet backend. Centralized
+// so future modes can be added without touching every call site.
+func (c *ClusterConfig) ClusterModeAgent() bool {
+	return c.ClusterMode() == ClusterModeAgentMode
+}
+
+// ClusterModeVKOllama reports whether the outpost should run the
+// virtual-kubelet with the NATIVE ollama (host-process) backend rather
+// than the libpod backend.
+func (c *ClusterConfig) ClusterModeVKOllama() bool {
+	return c.ClusterMode() == ClusterModeVKOllama
 }
 
 // OutboundConfig is one local mount that proxies to a remote outpost.

@@ -1,6 +1,8 @@
 package admincore
 
 import (
+	"strings"
+
 	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
@@ -44,10 +46,12 @@ type BuiltinsParams struct {
 	YcodeShareSurfaces     map[string]bool `json:"ycode_share_surfaces,omitempty"`
 	Cluster                *bool           `json:"cluster,omitempty"`
 	// ClusterMode selects which runtime joins the cluster:
-	// "" / "vkpodman" → legacy virtual-kubelet path (default).
+	// "" / "vkpodman" / "vk-podman" → libpod virtual-kubelet (default).
+	// "vk-ollama" → native-process (ollama) virtual-kubelet backend.
 	// "agent" → real `k3s agent` subprocess (Linux only). Pointer-string
 	// so nil = "leave unchanged"; non-nil with an unknown value is
-	// rejected by SetBuiltins with a 400-class APIError.
+	// rejected by SetBuiltins with a 400-class APIError. The persisted
+	// value is normalized via conf.NormalizeClusterMode.
 	ClusterMode *string `json:"cluster_mode,omitempty"`
 	// UpdateMode is one of "auto" / "manual" / "never" (see
 	// conf.UpdateMode* constants). Pointer-string so nil = "leave
@@ -159,15 +163,17 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 		fc.Cluster.Enabled = *p.Cluster
 	}
 	if p.ClusterMode != nil {
-		mode := *p.ClusterMode
-		switch mode {
-		case "", "vkpodman", "agent":
+		// Accept the three canonical modes plus the back-compat aliases
+		// ("" / "vkpodman" → vk-podman) and persist the normalized
+		// canonical value so on-disk configs converge.
+		switch strings.ToLower(strings.TrimSpace(*p.ClusterMode)) {
+		case "", "vkpodman", "vk-podman", "agent", "vk-ollama":
 			if fc.Cluster == nil {
 				fc.Cluster = &conf.ClusterConfig{}
 			}
-			fc.Cluster.Mode = mode
+			fc.Cluster.Mode = conf.NormalizeClusterMode(*p.ClusterMode)
 		default:
-			return BuiltinsResult{}, badRequest("cluster_mode must be one of \"\" / vkpodman / agent")
+			return BuiltinsResult{}, badRequest("cluster_mode must be one of agent / vk-podman / vk-ollama (alias: vkpodman)")
 		}
 	}
 	// UpdateMode is live-read by the upgrade worker on each

@@ -195,3 +195,55 @@ func TestEnsureAppSSOSecrets(t *testing.T) {
 		t.Errorf("second call minted = %v, want []", minted2)
 	}
 }
+
+// TestNormalizeClusterMode locks in the back-compat aliases — the
+// persisted "vkpodman" wire value and an empty Mode both resolve to
+// vk-podman, while the three canonical modes round-trip unchanged.
+func TestNormalizeClusterMode(t *testing.T) {
+	cases := map[string]string{
+		"":           ClusterModeVKPodman,
+		"vkpodman":   ClusterModeVKPodman,
+		"VKPodman":   ClusterModeVKPodman,
+		" vkpodman ": ClusterModeVKPodman,
+		"vk-podman":  ClusterModeVKPodman,
+		"agent":      ClusterModeAgentMode,
+		"AGENT":      ClusterModeAgentMode,
+		"vk-ollama":  ClusterModeVKOllama,
+		"VK-Ollama":  ClusterModeVKOllama,
+	}
+	for in, want := range cases {
+		if got := NormalizeClusterMode(in); got != want {
+			t.Errorf("NormalizeClusterMode(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestClusterModeHelpers verifies the predicate helpers off the
+// normalized mode, including the load-bearing rule that "vkpodman" and
+// "" select neither agent nor vk-ollama (i.e. the libpod vk-podman
+// backend).
+func TestClusterModeHelpers(t *testing.T) {
+	for _, mode := range []string{"", "vkpodman", "vk-podman"} {
+		c := &ClusterConfig{Mode: mode}
+		if c.ClusterModeAgent() {
+			t.Errorf("Mode=%q: ClusterModeAgent() = true, want false", mode)
+		}
+		if c.ClusterModeVKOllama() {
+			t.Errorf("Mode=%q: ClusterModeVKOllama() = true, want false", mode)
+		}
+		if c.ClusterMode() != ClusterModeVKPodman {
+			t.Errorf("Mode=%q: ClusterMode() = %q, want vk-podman", mode, c.ClusterMode())
+		}
+	}
+	if c := (&ClusterConfig{Mode: "agent"}); !c.ClusterModeAgent() || c.ClusterModeVKOllama() {
+		t.Errorf("Mode=agent: helpers wrong (agent=%v ollama=%v)", c.ClusterModeAgent(), c.ClusterModeVKOllama())
+	}
+	if c := (&ClusterConfig{Mode: "vk-ollama"}); !c.ClusterModeVKOllama() || c.ClusterModeAgent() {
+		t.Errorf("Mode=vk-ollama: helpers wrong (agent=%v ollama=%v)", c.ClusterModeAgent(), c.ClusterModeVKOllama())
+	}
+	// nil receiver normalizes like an empty Mode.
+	var nilc *ClusterConfig
+	if nilc.ClusterMode() != ClusterModeVKPodman || nilc.ClusterModeAgent() || nilc.ClusterModeVKOllama() {
+		t.Errorf("nil receiver: helpers wrong")
+	}
+}

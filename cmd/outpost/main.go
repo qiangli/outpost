@@ -1475,9 +1475,35 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 	if nodeName == "" {
 		return errors.New("ClusterNodeName empty (agent_name unset?)")
 	}
-	bt := agent.DetectPodman()
-	if !bt.Available || bt.Socket == "" {
-		return fmt.Errorf("podman socket not detected (tried %s)", bt.Socket)
+
+	// vk-ollama realizes Pods as NATIVE host processes (vknode
+	// ollamaBackend), so it does NOT need a local podman socket — that
+	// is the whole point (Metal/CUDA workloads the podman-in-a-VM
+	// substrate can't serve). The libpod vk-podman path still requires
+	// podman. Build the backend up front; an empty backend means the
+	// runner falls back to the podman substrate keyed off bt.Socket.
+	var (
+		backend    vknode.Backend
+		podmanSock string
+	)
+	if fc.Cluster.ClusterModeVKOllama() {
+		base, err := conf.DefaultCacheDir()
+		if err != nil {
+			return fmt.Errorf("cluster mode=vk-ollama: data dir: %w", err)
+		}
+		be, err := vknode.NewOllamaBackend(vknode.OllamaConfig{
+			DataDir: filepath.Join(base, "vk-ollama"),
+		})
+		if err != nil {
+			return fmt.Errorf("cluster mode=vk-ollama: backend: %w", err)
+		}
+		backend = be
+	} else {
+		bt := agent.DetectPodman()
+		if !bt.Available || bt.Socket == "" {
+			return fmt.Errorf("podman socket not detected (tried %s)", bt.Socket)
+		}
+		podmanSock = bt.Socket
 	}
 
 	// Bootstrap: if we have an outpost access_token and either no
@@ -1560,10 +1586,12 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 	}
 
 	g.Go(func() error {
-		slog.Info("cluster mode: joining", "node", nodeName, "apiserver", cc.APIURL, "podman_socket", bt.Socket)
+		slog.Info("cluster mode: joining", "node", nodeName, "apiserver", cc.APIURL,
+			"mode", fc.Cluster.ClusterMode(), "podman_socket", podmanSock)
 		if err := vknode.Run(ctx, vknode.RunOptions{
 			NodeName:        nodeName,
-			PodmanSocket:    bt.Socket,
+			PodmanSocket:    podmanSock,
+			Backend:         backend,
 			Kube:            kubeCfg,
 			Access:          access,
 			TransientApps:   appsAsTransient{apps},
