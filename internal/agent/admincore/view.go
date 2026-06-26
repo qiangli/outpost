@@ -206,6 +206,7 @@ type SafeView struct {
 	UpdateMode         string                  `json:"update_mode"`
 	LLMPool            LLMPoolStatusView       `json:"llm_pool"`
 	PeerTiers          []PeerTierView          `json:"peer_tiers,omitempty"`
+	AppHealth          []AppHealthView         `json:"app_health,omitempty"`
 	ClusterLLM         ClusterLLMView          `json:"cluster_llm"`
 	Cluster            ClusterView             `json:"cluster"`
 	Outbound           []agent.OutboundView    `json:"outbound"`
@@ -292,6 +293,7 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		UpdateMode:             fc.UpdateModeName(),
 		LLMPool:                s.llmPoolStatusView(fc),
 		PeerTiers:              s.PeerTiers(),
+		AppHealth:              s.AppHealth(),
 		ClusterLLM:             s.clusterLLMView(fc),
 		Cluster:                toClusterView(fc),
 		Outbound:               s.outboundList(),
