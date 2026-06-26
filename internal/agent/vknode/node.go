@@ -182,6 +182,31 @@ func BuildNodeFromInfo(nodeName string, extraLabels map[string]string, info sysi
 	}
 }
 
+// LocalityTierForMeasured maps a peer-plane MEASURED tier value (the
+// ground-truth RTT classification — "tp"/"lan"/"wan"/"unreached") to the
+// Node's locality-tier label value. tp/lan/wan pass through unchanged;
+// an unreachable, empty, or unknown input collapses to
+// NodeLocalityTierRemote so a host whose only links are relay-only still
+// carries an explicit tier instead of a silently-missing label.
+//
+// This is the seam that replaces the previously-stubbed tier: callers
+// feed peerplane.Service.SelfTier() through here and into
+// NodeLocalityLabels, so the Node's tier reflects what was measured
+// rather than a hardcoded guess. Kept as a plain string map so vknode
+// stays decoupled from the peerplane package.
+func LocalityTierForMeasured(measured string) string {
+	switch measured {
+	case NodeLocalityTierTP:
+		return NodeLocalityTierTP
+	case NodeLocalityTierLAN:
+		return NodeLocalityTierLAN
+	case NodeLocalityTierWAN:
+		return NodeLocalityTierWAN
+	default:
+		return NodeLocalityTierRemote
+	}
+}
+
 func capacityFromInfo(info sysinfo.Info) corev1.ResourceList {
 	cpuCount := info.CPUCount
 	if cpuCount <= 0 {

@@ -1276,7 +1276,7 @@ func startCmd() *cobra.Command {
 					if err := startK3sAgentRunner(gctx, g, fc); err != nil {
 						slog.Warn("cluster mode=agent: disabled", "err", err)
 					}
-				} else if err := startClusterRunner(gctx, g, fc, cfgPath, apps); err != nil {
+				} else if err := startClusterRunner(gctx, g, fc, cfgPath, apps, peerPlaneSvc); err != nil {
 					slog.Warn("cluster mode: disabled", "err", err)
 				}
 				// Materialize the kubectl-ready kubeconfig on disk so
@@ -1470,7 +1470,7 @@ func sandboxPrewarmImages(fc *conf.FileConfig) []string {
 // half-configured Cluster section shouldn't stop the matrix tunnel or
 // admin UI from coming up. The caller logs the returned error and
 // moves on.
-func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry) error {
+func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service) error {
 	nodeName := fc.ClusterNodeName()
 	if nodeName == "" {
 		return errors.New("ClusterNodeName empty (agent_name unset?)")
@@ -1544,14 +1544,30 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 		}
 	}
 
+	// Locality tier label. Stamp the Node with this host's MEASURED
+	// locality (peerplane ground truth) rather than a stub: SelfTier
+	// reduces the latest probe snapshot to the host's best-link tier.
+	// Only set the label when a probe cycle has actually recorded a peer
+	// — an empty snapshot (single machine, or peerplane off) leaves the
+	// tier label off entirely, same as before this wiring.
+	var extraNodeLabels map[string]string
+	if peerSvc != nil {
+		if snap := peerSvc.Snapshot(); len(snap) > 0 {
+			tier := vknode.LocalityTierForMeasured(string(peerplane.BestTier(snap)))
+			extraNodeLabels = vknode.NodeLocalityLabels("", tier)
+			slog.Info("cluster mode: measured locality tier", "node", nodeName, "tier", tier, "peers", len(snap))
+		}
+	}
+
 	g.Go(func() error {
 		slog.Info("cluster mode: joining", "node", nodeName, "apiserver", cc.APIURL, "podman_socket", bt.Socket)
 		if err := vknode.Run(ctx, vknode.RunOptions{
-			NodeName:      nodeName,
-			PodmanSocket:  bt.Socket,
-			Kube:          kubeCfg,
-			Access:        access,
-			TransientApps: appsAsTransient{apps},
+			NodeName:        nodeName,
+			PodmanSocket:    bt.Socket,
+			Kube:            kubeCfg,
+			Access:          access,
+			TransientApps:   appsAsTransient{apps},
+			ExtraNodeLabels: extraNodeLabels,
 		}); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("cluster mode: runner exited", "err", err)
 		}

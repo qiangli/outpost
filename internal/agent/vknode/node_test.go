@@ -178,6 +178,34 @@ func TestBuildNodeFromInfo_LocalityLabels(t *testing.T) {
 	}
 }
 
+func TestLocalityTierForMeasured(t *testing.T) {
+	cases := map[string]string{
+		"tp":        NodeLocalityTierTP,
+		"lan":       NodeLocalityTierLAN,
+		"wan":       NodeLocalityTierWAN,
+		"unreached": NodeLocalityTierRemote,
+		"":          NodeLocalityTierRemote,
+		"bogus":     NodeLocalityTierRemote,
+	}
+	for in, want := range cases {
+		if got := LocalityTierForMeasured(in); got != want {
+			t.Errorf("LocalityTierForMeasured(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestBuildNodeFromInfo_MeasuredTierLabel(t *testing.T) {
+	// Simulate the main.go wiring: a measured tp tier becomes the Node's
+	// locality-tier label via LocalityTierForMeasured + NodeLocalityLabels.
+	extra := NodeLocalityLabels("", LocalityTierForMeasured("tp"))
+	n := BuildNodeFromInfo("tp-host", extra, sysinfo.Info{
+		OS: "linux", Arch: "amd64", CPUCount: 8, MemTotalBytes: 16 * 1024 * 1024 * 1024,
+	})
+	if n.Labels[NodeLocalityTierLabel] != NodeLocalityTierTP {
+		t.Errorf("tier label = %q, want %q", n.Labels[NodeLocalityTierLabel], NodeLocalityTierTP)
+	}
+}
+
 func assertAllocatableMirrorsCapacity(t *testing.T, n *corev1.Node) {
 	t.Helper()
 	if len(n.Status.Allocatable) != len(n.Status.Capacity) {
