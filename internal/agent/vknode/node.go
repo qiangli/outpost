@@ -31,6 +31,7 @@ const (
 type NodeProvider struct {
 	client    *Client
 	node      *corev1.Node
+	pinger    func(context.Context) error
 	heartbeat time.Duration
 }
 
@@ -38,20 +39,38 @@ type NodeProvider struct {
 // client. node is the initial Node object — typically built with
 // BuildNode below; NotifyNodeStatus mutates it in place (touching the
 // Ready condition's LastHeartbeatTime) before each push.
+//
+// When c is non-nil, Ping delegates to c.Ping (the libpod /libpod/_ping
+// endpoint). When c is nil (native backends), Ping returns nil by
+// default — callers can override with SetPinger.
 func NewNodeProvider(c *Client, node *corev1.Node) *NodeProvider {
-	return &NodeProvider{
+	np := &NodeProvider{
 		client:    c,
 		node:      node,
+		pinger:    func(_ context.Context) error { return nil },
 		heartbeat: staticHeartbeat,
 	}
+	if c != nil {
+		np.pinger = c.Ping
+	}
+	return np
+}
+
+// SetPinger replaces the health-check function used by Ping. When the
+// pinger returns an error the node is marked NotReady. The zero value
+// (when client is nil and SetPinger is never called) is an always-
+// healthy pinger — callers of native backends can swap in a custom
+// probe (e.g. "is the ollama process reachable?") via this seam.
+func (np *NodeProvider) SetPinger(fn func(context.Context) error) {
+	np.pinger = fn
 }
 
 // Ping is the lightweight liveness check virtual-kubelet calls
-// periodically to drive the node lease. We pass it straight through to
-// /libpod/_ping — a non-2xx response or any transport error fails the
-// heartbeat and marks the node NotReady.
+// periodically to drive the node lease. When backed by a podman client
+// it passes through to /libpod/_ping; for native backends it calls
+// the configured pinger (always-healthy by default).
 func (np *NodeProvider) Ping(ctx context.Context) error {
-	return np.client.Ping(ctx)
+	return np.pinger(ctx)
 }
 
 // NotifyNodeStatus starts an asynchronous heartbeat loop that pushes
