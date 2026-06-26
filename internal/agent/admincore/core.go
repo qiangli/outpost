@@ -75,6 +75,11 @@ type Deps struct {
 	// the service isn't wired.
 	PeerTiers func() []PeerTierView
 
+	// AppHealth, when set, returns the latest per-app reachability
+	// measurements (TCP/HTTP probes, no ICMP). Nil when the service
+	// isn't wired.
+	AppHealth func() []AppHealthView
+
 	// Upgrader + UpgradeLedger feed the Update tab on the admin UI
 	// and the corresponding MCP tools. Nil on unpaired hosts (the
 	// route falls back to a graceful 404 — see handlers/server.go
@@ -119,6 +124,28 @@ type PeerTierView struct {
 	Addr              string    `json:"addr,omitempty"`
 	EgressSameLANHint bool      `json:"egress_same_lan_hint"`
 	At                time.Time `json:"at,omitzero"`
+}
+
+// AppHealthView is one app's reachability measurement (rendered into SafeView).
+type AppHealthView struct {
+	Name       string    `json:"name"`
+	Scheme     string    `json:"scheme"`
+	Target     string    `json:"target"`
+	Reachable  bool      `json:"reachable"`
+	RTTms      float64   `json:"rtt_ms"`
+	Tier       string    `json:"tier"`
+	StatusCode int       `json:"status_code,omitempty"`
+	Error      string    `json:"error,omitempty"`
+	At         time.Time `json:"at,omitzero"`
+}
+
+// AppHealth returns the latest per-app reachability measurements, or nil
+// when the app-health service isn't wired.
+func (s *Server) AppHealth() []AppHealthView {
+	if s.deps.AppHealth == nil {
+		return nil
+	}
+	return s.deps.AppHealth()
 }
 
 // PeerTiers returns the latest measured peer-locality tiers, or nil when the
