@@ -134,3 +134,71 @@ func TestBuildEnvWith_PreservesPathExtras(t *testing.T) {
 		t.Errorf("BuildEnvWith dropped PATH-extras: %q missing %q", got, exeDir)
 	}
 }
+
+func TestAugmentPathEntries_WindowsAddsCommonDirs(t *testing.T) {
+	extras := windowsPathExtras([]string{`SystemRoot=C:\Windows`}, "windows")
+	exists := func(string) bool { return true }
+
+	got := augmentPathEntries([]string{`C:\outpost`}, extras, "windows", exists)
+	want := []string{
+		`C:\Windows\System32`,
+		`C:\Windows`,
+		`C:\Windows\System32\Wbem`,
+		`C:\Windows\System32\WindowsPowerShell\v1.0`,
+		`C:\Windows\System32\OpenSSH`,
+		`C:\Program Files\NVIDIA Corporation\NVSMI`,
+		`C:\outpost`,
+	}
+	if strings.Join(got, ";") != strings.Join(want, ";") {
+		t.Fatalf("PATH entries = %q, want %q", strings.Join(got, ";"), strings.Join(want, ";"))
+	}
+}
+
+func TestAugmentPathEntries_WindowsSkipsMissingCommonDirs(t *testing.T) {
+	extras := windowsPathExtras([]string{`SystemRoot=C:\Windows`}, "windows")
+	exists := func(p string) bool {
+		return p == `C:\Windows\System32` || p == `C:\outpost`
+	}
+
+	got := augmentPathEntries([]string{`C:\outpost`}, extras, "windows", exists)
+	want := []string{`C:\Windows\System32`, `C:\outpost`}
+	if strings.Join(got, ";") != strings.Join(want, ";") {
+		t.Fatalf("PATH entries = %q, want %q", strings.Join(got, ";"), strings.Join(want, ";"))
+	}
+}
+
+func TestAugmentPathEntries_WindowsDedupesCaseInsensitive(t *testing.T) {
+	extras := windowsPathExtras([]string{`SystemRoot=C:\Windows`}, "windows")
+	exists := func(string) bool { return true }
+
+	got := augmentPathEntries([]string{
+		`c:\windows\system32`,
+		`C:\outpost`,
+		`c:\program files\nvidia corporation\nvsmi`,
+	}, extras, "windows", exists)
+
+	for _, wantOnce := range []string{
+		`C:\Windows\System32`,
+		`C:\Program Files\NVIDIA Corporation\NVSMI`,
+	} {
+		count := 0
+		for _, p := range got {
+			if strings.EqualFold(p, wantOnce) {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("%q appears %d times in PATH entries %q, want 1", wantOnce, count, strings.Join(got, ";"))
+		}
+	}
+}
+
+func TestWindowsPathExtras_UsesWindowsEnvCaseInsensitive(t *testing.T) {
+	got := windowsPathExtras([]string{`windir=D:\WinDir\`}, "windows")
+	if len(got) == 0 {
+		t.Fatal("windowsPathExtras returned no entries")
+	}
+	if got[0] != `D:\WinDir\System32` {
+		t.Fatalf("first Windows PATH extra = %q, want %q", got[0], `D:\WinDir\System32`)
+	}
+}

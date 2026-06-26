@@ -6,6 +6,7 @@ package shell
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"mvdan.cc/sh/v3/expand"
@@ -28,9 +29,13 @@ import (
 //   - /usr/local/bin and /usr/local/sbin (Intel Homebrew, MacPorts;
 //     common deploy target for `make install`)
 //
+// On Windows, service-spawned sessions commonly inherit only the outpost
+// directory in PATH, so BuildEnv also adds the standard Windows executable
+// directories such as C:\Windows\System32 when they are missing.
+//
 // Entries that don't exist or that PATH already contains are skipped, so
 // running this on a host with a fully-correct PATH is a no-op. Dedup is
-// case-sensitive (paths are case-sensitive on the platforms we target).
+// case-insensitive on Windows to match PATH semantics there.
 //
 // Returns an expand.Environ suitable for passing to interp.Env(...).
 func BuildEnv() expand.Environ {
@@ -50,11 +55,14 @@ func BuildEnvWith(overrides map[string]string) expand.Environ {
 	// the 1% where launchd doesn't propagate one is precisely the kind
 	// of environment this helper is built for.
 	pathIdx := -1
+	pathKey := "PATH"
 	var paths []string
 	for i, kv := range env {
-		if strings.HasPrefix(kv, "PATH=") {
+		k, v, ok := strings.Cut(kv, "=")
+		if ok && envKeyEqual(k, "PATH", runtime.GOOS) {
 			pathIdx = i
-			paths = strings.Split(kv[len("PATH="):], string(os.PathListSeparator))
+			pathKey = k
+			paths = strings.Split(v, string(os.PathListSeparator))
 			break
 		}
 	}
@@ -75,28 +83,11 @@ func BuildEnvWith(overrides map[string]string) expand.Environ {
 		"/usr/local/bin",
 		"/usr/local/sbin",
 	)
+	extras = append(extras, windowsPathExtras(env, runtime.GOOS)...)
 
-	seen := make(map[string]bool, len(paths)+len(extras))
-	for _, p := range paths {
-		seen[p] = true
-	}
-	var prepend []string
-	for _, p := range extras {
-		if p == "" || seen[p] {
-			continue
-		}
-		// Don't pollute PATH with dirs that don't exist on this host.
-		if info, err := os.Stat(p); err != nil || !info.IsDir() {
-			continue
-		}
-		seen[p] = true
-		prepend = append(prepend, p)
-	}
-	if len(prepend) > 0 {
-		paths = append(prepend, paths...)
-	}
+	paths = augmentPathEntries(paths, extras, runtime.GOOS, dirExists)
 
-	newPATH := "PATH=" + strings.Join(paths, string(os.PathListSeparator))
+	newPATH := pathKey + "=" + strings.Join(paths, string(os.PathListSeparator))
 	if pathIdx >= 0 {
 		env[pathIdx] = newPATH
 	} else {
@@ -119,4 +110,92 @@ func BuildEnvWith(overrides map[string]string) expand.Environ {
 		}
 	}
 	return expand.ListEnviron(env...)
+}
+
+func augmentPathEntries(paths, extras []string, goos string, exists func(string) bool) []string {
+	seen := make(map[string]bool, len(paths)+len(extras))
+	for _, p := range paths {
+		seen[pathSeenKey(p, goos)] = true
+	}
+	var prepend []string
+	for _, p := range extras {
+		if p == "" || seen[pathSeenKey(p, goos)] {
+			continue
+		}
+		// Don't pollute PATH with dirs that don't exist on this host.
+		if !exists(p) {
+			continue
+		}
+		seen[pathSeenKey(p, goos)] = true
+		prepend = append(prepend, p)
+	}
+	if len(prepend) == 0 {
+		return paths
+	}
+	out := make([]string, 0, len(prepend)+len(paths))
+	out = append(out, prepend...)
+	out = append(out, paths...)
+	return out
+}
+
+func dirExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.IsDir()
+}
+
+func windowsPathExtras(env []string, goos string) []string {
+	if goos != "windows" {
+		return nil
+	}
+	windir := envValue(env, "SystemRoot", goos)
+	if windir == "" {
+		windir = envValue(env, "WINDIR", goos)
+	}
+	if windir == "" {
+		windir = `C:\Windows`
+	}
+	return []string{
+		winPathJoin(windir, "System32"),
+		windir,
+		winPathJoin(windir, "System32", "Wbem"),
+		winPathJoin(windir, "System32", "WindowsPowerShell", "v1.0"),
+		winPathJoin(windir, "System32", "OpenSSH"),
+		`C:\Program Files\NVIDIA Corporation\NVSMI`,
+	}
+}
+
+func envValue(env []string, key, goos string) string {
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if ok && envKeyEqual(k, key, goos) {
+			return v
+		}
+	}
+	return ""
+}
+
+func envKeyEqual(a, b, goos string) bool {
+	if goos == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+func pathSeenKey(p, goos string) string {
+	if goos == "windows" {
+		return strings.ToLower(p)
+	}
+	return p
+}
+
+func winPathJoin(base string, parts ...string) string {
+	out := strings.TrimRight(base, `\/`)
+	for _, p := range parts {
+		p = strings.Trim(p, `\/`)
+		if p == "" {
+			continue
+		}
+		out += `\` + p
+	}
+	return out
 }
