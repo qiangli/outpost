@@ -24,7 +24,7 @@ func clusterCmd() *cobra.Command {
 		Short: "Interact with this outpost's cloudbox k8s cluster (default mode: real k3s-agent in a podman container; legacy vkpodman is opt-in)",
 	}
 	cmd.AddCommand(clusterKubeconfigCmd(), clusterUserKubeconfigCmd(),
-		clusterInitCmd(), clusterClearCmd(), clusterBuildRuntimeCmd())
+		clusterInitCmd(), clusterShardInitCmd(), clusterClearCmd(), clusterBuildRuntimeCmd())
 	return cmd
 }
 
