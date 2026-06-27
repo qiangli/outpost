@@ -447,6 +447,15 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   it with `outpost mesh listen <peer-id> git`. (Full tool *lifecycle* — the
   daemon running Gitea/Distribution itself — is a per-tool follow-on; the harness
   exposes whatever is already on a loopback port.)
+- **Service registry — `mesh dial <service>` (zero-config consume).** The
+  rendezvous advertises the forwarder's exposed service names to cloudbox
+  (`announce` carries an optional `services` list — nil from the peer-plane RTT
+  prober so it can't clobber it); `cloudbox PeerSignal.Resolve` + `GET
+  /api/v1/peer/resolve?service=` answer "who runs `<service>`". A peer then runs
+  `outpost mesh dial git` (admincore `MeshDial` → resolve → `MeshListen`) and
+  gets a local forward addr without knowing the peer id — the MagicDNS analog.
+  Cross-owner isolated. peerplane.Client gains `Resolve`; the resolver is wired
+  via `admincore.Deps.MeshResolver` in `main.go`.
 - **Status:** host + rendezvous + forwarder + **circuit relay** + **wrap harness**
   wired (sprint #8 P0 complete) — paired hosts discover + dial each other
   (same-LAN/vicinity direct, strict-NAT via the cloudbox relay + DCUtR) and carry
