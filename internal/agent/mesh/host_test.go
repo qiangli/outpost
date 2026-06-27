@@ -81,3 +81,16 @@ func newTestHost(t *testing.T) *Host {
 	}
 	return h
 }
+
+func newTestHostWithRelay(t *testing.T, relayAddr string) *Host {
+	t.Helper()
+	priv, _, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := New(Config{ListenPort: 0, PrivKey: priv, RelayAddrs: []string{relayAddr}})
+	if err != nil {
+		t.Fatalf("new host with relay: %v", err)
+	}
+	return h
+}

@@ -10,6 +10,8 @@ import (
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
+	ma "github.com/multiformats/go-multiaddr"
 )
 
 // Config configures the mesh host.
@@ -24,7 +26,14 @@ type Config struct {
 	// persistent on-disk key. Tests pass an ephemeral key; production
 	// leaves it nil so LoadOrCreateKey owns the stable peer ID.
 	PrivKey crypto.PrivKey
-	Logger  *slog.Logger
+	// RelayAddrs are circuit-relay v2 relay multiaddrs (cloudbox's relay,
+	// each ending in /p2p/<relay-id>). When set, the host runs AutoRelay
+	// against them — it reserves a slot, advertises a relayed address, and
+	// DCUtR upgrades the relayed link to a direct hole-punched one. This is
+	// what lets two strict-NAT peers connect when neither is directly
+	// reachable (same-LAN/same-vicinity needs no relay).
+	RelayAddrs []string
+	Logger     *slog.Logger
 }
 
 // Host is the outpost's libp2p peer — the data-plane node of the mesh. It is
@@ -70,6 +79,14 @@ func New(cfg Config) (*Host, error) {
 	// Defaults supply TCP+QUIC+WS transports, Noise+TLS security, yamux,
 	// and the circuit-relay v2 client that hole-punching coordinates through.
 
+	// When a relay (cloudbox) is configured, run AutoRelay against it so a
+	// strict-NAT host reserves a slot + advertises a relayed addr that DCUtR
+	// can then upgrade to a direct link.
+	if relays := parseRelays(cfg.RelayAddrs, log); len(relays) > 0 {
+		opts = append(opts, libp2p.EnableAutoRelayWithStaticRelays(relays))
+		log.Info("mesh: AutoRelay enabled", "relays", len(relays))
+	}
+
 	h, err := libp2p.New(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("libp2p host: %w", err)
@@ -86,6 +103,30 @@ func listenAddrs(port int) []string {
 		fmt.Sprintf("/ip6/::/tcp/%d", port),
 		fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port),
 	}
+}
+
+// parseRelays turns relay multiaddr strings (each ending in /p2p/<id>) into
+// AddrInfos, skipping malformed entries with a warning.
+func parseRelays(addrs []string, log *slog.Logger) []peer.AddrInfo {
+	var infos []peer.AddrInfo
+	for _, a := range addrs {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		m, err := ma.NewMultiaddr(a)
+		if err != nil {
+			log.Warn("mesh: bad relay multiaddr", "addr", a, "err", err)
+			continue
+		}
+		info, err := peer.AddrInfoFromP2pAddr(m)
+		if err != nil {
+			log.Warn("mesh: relay multiaddr missing /p2p/<id>", "addr", a, "err", err)
+			continue
+		}
+		infos = append(infos, *info)
+	}
+	return infos
 }
 
 // Run logs the host identity + listen addresses and blocks until ctx is
