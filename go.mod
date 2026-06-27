@@ -16,6 +16,7 @@ require (
 	github.com/hashicorp/memberlist v0.5.4
 	github.com/libp2p/go-libp2p v0.48.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
+	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/pkg/sftp v1.13.10
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.53.0
@@ -99,7 +100,6 @@ require (
 	github.com/mr-tron/base58 v1.2.0 // indirect
 	github.com/multiformats/go-base32 v0.1.0 // indirect
 	github.com/multiformats/go-base36 v0.2.0 // indirect
-	github.com/multiformats/go-multiaddr v0.16.0 // indirect
 	github.com/multiformats/go-multiaddr-dns v0.4.1 // indirect
 	github.com/multiformats/go-multiaddr-fmt v0.1.0 // indirect
 	github.com/multiformats/go-multibase v0.2.0 // indirect

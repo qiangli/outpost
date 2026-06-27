@@ -410,12 +410,22 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   (`Mesh`/`MeshPort` params, in the `updateModeOnly` restart guard), the
   `outpost_set_builtins` MCP args, CLI `builtins set --mesh=on/off --mesh-port`, and
   the `mesh_enabled` SafeView row. Built at boot → toggling restarts.
-- **Status:** the **host foundation** (sprint #8, p2p-fabric P0). Next items on the
-  same sprint: cloudbox rendezvous/signaling (register the peer ID at
-  `register/exchange`, bootstrap to cloudbox's relay), a generic loopback-TCP
-  forwarder over the mesh, and the shard-RPC wiring. Not yet wired: no peers are
-  dialed until the rendezvous lands — the host comes up, logs its ID/addrs, and
-  waits.
+- **Rendezvous (`mesh/rendezvous.go`)** — wires the host to cloudbox's
+  peer-signal surface (`/api/v1/peer/{announce,connect,inbox}` — the *sole*
+  rendezvous; no third-party discovery). Each 60 s tick it announces this host's
+  peer id + dialable multiaddrs, fetches the paired-host list (`peerstatus.Fetch`
+  → `/api/v1/peers`), `Connect`s to each online peer (which also enqueues a
+  reciprocal notice), and dials it; `drainInbox` dials back requesters (the
+  source side of a DCUtR hole-punch, so both ends dial at once). Reuses
+  `peerplane.Client` (announce/connect/inbox) + the outpost's existing cloudbox
+  credentials — no new scope. Constructed next to the host in `main.go`, run in
+  the errgroup. cloudbox brokers the introduction; the bytes then go
+  peer-to-peer (relay only on hole-punch failure).
+- **Status:** host + rendezvous wired (sprint #8, p2p-fabric P0) — paired hosts
+  now discover + dial each other; same-LAN forms a direct link immediately.
+  Next on the same sprint: a circuit-relay in cloudbox (for DCUtR across strict
+  NATs), a generic loopback-TCP forwarder over the mesh, and the shard-RPC
+  wiring (loopback `rpc-server` carried over the forwarder).
 
 ### Cloudbox-pushed self-upgrade (`internal/agent/upgrade/`)
 

@@ -65,6 +65,7 @@ func (c *Client) Connect(ctx context.Context, fromHost, toHost string) (*PeerTar
 type Rendezvous struct {
 	FromHost       string   `json:"from_host"`
 	FromOwner      string   `json:"from_owner"`
+	FromPeerID     string   `json:"from_peer_id"`
 	FromCandidates []string `json:"from_candidates"`
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -105,6 +106,25 @@ func (m *Host) PeerID() string { return m.h.ID().String() }
 // LibP2PHost exposes the underlying libp2p host for the forwarder and
 // protocol handlers added by later sprint-#8 items.
 func (m *Host) LibP2PHost() host.Host { return m.h }
+
+// dialableAddrs returns the host's reachable multiaddrs as strings, dropping
+// unspecified (0.0.0.0 / ::) listen addrs that no remote peer can dial. These
+// are what we announce to cloudbox for peers to dial back. libp2p's host.Addrs()
+// already expands a 0.0.0.0 listen to the concrete interface addresses; this
+// just filters any residual wildcard.
+func (m *Host) dialableAddrs() []string {
+	addrs := m.h.Addrs()
+	out := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		s := a.String()
+		if strings.Contains(s, "/0.0.0.0/") || strings.Contains(s, "/::/") {
+			continue
+		}
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
 
 func (m *Host) addrStrings() []string {
 	addrs := m.h.Addrs()

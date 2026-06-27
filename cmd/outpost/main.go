@@ -605,6 +605,15 @@ func startCmd() *cobra.Command {
 					ConnectedPeers: s.ConnectedPeers,
 				}
 			}
+			// Mesh rendezvous client — uses cloudbox's peer-signal surface to
+			// announce this host + discover/dial paired peers. Started in the
+			// errgroup below.
+			var meshRdv *mesh.Rendezvous
+			if meshHost != nil {
+				if cb := cloudboxHTTPBase(fc); cb != "" {
+					meshRdv = mesh.NewRendezvous(meshHost, fc.AgentName, cb, fc.AccessToken, slog.Default())
+				}
+			}
 
 			// Construct the shared business-logic layer first. The same
 			// admincore.Server instance feeds adminui (human SPA) and
@@ -892,6 +901,14 @@ func startCmd() *cobra.Command {
 				g.Go(func() error {
 					if err := meshHost.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
 						slog.Warn("mesh: exited", "err", err)
+					}
+					return nil
+				})
+			}
+			if meshRdv != nil {
+				g.Go(func() error {
+					if err := meshRdv.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+						slog.Warn("mesh rendezvous: exited", "err", err)
 					}
 					return nil
 				})

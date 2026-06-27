@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +54,18 @@ func TestHostsConnectDirect(t *testing.T) {
 	}
 	if len(h1.Status().ListenAddrs) == 0 {
 		t.Fatal("host should report listen addrs")
+	}
+}
+
+// dialableAddrs is what we announce to cloudbox for peers to dial back — it
+// must never include an unspecified (0.0.0.0 / ::) listen address.
+func TestDialableAddrsNoUnspecified(t *testing.T) {
+	h := newTestHost(t)
+	defer h.Close()
+	for _, a := range h.dialableAddrs() {
+		if strings.Contains(a, "/0.0.0.0/") || strings.Contains(a, "/::/") {
+			t.Errorf("dialableAddrs leaked an unspecified addr: %s", a)
+		}
 	}
 }
 
