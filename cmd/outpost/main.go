@@ -635,6 +635,13 @@ func startCmd() *cobra.Command {
 			var meshFwd admincore.MeshForwardOps
 			if meshHost != nil {
 				meshFwd = meshFwdAdapter{f: meshHost.Forwarder()}
+				// Wrap harness: auto-expose the persistently-configured mesh
+				// services so they survive restarts (declarative `mesh expose`).
+				for _, s := range fc.MeshServices {
+					if s.Name != "" && s.Addr != "" {
+						meshHost.Forwarder().Expose(s.Name, s.Addr)
+					}
+				}
 			}
 
 			// Construct the shared business-logic layer first. The same

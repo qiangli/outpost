@@ -247,6 +247,13 @@ type FileConfig struct {
 	// NAT/hole-punch and the loopback forwarder.
 	MeshPort int `json:"mesh_port,omitempty"`
 
+	// MeshServices are local loopback services persistently exposed over the
+	// mesh (the "wrap harness" — the declarative form of `mesh expose`). The
+	// daemon auto-exposes them when the mesh host comes up, so a peer can reach
+	// e.g. a git server or registry by name without re-running expose after a
+	// restart. See docs/mesh-app-platform.md.
+	MeshServices []MeshService `json:"mesh_services,omitempty"`
+
 	// Shard configures the Ollama sharding sub-feature: serve a model bigger
 	// than any single node by splitting it across mesh peers via llama.cpp
 	// RPC carried over the mesh forwarder. Under Ollama; default off.
@@ -1260,6 +1267,14 @@ func (fc *FileConfig) PeerPlaneOn() bool {
 // is the rendezvous, so an unpaired host has no signaler to find peers through).
 func (fc *FileConfig) MeshOn() bool {
 	return fc != nil && fc.MeshEnabled != nil && *fc.MeshEnabled
+}
+
+// MeshService is one local loopback service persistently exposed over the mesh.
+type MeshService struct {
+	// Name is the mesh service name a peer dials (e.g. "git", "registry").
+	Name string `json:"name"`
+	// Addr is the local loopback address to bridge to (e.g. "127.0.0.1:3000").
+	Addr string `json:"addr"`
 }
 
 // ShardConfig is the Ollama sharding sub-feature config (under Ollama).

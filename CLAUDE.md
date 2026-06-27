@@ -434,12 +434,26 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   `llama-server` pointed at a local `Listen()` address) and peer-backup. Tested
   end-to-end (echo round-trips TCP→listener→stream→handler→echo; unknown service
   refused).
-- **Status:** host + rendezvous + forwarder wired (sprint #8, p2p-fabric P0) —
-  paired hosts discover + dial each other (same-LAN direct) and can carry a
-  loopback TCP service peer-to-peer over the mesh. Next on the same sprint: a
-  circuit-relay in cloudbox (DCUtR across strict NATs), and the shard-RPC wiring
-  (the `shard` builtin Expose()s rpc-server + the leader Listen()s — `docs/
-  ollama-sharding-builtin-plan.md` + `docs/libp2p-mesh-transport.md`).
+- **Wrap harness — persistent service exposure (`FileConfig.MeshServices`).** The
+  declarative form of `mesh expose`: a `[]MeshService{Name,Addr}` the daemon
+  **auto-exposes when the mesh host comes up** (boot loop in `main.go`), so a
+  service stays reachable by name across restarts. Four-surface:
+  `admincore.MeshService{Upsert,Delete,Services}` (persist + live-apply via the
+  forwarder), `outpost_mesh_service_{set,rm}` + `outpost_mesh_services` MCP, and
+  `outpost mesh service {add,rm,ls}` CLI. **This is the wrap‑harness foundation**
+  (docs/mesh-app-platform.md): expose any tool you run — e.g. a git server
+  (`outpost mesh service add git 127.0.0.1:3000`) or an OCI registry
+  (`… add registry 127.0.0.1:5000`) — over the mesh persistently; a peer reaches
+  it with `outpost mesh listen <peer-id> git`. (Full tool *lifecycle* — the
+  daemon running Gitea/Distribution itself — is a per-tool follow-on; the harness
+  exposes whatever is already on a loopback port.)
+- **Status:** host + rendezvous + forwarder + **circuit relay** + **wrap harness**
+  wired (sprint #8 P0 complete) — paired hosts discover + dial each other
+  (same-LAN/vicinity direct, strict-NAT via the cloudbox relay + DCUtR) and carry
+  loopback TCP services peer-to-peer, persistently. rpc-over-mesh proven on
+  hardware (`mesh/rpcdemo_test.go`). The `shard` builtin (sprint #6) consumes the
+  forwarder via `internal/agent/shard` — see `docs/ollama-sharding-builtin-plan.md`
+  + `docs/libp2p-mesh-transport.md` + `docs/mesh-app-platform.md`.
 
 ### Cloudbox-pushed self-upgrade (`internal/agent/upgrade/`)
 

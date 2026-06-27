@@ -47,7 +47,72 @@ hole-punched link (cloudbox brokers the introduction; the bytes go
 peer-to-peer). On the worker, Expose a local service; on the leader, Listen for
 it and point a client (e.g. llama-server --rpc) at the printed local address.`,
 	}
-	cmd.AddCommand(meshStatusCmd(), meshExposeCmd(), meshUnexposeCmd(), meshListenCmd(), meshUnlistenCmd())
+	cmd.AddCommand(meshStatusCmd(), meshExposeCmd(), meshUnexposeCmd(), meshListenCmd(), meshUnlistenCmd(), meshServiceCmd())
+	return cmd
+}
+
+// meshServiceCmd manages persistently-exposed services (the wrap harness): the
+// declarative form of `mesh expose`, auto-applied on every boot.
+func meshServiceCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "service",
+		Short: "Manage persistently-exposed mesh services (survive restarts)",
+		Long: `A persisted local service is auto-exposed over the mesh on every boot —
+the declarative form of 'mesh expose'. Use it for services (git, registry, …)
+that should stay reachable across restarts.`,
+	}
+	add := &cobra.Command{
+		Use:   "add <name> <loopback-addr>",
+		Short: "Persistently expose a local service over the mesh",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var out struct {
+				OK bool `json:"ok"`
+			}
+			if err := runMeshTool(cmd.Context(), "outpost_mesh_service_set",
+				map[string]string{"service": args[0], "addr": args[1]}, &out); err != nil {
+				return err
+			}
+			fmt.Printf("persistently exposing %s -> %s over the mesh\n", args[0], args[1])
+			return nil
+		},
+	}
+	rm := &cobra.Command{
+		Use:   "rm <name>",
+		Short: "Remove a persistently-exposed mesh service",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var out struct {
+				OK bool `json:"ok"`
+			}
+			if err := runMeshTool(cmd.Context(), "outpost_mesh_service_rm",
+				map[string]string{"service": args[0]}, &out); err != nil {
+				return err
+			}
+			fmt.Printf("removed mesh service %s\n", args[0])
+			return nil
+		},
+	}
+	ls := &cobra.Command{
+		Use:   "ls",
+		Short: "List persistently-exposed mesh services",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			var out struct {
+				Services []struct {
+					Name string `json:"name"`
+					Addr string `json:"addr"`
+				} `json:"services"`
+			}
+			if err := runMeshTool(cmd.Context(), "outpost_mesh_services", struct{}{}, &out); err != nil {
+				return err
+			}
+			for _, s := range out.Services {
+				fmt.Printf("%s -> %s\n", s.Name, s.Addr)
+			}
+			return nil
+		},
+	}
+	cmd.AddCommand(add, rm, ls)
 	return cmd
 }
 

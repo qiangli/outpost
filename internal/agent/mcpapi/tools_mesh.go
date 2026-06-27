@@ -40,6 +40,10 @@ type meshStatusOut struct {
 	Forwards admincore.MeshForwardView `json:"forwards"`
 }
 
+type meshServicesOut struct {
+	Services []admincore.MeshServiceView `json:"services"`
+}
+
 func (s *Server) registerMeshTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "outpost_mesh_status",
@@ -91,5 +95,36 @@ func (s *Server) registerMeshTools() {
 			return apiErrResult[meshOKOut](err)
 		}
 		return nil, meshOKOut{OK: true}, nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_mesh_service_set",
+		Description: "Persistently expose a local loopback service over the mesh (the wrap harness): saved to config + exposed live, and auto-exposed on every boot. e.g. set 'git' -> 127.0.0.1:3000. Use this (not mesh_expose) for services that should survive restarts.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in meshExposeIn) (*mcp.CallToolResult, meshOKOut, error) {
+		if err := s.core.MeshServiceUpsert(in.Service, in.Addr); err != nil {
+			return apiErrResult[meshOKOut](err)
+		}
+		return nil, meshOKOut{OK: true}, nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_mesh_service_rm",
+		Description: "Remove a persistently-exposed mesh service (un-exposes it live + drops it from config).",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in meshServiceIn) (*mcp.CallToolResult, meshOKOut, error) {
+		if err := s.core.MeshServiceDelete(in.Service); err != nil {
+			return apiErrResult[meshOKOut](err)
+		}
+		return nil, meshOKOut{OK: true}, nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_mesh_services",
+		Description: "List the persistently-exposed mesh services (the wrap-harness config).",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, meshServicesOut, error) {
+		svcs, err := s.core.MeshServices()
+		if err != nil {
+			return apiErrResult[meshServicesOut](err)
+		}
+		return nil, meshServicesOut{Services: svcs}, nil
 	})
 }
