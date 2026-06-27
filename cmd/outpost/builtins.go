@@ -68,6 +68,7 @@ func builtinsShowCmd() *cobra.Command {
 			row("zot", view.ZotEnabled)
 			row("seaweedfs", view.SeaweedfsEnabled)
 			row("kopia", view.KopiaEnabled)
+			row("actrunner", view.ActrunnerEnabled)
 			row("otel", view.OtelEnabled)
 			row("otel_pool", view.OtelPoolEnabled)
 			row("ycode_share", view.YcodeShareEnabled)
@@ -104,6 +105,10 @@ func builtinsSetCmd() *cobra.Command {
 		seaweedfsPort                                                                                                                                                                  int
 		kopia                                                                                                                                                                          string
 		kopiaPort                                                                                                                                                                      int
+		actrunner                                                                                                                                                                      string
+		actrunnerInstance                                                                                                                                                              string
+		actrunnerToken                                                                                                                                                                 string
+		actrunnerLabels                                                                                                                                                                string
 		sshForwardSockets                                                                                                                                                              []string
 		clearSSHForwardSockets                                                                                                                                                         bool
 		ycodeShareSurfaces                                                                                                                                                             map[string]string
@@ -259,6 +264,18 @@ func builtinsSetCmd() *cobra.Command {
 			if cmd.Flags().Changed("kopia-port") {
 				params.KopiaPort = &kopiaPort
 			}
+			if params.Actrunner, err = parseToggle("actrunner", actrunner); err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("actrunner-instance") {
+				params.ActrunnerInstance = &actrunnerInstance
+			}
+			if cmd.Flags().Changed("actrunner-token") {
+				params.ActrunnerToken = &actrunnerToken
+			}
+			if cmd.Flags().Changed("actrunner-labels") {
+				params.ActrunnerLabels = &actrunnerLabels
+			}
 			if clearSSHForwardSockets {
 				params.SSHForwardSockets = []string{}
 			} else if cmd.Flags().Changed("ssh-forward-socket") {
@@ -314,6 +331,10 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().IntVar(&seaweedfsPort, "seaweedfs-port", 0, "SeaweedFS's loopback S3-gateway port (0 = default 8333)")
 	cmd.Flags().StringVar(&kopia, "kopia", "", "on|off - run the Kopia snapshot-backup repo server (managed external binary) on loopback, auto-exposed over the mesh as 'backup'")
 	cmd.Flags().IntVar(&kopiaPort, "kopia-port", 0, "Kopia's loopback server port (0 = default 51515)")
+	cmd.Flags().StringVar(&actrunner, "actrunner", "", "on|off - run Gitea act_runner (CI executor, managed external binary); registers against a Gitea instance and dials out")
+	cmd.Flags().StringVar(&actrunnerInstance, "actrunner-instance", "", "Gitea base URL the runner registers against (empty = local loom forge)")
+	cmd.Flags().StringVar(&actrunnerToken, "actrunner-token", "", "act_runner registration token (minted in Gitea)")
+	cmd.Flags().StringVar(&actrunnerLabels, "actrunner-labels", "", "executor labels (default 'host:host')")
 	return cmd
 }
 

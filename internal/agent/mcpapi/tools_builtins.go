@@ -46,6 +46,10 @@ type builtinsIn struct {
 	SeaweedfsPort          *int            `json:"seaweedfs_port,omitempty" jsonschema:"SeaweedFS's loopback S3-gateway port (0 = default 8333)"`
 	Kopia                  *bool           `json:"kopia,omitempty" jsonschema:"Toggle running the Kopia snapshot-backup repository server as a managed external binary on a loopback port, auto-exposed over the mesh as the 'backup' service (many nodes back up into one repo). Downloaded/verified/cached by binmgr — not compiled in."`
 	KopiaPort              *int            `json:"kopia_port,omitempty" jsonschema:"Kopia's loopback server port (0 = default 51515)"`
+	Actrunner              *bool           `json:"actrunner,omitempty" jsonschema:"Toggle running Gitea act_runner (the CI executor) as a managed external binary. A CONSUMER (registers against a Gitea instance and dials out), not a mesh service. Downloaded/verified/cached by binmgr — not compiled in."`
+	ActrunnerInstance      *string         `json:"actrunner_instance,omitempty" jsonschema:"Gitea base URL the runner registers against (empty = local loom forge)"`
+	ActrunnerToken         *string         `json:"actrunner_token,omitempty" jsonschema:"act_runner registration token (minted in Gitea)"`
+	ActrunnerLabels        *string         `json:"actrunner_labels,omitempty" jsonschema:"executor labels (default 'host:host')"`
 }
 
 type setBuiltinsOut struct {
@@ -93,6 +97,10 @@ func (s *Server) registerBuiltinsTools() {
 			SeaweedfsPort:          in.SeaweedfsPort,
 			Kopia:                  in.Kopia,
 			KopiaPort:              in.KopiaPort,
+			Actrunner:              in.Actrunner,
+			ActrunnerInstance:      in.ActrunnerInstance,
+			ActrunnerToken:         in.ActrunnerToken,
+			ActrunnerLabels:        in.ActrunnerLabels,
 		})
 		if err != nil {
 			return apiErrResult[setBuiltinsOut](err)
