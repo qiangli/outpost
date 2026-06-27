@@ -39,7 +39,7 @@ Unicode curly quotes inside.
 End-to-end smoke confirmed it through the SSH exec path:
 
 ```bash
-$ ssh novidesign 'cat <<PY
+$ ssh host-c 'cat <<PY
 > he said "smart" quotes
 > print(f"key: {v}")
 > data = {"a": 1, "b": 2}
@@ -49,8 +49,8 @@ print(f"key: {v}")
 data = {"a": 1, "b": 2}
 ```
 
-Bytes survive cleanly through `dragon ssh-proxy → cloudbox → matrix
-tunnel → novidesign outpost → ssh server exec channel → qiangli/sh
+Bytes survive cleanly through `host-a ssh-proxy → cloudbox → matrix
+tunnel → host-c outpost → ssh server exec channel → qiangli/sh
 runner`. Both Unicode curly quotes and ASCII double quotes pass through.
 
 ### Where to look if it resurfaces
@@ -109,10 +109,10 @@ aren't duplicated. The new env replaces `interp.Env(nil)` in both
 `shell/runner.go` (browser `/shell` route) and `agent/ssh.go`
 (`/ssh` route's exec channel).
 
-Verified end-to-end on novidesign:
+Verified end-to-end on host-c:
 
 ```bash
-$ ssh novidesign 'echo "PATH=$PATH" ; which outpost ; ls -la $(which outpost) | head -1'
+$ ssh host-c 'echo "PATH=$PATH" ; which outpost ; ls -la $(which outpost) | head -1'
 PATH=/Users/noviadmin/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin
 /Users/noviadmin/bin/outpost
 -rwxr-xr-x  1 noviadmin  staff  39429202 May 23 03:44 /Users/noviadmin/bin/outpost

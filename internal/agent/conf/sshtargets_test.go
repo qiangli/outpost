@@ -22,10 +22,10 @@ func TestSSHTargetCRUD(t *testing.T) {
 	}
 
 	// Save two targets.
-	if err := SaveSSHTarget(SSHTarget{Name: "lab", Host: "novicortex", User: "noviadmin"}); err != nil {
+	if err := SaveSSHTarget(SSHTarget{Name: "lab", Host: "host-b", User: "noviadmin"}); err != nil {
 		t.Fatalf("save lab: %v", err)
 	}
-	if err := SaveSSHTarget(SSHTarget{Name: "design", Host: "novidesign", User: "noviadmin", Description: "design VM"}); err != nil {
+	if err := SaveSSHTarget(SSHTarget{Name: "design", Host: "host-c", User: "noviadmin", Description: "design VM"}); err != nil {
 		t.Fatalf("save design: %v", err)
 	}
 
@@ -34,7 +34,7 @@ func TestSSHTargetCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load lab: %v", err)
 	}
-	if lab.Host != "novicortex" || lab.User != "noviadmin" {
+	if lab.Host != "host-b" || lab.User != "noviadmin" {
 		t.Errorf("lab round-trip mismatch: %+v", lab)
 	}
 
@@ -96,7 +96,7 @@ func TestResolveSSHTargetChain(t *testing.T) {
 	}
 
 	// Flat: no Via → chain == [inner].
-	mustSave(SSHTarget{Name: "flat", Host: "novicortex", User: "u"})
+	mustSave(SSHTarget{Name: "flat", Host: "host-b", User: "u"})
 	got, err := ResolveSSHTargetChain("flat", "")
 	if err != nil {
 		t.Fatalf("flat: %v", err)

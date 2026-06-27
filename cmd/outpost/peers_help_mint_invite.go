@@ -40,15 +40,15 @@ the operator chooses the name at register time.
 
 Use it like this:
 
-    # On a healthy peer (dragon):
-    outpost peers help-mint-invite novicortex
+    # On a healthy peer (host-a):
+    outpost peers help-mint-invite host-b
     Code: <code>  (expires in 30m)
 
-    # Then on dragon:
-    outpost repair register --to novicortex --code <code>
+    # Then on host-a:
+    outpost repair register --to host-b --code <code>
 
 That second command sshs into the broken peer and runs
-'outpost register --code <code> --name novicortex' there, so the
+'outpost register --code <code> --name host-b' there, so the
 broken peer re-pairs with cloudbox using the cached SSH path —
 no operator-in-SPA, no LAN reachability to the SPA browser.`,
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -137,7 +137,7 @@ func TestOutboundConnectAndProxy(t *testing.T) {
 
 	m := NewOutboundManager(cloud.URL, "test-access-token", nil)
 	m.Register([]conf.OutboundConfig{
-		{Path: "kg", Name: "ollama", Host: "novicortex", User: "noviadmin"},
+		{Path: "kg", Name: "ollama", Host: "host-b", User: "noviadmin"},
 	})
 
 	// Proxy before Connect must 503 with the "click Connect" hint.
@@ -301,7 +301,7 @@ func TestOutboundTCPBridge(t *testing.T) {
 	m := NewOutboundManager(cloud.URL, "test-access-token", nil)
 	t.Cleanup(m.Stop)
 	m.Register([]conf.OutboundConfig{
-		{Path: "pg", Name: "postgres", Host: "novicortex", User: "noviadmin", Scheme: "tcp", LocalPort: localPort},
+		{Path: "pg", Name: "postgres", Host: "host-b", User: "noviadmin", Scheme: "tcp", LocalPort: localPort},
 	})
 
 	if err := m.Connect("pg", "pw"); err != nil {
@@ -539,10 +539,10 @@ func TestOutboundSSHBridge(t *testing.T) {
 	// scheme="ssh" with Name intentionally empty — the manager must not
 	// build /app/<name>/ paths for ssh outbounds.
 	m.Register([]conf.OutboundConfig{
-		{Path: "novicortex-ssh", Host: "novicortex", User: "noviadmin", Scheme: "ssh", LocalPort: localPort},
+		{Path: "host-b-ssh", Host: "host-b", User: "noviadmin", Scheme: "ssh", LocalPort: localPort},
 	})
 
-	if err := m.Connect("novicortex-ssh", "pw"); err != nil {
+	if err := m.Connect("host-b-ssh", "pw"); err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	if elevateHits != 1 {
@@ -583,7 +583,7 @@ func TestOutboundSSHBridge(t *testing.T) {
 		t.Fatalf("ssh WS hits = %d, want 1", sshHits)
 	}
 
-	m.Disconnect("novicortex-ssh")
+	m.Disconnect("host-b-ssh")
 	time.Sleep(50 * time.Millisecond)
 	if c, derr := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", itoa(localPort)), 200*time.Millisecond); derr == nil {
 		_ = c.Close()

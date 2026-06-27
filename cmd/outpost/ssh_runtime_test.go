@@ -12,7 +12,7 @@ func TestSplitAdHocHostPort(t *testing.T) {
 		wantHost string
 		wantPort int
 	}{
-		{"novidesign", "novidesign", 0},
+		{"host-c", "host-c", 0},
 		{"192.168.1.5", "192.168.1.5", 0},
 		{"192.168.1.5:2222", "192.168.1.5", 2222},
 		{"host.local:22", "host.local", 22},

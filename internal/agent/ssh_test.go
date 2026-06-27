@@ -886,7 +886,7 @@ func TestPeerDial_BuildURL(t *testing.T) {
 	cases := []struct {
 		name, base, proto, peer, want string
 	}{
-		{"https-base", "https://ai.dhnt.io", "wss", "novidesign", "wss://ai.dhnt.io/matrix/h/novidesign/ssh"},
+		{"https-base", "https://ai.dhnt.io", "wss", "host-c", "wss://ai.dhnt.io/matrix/h/host-c/ssh"},
 		{"http-base", "http://localhost:18080", "ws", "peerA", "ws://localhost:18080/matrix/h/peerA/ssh"},
 		{"infer-wss-from-base", "https://example", "", "peerB", "wss://example/matrix/h/peerB/ssh"},
 		{"trim-trailing-slash", "https://ai.dhnt.io/", "wss", "x", "wss://ai.dhnt.io/matrix/h/x/ssh"},
@@ -940,7 +940,7 @@ func TestPeerDial_IsLoopbackDest(t *testing.T) {
 			t.Errorf("isLoopbackDest(%q) = false; want true", host)
 		}
 	}
-	for _, host := range []string{"novidesign", "10.0.0.5", "[::2]", ""} {
+	for _, host := range []string{"host-c", "10.0.0.5", "[::2]", ""} {
 		if isLoopbackDest(host) {
 			t.Errorf("isLoopbackDest(%q) = true; want false", host)
 		}

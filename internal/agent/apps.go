@@ -349,7 +349,7 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 		// legacy `/admin/*p → /cloudbox/*p` redirect, dumping the user
 		// into cloudbox itself instead of the app. Prepend our public
 		// prefix (set by cloudbox via X-Forwarded-Prefix, e.g.
-		// /h/dragon/app/lern-admin) so the redirect lands back on the
+		// /h/host-a/app/lern-admin) so the redirect lands back on the
 		// proxy.
 		//
 		// Untouched: full URLs (`https://other.example/foo`),

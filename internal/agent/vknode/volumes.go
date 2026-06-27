@@ -26,7 +26,7 @@ import (
 //
 // We use a libpod-managed named volume instead of a host bind mount
 // because on macOS podman runs in a vfkit/libkrun Linux VM — bind-
-// mounting "/tmp/x" or "/Users/qiangli/y" from the host into a
+// mounting "/tmp/x" or "/Users/you/y" from the host into a
 // container fails with "no such file or directory" since those paths
 // don't exist inside the VM. Named volumes live inside the VM's own
 // storage (/var/home/core/.local/share/containers/storage/volumes/),

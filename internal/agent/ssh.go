@@ -524,7 +524,7 @@ type directTCPIPMsg struct {
 //
 // When `peers` is non-nil, any hostname registered as a paired outpost
 // in this cloudbox account is also allowed — that enables
-// `ssh -J novicortex novidesign`, since `novidesign` is itself a
+// `ssh -J host-b host-c`, since `host-c` is itself a
 // reachable outpost. The trust delegation is bounded:
 //   - The inner SSH handshake still goes through the destination
 //     outpost's own OS-password gate (or matrix_elev cookie), so
@@ -604,8 +604,8 @@ func handleDirectTCPIP(ctx context.Context, newCh ssh.NewChannel, peers *peerhos
 	// LAN DNS, which usually doesn't resolve peer outpost names from
 	// inside another peer machine. Cloudbox already has account-level
 	// routing for /h/<peer>/ssh — see peerhosts and ssh-config — so
-	// reusing it here turns `ssh -J novicortex novidesign` into the
-	// same wss round-trip `outpost ssh-proxy novidesign` already does
+	// reusing it here turns `ssh -J host-b host-c` into the
+	// same wss round-trip `outpost ssh-proxy host-c` already does
 	// from the operator's local host. Loopback targets keep the
 	// pre-existing net.Dial path so `ssh -L 7777:localhost:5432` etc.
 	// stay zero-overhead.

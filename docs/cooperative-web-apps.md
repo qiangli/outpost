@@ -11,7 +11,7 @@ Every proxied request carries the standard forwarding headers:
 | --------------------- | -------------------------------------------- |
 | `X-Forwarded-Host`    | `ai.dhnt.io`                                 |
 | `X-Forwarded-Proto`   | `https`                                      |
-| `X-Forwarded-Prefix`  | `/matrix/h/dragon/app/lern-admin`            |
+| `X-Forwarded-Prefix`  | `/matrix/h/host-a/app/lern-admin`            |
 | `X-Forwarded-For`     | client IP chain                              |
 
 When the app's **Trust cloudbox identity** toggle is on (admin UI per-app
@@ -161,9 +161,9 @@ an admin in your app."* The two layers can diverge:
   second factor (local username/password) before granting elevated
   scope.
 
-The classgo deployment on dragon is an example of the second pattern:
+The classgo deployment on host-a is an example of the second pattern:
 the cloud stamp gets the sharee through cloudbox + outpost, then
-classgo's own OS-PAM `/admin/login` (against a separate dragon OS
+classgo's own OS-PAM `/admin/login` (against a separate host-a OS
 account) gates app-level admin scope.
 
 ## Verifying the identity stamp (LAN-bypass defense)

@@ -161,13 +161,13 @@ func TestIsLANAddressLiteral(t *testing.T) {
 		host string
 		want bool
 	}{
-		{"2ivy.local", true},
-		{"2IVY.LOCAL", true},
+		{"host-f.local", true},
+		{"HOST-F.LOCAL", true},
 		{"10.0.0.211", true},
 		{"::1", true},
 		{"fe80::1", true},
-		{"2ivy", false},      // paired host name → cloudbox flow
-		{"dragon", false},    // paired host name → cloudbox flow
+		{"host-f", false},      // paired host name → cloudbox flow
+		{"host-a", false},    // paired host name → cloudbox flow
 		{"corp.example.com", false},
 		{"", false},
 	}

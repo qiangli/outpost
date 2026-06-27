@@ -62,8 +62,8 @@ stable code:
 
 Designed for shell preflights:
 
-  if ! outpost reach novicortex >/dev/null; then
-    echo "novicortex unreachable — skipping deploy"; exit 1
+  if ! outpost reach host-b >/dev/null; then
+    echo "host-b unreachable — skipping deploy"; exit 1
   fi
 
 Bails before the SSH handshake — no password prompt, no elevation

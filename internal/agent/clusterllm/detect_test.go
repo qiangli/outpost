@@ -86,9 +86,9 @@ func TestDetect_RunningWithKey_AggregatesVRAM(t *testing.T) {
 	// Two workers, three devices: 24+36 GiB on one Mac, 24 GiB on another.
 	const giB = 1 << 30
 	devices := `{"items":[
-		{"worker_name":"dragon","memory":{"total":25769803776,"is_unified_memory":true}},
-		{"worker_name":"novidesign","memory":{"total":38654705664,"is_unified_memory":true}},
-		{"worker_name":"novidesign","memory":{"total":25769803776,"is_unified_memory":true}}
+		{"worker_name":"host-a","memory":{"total":25769803776,"is_unified_memory":true}},
+		{"worker_name":"host-c","memory":{"total":38654705664,"is_unified_memory":true}},
+		{"worker_name":"host-c","memory":{"total":25769803776,"is_unified_memory":true}}
 	]}`
 	srv := gpustackStub(t, true, devices, "secret-key")
 	got := Detect(context.Background(), Config{Endpoint: srv.URL, APIKey: "secret-key"}, srv.Client())

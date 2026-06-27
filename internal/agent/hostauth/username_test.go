@@ -6,7 +6,7 @@ func TestBareUsername(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"alice", "alice"},
 		{"  alice  ", "alice"},
-		{`2IVY\Lijuan Song`, "Lijuan Song"},
+		{`HOST-F\Lijuan Song`, "Lijuan Song"},
 		{`DOMAIN\alice`, "alice"},
 		{"alice@example.com", "alice"},
 		{"", ""},
@@ -28,17 +28,17 @@ func TestSameUser(t *testing.T) {
 		{"Alice", "alice", true},
 		// Bare form matches the Windows SAM-compatible canonical —
 		// the cross-platform consistency this helper exists for.
-		{"Lijuan Song", `2IVY\Lijuan Song`, true},
-		{"lijuan song", `2IVY\Lijuan Song`, true},
-		{`2ivy\lijuan song`, `2IVY\Lijuan Song`, true},
+		{"Lijuan Song", `HOST-F\Lijuan Song`, true},
+		{"lijuan song", `HOST-F\Lijuan Song`, true},
+		{`host-f\lijuan song`, `HOST-F\Lijuan Song`, true},
 		// UPN form.
 		{"alice@example.com", `EXAMPLE\alice`, true},
 		// Qualified submitted vs bare canonical (Unix daemon, client
 		// pasted a Windows-style name): bare parts must still match.
 		{`SOMEBOX\alice`, "alice", true},
 		// Mismatches.
-		{"bob", `2IVY\Lijuan Song`, false},
-		{`2IVY\bob`, `2IVY\Lijuan Song`, false},
+		{"bob", `HOST-F\Lijuan Song`, false},
+		{`HOST-F\bob`, `HOST-F\Lijuan Song`, false},
 		{"", "alice", false},
 		{"alice", "", false},
 	}

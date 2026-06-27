@@ -2344,7 +2344,7 @@ code" dialog usually only needs --code.`,
 
 // defaultHostName returns the system hostname with the macOS/mDNS
 // `.local` and the older `.lan` suffix stripped, so a Mac that reports
-// "dragon.local" pairs as just "dragon" (matching how users typically
+// "host-a.local" pairs as just "host-a" (matching how users typically
 // type the name interactively). Empty result is possible on rare
 // systems where os.Hostname errors — callers are expected to surface
 // that as "host name resolver returned empty, pass --name explicitly".

@@ -37,7 +37,7 @@ func TestMergePairingPreservesDaemonAndOperatorState(t *testing.T) {
 	}
 
 	exchanged := &conf.FileConfig{
-		AgentName:   "puppy",
+		AgentName:   "host-d",
 		ServerAddr:  "ai.dhnt.io",
 		ServerPort:  443,
 		Protocol:    "wss",
@@ -48,7 +48,7 @@ func TestMergePairingPreservesDaemonAndOperatorState(t *testing.T) {
 	merged := mergePairing(path, exchanged)
 
 	// Portal-controlled fields overlaid.
-	if merged.AgentName != "puppy" || merged.AccessToken != "new-token" ||
+	if merged.AgentName != "host-d" || merged.AccessToken != "new-token" ||
 		merged.ServerAddr != "ai.dhnt.io" || merged.ServerPort != 443 ||
 		merged.Protocol != "wss" || merged.RemotePort != 17006 {
 		t.Fatalf("pairing fields not overlaid: %+v", merged)
@@ -109,7 +109,7 @@ func TestMergePairingClusterCreds(t *testing.T) {
 			Enabled:   true,
 			Mode:      "agent",
 			APIURL:    "https://127.0.0.1:6443",
-			NodeName:  "puppy-node",
+			NodeName:  "host-d-node",
 			NodeToken: "stale-node-token",
 		},
 	}
@@ -118,7 +118,7 @@ func TestMergePairingClusterCreds(t *testing.T) {
 	}
 
 	exchanged := &conf.FileConfig{
-		AgentName: "puppy",
+		AgentName: "host-d",
 		Cluster: &conf.ClusterConfig{
 			NodeToken:  "fresh-node-token",
 			STCPSecret: "fresh-secret",
@@ -135,7 +135,7 @@ func TestMergePairingClusterCreds(t *testing.T) {
 	}
 	// Operator fields preserved.
 	if !merged.Cluster.Enabled || merged.Cluster.Mode != "agent" ||
-		merged.Cluster.APIURL != "https://127.0.0.1:6443" || merged.Cluster.NodeName != "puppy-node" {
+		merged.Cluster.APIURL != "https://127.0.0.1:6443" || merged.Cluster.NodeName != "host-d-node" {
 		t.Errorf("operator cluster fields not preserved: %+v", merged.Cluster)
 	}
 }

@@ -24,7 +24,7 @@ func TestRegistry_NilSafe(t *testing.T) {
 
 func TestRegistry_EmptyTokenIsNoOp(t *testing.T) {
 	r := New(Config{ServerAddr: "http://example.invalid", Token: ""})
-	if r.IsPeer(context.Background(), "novidesign") {
+	if r.IsPeer(context.Background(), "host-c") {
 		t.Fatalf("empty-token registry must answer false (loopback fallback covers unpaired outposts)")
 	}
 }
@@ -41,8 +41,8 @@ func TestRegistry_PopulatesFromServer(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"hosts": []map[string]string{
-				{"host": "novidesign"},
-				{"host": "Novicortex"}, // mixed-case → lowered
+				{"host": "host-c"},
+				{"host": "Host-b"}, // mixed-case → lowered
 				{"host": ""},           // skipped
 			},
 		})
@@ -51,7 +51,7 @@ func TestRegistry_PopulatesFromServer(t *testing.T) {
 	r := New(serverConfig(t, srv.URL, "T0KEN"))
 
 	ctx := context.Background()
-	for _, want := range []string{"novidesign", "novicortex", "NOVIDESIGN"} {
+	for _, want := range []string{"host-c", "host-b", "HOST-C"} {
 		if !r.IsPeer(ctx, want) {
 			t.Errorf("IsPeer(%q) = false, want true", want)
 		}

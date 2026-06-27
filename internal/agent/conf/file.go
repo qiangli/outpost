@@ -467,7 +467,7 @@ type FileConfig struct {
 	// so a default install doesn't leak metadata or expose listeners.
 
 	// AssignedHostname is the cloudbox-issued DNS-safe slug returned at
-	// register/exchange time (e.g. "dragon-7a3b"). Used as the mDNS
+	// register/exchange time (e.g. "host-a-7a3b"). Used as the mDNS
 	// service-instance name and as the assumed hostname for
 	// `<assigned_hostname>.local` resolution. Cloudbox-side issuance
 	// lands in Wave 3A.2; until then this falls back to os.Hostname()
@@ -1687,7 +1687,7 @@ func EnsureMCPBearerToken(path string, fc *FileConfig) (string, error) {
 // hand, by older outpost versions, or by automation that set
 // TrustCloudIdentity without also seeding the secret. Skipping the
 // HMAC because the secret is empty is a real LAN-spoof exposure
-// (dragon's `kg` tile was the trigger for adding this).
+// (host-a's `kg` tile was the trigger for adding this).
 func EnsureAppSSOSecrets(path string, fc *FileConfig) ([]string, error) {
 	if fc == nil {
 		return nil, fmt.Errorf("nil FileConfig")

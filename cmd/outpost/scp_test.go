@@ -19,8 +19,8 @@ func TestParseSCPArg(t *testing.T) {
 		{"host:", scpEndpoint{Remote: true, Host: "host", Path: ""}},
 
 		// user@host: form.
-		{"alice@dragon:foo", scpEndpoint{Remote: true, User: "alice", Host: "dragon", Path: "foo"}},
-		{"alice@dragon:/abs/path", scpEndpoint{Remote: true, User: "alice", Host: "dragon", Path: "/abs/path"}},
+		{"alice@host-a:foo", scpEndpoint{Remote: true, User: "alice", Host: "host-a", Path: "foo"}},
+		{"alice@host-a:/abs/path", scpEndpoint{Remote: true, User: "alice", Host: "host-a", Path: "/abs/path"}},
 
 		// scp's local-with-colon escape: a slash before the colon
 		// forces local interpretation (so files named "foo:bar"

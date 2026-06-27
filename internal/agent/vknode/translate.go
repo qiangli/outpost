@@ -170,7 +170,7 @@ func buildEnv(envs []corev1.EnvVar) (map[string]string, error) {
 // hostPathVolumeName / emptyDirVolumeName for the keying. The reason
 // is environmental: on macOS, podman runs inside a vfkit/libkrun Linux
 // VM, and the VM does not have the host's filesystem mounted in. A
-// literal bind of "/tmp/x" or "/Users/qiangli/y" fails with
+// literal bind of "/tmp/x" or "/Users/you/y" fails with
 // "statfs ...: no such file or directory" because that path doesn't
 // exist inside the VM. Named volumes live inside the VM's own storage
 // (Mountpoint: /var/home/core/.local/share/containers/storage/volumes/...)

@@ -19,7 +19,7 @@
 //
 // This is the resilience-Layer-3 path the roadmap explicitly deferred
 // to Phase 2 ("Peer-mediated re-registration"); promoted back into
-// Wave 3A.2 after the novicortex 2026-05-22 incident exposed the
+// Wave 3A.2 after the host-b 2026-05-22 incident exposed the
 // chicken-and-egg in the original deferral.
 
 package main

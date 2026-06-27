@@ -280,7 +280,7 @@ func TestProxy_IdentityHeaders_Gated(t *testing.T) {
 		t.Cleanup(front.Close)
 
 		req, _ := http.NewRequest("GET", front.URL+"/app/app/ping", nil)
-		req.Header.Set("X-Forwarded-Prefix", "/matrix/h/dragon/app/app")
+		req.Header.Set("X-Forwarded-Prefix", "/matrix/h/host-a/app/app")
 		req.Header.Set("X-Periscope-User", "alice@example.com")
 		req.Header.Set("X-Periscope-Role", "user")
 		resp, err := http.DefaultClient.Do(req)
@@ -307,7 +307,7 @@ func TestProxy_IdentityHeaders_Gated(t *testing.T) {
 		t.Cleanup(front.Close)
 
 		req, _ := http.NewRequest("GET", front.URL+"/app/app/ping", nil)
-		req.Header.Set("X-Forwarded-Prefix", "/matrix/h/dragon/app/app")
+		req.Header.Set("X-Forwarded-Prefix", "/matrix/h/host-a/app/app")
 		req.Header.Set("X-Periscope-User", "alice@example.com")
 		req.Header.Set("X-Periscope-Role", "admin")
 		resp, err := http.DefaultClient.Do(req)
@@ -390,7 +390,7 @@ func TestProxy_IdentityHeaders_Gated(t *testing.T) {
 		t.Cleanup(front.Close)
 
 		req, _ := http.NewRequest("GET", front.URL+"/app/app/ping", nil)
-		req.Header.Set("X-Forwarded-Prefix", "/matrix/h/dragon/app/app")
+		req.Header.Set("X-Forwarded-Prefix", "/matrix/h/host-a/app/app")
 		req.Header.Set("X-Periscope-User", "alice@example.com")
 		req.Header.Set("X-Periscope-Role", "admin")
 		resp, err := http.DefaultClient.Do(req)
@@ -427,7 +427,7 @@ func TestProxy_IdentityHeaders_Gated(t *testing.T) {
 		t.Cleanup(front.Close)
 
 		req, _ := http.NewRequest("GET", front.URL+"/app/app/ping", nil)
-		req.Header.Set("X-Forwarded-Prefix", "/matrix/h/dragon/app/app")
+		req.Header.Set("X-Forwarded-Prefix", "/matrix/h/host-a/app/app")
 		req.Header.Set("X-Periscope-User", "alice@example.com")
 		req.Header.Set("X-Periscope-Role", "admin")
 		resp, err := http.DefaultClient.Do(req)
@@ -619,7 +619,7 @@ func TestProxyTo_RequireLogin_BlocksCloudWithoutPeriscopeRole(t *testing.T) {
 	defer srv.Close()
 
 	req, _ := http.NewRequest("GET", srv.URL+"/app/guarded/x", nil)
-	req.Header.Set("X-Forwarded-Prefix", "/matrix/h/dragon/app/guarded")
+	req.Header.Set("X-Forwarded-Prefix", "/matrix/h/host-a/app/guarded")
 	// NO X-Periscope-Role — simulates an un-elevated cloud caller.
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -657,7 +657,7 @@ func TestProxyTo_RequireLogin_AllowsCloudWithPeriscopeRole(t *testing.T) {
 	defer srv.Close()
 
 	req, _ := http.NewRequest("GET", srv.URL+"/app/guarded/x", nil)
-	req.Header.Set("X-Forwarded-Prefix", "/matrix/h/dragon/app/guarded")
+	req.Header.Set("X-Forwarded-Prefix", "/matrix/h/host-a/app/guarded")
 	req.Header.Set("X-Periscope-Role", "user")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -739,7 +739,7 @@ func TestProxyTo_LANOnlyPaths_BlocksCloud(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req, _ := http.NewRequest("GET", srv.URL+tc.path, nil)
-			req.Header.Set("X-Forwarded-Prefix", "/matrix/h/dragon/app/class")
+			req.Header.Set("X-Forwarded-Prefix", "/matrix/h/host-a/app/class")
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
 				t.Fatalf("get: %v", err)
@@ -874,7 +874,7 @@ func TestRegisterFromConfig_XForwardedHeaders(t *testing.T) {
 		req, _ := http.NewRequest("GET", srv.URL+"/app/grafana/dashboards", nil)
 		req.Header.Set("X-Forwarded-Host", "ai.dhnt.io")
 		req.Header.Set("X-Forwarded-Proto", "https")
-		req.Header.Set("X-Forwarded-Prefix", "/matrix/h/novicortex/app/grafana")
+		req.Header.Set("X-Forwarded-Prefix", "/matrix/h/host-b/app/grafana")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("get: %v", err)
@@ -886,8 +886,8 @@ func TestRegisterFromConfig_XForwardedHeaders(t *testing.T) {
 		if got.proto != "https" {
 			t.Errorf("X-Forwarded-Proto = %q, want https", got.proto)
 		}
-		if got.prefix != "/matrix/h/novicortex/app/grafana" {
-			t.Errorf("X-Forwarded-Prefix = %q, want /h/novicortex/app/grafana", got.prefix)
+		if got.prefix != "/matrix/h/host-b/app/grafana" {
+			t.Errorf("X-Forwarded-Prefix = %q, want /h/host-b/app/grafana", got.prefix)
 		}
 	})
 }
@@ -903,15 +903,15 @@ func TestProxy_RewritesAbsoluteLocationHeader(t *testing.T) {
 		name, sent, prefix, want string
 	}{
 		{"absolute-path gets prefixed",
-			"/admin/login", "/matrix/h/dragon/app/lern-admin", "/matrix/h/dragon/app/lern-admin/admin/login"},
+			"/admin/login", "/matrix/h/host-a/app/lern-admin", "/matrix/h/host-a/app/lern-admin/admin/login"},
 		{"already prefixed left alone",
-			"/matrix/h/dragon/app/lern-admin/x", "/matrix/h/dragon/app/lern-admin", "/matrix/h/dragon/app/lern-admin/x"},
+			"/matrix/h/host-a/app/lern-admin/x", "/matrix/h/host-a/app/lern-admin", "/matrix/h/host-a/app/lern-admin/x"},
 		{"exact prefix match left alone",
-			"/matrix/h/dragon/app/lern-admin", "/matrix/h/dragon/app/lern-admin", "/matrix/h/dragon/app/lern-admin"},
+			"/matrix/h/host-a/app/lern-admin", "/matrix/h/host-a/app/lern-admin", "/matrix/h/host-a/app/lern-admin"},
 		{"full URL left alone",
-			"https://other.example/foo", "/matrix/h/dragon/app/lern-admin", "https://other.example/foo"},
+			"https://other.example/foo", "/matrix/h/host-a/app/lern-admin", "https://other.example/foo"},
 		{"protocol-relative left alone",
-			"//other.example/foo", "/matrix/h/dragon/app/lern-admin", "//other.example/foo"},
+			"//other.example/foo", "/matrix/h/host-a/app/lern-admin", "//other.example/foo"},
 		{"no inbound prefix → falls back to /app/<name>",
 			"/admin/login", "", "/app/lern-admin/admin/login"},
 	}

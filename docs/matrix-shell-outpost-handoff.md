@@ -39,7 +39,7 @@ Listed newest first; all on `main`.
   `PasswordCallback` still runs, so the operator gets a password
   prompt for the destination's OS user (matching vanilla openssh
   ProxyJump semantics). Verified live:
-  `ssh -J novicortex noviadmin@novidesign` works both directions.
+  `ssh -J host-b noviadmin@host-c` works both directions.
 - **`343a4f4` `cli: add outpost run --label X -- cmd to replace launchctl
   submit`** — T2.f workaround. `launchctl submit` is silently no-op'd
   inside the matrix-shell because the SSH session inherits a launchd
@@ -52,7 +52,7 @@ Listed newest first; all on `main`.
   Render gotcha: `html/template` escapes the leading `<?xml`, which
   launchd rejects with `Bootstrap failed: 5: Input/output error` —
   use `text/template` + `encoding/xml` escaping for user strings.
-  Smoke-tested submit → ps → list → remove on dragon + novidesign.
+  Smoke-tested submit → ps → list → remove on host-a + host-c.
 - **`aa54346` `ssh: add direct-streamlocal (podman ssh://) + peer-tunneled
   ProxyJump dial`** — two SSH server capabilities riding the existing
   /ssh WebSocket:
@@ -64,7 +64,7 @@ Listed newest first; all on `main`.
     - **peer-tunneled ProxyJump dial**: extends T3.k. The allowlist
       policy fix landed last round but the dial still fell through to
       LAN DNS. Now `handleDirectTCPIP` routes peer SSH dials
-      (`ssh -J novicortex novidesign`) through cloudbox's
+      (`ssh -J host-b host-c`) through cloudbox's
       `/h/<peer>/ssh` WSS endpoint with this outpost's own
       `access_token`. Loopback dials keep the zero-overhead path.
       Cloudbox originally 403'd on sibling-outpost tokens — see

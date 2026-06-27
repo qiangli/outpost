@@ -33,8 +33,8 @@ func TestPeerID_IsValid(t *testing.T) {
 func TestBuildTXTRecords(t *testing.T) {
 	opts := AdvertiseOptions{
 		PeerID:           "SHA256:abc",
-		AgentName:        "dragon",
-		AssignedHostname: "dragon-7a3b",
+		AgentName:        "host-a",
+		AssignedHostname: "host-a-7a3b",
 		OSUsername:       "qiangli",
 		OAuth2Email:      "", // empty: must be omitted
 		CloudboxBase:     "https://ai.dhnt.io",
@@ -44,8 +44,8 @@ func TestBuildTXTRecords(t *testing.T) {
 	}
 	got := buildTXTRecords(opts)
 	mustContain(t, got, "id=SHA256:abc")
-	mustContain(t, got, "an=dragon")
-	mustContain(t, got, "host=dragon-7a3b")
+	mustContain(t, got, "an=host-a")
+	mustContain(t, got, "host=host-a-7a3b")
 	mustContain(t, got, "user=qiangli")
 	mustContain(t, got, "cb=https://ai.dhnt.io")
 	mustContain(t, got, "ver=b49e182")
@@ -67,8 +67,8 @@ func TestBuildTXTRecords(t *testing.T) {
 func TestParseTXT(t *testing.T) {
 	records := []string{
 		"id=SHA256:abc",
-		"an=dragon",
-		"host=dragon-7a3b",
+		"an=host-a",
+		"host=host-a-7a3b",
 		"email=liqiang@gmail.com",
 		"pair=1",
 		"bare-key", // edge case: no `=`

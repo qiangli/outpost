@@ -50,7 +50,7 @@ on:
         required: true
       host:
         description: "Canary host name (must match a cloudbox-paired host)"
-        default: "dragon"
+        default: "host-a"
       platform:
         description: "Canary host platform"
         default: "darwin-arm64"
@@ -98,7 +98,7 @@ jobs:
             # workflow_run: derive tag from source workflow. GitHub sets
             # head_branch to the tag ref for tag-triggered workflows.
             tag="${{ github.event.workflow_run.head_branch }}"
-            host="dragon"
+            host="host-a"
             platform="darwin-arm64"
             dry_run="false"
           fi
@@ -282,7 +282,7 @@ jobs:
           # mis-compared same_commit (version tag vs sha), so the
           # fan-out re-applied on the canary and overwrote its
           # <binary>.previous rollback copy with the new version (seen
-          # on dragon during the v0.7.0 rollout). v0.7.1+ workers
+          # on host-a during the v0.7.0 rollout). v0.7.1+ workers
           # defend receiver-side too (ledger-seeded replay guard +
           # normalized same_commit), but the envelope shouldn't rely
           # on the receiver being new enough.

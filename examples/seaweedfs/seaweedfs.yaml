@@ -42,7 +42,7 @@ spec:
       # would silently give the new pod an empty volume. Remove the
       # nodeSelector once the per-node volume DaemonSet ships.
       nodeSelector:
-        kubernetes.io/hostname: dragon
+        kubernetes.io/hostname: host-a
       tolerations: [{key: virtual-kubelet.io/provider, operator: Exists}]
       # K8s otherwise auto-injects $S3_PORT=tcp://… for every
       # Service in the namespace named "s3" — and SeaweedFS reads

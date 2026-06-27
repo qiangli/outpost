@@ -238,7 +238,7 @@ func TestExchangeRequiresTitleWithAuthURL(t *testing.T) {
 	}
 }
 
-// TestExchangeRetryPreservesFirstError reproduces the 2ivy pairing
+// TestExchangeRetryPreservesFirstError reproduces the host-f pairing
 // incident: the portal redeems the one-time code, then 500s on a host-
 // name conflict; the retry hits "code already used" (401). Before the
 // firstErr plumbing, the surfaced error was ONLY the 401 — the root

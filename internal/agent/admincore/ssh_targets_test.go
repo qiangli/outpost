@@ -42,11 +42,11 @@ func TestSSHTargetCRUDAdmincore(t *testing.T) {
 	}
 
 	// Upsert one.
-	saved, err := s.UpsertSSHTarget(conf.SSHTarget{Name: "lab", Host: "novicortex", User: "noviadmin"})
+	saved, err := s.UpsertSSHTarget(conf.SSHTarget{Name: "lab", Host: "host-b", User: "noviadmin"})
 	if err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
-	if saved.Name != "lab" || saved.Host != "novicortex" {
+	if saved.Name != "lab" || saved.Host != "host-b" {
 		t.Errorf("Upsert round-trip mismatch: %+v", saved)
 	}
 

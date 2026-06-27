@@ -223,4 +223,4 @@ See the project plan at
 for the cloudbox-side checklist (k3s systemd unit, two reverse-proxy
 routes, the token-issuing endpoint, the RBAC controller, the UserFleet
 CRD, the ValidatingAdmissionPolicy). None of that exists in
-`/Users/qiangli/projects/poc/cloudbox` yet — that's the next phase.
+`/Users/you/projects/poc/cloudbox` yet — that's the next phase.
