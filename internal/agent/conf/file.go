@@ -254,6 +254,15 @@ type FileConfig struct {
 	// restart. See docs/mesh-app-platform.md.
 	MeshServices []MeshService `json:"mesh_services,omitempty"`
 
+	// LoomEnabled opts this outpost into running the loom git forge (Gitea) as a
+	// managed external binary (coreutils/external/loom via pkg/binmgr — not
+	// compiled in) on a loopback port, auto-exposed over the mesh as the `git`
+	// service. The wrap-harness "tool lifecycle" builtin. Default OFF.
+	LoomEnabled *bool `json:"loom_enabled,omitempty"`
+
+	// LoomPort is loom's loopback HTTP port (default 3000).
+	LoomPort int `json:"loom_port,omitempty"`
+
 	// Shard configures the Ollama sharding sub-feature: serve a model bigger
 	// than any single node by splitting it across mesh peers via llama.cpp
 	// RPC carried over the mesh forwarder. Under Ollama; default off.
@@ -1265,6 +1274,18 @@ func (fc *FileConfig) PeerPlaneOn() bool {
 // peer node carrying authenticated, NAT-traversing peer↔peer streams). Opt-in
 // (default OFF) — gated on MeshEnabled=true AND a paired access token (cloudbox
 // is the rendezvous, so an unpaired host has no signaler to find peers through).
+func (fc *FileConfig) LoomOn() bool {
+	return fc != nil && fc.LoomEnabled != nil && *fc.LoomEnabled
+}
+
+// LoomPortOrDefault returns the configured loom port, or 3000.
+func (fc *FileConfig) LoomPortOrDefault() int {
+	if fc != nil && fc.LoomPort > 0 {
+		return fc.LoomPort
+	}
+	return 3000
+}
+
 func (fc *FileConfig) MeshOn() bool {
 	return fc != nil && fc.MeshEnabled != nil && *fc.MeshEnabled
 }

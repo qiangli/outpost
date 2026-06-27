@@ -64,6 +64,7 @@ func builtinsShowCmd() *cobra.Command {
 			row("ollama", view.Ollama.Enabled)
 			row("ollama_pool", view.OllamaPoolEnabled)
 			row("mesh", view.MeshEnabled)
+			row("loom", view.LoomEnabled)
 			row("otel", view.OtelEnabled)
 			row("otel_pool", view.OtelPoolEnabled)
 			row("ycode_share", view.YcodeShareEnabled)
@@ -92,6 +93,8 @@ func builtinsSetCmd() *cobra.Command {
 		updateMode, autoUpgradeLegacy, autoRollback                                                                                                                                    string
 		mesh                                                                                                                                                                           string
 		meshPort                                                                                                                                                                       int
+		loom                                                                                                                                                                           string
+		loomPort                                                                                                                                                                       int
 		sshForwardSockets                                                                                                                                                              []string
 		clearSSHForwardSockets                                                                                                                                                         bool
 		ycodeShareSurfaces                                                                                                                                                             map[string]string
@@ -223,6 +226,12 @@ func builtinsSetCmd() *cobra.Command {
 			if cmd.Flags().Changed("mesh-port") {
 				params.MeshPort = &meshPort
 			}
+			if params.Loom, err = parseToggle("loom", loom); err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("loom-port") {
+				params.LoomPort = &loomPort
+			}
 			if clearSSHForwardSockets {
 				params.SSHForwardSockets = []string{}
 			} else if cmd.Flags().Changed("ssh-forward-socket") {
@@ -270,6 +279,8 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&clearSSHForwardSockets, "clear-ssh-forward-sockets", false, "Reset ssh-forward-sockets to the auto-detect default set")
 	cmd.Flags().StringVar(&mesh, "mesh", "", "on|off - libp2p mesh data plane (peer-to-peer transport under shard-RPC/peer-backup; needs pairing)")
 	cmd.Flags().IntVar(&meshPort, "mesh-port", 0, "TCP+QUIC listen port for the mesh host (0 = ephemeral)")
+	cmd.Flags().StringVar(&loom, "loom", "", "on|off - run the loom git forge (Gitea, managed external binary) on loopback, auto-exposed over the mesh as 'git'")
+	cmd.Flags().IntVar(&loomPort, "loom-port", 0, "loom's loopback HTTP port (0 = default 3000)")
 	return cmd
 }
 

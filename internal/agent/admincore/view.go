@@ -195,6 +195,8 @@ type SafeView struct {
 	OllamaPoolEnabled       bool             `json:"ollama_pool_enabled"`
 	MeshEnabled             bool             `json:"mesh_enabled"`
 	MeshPort                int              `json:"mesh_port,omitempty"`
+	LoomEnabled             bool             `json:"loom_enabled"`
+	LoomPort                int              `json:"loom_port,omitempty"`
 	OtelEnabled             bool             `json:"otel_enabled"`
 	OtelPoolEnabled         bool             `json:"otel_pool_enabled"`
 	Ycode                   YcodeView        `json:"ycode"`
@@ -288,6 +290,8 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		Ollama:                 toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
 		OllamaPoolEnabled:      fc.OllamaPoolOn(),
 		MeshEnabled:            fc.MeshOn(),
+		LoomEnabled:            fc.LoomOn(),
+		LoomPort:               fc.LoomPort,
 		MeshPort:               fc.MeshPort,
 		OtelEnabled:            fc.OtelOn(),
 		OtelPoolEnabled:        fc.OtelPoolOn(),

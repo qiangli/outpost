@@ -38,6 +38,8 @@ type builtinsIn struct {
 	AutoRollback           *bool           `json:"auto_rollback,omitempty" jsonschema:"Arm the auto-rollback watchdog's destructive revert: when a self-upgrade's new binary fails to confirm healthy, the supervisor reverts to the previous binary. Default off (observe-only — logs 'would auto-rollback')."`
 	Mesh                   *bool           `json:"mesh,omitempty" jsonschema:"Toggle the libp2p mesh data plane (the peer node carrying authenticated, NAT-traversing peer↔peer streams — transport under shard-RPC, peer-backup, the resource fabric). Requires a paired access token."`
 	MeshPort               *int            `json:"mesh_port,omitempty" jsonschema:"TCP+QUIC listen port for the mesh host (0 = ephemeral; a stable port helps NAT/hole-punch)"`
+	Loom                   *bool           `json:"loom,omitempty" jsonschema:"Toggle running the loom git forge (Gitea) as a managed external binary on a loopback port, auto-exposed over the mesh as the 'git' service. Downloaded/verified/cached by binmgr — not compiled in."`
+	LoomPort               *int            `json:"loom_port,omitempty" jsonschema:"loom's loopback HTTP port (0 = default 3000)"`
 }
 
 type setBuiltinsOut struct {
@@ -77,6 +79,8 @@ func (s *Server) registerBuiltinsTools() {
 			AutoRollback:           in.AutoRollback,
 			Mesh:                   in.Mesh,
 			MeshPort:               in.MeshPort,
+			Loom:                   in.Loom,
+			LoomPort:               in.LoomPort,
 		})
 		if err != nil {
 			return apiErrResult[setBuiltinsOut](err)

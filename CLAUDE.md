@@ -444,9 +444,21 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   (docs/mesh-app-platform.md): expose any tool you run — e.g. a git server
   (`outpost mesh service add git 127.0.0.1:3000`) or an OCI registry
   (`… add registry 127.0.0.1:5000`) — over the mesh persistently; a peer reaches
-  it with `outpost mesh listen <peer-id> git`. (Full tool *lifecycle* — the
-  daemon running Gitea/Distribution itself — is a per-tool follow-on; the harness
-  exposes whatever is already on a loopback port.)
+  it with `outpost mesh listen <peer-id> git`.
+- **Loom builtin — the git forge (wrap-harness *tool lifecycle*).** `LoomEnabled`
+  (`LoomOn()`) + `LoomPort` (default 3000): when on, the daemon runs **Gitea as a
+  managed external binary** — downloaded/sha256-verified/cached by
+  `coreutils/pkg/binmgr`, launched via `coreutils/external/loom.Start` on a
+  loopback port, and **auto-exposed over the mesh as `git`** (boot block in
+  `main.go`, next to the admin errgroup; calls `meshHost.Forwarder().Expose`).
+  **Gitea is NOT compiled into outpost** — it's a downloaded external on its own
+  release cadence (the lean-core model, docs/external-binary-builtins.md). Loom is
+  also the bashy "OS of binaries" entry (`bashy loom serve`) using the same
+  coreutils code in-process. Four-surface like the other builtins (`SetBuiltins`
+  Loom/LoomPort → restart, `outpost_set_builtins` MCP, `builtins set
+  --loom[-port]` CLI, `loom_enabled` SafeView row). Non-fatal: a fetch/launch
+  failure logs + degrades. This is the first wrapped tool; Zot/SeaweedFS/Kopia
+  follow the same pattern.
 - **Service registry — `mesh dial <service>` (zero-config consume).** The
   rendezvous advertises the forwarder's exposed service names to cloudbox
   (`announce` carries an optional `services` list — nil from the peer-plane RTT

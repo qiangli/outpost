@@ -66,6 +66,11 @@ type BuiltinsParams struct {
 	// TCP+QUIC listen port (0 = ephemeral). nil = leave unchanged.
 	Mesh     *bool `json:"mesh,omitempty"`
 	MeshPort *int  `json:"mesh_port,omitempty"`
+	// Loom toggles running the loom git forge (Gitea) as a managed external
+	// binary on a loopback port, auto-exposed over the mesh as `git`. LoomPort
+	// sets its HTTP port (0 = default 3000). nil = leave unchanged.
+	Loom     *bool `json:"loom,omitempty"`
+	LoomPort *int  `json:"loom_port,omitempty"`
 }
 
 // BuiltinsResult reports what happened. RestartPending is true when
@@ -141,6 +146,12 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	if p.MeshPort != nil {
 		fc.MeshPort = *p.MeshPort
 	}
+	if p.Loom != nil {
+		fc.LoomEnabled = p.Loom
+	}
+	if p.LoomPort != nil {
+		fc.LoomPort = *p.LoomPort
+	}
 	if p.Otel != nil {
 		fc.OtelEnabled = *p.Otel
 	}
@@ -191,7 +202,7 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil && p.Mesh == nil && p.MeshPort == nil
+	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil && p.Mesh == nil && p.MeshPort == nil && p.Loom == nil && p.LoomPort == nil
 	if p.UpdateMode != nil {
 		if !conf.ValidUpdateMode(*p.UpdateMode) {
 			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")

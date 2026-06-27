@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -26,6 +27,8 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sync/errgroup"
+
+	loom "github.com/qiangli/coreutils/external/loom"
 
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/admincore"
@@ -866,6 +869,36 @@ func startCmd() *cobra.Command {
 				slog.Info("outpost: admin ui listening", "url", adminSrv.URL())
 				return adminSrv.Serve(gctx)
 			})
+
+			// Loom git forge (wrap-harness tool lifecycle): run Gitea as a
+			// managed external binary on a loopback port + auto-expose it over
+			// the mesh as "git". The binary is downloaded/verified/cached by
+			// binmgr (coreutils/external/loom) — NOT compiled into outpost.
+			// Non-fatal: a fetch/launch failure logs + degrades.
+			if fc.LoomOn() {
+				loomPort := fc.LoomPortOrDefault()
+				loomData := "loom"
+				if cd, _ := conf.ResolveCacheDir(); cd != "" {
+					loomData = filepath.Join(cd, "loom")
+				}
+				g.Go(func() error {
+					inst, lerr := loom.Start(gctx, loom.Options{
+						Addr: "127.0.0.1", Port: loomPort, DataDir: loomData,
+						Stdout: io.Discard, Stderr: io.Discard,
+					})
+					if lerr != nil {
+						slog.Warn("loom git forge: not started", "err", lerr)
+						return nil
+					}
+					slog.Info("loom git forge serving", "url", inst.URL, "gitea", inst.Version)
+					if meshHost != nil {
+						meshHost.Forwarder().Expose("git", inst.Addr)
+						slog.Info("loom: exposed over the mesh as 'git'", "addr", inst.Addr)
+					}
+					<-gctx.Done()
+					return inst.Stop()
+				})
+			}
 
 			// Files builtin — embedded File Browser (GUI sibling of /shell +
 			// /ssh). In-process handler on a random loopback port, registered
