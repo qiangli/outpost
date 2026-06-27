@@ -290,6 +290,27 @@ type FileConfig struct {
 	// KopiaPort is Kopia's loopback server port (default 51515).
 	KopiaPort int `json:"kopia_port,omitempty"`
 
+	// ActrunnerEnabled opts this outpost into running Gitea act_runner (the CI
+	// executor) as a managed external binary (coreutils/external/actrunner via
+	// pkg/binmgr — not compiled in). Unlike loom/zot it's a CONSUMER, not a mesh
+	// service: it registers against a Gitea instance and dials OUT to execute
+	// .gitea/workflows/*.yml. Default OFF. See docs/local-p2p-cicd.md.
+	ActrunnerEnabled *bool `json:"actrunner_enabled,omitempty"`
+
+	// ActrunnerInstance is the Gitea base URL the runner registers against. Empty
+	// uses the local loom forge (http://127.0.0.1:<loom_port>) when loom is on —
+	// the hub-node case. For a build-only node, set this to a mesh-reachable git
+	// addr (e.g. from `outpost mesh dial git`).
+	ActrunnerInstance string `json:"actrunner_instance,omitempty"`
+
+	// ActrunnerToken is the runner registration token (minted in Gitea). Required
+	// to register on first boot; ignored once the runner's .runner file exists.
+	ActrunnerToken string `json:"actrunner_token,omitempty"`
+
+	// ActrunnerLabels are the executor labels (default "host:host" — jobs run on
+	// the host shell, no container runtime needed for the runner itself).
+	ActrunnerLabels string `json:"actrunner_labels,omitempty"`
+
 	// Shard configures the Ollama sharding sub-feature: serve a model bigger
 	// than any single node by splitting it across mesh peers via llama.cpp
 	// RPC carried over the mesh forwarder. Under Ollama; default off.
@@ -1389,6 +1410,36 @@ func (fc *FileConfig) KopiaPortOrDefault() int {
 		return fc.KopiaPort
 	}
 	return 51515
+}
+
+// ActrunnerOn reports whether the act_runner CI-executor builtin is enabled.
+func (fc *FileConfig) ActrunnerOn() bool {
+	return fc != nil && fc.ActrunnerEnabled != nil && *fc.ActrunnerEnabled
+}
+
+// ActrunnerLabelsOrDefault returns the configured runner labels, or "host:host".
+func (fc *FileConfig) ActrunnerLabelsOrDefault() string {
+	if fc != nil && fc.ActrunnerLabels != "" {
+		return fc.ActrunnerLabels
+	}
+	return "host:host"
+}
+
+// ActrunnerInstanceResolved returns the Gitea base URL the runner registers
+// against: an explicit ActrunnerInstance wins; otherwise the local loom forge
+// (http://127.0.0.1:<loom_port>) when loom is on; else "" (caller must skip /
+// surface a clear error — a build-only node needs an explicit instance).
+func (fc *FileConfig) ActrunnerInstanceResolved() string {
+	if fc == nil {
+		return ""
+	}
+	if fc.ActrunnerInstance != "" {
+		return fc.ActrunnerInstance
+	}
+	if fc.LoomOn() {
+		return fmt.Sprintf("http://127.0.0.1:%d", fc.LoomPortOrDefault())
+	}
+	return ""
 }
 
 func (fc *FileConfig) MeshOn() bool {

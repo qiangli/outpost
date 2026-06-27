@@ -28,6 +28,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sync/errgroup"
 
+	actrunner "github.com/qiangli/coreutils/external/actrunner"
 	kopia "github.com/qiangli/coreutils/external/kopia"
 	loom "github.com/qiangli/coreutils/external/loom"
 	seaweedfs "github.com/qiangli/coreutils/external/seaweedfs"
@@ -987,6 +988,45 @@ func startCmd() *cobra.Command {
 					}
 					<-gctx.Done()
 					return inst.Stop()
+				})
+			}
+
+			// Gitea act_runner (CI executor — wrap-harness tool lifecycle, but a
+			// CONSUMER not a mesh service): registers against a Gitea instance and
+			// dials OUT to run .gitea/workflows/*.yml, so it's NAT/mesh-friendly.
+			// act_runner is NOT compiled into outpost (binmgr-managed external).
+			// Non-fatal on error. See docs/local-p2p-cicd.md.
+			if fc.ActrunnerOn() {
+				arData := "act_runner"
+				if cd, _ := conf.ResolveCacheDir(); cd != "" {
+					arData = filepath.Join(cd, "act_runner")
+				}
+				instance := fc.ActrunnerInstanceResolved()
+				labels := fc.ActrunnerLabelsOrDefault()
+				token := fc.ActrunnerToken
+				g.Go(func() error {
+					if instance == "" {
+						slog.Warn("act_runner: no instance — set actrunner_instance or enable loom; skipping")
+						return nil
+					}
+					if !actrunner.Registered(arData) {
+						if token == "" {
+							slog.Warn("act_runner: not registered and no actrunner_token set; skipping")
+							return nil
+						}
+						if rerr := actrunner.Register(gctx, actrunner.RegisterOptions{
+							DataDir: arData, Instance: instance, Token: token, Labels: labels,
+						}); rerr != nil {
+							slog.Warn("act_runner: registration failed", "err", rerr)
+							return nil
+						}
+						slog.Info("act_runner: registered", "instance", instance, "labels", labels)
+					}
+					slog.Info("act_runner: starting CI daemon", "instance", instance)
+					if derr := actrunner.Daemon(gctx, "", arData); derr != nil && gctx.Err() == nil {
+						slog.Warn("act_runner: daemon exited", "err", derr)
+					}
+					return nil
 				})
 			}
 
