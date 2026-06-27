@@ -247,6 +247,12 @@ type FileConfig struct {
 	// NAT/hole-punch and the loopback forwarder.
 	MeshPort int `json:"mesh_port,omitempty"`
 
+	// Shard configures the Ollama sharding sub-feature: serve a model bigger
+	// than any single node by splitting it across mesh peers via llama.cpp
+	// RPC carried over the mesh forwarder. Under Ollama; default off.
+	// See docs/ollama-sharding-builtin-plan.md.
+	Shard *ShardConfig `json:"shard,omitempty"`
+
 	// ClusterLLMEndpoint is the base URL of an intra-home
 	// distributed-inference backend (GPUStack first; any runtime that
 	// publishes the same OpenAI /v1-openai surface later) that this home
@@ -1254,6 +1260,23 @@ func (fc *FileConfig) PeerPlaneOn() bool {
 // is the rendezvous, so an unpaired host has no signaler to find peers through).
 func (fc *FileConfig) MeshOn() bool {
 	return fc != nil && fc.MeshEnabled != nil && *fc.MeshEnabled
+}
+
+// ShardConfig is the Ollama sharding sub-feature config (under Ollama).
+type ShardConfig struct {
+	// Enabled turns sharding on (requires Ollama + the mesh data plane).
+	Enabled bool `json:"enabled,omitempty"`
+	// Peers is the selected worker hostnames; empty or "auto" = every
+	// reachable same-vicinity mesh peer.
+	Peers []string `json:"peers,omitempty"`
+	// Role is "auto" (default; most-VRAM host leads), "leader", or "worker".
+	Role string `json:"role,omitempty"`
+}
+
+// ShardOn reports whether Ollama sharding is enabled. Gated on the mesh data
+// plane (the transport) being on too — sharding rides the mesh forwarder.
+func (fc *FileConfig) ShardOn() bool {
+	return fc != nil && fc.Shard != nil && fc.Shard.Enabled && fc.MeshOn()
 }
 
 // OtelOn reports whether the built-in observability proxies are enabled.
