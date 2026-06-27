@@ -263,6 +263,15 @@ type FileConfig struct {
 	// LoomPort is loom's loopback HTTP port (default 3000).
 	LoomPort int `json:"loom_port,omitempty"`
 
+	// ZotEnabled opts this outpost into running the Zot OCI registry as a managed
+	// external binary (coreutils/external/zot via pkg/binmgr — not compiled in)
+	// on a loopback port, auto-exposed over the mesh as the `registry` service.
+	// Serves container images + Ollama models (OCI). Default OFF.
+	ZotEnabled *bool `json:"zot_enabled,omitempty"`
+
+	// ZotPort is zot's loopback HTTP port (default 5000).
+	ZotPort int `json:"zot_port,omitempty"`
+
 	// Shard configures the Ollama sharding sub-feature: serve a model bigger
 	// than any single node by splitting it across mesh peers via llama.cpp
 	// RPC carried over the mesh forwarder. Under Ollama; default off.
@@ -1284,6 +1293,18 @@ func (fc *FileConfig) LoomPortOrDefault() int {
 		return fc.LoomPort
 	}
 	return 3000
+}
+
+func (fc *FileConfig) ZotOn() bool {
+	return fc != nil && fc.ZotEnabled != nil && *fc.ZotEnabled
+}
+
+// ZotPortOrDefault returns the configured zot port, or 5000.
+func (fc *FileConfig) ZotPortOrDefault() int {
+	if fc != nil && fc.ZotPort > 0 {
+		return fc.ZotPort
+	}
+	return 5000
 }
 
 func (fc *FileConfig) MeshOn() bool {

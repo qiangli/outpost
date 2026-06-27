@@ -29,6 +29,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	loom "github.com/qiangli/coreutils/external/loom"
+	zot "github.com/qiangli/coreutils/external/zot"
 
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/admincore"
@@ -894,6 +895,35 @@ func startCmd() *cobra.Command {
 					if meshHost != nil {
 						meshHost.Forwarder().Expose("git", inst.Addr)
 						slog.Info("loom: exposed over the mesh as 'git'", "addr", inst.Addr)
+					}
+					<-gctx.Done()
+					return inst.Stop()
+				})
+			}
+
+			// Zot OCI registry (wrap-harness tool lifecycle): run Zot as a
+			// managed external binary on a loopback port + auto-expose it over the
+			// mesh as "registry" (serves container images + Ollama models). Zot is
+			// NOT compiled into outpost. Non-fatal: a fetch/launch failure logs.
+			if fc.ZotOn() {
+				zotPort := fc.ZotPortOrDefault()
+				zotData := "zot"
+				if cd, _ := conf.ResolveCacheDir(); cd != "" {
+					zotData = filepath.Join(cd, "zot")
+				}
+				g.Go(func() error {
+					inst, zerr := zot.Start(gctx, zot.Options{
+						Addr: "127.0.0.1", Port: zotPort, DataDir: zotData,
+						Stdout: io.Discard, Stderr: io.Discard,
+					})
+					if zerr != nil {
+						slog.Warn("zot registry: not started", "err", zerr)
+						return nil
+					}
+					slog.Info("zot registry serving", "url", inst.URL, "zot", inst.Version)
+					if meshHost != nil {
+						meshHost.Forwarder().Expose("registry", inst.Addr)
+						slog.Info("zot: exposed over the mesh as 'registry'", "addr", inst.Addr)
 					}
 					<-gctx.Done()
 					return inst.Stop()

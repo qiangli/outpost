@@ -40,6 +40,8 @@ type builtinsIn struct {
 	MeshPort               *int            `json:"mesh_port,omitempty" jsonschema:"TCP+QUIC listen port for the mesh host (0 = ephemeral; a stable port helps NAT/hole-punch)"`
 	Loom                   *bool           `json:"loom,omitempty" jsonschema:"Toggle running the loom git forge (Gitea) as a managed external binary on a loopback port, auto-exposed over the mesh as the 'git' service. Downloaded/verified/cached by binmgr — not compiled in."`
 	LoomPort               *int            `json:"loom_port,omitempty" jsonschema:"loom's loopback HTTP port (0 = default 3000)"`
+	Zot                    *bool           `json:"zot,omitempty" jsonschema:"Toggle running the Zot OCI registry as a managed external binary on a loopback port, auto-exposed over the mesh as the 'registry' service (serves container images + Ollama models). Downloaded/verified/cached by binmgr — not compiled in."`
+	ZotPort                *int            `json:"zot_port,omitempty" jsonschema:"zot's loopback HTTP port (0 = default 5000)"`
 }
 
 type setBuiltinsOut struct {
@@ -81,6 +83,8 @@ func (s *Server) registerBuiltinsTools() {
 			MeshPort:               in.MeshPort,
 			Loom:                   in.Loom,
 			LoomPort:               in.LoomPort,
+			Zot:                    in.Zot,
+			ZotPort:                in.ZotPort,
 		})
 		if err != nil {
 			return apiErrResult[setBuiltinsOut](err)

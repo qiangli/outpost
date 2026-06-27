@@ -65,6 +65,7 @@ func builtinsShowCmd() *cobra.Command {
 			row("ollama_pool", view.OllamaPoolEnabled)
 			row("mesh", view.MeshEnabled)
 			row("loom", view.LoomEnabled)
+			row("zot", view.ZotEnabled)
 			row("otel", view.OtelEnabled)
 			row("otel_pool", view.OtelPoolEnabled)
 			row("ycode_share", view.YcodeShareEnabled)
@@ -95,6 +96,8 @@ func builtinsSetCmd() *cobra.Command {
 		meshPort                                                                                                                                                                       int
 		loom                                                                                                                                                                           string
 		loomPort                                                                                                                                                                       int
+		zot                                                                                                                                                                            string
+		zotPort                                                                                                                                                                        int
 		sshForwardSockets                                                                                                                                                              []string
 		clearSSHForwardSockets                                                                                                                                                         bool
 		ycodeShareSurfaces                                                                                                                                                             map[string]string
@@ -232,6 +235,12 @@ func builtinsSetCmd() *cobra.Command {
 			if cmd.Flags().Changed("loom-port") {
 				params.LoomPort = &loomPort
 			}
+			if params.Zot, err = parseToggle("zot", zot); err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("zot-port") {
+				params.ZotPort = &zotPort
+			}
 			if clearSSHForwardSockets {
 				params.SSHForwardSockets = []string{}
 			} else if cmd.Flags().Changed("ssh-forward-socket") {
@@ -281,6 +290,8 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().IntVar(&meshPort, "mesh-port", 0, "TCP+QUIC listen port for the mesh host (0 = ephemeral)")
 	cmd.Flags().StringVar(&loom, "loom", "", "on|off - run the loom git forge (Gitea, managed external binary) on loopback, auto-exposed over the mesh as 'git'")
 	cmd.Flags().IntVar(&loomPort, "loom-port", 0, "loom's loopback HTTP port (0 = default 3000)")
+	cmd.Flags().StringVar(&zot, "zot", "", "on|off - run the Zot OCI registry (managed external binary) on loopback, auto-exposed over the mesh as 'registry'")
+	cmd.Flags().IntVar(&zotPort, "zot-port", 0, "zot's loopback HTTP port (0 = default 5000)")
 	return cmd
 }
 

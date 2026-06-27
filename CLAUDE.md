@@ -457,8 +457,15 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   coreutils code in-process. Four-surface like the other builtins (`SetBuiltins`
   Loom/LoomPort → restart, `outpost_set_builtins` MCP, `builtins set
   --loom[-port]` CLI, `loom_enabled` SafeView row). Non-fatal: a fetch/launch
-  failure logs + degrades. This is the first wrapped tool; Zot/SeaweedFS/Kopia
-  follow the same pattern.
+  failure logs + degrades.
+- **Zot builtin — the OCI registry (wrap-harness *tool lifecycle*).** Identical
+  pattern to loom: `ZotEnabled`/`ZotPort` (default 5000), four-surface; the daemon
+  runs **Zot** (project-zot/zot, Apache-2.0) as a managed external binary via
+  `coreutils/external/zot.Start` on a loopback port and **auto-exposes it over the
+  mesh as `registry`** (serves container images + Ollama models, OCI). Also
+  `bashy zot serve`. The first two wrapped tools (loom + zot) prove the pattern;
+  SeaweedFS/Kopia follow it — a `binmgr.GitHubSpec` + an `external/<tool>`
+  launcher + an outpost builtin toggle, each on its own release cadence.
 - **Service registry — `mesh dial <service>` (zero-config consume).** The
   rendezvous advertises the forwarder's exposed service names to cloudbox
   (`announce` carries an optional `services` list — nil from the peer-plane RTT
