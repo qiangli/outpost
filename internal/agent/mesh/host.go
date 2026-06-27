@@ -35,6 +35,7 @@ type Host struct {
 	cfg Config
 	h   host.Host
 	log *slog.Logger
+	fwd *Forwarder
 }
 
 // New builds the libp2p host with the persistent (or supplied) mesh identity.
@@ -73,7 +74,9 @@ func New(cfg Config) (*Host, error) {
 	if err != nil {
 		return nil, fmt.Errorf("libp2p host: %w", err)
 	}
-	return &Host{cfg: cfg, h: h, log: log}, nil
+	m := &Host{cfg: cfg, h: h, log: log}
+	m.fwd = newForwarder(m, log) // registers the forward stream handler
+	return m, nil
 }
 
 func listenAddrs(port int) []string {
@@ -103,9 +106,14 @@ func (m *Host) Close() error { return m.h.Close() }
 // PeerID returns this host's stable libp2p peer ID (string form).
 func (m *Host) PeerID() string { return m.h.ID().String() }
 
-// LibP2PHost exposes the underlying libp2p host for the forwarder and
-// protocol handlers added by later sprint-#8 items.
+// LibP2PHost exposes the underlying libp2p host for protocol handlers added by
+// later sprint-#8 items.
 func (m *Host) LibP2PHost() host.Host { return m.h }
+
+// Forwarder is the loopback-TCP-over-mesh transport bound to this host (the
+// stream handler is registered at construction). Expose local services on the
+// worker side; Listen for a (peer, service) on the client side.
+func (m *Host) Forwarder() *Forwarder { return m.fwd }
 
 // dialableAddrs returns the host's reachable multiaddrs as strings, dropping
 // unspecified (0.0.0.0 / ::) listen addrs that no remote peer can dial. These

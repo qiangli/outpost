@@ -421,11 +421,25 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   credentials — no new scope. Constructed next to the host in `main.go`, run in
   the errgroup. cloudbox brokers the introduction; the bytes then go
   peer-to-peer (relay only on hole-punch failure).
-- **Status:** host + rendezvous wired (sprint #8, p2p-fabric P0) — paired hosts
-  now discover + dial each other; same-LAN forms a direct link immediately.
-  Next on the same sprint: a circuit-relay in cloudbox (for DCUtR across strict
-  NATs), a generic loopback-TCP forwarder over the mesh, and the shard-RPC
-  wiring (loopback `rpc-server` carried over the forwarder).
+- **Forwarder (`mesh/forward.go`)** — the generic loopback-TCP-over-mesh
+  transport everything else rides on (stream protocol `/dhnt/mesh/forward/1.0.0`,
+  owned by the host, `host.Forwarder()`). Two halves: the **exposer** (worker)
+  `Expose(name, "127.0.0.1:port")`s allowlisted local services + a stream handler
+  bridges inbound streams to them; the **dialer** (client/leader)
+  `Listen(local, peerID, service)` opens a local TCP listener that bridges every
+  accepted connection over a fresh mesh stream to that `(peer, service)`. **Only
+  allowlisted services are reachable** — a connected peer can never dial an
+  arbitrary local port (the safety boundary). This is the transport under
+  shard-RPC (a loopback `rpc-server` Expose()d on the worker, the leader's
+  `llama-server` pointed at a local `Listen()` address) and peer-backup. Tested
+  end-to-end (echo round-trips TCP→listener→stream→handler→echo; unknown service
+  refused).
+- **Status:** host + rendezvous + forwarder wired (sprint #8, p2p-fabric P0) —
+  paired hosts discover + dial each other (same-LAN direct) and can carry a
+  loopback TCP service peer-to-peer over the mesh. Next on the same sprint: a
+  circuit-relay in cloudbox (DCUtR across strict NATs), and the shard-RPC wiring
+  (the `shard` builtin Expose()s rpc-server + the leader Listen()s — `docs/
+  ollama-sharding-builtin-plan.md` + `docs/libp2p-mesh-transport.md`).
 
 ### Cloudbox-pushed self-upgrade (`internal/agent/upgrade/`)
 
