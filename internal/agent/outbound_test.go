@@ -137,7 +137,7 @@ func TestOutboundConnectAndProxy(t *testing.T) {
 
 	m := NewOutboundManager(cloud.URL, "test-access-token", nil)
 	m.Register([]conf.OutboundConfig{
-		{Path: "kg", Name: "ollama", Host: "host-b", User: "noviadmin"},
+		{Path: "kg", Name: "ollama", Host: "host-b", User: "alice"},
 	})
 
 	// Proxy before Connect must 503 with the "click Connect" hint.
@@ -301,7 +301,7 @@ func TestOutboundTCPBridge(t *testing.T) {
 	m := NewOutboundManager(cloud.URL, "test-access-token", nil)
 	t.Cleanup(m.Stop)
 	m.Register([]conf.OutboundConfig{
-		{Path: "pg", Name: "postgres", Host: "host-b", User: "noviadmin", Scheme: "tcp", LocalPort: localPort},
+		{Path: "pg", Name: "postgres", Host: "host-b", User: "alice", Scheme: "tcp", LocalPort: localPort},
 	})
 
 	if err := m.Connect("pg", "pw"); err != nil {
@@ -539,7 +539,7 @@ func TestOutboundSSHBridge(t *testing.T) {
 	// scheme="ssh" with Name intentionally empty — the manager must not
 	// build /app/<name>/ paths for ssh outbounds.
 	m.Register([]conf.OutboundConfig{
-		{Path: "host-b-ssh", Host: "host-b", User: "noviadmin", Scheme: "ssh", LocalPort: localPort},
+		{Path: "host-b-ssh", Host: "host-b", User: "alice", Scheme: "ssh", LocalPort: localPort},
 	})
 
 	if err := m.Connect("host-b-ssh", "pw"); err != nil {

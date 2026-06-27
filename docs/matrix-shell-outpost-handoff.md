@@ -39,7 +39,7 @@ Listed newest first; all on `main`.
   `PasswordCallback` still runs, so the operator gets a password
   prompt for the destination's OS user (matching vanilla openssh
   ProxyJump semantics). Verified live:
-  `ssh -J host-b noviadmin@host-c` works both directions.
+  `ssh -J host-b alice@host-c` works both directions.
 - **`343a4f4` `cli: add outpost run --label X -- cmd to replace launchctl
   submit`** — T2.f workaround. `launchctl submit` is silently no-op'd
   inside the matrix-shell because the SSH session inherits a launchd

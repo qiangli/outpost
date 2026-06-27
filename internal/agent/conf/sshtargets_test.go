@@ -22,10 +22,10 @@ func TestSSHTargetCRUD(t *testing.T) {
 	}
 
 	// Save two targets.
-	if err := SaveSSHTarget(SSHTarget{Name: "lab", Host: "host-b", User: "noviadmin"}); err != nil {
+	if err := SaveSSHTarget(SSHTarget{Name: "lab", Host: "host-b", User: "alice"}); err != nil {
 		t.Fatalf("save lab: %v", err)
 	}
-	if err := SaveSSHTarget(SSHTarget{Name: "design", Host: "host-c", User: "noviadmin", Description: "design VM"}); err != nil {
+	if err := SaveSSHTarget(SSHTarget{Name: "design", Host: "host-c", User: "alice", Description: "design VM"}); err != nil {
 		t.Fatalf("save design: %v", err)
 	}
 
@@ -34,7 +34,7 @@ func TestSSHTargetCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load lab: %v", err)
 	}
-	if lab.Host != "host-b" || lab.User != "noviadmin" {
+	if lab.Host != "host-b" || lab.User != "alice" {
 		t.Errorf("lab round-trip mismatch: %+v", lab)
 	}
 

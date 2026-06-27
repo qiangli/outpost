@@ -263,7 +263,7 @@ func TestDialAndExec(t *testing.T) {
 	client, err := Dial(ctx, Config{
 		Transport:        clientConn,
 		HostAlias:        "outpost-mytest",
-		User:             "noviadmin",
+		User:             "alice",
 		HostKeyCallback:  cb,
 		HandshakeTimeout: 2 * time.Second,
 	})

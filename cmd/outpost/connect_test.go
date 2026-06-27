@@ -437,7 +437,7 @@ func TestPostElevate_TTLInPayload(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseTTL(%q): %v", tc.ttlInput, err)
 			}
-			cookie, err := postElevate(context.Background(), fc, "bearer", "host1", "noviadmin", "pw", ttl)
+			cookie, err := postElevate(context.Background(), fc, "bearer", "host1", "alice", "pw", ttl)
 			if err != nil {
 				t.Fatalf("postElevate: %v", err)
 			}
@@ -521,7 +521,7 @@ func TestKeepAlive_SelfHealReElevates(t *testing.T) {
 				http.Error(w, "bad json", http.StatusBadRequest)
 				return
 			}
-			if payload["user"] != "noviadmin" || payload["password"] != "secret" {
+			if payload["user"] != "alice" || payload["password"] != "secret" {
 				http.Error(w, "wrong creds", http.StatusUnauthorized)
 				return
 			}
@@ -556,7 +556,7 @@ func TestKeepAlive_SelfHealReElevates(t *testing.T) {
 	go func() {
 		// Non-empty password+user enables self-heal.
 		done <- runKeepAlive(ctx, fc, "test-bearer", host, "stale-cookie",
-			"secret", "noviadmin", 0)
+			"secret", "alice", 0)
 	}()
 
 	// Wait until re-elevate has happened AND at least one ping after
@@ -632,7 +632,7 @@ func TestKeepAlive_SelfHealExitsOnWrongPassword(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	err := runKeepAlive(ctx, fc, "tk", host, "any", "wrong-secret", "noviadmin", 0)
+	err := runKeepAlive(ctx, fc, "tk", host, "any", "wrong-secret", "alice", 0)
 	if err == nil {
 		t.Fatal("expected non-nil error when re-elevate also returns 401")
 	}

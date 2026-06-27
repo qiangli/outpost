@@ -113,9 +113,9 @@ Verified end-to-end on host-c:
 
 ```bash
 $ ssh host-c 'echo "PATH=$PATH" ; which outpost ; ls -la $(which outpost) | head -1'
-PATH=/Users/noviadmin/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin
-/Users/noviadmin/bin/outpost
--rwxr-xr-x  1 noviadmin  staff  39429202 May 23 03:44 /Users/noviadmin/bin/outpost
+PATH=/Users/alice/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin
+/Users/alice/bin/outpost
+-rwxr-xr-x  1 alice  staff  39429202 May 23 03:44 /Users/alice/bin/outpost
 ```
 
 Unit tests in `internal/agent/shell/env_test.go` cover prepend order,

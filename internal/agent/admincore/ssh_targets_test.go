@@ -42,7 +42,7 @@ func TestSSHTargetCRUDAdmincore(t *testing.T) {
 	}
 
 	// Upsert one.
-	saved, err := s.UpsertSSHTarget(conf.SSHTarget{Name: "lab", Host: "host-b", User: "noviadmin"})
+	saved, err := s.UpsertSSHTarget(conf.SSHTarget{Name: "lab", Host: "host-b", User: "alice"})
 	if err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
@@ -55,8 +55,8 @@ func TestSSHTargetCRUDAdmincore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.User != "noviadmin" {
-		t.Errorf("Get.User=%q, want noviadmin", got.User)
+	if got.User != "alice" {
+		t.Errorf("Get.User=%q, want alice", got.User)
 	}
 
 	// Get unknown → 404 APIError.
