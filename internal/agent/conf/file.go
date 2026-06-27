@@ -234,6 +234,19 @@ type FileConfig struct {
 	// LAN/hub path cloudbox's egress-IP heuristic misses). Default OFF.
 	PeerPlaneEnabled *bool `json:"peer_plane_enabled,omitempty"`
 
+	// MeshEnabled opts this outpost into the libp2p mesh data plane: a
+	// peer node with TCP+QUIC transports, Noise/TLS security, AutoNAT, and
+	// DCUtR hole-punching. It is the robust, secure, NAT-traversing
+	// transport under shard-RPC, peer-backup, and the resource fabric —
+	// cloudbox signals, data goes peer-to-peer direct. Default OFF.
+	// See docs/libp2p-mesh-transport.md.
+	MeshEnabled *bool `json:"mesh_enabled,omitempty"`
+
+	// MeshPort is the TCP+QUIC listen port for the mesh host. 0 (the
+	// default) picks an ephemeral port per transport; a stable port helps
+	// NAT/hole-punch and the loopback forwarder.
+	MeshPort int `json:"mesh_port,omitempty"`
+
 	// ClusterLLMEndpoint is the base URL of an intra-home
 	// distributed-inference backend (GPUStack first; any runtime that
 	// publishes the same OpenAI /v1-openai surface later) that this home
@@ -1233,6 +1246,14 @@ func (fc *FileConfig) OllamaPoolOn() bool {
 // (default OFF) — gated on PeerPlaneEnabled=true AND a paired access token.
 func (fc *FileConfig) PeerPlaneOn() bool {
 	return fc != nil && fc.PeerPlaneEnabled != nil && *fc.PeerPlaneEnabled
+}
+
+// MeshOn reports whether this outpost runs the libp2p mesh data plane (the
+// peer node carrying authenticated, NAT-traversing peer↔peer streams). Opt-in
+// (default OFF) — gated on MeshEnabled=true AND a paired access token (cloudbox
+// is the rendezvous, so an unpaired host has no signaler to find peers through).
+func (fc *FileConfig) MeshOn() bool {
+	return fc != nil && fc.MeshEnabled != nil && *fc.MeshEnabled
 }
 
 // OtelOn reports whether the built-in observability proxies are enabled.

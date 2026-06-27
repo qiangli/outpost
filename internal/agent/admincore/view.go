@@ -193,6 +193,8 @@ type SafeView struct {
 	Sandbox                 BuiltinView      `json:"sandbox"`
 	Ollama                  BuiltinView      `json:"ollama"`
 	OllamaPoolEnabled       bool             `json:"ollama_pool_enabled"`
+	MeshEnabled             bool             `json:"mesh_enabled"`
+	MeshPort                int              `json:"mesh_port,omitempty"`
 	OtelEnabled             bool             `json:"otel_enabled"`
 	OtelPoolEnabled         bool             `json:"otel_pool_enabled"`
 	Ycode                   YcodeView        `json:"ycode"`
@@ -206,6 +208,7 @@ type SafeView struct {
 	UpdateMode         string                  `json:"update_mode"`
 	LLMPool            LLMPoolStatusView       `json:"llm_pool"`
 	PeerTiers          []PeerTierView          `json:"peer_tiers,omitempty"`
+	Mesh               *MeshStatusView         `json:"mesh,omitempty"`
 	AppHealth          []AppHealthView         `json:"app_health,omitempty"`
 	ClusterLLM         ClusterLLMView          `json:"cluster_llm"`
 	Cluster            ClusterView             `json:"cluster"`
@@ -284,6 +287,8 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		Sandbox:                toBuiltinView(fc.SandboxOn(), s.detector.Podman()),
 		Ollama:                 toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
 		OllamaPoolEnabled:      fc.OllamaPoolOn(),
+		MeshEnabled:            fc.MeshOn(),
+		MeshPort:               fc.MeshPort,
 		OtelEnabled:            fc.OtelOn(),
 		OtelPoolEnabled:        fc.OtelPoolOn(),
 		Ycode:                  toYcodeView(fc.YcodeOn(), ycode.Detect()),
@@ -293,6 +298,7 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		UpdateMode:             fc.UpdateModeName(),
 		LLMPool:                s.llmPoolStatusView(fc),
 		PeerTiers:              s.PeerTiers(),
+		Mesh:                   s.MeshStatus(),
 		AppHealth:              s.AppHealth(),
 		ClusterLLM:             s.clusterLLMView(fc),
 		Cluster:                toClusterView(fc),

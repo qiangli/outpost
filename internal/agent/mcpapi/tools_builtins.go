@@ -36,6 +36,8 @@ type builtinsIn struct {
 	Cluster                *bool           `json:"cluster,omitempty" jsonschema:"Join the cloudbox virtual-podman cluster as a node"`
 	UpdateMode             *string         `json:"update_mode,omitempty" jsonschema:"Per-host policy for cloudbox-pushed self-upgrades — one of 'auto' (default; stage+swap+restart on push), 'manual' (persist envelope, operator applies), 'never' (refuse)"`
 	AutoRollback           *bool           `json:"auto_rollback,omitempty" jsonschema:"Arm the auto-rollback watchdog's destructive revert: when a self-upgrade's new binary fails to confirm healthy, the supervisor reverts to the previous binary. Default off (observe-only — logs 'would auto-rollback')."`
+	Mesh                   *bool           `json:"mesh,omitempty" jsonschema:"Toggle the libp2p mesh data plane (the peer node carrying authenticated, NAT-traversing peer↔peer streams — transport under shard-RPC, peer-backup, the resource fabric). Requires a paired access token."`
+	MeshPort               *int            `json:"mesh_port,omitempty" jsonschema:"TCP+QUIC listen port for the mesh host (0 = ephemeral; a stable port helps NAT/hole-punch)"`
 }
 
 type setBuiltinsOut struct {
@@ -73,6 +75,8 @@ func (s *Server) registerBuiltinsTools() {
 			Cluster:                in.Cluster,
 			UpdateMode:             in.UpdateMode,
 			AutoRollback:           in.AutoRollback,
+			Mesh:                   in.Mesh,
+			MeshPort:               in.MeshPort,
 		})
 		if err != nil {
 			return apiErrResult[setBuiltinsOut](err)

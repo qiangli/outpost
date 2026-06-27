@@ -75,6 +75,11 @@ type Deps struct {
 	// the service isn't wired.
 	PeerTiers func() []PeerTierView
 
+	// MeshStatus, when set, returns the libp2p mesh host's live status
+	// (peer ID, listen addrs, connected-peer count). Closure so admincore
+	// doesn't import the mesh package. Nil when the host isn't wired.
+	MeshStatus func() *MeshStatusView
+
 	// AppHealth, when set, returns the latest per-app reachability
 	// measurements (TCP/HTTP probes, no ICMP). Nil when the service
 	// isn't wired.
@@ -126,6 +131,14 @@ type PeerTierView struct {
 	At                time.Time `json:"at,omitzero"`
 }
 
+// MeshStatusView is the libp2p mesh host's live status (rendered into SafeView
+// + the status surfaces). Nil/absent when the mesh data plane is off.
+type MeshStatusView struct {
+	PeerID         string   `json:"peer_id"`
+	ListenAddrs    []string `json:"listen_addrs,omitempty"`
+	ConnectedPeers int      `json:"connected_peers"`
+}
+
 // AppHealthView is one app's reachability measurement (rendered into SafeView).
 type AppHealthView struct {
 	Name       string    `json:"name"`
@@ -155,6 +168,15 @@ func (s *Server) PeerTiers() []PeerTierView {
 		return nil
 	}
 	return s.deps.PeerTiers()
+}
+
+// MeshStatus returns the libp2p mesh host's live status, or nil when the mesh
+// data plane isn't wired.
+func (s *Server) MeshStatus() *MeshStatusView {
+	if s.deps.MeshStatus == nil {
+		return nil
+	}
+	return s.deps.MeshStatus()
 }
 
 // Server is the stateful object that the HTTP layers share. Holds the

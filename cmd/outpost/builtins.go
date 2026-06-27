@@ -63,6 +63,7 @@ func builtinsShowCmd() *cobra.Command {
 			row("sandbox", view.Sandbox.Enabled)
 			row("ollama", view.Ollama.Enabled)
 			row("ollama_pool", view.OllamaPoolEnabled)
+			row("mesh", view.MeshEnabled)
 			row("otel", view.OtelEnabled)
 			row("otel_pool", view.OtelPoolEnabled)
 			row("ycode_share", view.YcodeShareEnabled)
@@ -89,6 +90,8 @@ func builtinsSetCmd() *cobra.Command {
 		files, filesAllowWrite, filesScope                                                                                                                                             string
 		clusterMode                                                                                                                                                                    string
 		updateMode, autoUpgradeLegacy, autoRollback                                                                                                                                    string
+		mesh                                                                                                                                                                           string
+		meshPort                                                                                                                                                                       int
 		sshForwardSockets                                                                                                                                                              []string
 		clearSSHForwardSockets                                                                                                                                                         bool
 		ycodeShareSurfaces                                                                                                                                                             map[string]string
@@ -214,6 +217,12 @@ func builtinsSetCmd() *cobra.Command {
 			if params.AutoRollback, err = parseToggle("auto-rollback", autoRollback); err != nil {
 				return err
 			}
+			if params.Mesh, err = parseToggle("mesh", mesh); err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("mesh-port") {
+				params.MeshPort = &meshPort
+			}
 			if clearSSHForwardSockets {
 				params.SSHForwardSockets = []string{}
 			} else if cmd.Flags().Changed("ssh-forward-socket") {
@@ -259,6 +268,8 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&autoRollback, "auto-rollback", "", "on|off — arm the auto-rollback watchdog's destructive revert (default off / observe-only)")
 	cmd.Flags().StringSliceVar(&sshForwardSockets, "ssh-forward-socket", nil, "Allow this unix-socket path for SSH direct-streamlocal forwarding (repeatable; replaces the entire list)")
 	cmd.Flags().BoolVar(&clearSSHForwardSockets, "clear-ssh-forward-sockets", false, "Reset ssh-forward-sockets to the auto-detect default set")
+	cmd.Flags().StringVar(&mesh, "mesh", "", "on|off - libp2p mesh data plane (peer-to-peer transport under shard-RPC/peer-backup; needs pairing)")
+	cmd.Flags().IntVar(&meshPort, "mesh-port", 0, "TCP+QUIC listen port for the mesh host (0 = ephemeral)")
 	return cmd
 }
 

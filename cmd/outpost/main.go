@@ -37,6 +37,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/heartbeat"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"github.com/qiangli/outpost/internal/agent/mcpapi"
+	"github.com/qiangli/outpost/internal/agent/mesh"
 	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/otel"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
@@ -575,6 +576,36 @@ func startCmd() *cobra.Command {
 				return out
 			}
 
+			// libp2p mesh data plane (opt-in, OFF by default) — the peer
+			// node carrying authenticated, NAT-traversing peer↔peer streams
+			// (the transport under shard-RPC, peer-backup, the resource
+			// fabric). Created here so its status renders into SafeView;
+			// started in the errgroup below. Self-disables when unpaired
+			// (cloudbox is the rendezvous that finds peers).
+			var meshHost *mesh.Host
+			if fc.MeshOn() && fc.AccessToken != "" {
+				mh, merr := mesh.New(mesh.Config{
+					AgentName:  fc.AgentName,
+					ListenPort: fc.MeshPort,
+					Logger:     slog.Default(),
+				})
+				if merr != nil {
+					return fmt.Errorf("mesh host: %w", merr)
+				}
+				meshHost = mh
+			}
+			meshStatus := func() *admincore.MeshStatusView {
+				if meshHost == nil {
+					return nil
+				}
+				s := meshHost.Status()
+				return &admincore.MeshStatusView{
+					PeerID:         s.PeerID,
+					ListenAddrs:    s.ListenAddrs,
+					ConnectedPeers: s.ConnectedPeers,
+				}
+			}
+
 			// Construct the shared business-logic layer first. The same
 			// admincore.Server instance feeds adminui (human SPA) and
 			// — soon — mcpapi (agent tools), so the file-save mutex and
@@ -589,6 +620,7 @@ func startCmd() *cobra.Command {
 				AgentName:           fc.AgentName,
 				LLMPoolStatus:       llmPoolStatus,
 				PeerTiers:           peerTiers,
+				MeshStatus:          meshStatus,
 			})
 			if err != nil {
 				return fmt.Errorf("admincore: %w", err)
@@ -849,6 +881,17 @@ func startCmd() *cobra.Command {
 				g.Go(func() error {
 					if err := peerPlaneSvc.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
 						slog.Warn("peerplane: exited", "err", err)
+					}
+					return nil
+				})
+			}
+
+			// libp2p mesh host — the peer data plane (constructed above so
+			// its status feeds SafeView). Closes on ctx cancel.
+			if meshHost != nil {
+				g.Go(func() error {
+					if err := meshHost.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+						slog.Warn("mesh: exited", "err", err)
 					}
 					return nil
 				})

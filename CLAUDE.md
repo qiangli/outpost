@@ -382,6 +382,41 @@ The LLM pool above load-balances across single-box daemons — it can route a mo
 
 **Config:** `ClusterLLMEndpoint` / `ClusterLLMAPIKey` in `FileConfig` (`ClusterLLMOn()`), four-surface (admincore / MCP / CLI `--cluster-llm-endpoint,--cluster-llm-api-key` / admin UI), key redacted from `SafeView`. **Demo recipe** (intra-LAN): stand up the backend across 2–3 LAN boxes serving a 70B; point the outpost's Ollama target at the cluster head (mode 1) and set `cluster_llm_endpoint`/`cluster_llm_api_key`; `outpost status --json` shows the cluster member count + aggregate VRAM; a request for the 70B through cloudbox `/v1/chat/completions` routes to this home and streams back. A model larger than the aggregate VRAM is dropped by `clusterCanHold`. **WAN/cross-home sharding** is deliberately out for now (tensor-parallel is latency-infeasible over WAN; pipeline/swarm — the Petals model — is viable-but-bounded and would need a peer↔peer data plane the star topology lacks, e.g. via libp2p; a Phase-3+ extension).
 
+### libp2p mesh data plane (`internal/agent/mesh/`)
+
+The peer↔peer data plane the star topology lacks — a libp2p host per outpost so
+two paired machines can exchange bytes *directly* (hole-punched), not doubled
+through the ~100 ms cloudbox relay. It is the robust, secure, NAT-traversing
+**transport** under shard-RPC (a loopback `rpc-server` forwarded over the mesh —
+the durable answer to llama.cpp RPC's fragile-over-wifi raw TCP), peer-backup, and
+the broader resource fabric. cloudbox is the rendezvous/signaler; data goes
+peer-to-peer direct, relay only as fallback. Design + rationale:
+`docs/libp2p-mesh-transport.md` (umbrella).
+
+- **`mesh.New(Config)` / `Host.Run(ctx)`** — a `go-libp2p` host with TCP+QUIC
+  transports, Noise/TLS security, yamux, AutoNAT (`EnableNATService`), and **DCUtR
+  hole-punching** (`EnableHolePunching`), so it forms direct links across NATs and
+  different subnets once a rendezvous supplies peer addresses. Constructed next to
+  the peerplane block in `cmd/outpost/main.go` (gated on `fc.MeshOn() && AccessToken`),
+  run in the same errgroup, closed on ctx-cancel. `Host.Status()` (peer ID / listen
+  addrs / connected-peer count) feeds `SafeView.Mesh` via the `admincore.MeshStatus`
+  closure — same closure pattern as `PeerTiers`.
+- **Identity (`mesh/key.go`)** — a persistent ed25519 key at
+  `<ConfigDir>/mesh_ed25519` (mode 0600), mirroring `hostkey.go`: its own file so
+  re-pairing (which rewrites `agent.json`) doesn't churn the peer ID — a stable peer
+  ID is what lets cloudbox keep routing rendezvous to this host.
+- **Config:** `MeshEnabled` (`MeshOn()`) + `MeshPort` in `FileConfig` (default OFF;
+  needs pairing — cloudbox is the rendezvous). Four-surface: `admincore.SetBuiltins`
+  (`Mesh`/`MeshPort` params, in the `updateModeOnly` restart guard), the
+  `outpost_set_builtins` MCP args, CLI `builtins set --mesh=on/off --mesh-port`, and
+  the `mesh_enabled` SafeView row. Built at boot → toggling restarts.
+- **Status:** the **host foundation** (sprint #8, p2p-fabric P0). Next items on the
+  same sprint: cloudbox rendezvous/signaling (register the peer ID at
+  `register/exchange`, bootstrap to cloudbox's relay), a generic loopback-TCP
+  forwarder over the mesh, and the shard-RPC wiring. Not yet wired: no peers are
+  dialed until the rendezvous lands — the host comes up, logs its ID/addrs, and
+  waits.
+
 ### Cloudbox-pushed self-upgrade (`internal/agent/upgrade/`)
 
 The daemon-side half of the "press button, fleet rolls" flow. Cloudbox initiates by POSTing an envelope to `<host>/admin/upgrade` through the matrix tunnel; the outpost downloads + atomically swaps its own binary + re-execs. The outpost decides what to do — cloudbox is a notifier, not a remote-control RPC.
