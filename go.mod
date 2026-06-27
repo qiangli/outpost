@@ -127,6 +127,7 @@ require (
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/quic-go/webtransport-go v0.10.0 // indirect
 	github.com/redis/go-redis/v9 v9.20.1 // indirect
+	github.com/rjeczalik/notify v0.9.3 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.5 // indirect
 	github.com/sorairolake/lzip-go v0.3.8 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect

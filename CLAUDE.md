@@ -482,6 +482,21 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   `backup`) — each a `binmgr.GitHubSpec` + `external/<tool>` launcher + `bashy
   <tool>` + an outpost builtin toggle, none compiled into outpost, each on its own
   release cadence.**
+- **Mobility-aware directory mirror (`FileConfig.Mirror`, `internal/agent/mirror`).**
+  A continuous one-way live replica — distinct from `backup` (age-encrypted
+  scheduled snapshots → cloudbox). Each `MirrorJob{Source, Service, LANOnly}`
+  mirrors a local dir to the peer exposing mesh `Service` (an `rclone serve
+  webdav` the replica runs), but **only while that pair is reachable** —
+  mobility/dynamic-mesh is the premise. The `Supervisor` polls a `Linker`
+  (`meshLinker` in `cmd/outpost`): **reachable → resume** (open a forward, run
+  `coreutils/pkg/mirror` whose initial full sync is the **catch-up**), **remote/
+  away → pause**. `LANOnly` gates "local" on a **direct (non-relayed) mesh
+  connection** (`mesh.Host.HasDirectConn` — relay == remote), so a roaming node
+  syncs at home, not over WAN. Engine = all-permissive (`rjeczalik/notify` MIT
+  recursive watch + rclone MIT sync, no Syncthing code). Four-surface:
+  `admincore.Mirror{Upsert,Delete}` (restart-triggering) + `outpost_mirror_{set,
+  rm,list}` MCP + `outpost mirror {add,rm,ls}` CLI. Boot supervisor in `main.go`
+  (needs the mesh + service resolver). See docs/external-binary-builtins.md.
 - **Service registry — `mesh dial <service>` (zero-config consume).** The
   rendezvous advertises the forwarder's exposed service names to cloudbox
   (`announce` carries an optional `services` list — nil from the peer-plane RTT

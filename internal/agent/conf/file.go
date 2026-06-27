@@ -517,6 +517,13 @@ type FileConfig struct {
 	// of these folders on its own schedule, and outpost picks the
 	// newest by mtime.
 	Backup *BackupConfig `json:"backup,omitempty"`
+
+	// Mirror is the continuous live directory-mirror config — distinct from
+	// Backup (which is age-encrypted point-in-time snapshots pushed to cloudbox
+	// for disaster recovery). Mirror keeps a peer's replica in near-real-time via
+	// coreutils/pkg/mirror (recursive watch + rclone sync), for availability /
+	// failover. See docs/external-binary-builtins.md.
+	Mirror *MirrorConfig `json:"mirror,omitempty"`
 }
 
 // ClusterConfig persists the kubeconfig fields cloudbox issues at
@@ -841,6 +848,41 @@ type BackupConfig struct {
 	// history file. Default empty → <UserCacheDir>/outpost/backup.log,
 	// mirroring the upgrade ledger convention.
 	LedgerPath string `json:"ledger_path,omitempty"`
+}
+
+// MirrorConfig is the continuous live directory-mirror config: a master switch
+// plus a list of jobs, each keeping a destination in near-real-time sync with a
+// source directory (coreutils/pkg/mirror — recursive watch + rclone sync, all
+// permissive parts). Distinct from BackupConfig (encrypted scheduled snapshots).
+type MirrorConfig struct {
+	// Enabled is the master switch. When false no mirror jobs run.
+	Enabled bool `json:"enabled"`
+	// Jobs is the list of source→dest mirror jobs.
+	Jobs []MirrorJob `json:"jobs,omitempty"`
+}
+
+// MirrorJob is one continuous, mobility-aware mirror: keep a peer's replica in
+// sync with Source, but ONLY while that peer is reachable over the mesh. The
+// supervisor resolves Service via the mesh and opens a forward to the peer
+// exposing it (a `rclone serve` the replica runs); when the peer is away the
+// resolve/forward fails, so the mirror pauses, and it resumes when the peer
+// reappears (e.g. a laptop returns to the LAN). This is the dynamic-peer /
+// mobility behaviour — no static address is pinned.
+type MirrorJob struct {
+	// Source is the local directory to mirror.
+	Source string `json:"source"`
+	// Service is the mesh service name the replica peer exposes to receive the
+	// mirror (e.g. an `rclone serve webdav` advertised as "webdav"). Resolved
+	// dynamically — the mirror runs only while a peer offers it and is reachable.
+	Service string `json:"service"`
+	// LANOnly, when true, mirrors only while the peer is on the same LAN (the
+	// fast, direct path) — so a roaming node syncs at home, not over slow WAN.
+	LANOnly bool `json:"lan_only,omitempty"`
+}
+
+// MirrorOn reports whether the live directory mirror is enabled with ≥1 job.
+func (fc *FileConfig) MirrorOn() bool {
+	return fc != nil && fc.Mirror != nil && fc.Mirror.Enabled && len(fc.Mirror.Jobs) > 0
 }
 
 type AppConfig struct {

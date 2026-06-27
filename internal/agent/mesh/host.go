@@ -156,6 +156,33 @@ func (m *Host) LibP2PHost() host.Host { return m.h }
 // worker side; Listen for a (peer, service) on the client side.
 func (m *Host) Forwarder() *Forwarder { return m.fwd }
 
+// HasDirectConn reports whether there is a DIRECT (non-relayed) connection to the
+// peer — the mesh-native "local / same-vicinity" signal: a relayed connection
+// (network.Limited) means the peer is reachable only over the WAN relay, i.e.
+// remote. The mobility-aware mirror's lan_only gate uses this to mirror only while
+// the pair is genuinely local (and pause when it falls back to relay).
+func (m *Host) HasDirectConn(peerID string) bool {
+	pid, err := peer.Decode(peerID)
+	if err != nil {
+		return false
+	}
+	for _, c := range m.h.Network().ConnsToPeer(pid) {
+		if !c.Stat().Limited {
+			return true
+		}
+	}
+	return false
+}
+
+// Connected reports whether there is any connection (direct or relayed) to peer.
+func (m *Host) Connected(peerID string) bool {
+	pid, err := peer.Decode(peerID)
+	if err != nil {
+		return false
+	}
+	return len(m.h.Network().ConnsToPeer(pid)) > 0
+}
+
 // dialableAddrs returns the host's reachable multiaddrs as strings, dropping
 // unspecified (0.0.0.0 / ::) listen addrs that no remote peer can dial. These
 // are what we announce to cloudbox for peers to dial back. libp2p's host.Addrs()

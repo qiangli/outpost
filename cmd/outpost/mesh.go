@@ -29,6 +29,62 @@ func (a meshFwdAdapter) Listen(peerID, service, localAddr string) (string, error
 
 func (a meshFwdAdapter) CloseListen(addr string) error { return a.f.CloseListen(addr) }
 
+// meshLinker implements mirror.Linker: it resolves a mesh service to a reachable
+// peer and opens a forward to it, gating "local" on a DIRECT (non-relayed)
+// connection for lan_only — the mobility/dynamic-mesh premise for the mirror.
+type meshLinker struct {
+	host     *mesh.Host
+	resolver func(service string) ([]admincore.MeshResolvedPeer, error)
+}
+
+func (l meshLinker) Reachable(_ context.Context, service string, lanOnly bool) bool {
+	peers, err := l.resolver(service)
+	if err != nil {
+		return false
+	}
+	for _, p := range peers {
+		if p.PeerID == "" {
+			continue
+		}
+		if lanOnly {
+			if l.host.HasDirectConn(p.PeerID) { // direct == local; relay == remote
+				return true
+			}
+			continue
+		}
+		if l.host.Connected(p.PeerID) {
+			return true
+		}
+	}
+	return false
+}
+
+func (l meshLinker) Open(_ context.Context, service string) (string, func(), error) {
+	peers, err := l.resolver(service)
+	if err != nil {
+		return "", nil, err
+	}
+	var peerID string
+	for _, p := range peers {
+		if p.PeerID != "" {
+			peerID = p.PeerID
+			break
+		}
+	}
+	if peerID == "" {
+		return "", nil, fmt.Errorf("mirror: no peer offers service %q", service)
+	}
+	ln, err := l.host.Forwarder().Listen("127.0.0.1:0", peerID, service)
+	if err != nil {
+		return "", nil, err
+	}
+	addr := ln.Addr().String()
+	// rclone connection string targeting the local forward (the peer runs
+	// `rclone serve webdav` behind <service>).
+	dest := fmt.Sprintf(":webdav,url='http://%s':", addr)
+	return dest, func() { _ = l.host.Forwarder().CloseListen(addr) }, nil
+}
+
 func (a meshFwdAdapter) Forwards() admincore.MeshForwardView {
 	snap := a.f.Snapshot()
 	v := admincore.MeshForwardView{Exposed: snap.Exposed}

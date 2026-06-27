@@ -44,6 +44,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"github.com/qiangli/outpost/internal/agent/mcpapi"
 	"github.com/qiangli/outpost/internal/agent/mesh"
+	agentmirror "github.com/qiangli/outpost/internal/agent/mirror"
 	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/otel"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
@@ -105,7 +106,7 @@ func main() {
 		clusterCmd(), departCmd(), poolCmd(), kubectlCmd(),
 		// MCP-client CLI parity (Phase 1.5):
 		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), unpairCmd(), restartCmd(), mcpCmd(),
-		remoteCmd(), meshCmd(),
+		remoteCmd(), meshCmd(), mirrorCmd(),
 		docsCmd(), gitCmd(), shellCmd(), versionCmd(), upgradeCmd(), rollbackCmd(), buildCmd(),
 		supervisordCmd(), serviceCmd(), doctorCmd(),
 	)
@@ -986,6 +987,25 @@ func startCmd() *cobra.Command {
 					}
 					<-gctx.Done()
 					return inst.Stop()
+				})
+			}
+
+			// Mobility-aware continuous directory mirror: each job mirrors a local
+			// dir to a peer's mesh service, but ONLY while the pair is reachable
+			// (and same-LAN / directly-connected when lan_only) — it pauses when
+			// the pair goes remote and resumes + catches up (full sync) when local
+			// again. Mobility/dynamic-mesh is the premise. Needs the mesh + the
+			// service resolver.
+			if fc.MirrorOn() && meshHost != nil && meshResolver != nil {
+				jobs := fc.Mirror.Jobs
+				sup := &agentmirror.Supervisor{
+					Link:   meshLinker{host: meshHost, resolver: meshResolver},
+					Logger: slog.Default(),
+				}
+				g.Go(func() error {
+					slog.Info("mirror: supervising jobs (mobility-aware)", "count", len(jobs))
+					sup.Run(gctx, jobs)
+					return nil
 				})
 			}
 
