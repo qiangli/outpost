@@ -643,6 +643,27 @@ func startCmd() *cobra.Command {
 					}
 				}
 			}
+			// Service registry resolver: query cloudbox for the peers exposing a
+			// named mesh service (the zero-config consume side).
+			var meshResolver func(service string) ([]admincore.MeshResolvedPeer, error)
+			if meshHost != nil {
+				if cb := cloudboxHTTPBase(fc); cb != "" {
+					rcli := &peerplane.Client{BaseURL: cb, Token: fc.AccessToken, HC: &http.Client{Timeout: 10 * time.Second}}
+					meshResolver = func(service string) ([]admincore.MeshResolvedPeer, error) {
+						rctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+						defer cancel()
+						peers, err := rcli.Resolve(rctx, service)
+						if err != nil {
+							return nil, err
+						}
+						out := make([]admincore.MeshResolvedPeer, 0, len(peers))
+						for _, p := range peers {
+							out = append(out, admincore.MeshResolvedPeer{Host: p.Host, PeerID: p.PeerID, Services: p.Services})
+						}
+						return out, nil
+					}
+				}
+			}
 
 			// Construct the shared business-logic layer first. The same
 			// admincore.Server instance feeds adminui (human SPA) and
@@ -660,6 +681,7 @@ func startCmd() *cobra.Command {
 				PeerTiers:           peerTiers,
 				MeshStatus:          meshStatus,
 				MeshForward:         meshFwd,
+				MeshResolver:        meshResolver,
 			})
 			if err != nil {
 				return fmt.Errorf("admincore: %w", err)

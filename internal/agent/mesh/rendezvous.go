@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -81,13 +82,22 @@ func (r *Rendezvous) tick(ctx context.Context) {
 	r.drainInbox(ctx)
 }
 
-// announce publishes this host's peer id + dialable multiaddrs to cloudbox.
+// announce publishes this host's peer id + dialable multiaddrs + exposed mesh
+// service names (the service registry) to cloudbox.
 func (r *Rendezvous) announce(ctx context.Context) {
 	addrs := r.host.dialableAddrs()
 	if len(addrs) == 0 {
 		return
 	}
-	if err := r.signal.Announce(ctx, r.agentName, r.host.PeerID(), addrs); err != nil {
+	// Advertise the forwarder's exposed service names so peers can resolve
+	// them by name. Non-nil (even empty) so the registry tracks the current set.
+	exposed := r.host.Forwarder().Snapshot().Exposed
+	services := make([]string, 0, len(exposed))
+	for name := range exposed {
+		services = append(services, name)
+	}
+	sort.Strings(services)
+	if err := r.signal.Announce(ctx, r.agentName, r.host.PeerID(), addrs, services); err != nil {
 		r.log.Debug("mesh: announce failed", "err", err)
 	}
 }

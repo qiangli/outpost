@@ -150,6 +150,44 @@ func (s *Server) MeshServiceDelete(name string) error {
 	return nil
 }
 
+// MeshResolvedPeer is one peer from the cloudbox service registry.
+type MeshResolvedPeer struct {
+	Host     string   `json:"host"`
+	PeerID   string   `json:"peer_id"`
+	Services []string `json:"services"`
+}
+
+// MeshResolve returns the peers exposing the named mesh service (the registry).
+func (s *Server) MeshResolve(service string) ([]MeshResolvedPeer, error) {
+	if s.deps.MeshResolver == nil {
+		return nil, badRequest("mesh service registry is not available (pair + enable mesh)")
+	}
+	return s.deps.MeshResolver(service)
+}
+
+// MeshDial resolves a peer exposing the named service and opens a local forward
+// listener to it, returning the bound local address + the chosen peer host —
+// the zero-config consume side ("dial git" without knowing the peer id).
+func (s *Server) MeshDial(service, localAddr string) (addr, host string, err error) {
+	if service == "" {
+		return "", "", badRequest("service is required")
+	}
+	peers, e := s.MeshResolve(service)
+	if e != nil {
+		return "", "", e
+	}
+	for _, p := range peers {
+		if p.PeerID == "" {
+			continue
+		}
+		a, le := s.MeshListen(p.PeerID, service, localAddr)
+		if le == nil {
+			return a, p.Host, nil
+		}
+	}
+	return "", "", badRequest("no reachable peer exposes service %q", service)
+}
+
 // MeshServices lists the persisted (auto-exposed) mesh services.
 func (s *Server) MeshServices() ([]MeshServiceView, error) {
 	fc, err := s.loadConfig()

@@ -32,7 +32,7 @@ func TestClient_AnnounceConnectInbox(t *testing.T) {
 	c := &Client{BaseURL: srv.URL, Token: "tok"}
 	ctx := context.Background()
 
-	if err := c.Announce(ctx, "alpha", "", []string{"10.0.0.1:9000", "169.254.1.1:9000"}); err != nil {
+	if err := c.Announce(ctx, "alpha", "", []string{"10.0.0.1:9000", "169.254.1.1:9000"}, nil); err != nil {
 		t.Fatalf("Announce: %v", err)
 	}
 	if gotAnnounce["candidates"] != "10.0.0.1:9000,169.254.1.1:9000" {

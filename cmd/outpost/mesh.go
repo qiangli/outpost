@@ -47,7 +47,33 @@ hole-punched link (cloudbox brokers the introduction; the bytes go
 peer-to-peer). On the worker, Expose a local service; on the leader, Listen for
 it and point a client (e.g. llama-server --rpc) at the printed local address.`,
 	}
-	cmd.AddCommand(meshStatusCmd(), meshExposeCmd(), meshUnexposeCmd(), meshListenCmd(), meshUnlistenCmd(), meshServiceCmd())
+	cmd.AddCommand(meshStatusCmd(), meshExposeCmd(), meshUnexposeCmd(), meshListenCmd(), meshUnlistenCmd(), meshServiceCmd(), meshDialCmd())
+	return cmd
+}
+
+// meshDialCmd is the zero-config consume side: dial a mesh service by name and
+// the cloudbox registry resolves which peer exposes it (vs `mesh listen
+// <peer-id> <service>`, which needs the peer id by hand).
+func meshDialCmd() *cobra.Command {
+	var local string
+	cmd := &cobra.Command{
+		Use:   "dial <service>",
+		Short: "Resolve who runs a mesh service by name + open a local forward to it",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var out struct {
+				Addr string `json:"addr"`
+				Host string `json:"host"`
+			}
+			if err := runMeshTool(cmd.Context(), "outpost_mesh_dial",
+				map[string]string{"service": args[0], "local_addr": local}, &out); err != nil {
+				return err
+			}
+			fmt.Printf("%s\t(via %s)\n", out.Addr, out.Host)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&local, "local", "", "Local listen address (default 127.0.0.1:0 = ephemeral)")
 	return cmd
 }
 

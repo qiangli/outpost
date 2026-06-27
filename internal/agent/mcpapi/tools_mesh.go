@@ -44,6 +44,16 @@ type meshServicesOut struct {
 	Services []admincore.MeshServiceView `json:"services"`
 }
 
+type meshDialIn struct {
+	Service   string `json:"service" jsonschema:"The mesh service name to dial — resolved to a peer via the registry (e.g. git, registry)"`
+	LocalAddr string `json:"local_addr,omitempty" jsonschema:"Local listen address (default 127.0.0.1:0 = ephemeral)"`
+}
+
+type meshDialOut struct {
+	Addr string `json:"addr"`
+	Host string `json:"host"`
+}
+
 func (s *Server) registerMeshTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "outpost_mesh_status",
@@ -126,5 +136,16 @@ func (s *Server) registerMeshTools() {
 			return apiErrResult[meshServicesOut](err)
 		}
 		return nil, meshServicesOut{Services: svcs}, nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_mesh_dial",
+		Description: "Resolve which peer exposes a named mesh service (the service registry) and open a local forward listener to it — the zero-config consume side. Returns the local address to point a client at + the chosen peer host. e.g. dial 'git'.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in meshDialIn) (*mcp.CallToolResult, meshDialOut, error) {
+		addr, host, err := s.core.MeshDial(in.Service, in.LocalAddr)
+		if err != nil {
+			return apiErrResult[meshDialOut](err)
+		}
+		return nil, meshDialOut{Addr: addr, Host: host}, nil
 	})
 }

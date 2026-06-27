@@ -27,13 +27,39 @@ func (c *Client) hc() *http.Client {
 	return http.DefaultClient
 }
 
-// Announce publishes this host's reachability candidates.
-func (c *Client) Announce(ctx context.Context, host, peerID string, candidates []string) error {
-	return c.do(ctx, http.MethodPost, "/api/v1/peer/announce", map[string]any{
+// Announce publishes this host's reachability candidates. services is the mesh
+// wrap-harness service list: nil omits the field (cloudbox preserves the stored
+// value — what the RTT prober passes), non-nil (even empty) sets it (the mesh
+// announcer passes its current exposed-service names).
+func (c *Client) Announce(ctx context.Context, host, peerID string, candidates, services []string) error {
+	body := map[string]any{
 		"host":       host,
 		"peer_id":    peerID,
 		"candidates": strings.Join(candidates, ","),
-	}, nil)
+	}
+	if services != nil {
+		body["services"] = strings.Join(services, ",")
+	}
+	return c.do(ctx, http.MethodPost, "/api/v1/peer/announce", body, nil)
+}
+
+// MeshPeer is one peer exposing a mesh service (from the service registry).
+type MeshPeer struct {
+	Host     string   `json:"host"`
+	PeerID   string   `json:"peer_id"`
+	Services []string `json:"services"`
+}
+
+// Resolve returns the caller's peers exposing the named mesh service (the
+// service registry — "who runs <service>"). Empty service ⇒ all announced peers.
+func (c *Client) Resolve(ctx context.Context, service string) ([]MeshPeer, error) {
+	var out struct {
+		Peers []MeshPeer `json:"peers"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/peer/resolve?service="+url.QueryEscape(service), nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Peers, nil
 }
 
 // PeerTarget is the Connect response: the peer's candidates + observed external

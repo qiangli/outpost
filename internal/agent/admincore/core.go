@@ -84,6 +84,12 @@ type Deps struct {
 	// (expose/listen/forwards). Nil when the mesh data plane is off.
 	MeshForward MeshForwardOps
 
+	// MeshResolver, when set, queries the cloudbox service registry for the
+	// peers exposing a named mesh service (the "who runs <service>" lookup).
+	// Closure so admincore doesn't import the peerplane client. Nil when the
+	// host isn't paired / mesh is off.
+	MeshResolver func(service string) ([]MeshResolvedPeer, error)
+
 	// AppHealth, when set, returns the latest per-app reachability
 	// measurements (TCP/HTTP probes, no ICMP). Nil when the service
 	// isn't wired.

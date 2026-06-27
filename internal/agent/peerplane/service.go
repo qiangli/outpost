@@ -93,7 +93,8 @@ func (s *Service) Run(ctx context.Context) error {
 // cycle announces our candidates, reciprocates inbound rendezvous, and actively
 // probes every online peer.
 func (s *Service) cycle(ctx context.Context, port int) {
-	if err := s.cli.Announce(ctx, s.cfg.AgentName, "", LocalCandidates(port)); err != nil {
+	// nil services: the RTT prober preserves whatever the mesh announcer set.
+	if err := s.cli.Announce(ctx, s.cfg.AgentName, "", LocalCandidates(port), nil); err != nil {
 		s.log.Debug("peerplane: announce failed", "err", err)
 	}
 
