@@ -469,10 +469,19 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   **SeaweedFS** (Apache-2.0; the `weed` binary extracted by binmgr from the
   `<os>_<arch>.tar.gz`) via `coreutils/external/seaweedfs.Start` — `weed server …
   -s3`, loopback-bound — and **auto-exposes the S3 gateway over the mesh as `s3`**
-  (can also back zot's blob store). Also `bashy seaweedfs serve`. **Three wrapped
-  tools now (loom `git`, zot `registry`, seaweedfs `s3`); Kopia (backup) follows
-  the same `binmgr.GitHubSpec` + `external/<tool>` launcher + outpost builtin
-  toggle, each on its own release cadence.**
+  (can also back zot's blob store). Also `bashy seaweedfs serve`.
+- **Kopia builtin — the snapshot-backup repo server (wrap-harness *tool
+  lifecycle*).** `KopiaEnabled`/`KopiaPort` (default 51515), four-surface; the
+  daemon runs **Kopia** (Apache-2.0; the `kopia` binary extracted by binmgr from a
+  versioned subdir in the archive — basename match) via `coreutils/external/
+  kopia.Start` (seeds a filesystem repo on first run, then `kopia server start
+  --insecure --without-password`) and **auto-exposes it over the mesh as
+  `backup`** (many nodes back up into one repo). Also `bashy kopia serve`. Kopia's
+  server flags are version-sensitive — validate on a real host. **The set is
+  complete: four wrapped tools (loom `git`, zot `registry`, seaweedfs `s3`, kopia
+  `backup`) — each a `binmgr.GitHubSpec` + `external/<tool>` launcher + `bashy
+  <tool>` + an outpost builtin toggle, none compiled into outpost, each on its own
+  release cadence.**
 - **Service registry — `mesh dial <service>` (zero-config consume).** The
   rendezvous advertises the forwarder's exposed service names to cloudbox
   (`announce` carries an optional `services` list — nil from the peer-plane RTT

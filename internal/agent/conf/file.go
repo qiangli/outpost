@@ -281,6 +281,15 @@ type FileConfig struct {
 	// SeaweedfsPort is SeaweedFS's loopback S3-gateway port (default 8333).
 	SeaweedfsPort int `json:"seaweedfs_port,omitempty"`
 
+	// KopiaEnabled opts this outpost into running the Kopia snapshot-backup
+	// repository server as a managed external binary (coreutils/external/kopia via
+	// pkg/binmgr — not compiled in) on a loopback port, auto-exposed over the mesh
+	// as the `backup` service (many nodes back up into one repo). Default OFF.
+	KopiaEnabled *bool `json:"kopia_enabled,omitempty"`
+
+	// KopiaPort is Kopia's loopback server port (default 51515).
+	KopiaPort int `json:"kopia_port,omitempty"`
+
 	// Shard configures the Ollama sharding sub-feature: serve a model bigger
 	// than any single node by splitting it across mesh peers via llama.cpp
 	// RPC carried over the mesh forwarder. Under Ollama; default off.
@@ -1326,6 +1335,18 @@ func (fc *FileConfig) SeaweedfsPortOrDefault() int {
 		return fc.SeaweedfsPort
 	}
 	return 8333
+}
+
+func (fc *FileConfig) KopiaOn() bool {
+	return fc != nil && fc.KopiaEnabled != nil && *fc.KopiaEnabled
+}
+
+// KopiaPortOrDefault returns the configured Kopia server port, or 51515.
+func (fc *FileConfig) KopiaPortOrDefault() int {
+	if fc != nil && fc.KopiaPort > 0 {
+		return fc.KopiaPort
+	}
+	return 51515
 }
 
 func (fc *FileConfig) MeshOn() bool {

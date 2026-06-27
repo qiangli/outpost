@@ -44,6 +44,8 @@ type builtinsIn struct {
 	ZotPort                *int            `json:"zot_port,omitempty" jsonschema:"zot's loopback HTTP port (0 = default 5000)"`
 	Seaweedfs              *bool           `json:"seaweedfs,omitempty" jsonschema:"Toggle running SeaweedFS (object/blob store, S3 gateway) as a managed external binary on a loopback port, auto-exposed over the mesh as the 's3' service. Can also back zot's blob store. Downloaded/verified/cached by binmgr — not compiled in."`
 	SeaweedfsPort          *int            `json:"seaweedfs_port,omitempty" jsonschema:"SeaweedFS's loopback S3-gateway port (0 = default 8333)"`
+	Kopia                  *bool           `json:"kopia,omitempty" jsonschema:"Toggle running the Kopia snapshot-backup repository server as a managed external binary on a loopback port, auto-exposed over the mesh as the 'backup' service (many nodes back up into one repo). Downloaded/verified/cached by binmgr — not compiled in."`
+	KopiaPort              *int            `json:"kopia_port,omitempty" jsonschema:"Kopia's loopback server port (0 = default 51515)"`
 }
 
 type setBuiltinsOut struct {
@@ -89,6 +91,8 @@ func (s *Server) registerBuiltinsTools() {
 			ZotPort:                in.ZotPort,
 			Seaweedfs:              in.Seaweedfs,
 			SeaweedfsPort:          in.SeaweedfsPort,
+			Kopia:                  in.Kopia,
+			KopiaPort:              in.KopiaPort,
 		})
 		if err != nil {
 			return apiErrResult[setBuiltinsOut](err)

@@ -67,6 +67,7 @@ func builtinsShowCmd() *cobra.Command {
 			row("loom", view.LoomEnabled)
 			row("zot", view.ZotEnabled)
 			row("seaweedfs", view.SeaweedfsEnabled)
+			row("kopia", view.KopiaEnabled)
 			row("otel", view.OtelEnabled)
 			row("otel_pool", view.OtelPoolEnabled)
 			row("ycode_share", view.YcodeShareEnabled)
@@ -101,6 +102,8 @@ func builtinsSetCmd() *cobra.Command {
 		zotPort                                                                                                                                                                        int
 		seaweedfs                                                                                                                                                                      string
 		seaweedfsPort                                                                                                                                                                  int
+		kopia                                                                                                                                                                          string
+		kopiaPort                                                                                                                                                                      int
 		sshForwardSockets                                                                                                                                                              []string
 		clearSSHForwardSockets                                                                                                                                                         bool
 		ycodeShareSurfaces                                                                                                                                                             map[string]string
@@ -250,6 +253,12 @@ func builtinsSetCmd() *cobra.Command {
 			if cmd.Flags().Changed("seaweedfs-port") {
 				params.SeaweedfsPort = &seaweedfsPort
 			}
+			if params.Kopia, err = parseToggle("kopia", kopia); err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("kopia-port") {
+				params.KopiaPort = &kopiaPort
+			}
 			if clearSSHForwardSockets {
 				params.SSHForwardSockets = []string{}
 			} else if cmd.Flags().Changed("ssh-forward-socket") {
@@ -303,6 +312,8 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().IntVar(&zotPort, "zot-port", 0, "zot's loopback HTTP port (0 = default 5000)")
 	cmd.Flags().StringVar(&seaweedfs, "seaweedfs", "", "on|off - run SeaweedFS (object/blob store, S3 gateway; managed external binary) on loopback, auto-exposed over the mesh as 's3'")
 	cmd.Flags().IntVar(&seaweedfsPort, "seaweedfs-port", 0, "SeaweedFS's loopback S3-gateway port (0 = default 8333)")
+	cmd.Flags().StringVar(&kopia, "kopia", "", "on|off - run the Kopia snapshot-backup repo server (managed external binary) on loopback, auto-exposed over the mesh as 'backup'")
+	cmd.Flags().IntVar(&kopiaPort, "kopia-port", 0, "Kopia's loopback server port (0 = default 51515)")
 	return cmd
 }
 

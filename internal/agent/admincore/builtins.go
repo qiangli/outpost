@@ -81,6 +81,11 @@ type BuiltinsParams struct {
 	// `s3`. SeaweedfsPort sets its S3 port (0 = default 8333). nil = unchanged.
 	Seaweedfs     *bool `json:"seaweedfs,omitempty"`
 	SeaweedfsPort *int  `json:"seaweedfs_port,omitempty"`
+	// Kopia toggles running the Kopia snapshot-backup repository server as a
+	// managed external binary on a loopback port, auto-exposed over the mesh as
+	// `backup`. KopiaPort sets its port (0 = default 51515). nil = unchanged.
+	Kopia     *bool `json:"kopia,omitempty"`
+	KopiaPort *int  `json:"kopia_port,omitempty"`
 }
 
 // BuiltinsResult reports what happened. RestartPending is true when
@@ -174,6 +179,12 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	if p.SeaweedfsPort != nil {
 		fc.SeaweedfsPort = *p.SeaweedfsPort
 	}
+	if p.Kopia != nil {
+		fc.KopiaEnabled = p.Kopia
+	}
+	if p.KopiaPort != nil {
+		fc.KopiaPort = *p.KopiaPort
+	}
 	if p.Otel != nil {
 		fc.OtelEnabled = *p.Otel
 	}
@@ -224,7 +235,7 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil && p.Mesh == nil && p.MeshPort == nil && p.Loom == nil && p.LoomPort == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil
+	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil && p.Mesh == nil && p.MeshPort == nil && p.Loom == nil && p.LoomPort == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil
 	if p.UpdateMode != nil {
 		if !conf.ValidUpdateMode(*p.UpdateMode) {
 			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")

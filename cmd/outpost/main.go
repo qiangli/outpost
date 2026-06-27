@@ -28,6 +28,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sync/errgroup"
 
+	kopia "github.com/qiangli/coreutils/external/kopia"
 	loom "github.com/qiangli/coreutils/external/loom"
 	seaweedfs "github.com/qiangli/coreutils/external/seaweedfs"
 	zot "github.com/qiangli/coreutils/external/zot"
@@ -953,6 +954,35 @@ func startCmd() *cobra.Command {
 					if meshHost != nil {
 						meshHost.Forwarder().Expose("s3", inst.Addr)
 						slog.Info("seaweedfs: exposed over the mesh as 's3'", "addr", inst.Addr)
+					}
+					<-gctx.Done()
+					return inst.Stop()
+				})
+			}
+
+			// Kopia snapshot-backup repository server (wrap-harness tool
+			// lifecycle): run it on a loopback port + auto-expose over the mesh as
+			// "backup" (many nodes back up into one repo). Kopia is NOT compiled
+			// into outpost. Non-fatal on fetch/launch error.
+			if fc.KopiaOn() {
+				kPort := fc.KopiaPortOrDefault()
+				kData := "kopia"
+				if cd, _ := conf.ResolveCacheDir(); cd != "" {
+					kData = filepath.Join(cd, "kopia")
+				}
+				g.Go(func() error {
+					inst, kerr := kopia.Start(gctx, kopia.Options{
+						Addr: "127.0.0.1", Port: kPort, DataDir: kData,
+						Stdout: io.Discard, Stderr: io.Discard,
+					})
+					if kerr != nil {
+						slog.Warn("kopia backup: not started", "err", kerr)
+						return nil
+					}
+					slog.Info("kopia backup server serving", "url", inst.URL, "kopia", inst.Version)
+					if meshHost != nil {
+						meshHost.Forwarder().Expose("backup", inst.Addr)
+						slog.Info("kopia: exposed over the mesh as 'backup'", "addr", inst.Addr)
 					}
 					<-gctx.Done()
 					return inst.Stop()
