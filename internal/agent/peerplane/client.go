@@ -69,6 +69,18 @@ type Rendezvous struct {
 	FromCandidates []string `json:"from_candidates"`
 }
 
+// Relays fetches cloudbox's circuit-relay advertised multiaddrs (for AutoRelay
+// / strict-NAT DCUtR). Empty when the relay isn't configured cloudbox-side.
+func (c *Client) Relays(ctx context.Context) ([]string, error) {
+	var out struct {
+		Relays []string `json:"relays"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/peer/relay", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Relays, nil
+}
+
 // Inbox returns + drains the pending rendezvous notices addressed to host.
 func (c *Client) Inbox(ctx context.Context, host string) ([]Rendezvous, error) {
 	var out struct {

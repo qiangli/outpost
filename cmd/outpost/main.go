@@ -582,11 +582,27 @@ func startCmd() *cobra.Command {
 			// fabric). Created here so its status renders into SafeView;
 			// started in the errgroup below. Self-disables when unpaired
 			// (cloudbox is the rendezvous that finds peers).
+			// Fetch cloudbox's circuit-relay multiaddrs (best-effort) so the
+			// mesh host runs AutoRelay against them — strict-NAT DCUtR. Absent
+			// relay (or cloudbox unreachable at boot) just means no relay leg;
+			// same-LAN/same-vicinity still connects directly.
+			var meshRelays []string
+			if fc.MeshOn() && fc.AccessToken != "" {
+				if cb := cloudboxHTTPBase(fc); cb != "" {
+					rc := &peerplane.Client{BaseURL: cb, Token: fc.AccessToken, HC: &http.Client{Timeout: 10 * time.Second}}
+					rctx, rcancel := context.WithTimeout(context.Background(), 10*time.Second)
+					if rs, rerr := rc.Relays(rctx); rerr == nil {
+						meshRelays = rs
+					}
+					rcancel()
+				}
+			}
 			var meshHost *mesh.Host
 			if fc.MeshOn() && fc.AccessToken != "" {
 				mh, merr := mesh.New(mesh.Config{
 					AgentName:  fc.AgentName,
 					ListenPort: fc.MeshPort,
+					RelayAddrs: meshRelays,
 					Logger:     slog.Default(),
 				})
 				if merr != nil {
