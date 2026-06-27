@@ -36,6 +36,16 @@ type Linker interface {
 type Supervisor struct {
 	Link   Linker
 	Logger *slog.Logger
+	// run overrides the mirror engine (for tests); nil = coreutils/pkg/mirror.Run.
+	// It must block until ctx is cancelled (mirroring the engine's lifecycle).
+	run func(ctx context.Context, source, dest string, log *slog.Logger) error
+}
+
+func (s *Supervisor) engineRun(ctx context.Context, source, dest string, log *slog.Logger) error {
+	if s.run != nil {
+		return s.run(ctx, source, dest, log)
+	}
+	return enginemirror.Run(ctx, enginemirror.Options{Source: source, Dest: dest, Logger: log})
 }
 
 // Run blocks until ctx is cancelled, supervising one goroutine per job.
@@ -90,10 +100,8 @@ func (s *Supervisor) runJob(ctx context.Context, job conf.MirrorJob, log *slog.L
 			}
 			mctx, mc := context.WithCancel(ctx)
 			go func() {
-				// Run does an initial full sync (the catch-up) then watches.
-				if e := enginemirror.Run(mctx, enginemirror.Options{
-					Source: job.Source, Dest: dest, Logger: log,
-				}); e != nil && mctx.Err() == nil {
+				// engineRun does an initial full sync (the catch-up) then watches.
+				if e := s.engineRun(mctx, job.Source, dest, log); e != nil && mctx.Err() == nil {
 					log.Warn("mirror: engine exited", "source", job.Source, "err", e)
 				}
 			}()
