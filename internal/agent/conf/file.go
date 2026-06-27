@@ -272,6 +272,15 @@ type FileConfig struct {
 	// ZotPort is zot's loopback HTTP port (default 5000).
 	ZotPort int `json:"zot_port,omitempty"`
 
+	// SeaweedfsEnabled opts this outpost into running SeaweedFS (object/blob
+	// store, S3 gateway) as a managed external binary (coreutils/external/
+	// seaweedfs via pkg/binmgr — not compiled in) on a loopback port, auto-exposed
+	// over the mesh as the `s3` service. Can also back zot's blob store. Default OFF.
+	SeaweedfsEnabled *bool `json:"seaweedfs_enabled,omitempty"`
+
+	// SeaweedfsPort is SeaweedFS's loopback S3-gateway port (default 8333).
+	SeaweedfsPort int `json:"seaweedfs_port,omitempty"`
+
 	// Shard configures the Ollama sharding sub-feature: serve a model bigger
 	// than any single node by splitting it across mesh peers via llama.cpp
 	// RPC carried over the mesh forwarder. Under Ollama; default off.
@@ -1305,6 +1314,18 @@ func (fc *FileConfig) ZotPortOrDefault() int {
 		return fc.ZotPort
 	}
 	return 5000
+}
+
+func (fc *FileConfig) SeaweedfsOn() bool {
+	return fc != nil && fc.SeaweedfsEnabled != nil && *fc.SeaweedfsEnabled
+}
+
+// SeaweedfsPortOrDefault returns the configured SeaweedFS S3 port, or 8333.
+func (fc *FileConfig) SeaweedfsPortOrDefault() int {
+	if fc != nil && fc.SeaweedfsPort > 0 {
+		return fc.SeaweedfsPort
+	}
+	return 8333
 }
 
 func (fc *FileConfig) MeshOn() bool {

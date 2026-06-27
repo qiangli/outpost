@@ -29,6 +29,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	loom "github.com/qiangli/coreutils/external/loom"
+	seaweedfs "github.com/qiangli/coreutils/external/seaweedfs"
 	zot "github.com/qiangli/coreutils/external/zot"
 
 	"github.com/qiangli/outpost/internal/agent"
@@ -924,6 +925,34 @@ func startCmd() *cobra.Command {
 					if meshHost != nil {
 						meshHost.Forwarder().Expose("registry", inst.Addr)
 						slog.Info("zot: exposed over the mesh as 'registry'", "addr", inst.Addr)
+					}
+					<-gctx.Done()
+					return inst.Stop()
+				})
+			}
+
+			// SeaweedFS object/blob store (wrap-harness tool lifecycle): run its
+			// S3 gateway on a loopback port + auto-expose over the mesh as "s3".
+			// SeaweedFS is NOT compiled into outpost. Non-fatal on fetch/launch.
+			if fc.SeaweedfsOn() {
+				swPort := fc.SeaweedfsPortOrDefault()
+				swData := "seaweedfs"
+				if cd, _ := conf.ResolveCacheDir(); cd != "" {
+					swData = filepath.Join(cd, "seaweedfs")
+				}
+				g.Go(func() error {
+					inst, serr := seaweedfs.Start(gctx, seaweedfs.Options{
+						Addr: "127.0.0.1", Port: swPort, DataDir: swData,
+						Stdout: io.Discard, Stderr: io.Discard,
+					})
+					if serr != nil {
+						slog.Warn("seaweedfs: not started", "err", serr)
+						return nil
+					}
+					slog.Info("seaweedfs S3 gateway serving", "url", inst.URL, "seaweedfs", inst.Version)
+					if meshHost != nil {
+						meshHost.Forwarder().Expose("s3", inst.Addr)
+						slog.Info("seaweedfs: exposed over the mesh as 's3'", "addr", inst.Addr)
 					}
 					<-gctx.Done()
 					return inst.Stop()

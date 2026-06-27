@@ -199,6 +199,8 @@ type SafeView struct {
 	LoomPort                int              `json:"loom_port,omitempty"`
 	ZotEnabled              bool             `json:"zot_enabled"`
 	ZotPort                 int              `json:"zot_port,omitempty"`
+	SeaweedfsEnabled        bool             `json:"seaweedfs_enabled"`
+	SeaweedfsPort           int              `json:"seaweedfs_port,omitempty"`
 	OtelEnabled             bool             `json:"otel_enabled"`
 	OtelPoolEnabled         bool             `json:"otel_pool_enabled"`
 	Ycode                   YcodeView        `json:"ycode"`
@@ -296,6 +298,8 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		LoomPort:               fc.LoomPort,
 		ZotEnabled:             fc.ZotOn(),
 		ZotPort:                fc.ZotPort,
+		SeaweedfsEnabled:       fc.SeaweedfsOn(),
+		SeaweedfsPort:          fc.SeaweedfsPort,
 		MeshPort:               fc.MeshPort,
 		OtelEnabled:            fc.OtelOn(),
 		OtelPoolEnabled:        fc.OtelPoolOn(),

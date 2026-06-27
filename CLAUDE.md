@@ -463,9 +463,16 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   runs **Zot** (project-zot/zot, Apache-2.0) as a managed external binary via
   `coreutils/external/zot.Start` on a loopback port and **auto-exposes it over the
   mesh as `registry`** (serves container images + Ollama models, OCI). Also
-  `bashy zot serve`. The first two wrapped tools (loom + zot) prove the pattern;
-  SeaweedFS/Kopia follow it — a `binmgr.GitHubSpec` + an `external/<tool>`
-  launcher + an outpost builtin toggle, each on its own release cadence.
+  `bashy zot serve`. The first wrapped tools prove the pattern.
+- **SeaweedFS builtin — the object/blob store (wrap-harness *tool lifecycle*).**
+  `SeaweedfsEnabled`/`SeaweedfsPort` (default 8333), four-surface; the daemon runs
+  **SeaweedFS** (Apache-2.0; the `weed` binary extracted by binmgr from the
+  `<os>_<arch>.tar.gz`) via `coreutils/external/seaweedfs.Start` — `weed server …
+  -s3`, loopback-bound — and **auto-exposes the S3 gateway over the mesh as `s3`**
+  (can also back zot's blob store). Also `bashy seaweedfs serve`. **Three wrapped
+  tools now (loom `git`, zot `registry`, seaweedfs `s3`); Kopia (backup) follows
+  the same `binmgr.GitHubSpec` + `external/<tool>` launcher + outpost builtin
+  toggle, each on its own release cadence.**
 - **Service registry — `mesh dial <service>` (zero-config consume).** The
   rendezvous advertises the forwarder's exposed service names to cloudbox
   (`announce` carries an optional `services` list — nil from the peer-plane RTT
