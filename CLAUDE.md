@@ -477,11 +477,23 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   kopia.Start` (seeds a filesystem repo on first run, then `kopia server start
   --insecure --without-password`) and **auto-exposes it over the mesh as
   `backup`** (many nodes back up into one repo). Also `bashy kopia serve`. Kopia's
-  server flags are version-sensitive — validate on a real host. **The set is
-  complete: four wrapped tools (loom `git`, zot `registry`, seaweedfs `s3`, kopia
-  `backup`) — each a `binmgr.GitHubSpec` + `external/<tool>` launcher + `bashy
-  <tool>` + an outpost builtin toggle, none compiled into outpost, each on its own
-  release cadence.**
+  server flags are version-sensitive — validate on a real host. **Four exposed
+  wrapped tools (loom `git`, zot `registry`, seaweedfs `s3`, kopia `backup`) —
+  each a `binmgr.GitHubSpec` + `external/<tool>` launcher + `bashy <tool>` + an
+  outpost builtin toggle, none compiled into outpost, each on its own release
+  cadence.**
+- **act_runner builtin — the CI executor (wrap-harness, but a CONSUMER not a mesh
+  service).** `ActrunnerEnabled`/`ActrunnerInstance`/`ActrunnerToken`/
+  `ActrunnerLabels` (four-surface: `admincore.SetBuiltins` + `outpost_set_builtins`
+  MCP + `builtins set --actrunner[-instance|-token|-labels]` CLI + SafeView).
+  Unlike loom/zot it does NOT expose a mesh service — on boot it **registers**
+  against a Gitea instance (`ActrunnerInstanceResolved()`: the local loom forge
+  `http://127.0.0.1:<loom_port>` when loom is on, else an explicit mesh-reachable
+  git addr) and runs the `act_runner` daemon (`coreutils/external/actrunner`,
+  resolved via `binmgr.URLSpec` from dl.gitea.com), which **dials OUT** to Gitea —
+  NAT/mesh-friendly. This is the CI executor of the local-p2p-CICD loop
+  (dhnt/docs/local-p2p-cicd.md): loom Actions + act_runner + zot, one Gitea
+  Actions run serving as the gate for both humans and the weave fleet.
 - **Mobility-aware directory mirror (`FileConfig.Mirror`, `internal/agent/mirror`).**
   A continuous one-way live replica — distinct from `backup` (age-encrypted
   scheduled snapshots → cloudbox). Each `MirrorJob{Source, Service, LANOnly}`
