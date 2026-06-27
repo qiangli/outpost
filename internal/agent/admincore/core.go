@@ -80,6 +80,10 @@ type Deps struct {
 	// doesn't import the mesh package. Nil when the host isn't wired.
 	MeshStatus func() *MeshStatusView
 
+	// MeshForward, when set, is the mesh forwarder's operation surface
+	// (expose/listen/forwards). Nil when the mesh data plane is off.
+	MeshForward MeshForwardOps
+
 	// AppHealth, when set, returns the latest per-app reachability
 	// measurements (TCP/HTTP probes, no ICMP). Nil when the service
 	// isn't wired.

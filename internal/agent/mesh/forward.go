@@ -34,17 +34,68 @@ type Forwarder struct {
 	host *Host
 	log  *slog.Logger
 
-	mu      sync.RWMutex
-	exposed map[string]string // service name → loopback addr (e.g. "rpc" → "127.0.0.1:50052")
+	mu        sync.RWMutex
+	exposed   map[string]string         // service name → loopback addr (e.g. "rpc" → "127.0.0.1:50052")
+	listeners map[string]*listenerEntry // bound addr → active forward listener
+}
+
+type listenerEntry struct {
+	ln      net.Listener
+	peerID  string
+	service string
 }
 
 func newForwarder(host *Host, log *slog.Logger) *Forwarder {
 	if log == nil {
 		log = slog.Default()
 	}
-	f := &Forwarder{host: host, log: log, exposed: map[string]string{}}
+	f := &Forwarder{
+		host:      host,
+		log:       log,
+		exposed:   map[string]string{},
+		listeners: map[string]*listenerEntry{},
+	}
 	host.h.SetStreamHandler(ForwardProtocol, f.handleStream)
 	return f
+}
+
+// ForwardSnapshot is the live state of this host's forwarder.
+type ForwardSnapshot struct {
+	Exposed   map[string]string `json:"exposed"`   // service → loopback addr
+	Listeners []ForwardListener `json:"listeners"` // active forward listeners
+}
+
+// ForwardListener describes one active forward listener.
+type ForwardListener struct {
+	Addr    string `json:"addr"`
+	PeerID  string `json:"peer_id"`
+	Service string `json:"service"`
+}
+
+// Snapshot returns the forwarder's exposed services + active listeners.
+func (f *Forwarder) Snapshot() ForwardSnapshot {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	exp := make(map[string]string, len(f.exposed))
+	for k, v := range f.exposed {
+		exp[k] = v
+	}
+	lis := make([]ForwardListener, 0, len(f.listeners))
+	for addr, e := range f.listeners {
+		lis = append(lis, ForwardListener{Addr: addr, PeerID: e.peerID, Service: e.service})
+	}
+	return ForwardSnapshot{Exposed: exp, Listeners: lis}
+}
+
+// CloseListen closes the forward listener bound at addr.
+func (f *Forwarder) CloseListen(addr string) error {
+	f.mu.Lock()
+	e := f.listeners[addr]
+	f.mu.Unlock()
+	if e == nil {
+		return fmt.Errorf("forward: no listener at %s", addr)
+	}
+	return e.ln.Close() // the accept goroutine removes it from the map
 }
 
 // Expose registers a local loopback service reachable over the mesh under name
@@ -78,7 +129,16 @@ func (f *Forwarder) Listen(localAddr, peerID, service string) (net.Listener, err
 	if err != nil {
 		return nil, err
 	}
+	addr := ln.Addr().String()
+	f.mu.Lock()
+	f.listeners[addr] = &listenerEntry{ln: ln, peerID: peerID, service: service}
+	f.mu.Unlock()
 	go func() {
+		defer func() {
+			f.mu.Lock()
+			delete(f.listeners, addr)
+			f.mu.Unlock()
+		}()
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
@@ -87,7 +147,7 @@ func (f *Forwarder) Listen(localAddr, peerID, service string) (net.Listener, err
 			go f.dialAndBridge(conn, pid, service)
 		}
 	}()
-	f.log.Info("mesh forward: listening", "addr", ln.Addr().String(), "peer", peerID, "service", service)
+	f.log.Info("mesh forward: listening", "addr", addr, "peer", peerID, "service", service)
 	return ln, nil
 }
 

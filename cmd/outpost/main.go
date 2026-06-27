@@ -99,7 +99,7 @@ func main() {
 		clusterCmd(), departCmd(), poolCmd(), kubectlCmd(),
 		// MCP-client CLI parity (Phase 1.5):
 		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), unpairCmd(), restartCmd(), mcpCmd(),
-		remoteCmd(),
+		remoteCmd(), meshCmd(),
 		docsCmd(), gitCmd(), shellCmd(), versionCmd(), upgradeCmd(), rollbackCmd(), buildCmd(),
 		supervisordCmd(), serviceCmd(), doctorCmd(),
 	)
@@ -614,6 +614,12 @@ func startCmd() *cobra.Command {
 					meshRdv = mesh.NewRendezvous(meshHost, fc.AgentName, cb, fc.AccessToken, slog.Default())
 				}
 			}
+			// Adapter so admincore can drive the forwarder (expose/listen)
+			// without importing the mesh package.
+			var meshFwd admincore.MeshForwardOps
+			if meshHost != nil {
+				meshFwd = meshFwdAdapter{f: meshHost.Forwarder()}
+			}
 
 			// Construct the shared business-logic layer first. The same
 			// admincore.Server instance feeds adminui (human SPA) and
@@ -630,6 +636,7 @@ func startCmd() *cobra.Command {
 				LLMPoolStatus:       llmPoolStatus,
 				PeerTiers:           peerTiers,
 				MeshStatus:          meshStatus,
+				MeshForward:         meshFwd,
 			})
 			if err != nil {
 				return fmt.Errorf("admincore: %w", err)

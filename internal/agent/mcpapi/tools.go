@@ -33,6 +33,7 @@ func (s *Server) registerTools() {
 	s.registerUpgradeTools()
 	s.registerSSHTools()
 	s.registerGossipTools()
+	s.registerMeshTools()
 }
 
 func (s *Server) registerResources() {
