@@ -113,6 +113,11 @@ func builtinsSetCmd() *cobra.Command {
 		clearSSHForwardSockets                                                                                                                                                         bool
 		ycodeShareSurfaces                                                                                                                                                             map[string]string
 	)
+	var (
+		shard      string
+		shardRole  string
+		shardPeers []string
+	)
 	cmd := &cobra.Command{
 		Use:   "set",
 		Short: "Toggle one or more built-ins. Only flags actually passed are modified.",
@@ -240,6 +245,15 @@ func builtinsSetCmd() *cobra.Command {
 			if cmd.Flags().Changed("mesh-port") {
 				params.MeshPort = &meshPort
 			}
+			if params.Shard, err = parseToggle("shard", shard); err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("shard-peers") {
+				params.ShardPeers = shardPeers
+			}
+			if cmd.Flags().Changed("shard-role") {
+				params.ShardRole = &shardRole
+			}
 			if params.Loom, err = parseToggle("loom", loom); err != nil {
 				return err
 			}
@@ -288,6 +302,9 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&desktop, "desktop", "", "on|off")
 	cmd.Flags().StringVar(&clipboard, "clipboard", "", "on|off")
 	cmd.Flags().StringVar(&ssh, "ssh", "", "on|off")
+	cmd.Flags().StringVar(&shard, "shard", "", "on|off — Ollama sharding; default on for a paired node, this opts out")
+	cmd.Flags().StringSliceVar(&shardPeers, "shard-peers", nil, "worker hostnames (empty/auto = every same-LAN peer)")
+	cmd.Flags().StringVar(&shardRole, "shard-role", "", "auto|leader|worker")
 	// Canonical names match the file/MCP key (ssh_allow_local_forward etc.);
 	// the old shorter spellings stay as deprecated aliases so existing
 	// scripts don't break.

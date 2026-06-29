@@ -50,6 +50,9 @@ type builtinsIn struct {
 	ActrunnerInstance      *string         `json:"actrunner_instance,omitempty" jsonschema:"Gitea base URL the runner registers against (empty = local loom forge)"`
 	ActrunnerToken         *string         `json:"actrunner_token,omitempty" jsonschema:"act_runner registration token (minted in Gitea)"`
 	ActrunnerLabels        *string         `json:"actrunner_labels,omitempty" jsonschema:"executor labels (default 'host:host')"`
+	Shard                  *bool           `json:"shard,omitempty" jsonschema:"Toggle Ollama sharding — serve a model bigger than one node by splitting it across same-LAN mesh peers. Default ON for a paired Ollama node; set false to opt out."`
+	ShardPeers             []string        `json:"shard_peers,omitempty" jsonschema:"Worker hostnames for the shard ring (empty or ['auto'] = every reachable same-LAN peer)"`
+	ShardRole              *string         `json:"shard_role,omitempty" jsonschema:"Shard role: 'auto' (most-VRAM host leads), 'leader', or 'worker'"`
 }
 
 type setBuiltinsOut struct {
@@ -101,6 +104,9 @@ func (s *Server) registerBuiltinsTools() {
 			ActrunnerInstance:      in.ActrunnerInstance,
 			ActrunnerToken:         in.ActrunnerToken,
 			ActrunnerLabels:        in.ActrunnerLabels,
+			Shard:                  in.Shard,
+			ShardPeers:             in.ShardPeers,
+			ShardRole:              in.ShardRole,
 		})
 		if err != nil {
 			return apiErrResult[setBuiltinsOut](err)
