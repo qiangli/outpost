@@ -1151,9 +1151,10 @@ func startCmd() *cobra.Command {
 			// Shard manager — keeps a launch-ready candidate ring up to date
 			// (same-LAN owner peers discovered via the peer-plane). Discovery
 			// only; forming a shard is gated on a too-big model (v1d).
-			if sm := newShardManager(fc, meshHost, peerPlaneSvc); sm != nil {
+			shardMgr := newShardManager(fc, meshHost, peerPlaneSvc)
+			if shardMgr != nil {
 				g.Go(func() error {
-					if err := sm.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+					if err := shardMgr.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
 						slog.Warn("shard manager: exited", "err", err)
 					}
 					return nil
@@ -1425,6 +1426,12 @@ func startCmd() *cobra.Command {
 					// push, unchanged.
 					if clusterDetector != nil {
 						ocfg.Cluster = clusterSourceAdapter{clusterDetector}
+					}
+					// Advertise an actively-served sharded model into the pool
+					// so cloudbox's routing/LB sends requests for it to this
+					// (leader) node — sharding fuses into the existing pool.
+					if shardMgr != nil {
+						ocfg.Cluster = shardClusterSource{base: ocfg.Cluster, mgr: shardMgr}
 					}
 					w, werr := ollama.New(ocfg)
 					if werr != nil {
