@@ -59,6 +59,10 @@ func (m *Manager) ServeControl() (func(), error) {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
+	mux.HandleFunc("/status", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(m.LocalStatus())
+	})
 	ln, err := net.Listen("tcp", loopback+":0")
 	if err != nil {
 		return nil, err
