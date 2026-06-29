@@ -43,6 +43,9 @@ func TestMeshNeeded_ShardCascade(t *testing.T) {
 	if !shardOn.MeshNeeded() {
 		t.Error("MeshNeeded must be true when sharding is on (cascade)")
 	}
+	if !shardOn.PeerPlaneNeeded() {
+		t.Error("PeerPlaneNeeded must be true when sharding is on (cascade)")
+	}
 
 	meshOnly := &FileConfig{MeshEnabled: bp(true), OllamaEnabled: true, AccessToken: "tok", Shard: &ShardConfig{Enabled: bp(false)}}
 	if !meshOnly.MeshNeeded() {

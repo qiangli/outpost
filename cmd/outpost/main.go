@@ -560,7 +560,7 @@ func startCmd() *cobra.Command {
 			// the outpost_peer_tiers MCP tool; started in the errgroup below.
 			// Self-disables when unpaired.
 			var peerPlaneSvc *peerplane.Service
-			if fc.PeerPlaneOn() && fc.AccessToken != "" {
+			if fc.PeerPlaneNeeded() && fc.AccessToken != "" {
 				if cb := cloudboxHTTPBase(fc); cb != "" {
 					peerPlaneSvc = peerplane.New(peerplane.Config{
 						AgentName:   cfg.AgentName,
@@ -595,7 +595,7 @@ func startCmd() *cobra.Command {
 			// relay (or cloudbox unreachable at boot) just means no relay leg;
 			// same-LAN/same-vicinity still connects directly.
 			var meshRelays []string
-			if fc.MeshOn() && fc.AccessToken != "" {
+			if fc.MeshNeeded() && fc.AccessToken != "" {
 				if cb := cloudboxHTTPBase(fc); cb != "" {
 					rc := &peerplane.Client{BaseURL: cb, Token: fc.AccessToken, HC: &http.Client{Timeout: 10 * time.Second}}
 					rctx, rcancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -606,7 +606,7 @@ func startCmd() *cobra.Command {
 				}
 			}
 			var meshHost *mesh.Host
-			if fc.MeshOn() && fc.AccessToken != "" {
+			if fc.MeshNeeded() && fc.AccessToken != "" {
 				mh, merr := mesh.New(mesh.Config{
 					AgentName:  fc.AgentName,
 					ListenPort: fc.MeshPort,
@@ -1143,6 +1143,18 @@ func startCmd() *cobra.Command {
 				g.Go(func() error {
 					if err := meshRdv.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
 						slog.Warn("mesh rendezvous: exited", "err", err)
+					}
+					return nil
+				})
+			}
+
+			// Shard manager — keeps a launch-ready candidate ring up to date
+			// (same-LAN owner peers discovered via the peer-plane). Discovery
+			// only; forming a shard is gated on a too-big model (v1d).
+			if sm := newShardManager(fc, meshHost, peerPlaneSvc); sm != nil {
+				g.Go(func() error {
+					if err := sm.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+						slog.Warn("shard manager: exited", "err", err)
 					}
 					return nil
 				})

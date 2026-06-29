@@ -1492,6 +1492,14 @@ func (fc *FileConfig) MeshNeeded() bool {
 	return fc.MeshOn() || fc.ShardOn()
 }
 
+// PeerPlaneNeeded reports whether the peer-plane locality service must run —
+// either explicitly enabled (PeerPlaneOn) or implicitly because sharding (which
+// discovers its same-LAN ring via the peer-plane) is on. Gating on this lets
+// zero-config sharding bring up its discovery service without a separate opt-in.
+func (fc *FileConfig) PeerPlaneNeeded() bool {
+	return fc.PeerPlaneOn() || fc.ShardOn()
+}
+
 // OtelOn reports whether the built-in observability proxies are enabled.
 func (fc *FileConfig) OtelOn() bool { return fc != nil && fc.OtelEnabled }
 
