@@ -705,8 +705,14 @@ func startCmd() *cobra.Command {
 				}
 				if host == "" || host == "self" || host == "local" {
 					// Lead the shard from THIS node, using its own ring — no mesh
-					// self-dial. The leader self-provisions + drives its workers.
-					return shardMgr.Orchestrate(ctx, model, 11434, nil)
+					// self-dial. Long-running (self-provision pulls the model), so
+					// background it on a detached context and return immediately.
+					go func() {
+						if err := shardMgr.Orchestrate(context.Background(), model, 11434, nil); err != nil {
+							slog.Warn("shard: local lead failed", "model", model, "err", err)
+						}
+					}()
+					return nil
 				}
 				peer, err := resolveShardPeer(ctx, host)
 				if err != nil {
