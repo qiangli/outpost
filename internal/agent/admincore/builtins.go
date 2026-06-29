@@ -66,6 +66,14 @@ type BuiltinsParams struct {
 	// TCP+QUIC listen port (0 = ephemeral). nil = leave unchanged.
 	Mesh     *bool `json:"mesh,omitempty"`
 	MeshPort *int  `json:"mesh_port,omitempty"`
+	// Shard is the Ollama sharding sub-feature: serve a model bigger than one
+	// node by splitting it across mesh peers. nil = leave unchanged; *bool=false
+	// opts OUT of the zero-config default (on for an owner-registered Ollama
+	// node). ShardPeers selects worker hostnames (nil = leave; empty/["auto"] =
+	// every same-LAN peer); ShardRole is "auto"/"leader"/"worker".
+	Shard      *bool    `json:"shard,omitempty"`
+	ShardPeers []string `json:"shard_peers,omitempty"`
+	ShardRole  *string  `json:"shard_role,omitempty"`
 	// Loom toggles running the loom git forge (Gitea) as a managed external
 	// binary on a loopback port, auto-exposed over the mesh as `git`. LoomPort
 	// sets its HTTP port (0 = default 3000). nil = leave unchanged.
@@ -170,6 +178,24 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	}
 	if p.MeshPort != nil {
 		fc.MeshPort = *p.MeshPort
+	}
+	if p.Shard != nil {
+		if fc.Shard == nil {
+			fc.Shard = &conf.ShardConfig{}
+		}
+		fc.Shard.Enabled = p.Shard
+	}
+	if p.ShardPeers != nil {
+		if fc.Shard == nil {
+			fc.Shard = &conf.ShardConfig{}
+		}
+		fc.Shard.Peers = p.ShardPeers
+	}
+	if p.ShardRole != nil {
+		if fc.Shard == nil {
+			fc.Shard = &conf.ShardConfig{}
+		}
+		fc.Shard.Role = *p.ShardRole
 	}
 	if p.Loom != nil {
 		fc.LoomEnabled = p.Loom
