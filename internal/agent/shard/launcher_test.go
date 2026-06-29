@@ -7,9 +7,42 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// syncBuf is a concurrency-safe log sink so the test can poll it while exec's
+// copy goroutine writes.
+type syncBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// waitFor polls cond until true or the deadline; fails the test on timeout.
+func waitFor(t *testing.T, d time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	t.Fatalf("condition not met within %s", d)
+}
 
 // writeStub writes a unix shell stand-in for the prima binary: it echoes its
 // argv (so the test can assert the wiring produced the right flags) then blocks
@@ -30,7 +63,7 @@ func TestStart_WiresLaunchesAndStops(t *testing.T) {
 	}
 	f := newFake()
 	plan, _ := ring2().PlanFor(0) // leader: 2 exposes, 2 forwards
-	var buf bytes.Buffer
+	var buf syncBuf
 	sess, err := Start(context.Background(), f, plan, LaunchConfig{
 		BinaryPath: writeStub(t),
 		ModelPath:  "/models/qwen.gguf",
@@ -48,8 +81,8 @@ func TestStart_WiresLaunchesAndStops(t *testing.T) {
 		t.Error("expected session running")
 	}
 
-	// Give the stub a moment to echo its argv, then stop.
-	time.Sleep(300 * time.Millisecond)
+	// Wait until the stub has echoed its argv (robust under load), then stop.
+	waitFor(t, 5*time.Second, func() bool { return strings.Contains(buf.String(), "PRIMA-ARGS:") })
 	sess.Stop()
 
 	got := buf.String() // safe: Stop waited for the process (and its log copy) to finish
