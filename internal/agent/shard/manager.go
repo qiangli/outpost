@@ -30,6 +30,11 @@ type ManagerConfig struct {
 	Interval  time.Duration  // discover cadence (0 → 30s)
 	Logger    *slog.Logger
 	Bins      ServeBins // this node's prima binaries (server + worker)
+	// LocalLoad yields this node's local models (with sizes) + its model-memory
+	// budget; when set, the discover loop auto-triggers a shard for a too-big
+	// model (MaybeShard). nil → no auto-trigger.
+	LocalLoad func() ([]LocalModel, uint64)
+	APIPort   int // OpenAI port for a leader-served shard (0 → 11434)
 }
 
 // Manager keeps a current candidate shard Ring up to date: it periodically
@@ -37,12 +42,14 @@ type ManagerConfig struct {
 // ring. It does NOT form a shard by itself — standing the ring up is gated on a
 // too-big model (the auto-trigger, v1d); the manager just keeps the ring ready.
 type Manager struct {
-	self     ShardPeer
-	fwd      Forwarder
-	peers    PeerDiscoverer
-	interval time.Duration
-	log      *slog.Logger
-	bins     ServeBins
+	self      ShardPeer
+	fwd       Forwarder
+	peers     PeerDiscoverer
+	interval  time.Duration
+	log       *slog.Logger
+	bins      ServeBins
+	localLoad func() ([]LocalModel, uint64)
+	apiPort   int
 	// onForm is the action taken to stand up a rank (default Form); injectable
 	// so the orchestration control plane can be tested without launching.
 	onForm func(context.Context, *Ring, int, ServeConfig) error
@@ -67,13 +74,19 @@ func NewManager(cfg ManagerConfig) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
+	apiPort := cfg.APIPort
+	if apiPort == 0 {
+		apiPort = 11434
+	}
 	m := &Manager{
-		self:     cfg.Self,
-		fwd:      cfg.Forwarder,
-		peers:    cfg.Peers,
-		interval: interval,
-		log:      log,
-		bins:     cfg.Bins,
+		self:      cfg.Self,
+		fwd:       cfg.Forwarder,
+		peers:     cfg.Peers,
+		interval:  interval,
+		log:       log,
+		bins:      cfg.Bins,
+		localLoad: cfg.LocalLoad,
+		apiPort:   apiPort,
 	}
 	m.onForm = m.Form
 	m.orchestrate = m.Orchestrate
@@ -117,6 +130,19 @@ func (m *Manager) refresh(ctx context.Context) {
 	m.mu.Unlock()
 	if ring != nil && (prev == nil || len(prev.Members) != len(ring.Members)) {
 		m.log.Info("shard: candidate ring", "members", len(ring.Members), "leader", m.self.Host)
+	}
+	m.maybeAutoShard(ctx)
+}
+
+// maybeAutoShard fires the auto-trigger with this node's local models + budget,
+// if a LocalLoad source is wired (best-effort; logs and moves on).
+func (m *Manager) maybeAutoShard(ctx context.Context) {
+	if m.localLoad == nil {
+		return
+	}
+	models, budget := m.localLoad()
+	if err := m.MaybeShard(ctx, models, budget, m.apiPort); err != nil {
+		m.log.Debug("shard: auto-trigger failed", "err", err)
 	}
 }
 

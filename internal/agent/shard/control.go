@@ -135,8 +135,8 @@ type LocalModel struct {
 // shard with this node as leader. Idempotent — skips the already-active model.
 // The daemon calls this with the local ollama models + this node's memory budget.
 func (m *Manager) MaybeShard(ctx context.Context, localModels []LocalModel, localBytes uint64, apiPort int) error {
-	if m.Ring() == nil {
-		return nil // no same-LAN peers to shard across
+	if localBytes == 0 || m.Ring() == nil {
+		return nil // no budget configured, or no same-LAN peers to shard across
 	}
 	active := m.ActiveModel()
 	for _, lm := range localModels {
