@@ -29,6 +29,7 @@ type ManagerConfig struct {
 	Peers     PeerDiscoverer // same-LAN owner-peer source
 	Interval  time.Duration  // discover cadence (0 → 30s)
 	Logger    *slog.Logger
+	Bins      ServeBins // this node's prima binaries (server + worker)
 }
 
 // Manager keeps a current candidate shard Ring up to date: it periodically
@@ -41,6 +42,10 @@ type Manager struct {
 	peers    PeerDiscoverer
 	interval time.Duration
 	log      *slog.Logger
+	bins     ServeBins
+	// onForm is the action taken to stand up a rank (default Form); injectable
+	// so the orchestration control plane can be tested without launching.
+	onForm func(context.Context, *Ring, int, ServeConfig) error
 
 	mu          sync.Mutex
 	ring        *Ring
@@ -59,18 +64,30 @@ func NewManager(cfg ManagerConfig) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Manager{
+	m := &Manager{
 		self:     cfg.Self,
 		fwd:      cfg.Forwarder,
 		peers:    cfg.Peers,
 		interval: interval,
 		log:      log,
+		bins:     cfg.Bins,
 	}
+	m.onForm = m.Form
+	return m
 }
 
 // Run refreshes the candidate ring immediately, then on every interval, until
 // ctx is cancelled.
 func (m *Manager) Run(ctx context.Context) error {
+	// Serve the shard-control endpoint so a leader can drive this node to form
+	// its rank (best-effort — discovery still runs if it can't bind).
+	if m.fwd != nil {
+		if cleanup, err := m.ServeControl(); err != nil {
+			m.log.Warn("shard: control endpoint unavailable", "err", err)
+		} else {
+			defer cleanup()
+		}
+	}
 	m.refresh(ctx)
 	t := time.NewTicker(m.interval)
 	defer t.Stop()
