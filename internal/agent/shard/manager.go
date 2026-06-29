@@ -42,8 +42,10 @@ type Manager struct {
 	interval time.Duration
 	log      *slog.Logger
 
-	mu   sync.Mutex
-	ring *Ring
+	mu          sync.Mutex
+	ring        *Ring
+	active      *Session
+	activeModel string
 }
 
 // NewManager builds a shard manager. Defaults: 30s discover interval, the
@@ -125,4 +127,51 @@ func (m *Manager) Ring() *Ring {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.ring
+}
+
+// Form launches THIS node's part of a shard for the given ring + serve config
+// (the caller — the trigger — decides ring/rank/model/when). The leader serves
+// the model's OpenAI endpoint; workers serve their layer span. Recording the
+// served model lets the pool advertise it (ActiveModel). Forming again replaces
+// the previous shard.
+func (m *Manager) Form(ctx context.Context, ring *Ring, myRank int, sc ServeConfig) error {
+	plan, err := ring.PlanFor(myRank)
+	if err != nil {
+		return err
+	}
+	sess, err := Start(ctx, m.fwd, plan, plan.LaunchConfigFor(sc))
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	prev := m.active
+	m.active = sess
+	m.activeModel = sc.Model
+	m.mu.Unlock()
+	if prev != nil {
+		prev.Stop()
+	}
+	m.log.Info("shard: formed", "model", sc.Model, "rank", myRank, "members", len(ring.Members))
+	return nil
+}
+
+// Stop tears down the active shard on this node (if any).
+func (m *Manager) Stop() {
+	m.mu.Lock()
+	sess := m.active
+	m.active = nil
+	m.activeModel = ""
+	m.mu.Unlock()
+	if sess != nil {
+		sess.Stop()
+	}
+}
+
+// ActiveModel returns the model this node is currently serving via a shard, or
+// "" if none — the name the pool advertises so cloudbox routes requests for it
+// to this (leader) node.
+func (m *Manager) ActiveModel() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.activeModel
 }

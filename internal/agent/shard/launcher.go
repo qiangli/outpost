@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strconv"
 	"sync"
 )
 
@@ -14,6 +15,37 @@ type LaunchConfig struct {
 	ModelPath  string    // -m <model>
 	Extra      []string  // --prefetch, --gpu-mem, and for rank 0 the -p/-n prompt
 	LogWriter  io.Writer // prima stdout+stderr sink (nil → discarded)
+}
+
+// ServeConfig describes how a node launches its shard process to SERVE a model:
+// the leader (rank 0) runs prima's llama-server (the OpenAI endpoint clients
+// hit); every other rank runs llama-cli over its layer span. The OpenAI port is
+// loopback-only — cloudbox reaches it via the existing ollama-style proxy, and
+// the pool routes to it once advertised.
+type ServeConfig struct {
+	Model     string   // -m <model gguf>
+	ServerBin string   // prima llama-server path (leader, rank 0)
+	WorkerBin string   // prima llama-cli path (workers)
+	APIHost   string   // leader OpenAI bind host (default 127.0.0.1)
+	APIPort   int      // leader OpenAI port
+	Extra     []string // engine extras: --prefetch, --gpu-mem, …
+}
+
+// LaunchConfigFor builds this host's LaunchConfig from its plan + a ServeConfig.
+// rank 0 → the server binary with --host/--port (the served OpenAI endpoint);
+// any other rank → the worker binary for its layer span. The distributed ring
+// flags come from the plan (PrimaArgs); this only chooses the binary + the
+// role-specific serve flags.
+func (p *HostPlan) LaunchConfigFor(sc ServeConfig) LaunchConfig {
+	if p.MyRank == 0 {
+		host := sc.APIHost
+		if host == "" {
+			host = loopback
+		}
+		extra := append([]string{"--host", host, "--port", strconv.Itoa(sc.APIPort)}, sc.Extra...)
+		return LaunchConfig{BinaryPath: sc.ServerBin, ModelPath: sc.Model, Extra: extra}
+	}
+	return LaunchConfig{BinaryPath: sc.WorkerBin, ModelPath: sc.Model, Extra: sc.Extra}
 }
 
 // Session is a running shard participant on this host: the prima process plus
