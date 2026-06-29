@@ -111,19 +111,31 @@ type peerPlaneDiscoverer struct {
 	svc      *peerplane.Service
 	client   *peerplane.Client
 	selfHost string
+	mesh     *mesh.Host
 }
 
 func (d *peerPlaneDiscoverer) SameLANPeers(ctx context.Context) ([]shard.ShardPeer, error) {
 	var peers []shard.ShardPeer
 	for _, t := range d.svc.Snapshot() {
-		if t.Tier != peerplane.TierLAN && t.Tier != peerplane.TierTP {
-			continue // sharding rides a fast local link only
-		}
 		target, err := d.client.Connect(ctx, d.selfHost, t.Host)
 		if err != nil || target == nil || target.Peer.PeerID == "" {
 			continue // can't resolve a libp2p id → skip
 		}
-		peers = append(peers, shard.ShardPeer{Host: t.Host, PeerID: target.Peer.PeerID})
+		peerID := target.Peer.PeerID
+		// Fast local link if the peerplane RTT-tiered it LAN/TP, OR the mesh holds
+		// a DIRECT connection over a private/link-local address. The latter rescues
+		// link-local (TP-Link) + firewalled LANs the UDP prober reports "unreached"
+		// — the mesh connection's own remote address is the ground truth.
+		local := t.Tier == peerplane.TierLAN || t.Tier == peerplane.TierTP
+		if !local && d.mesh != nil {
+			if cls := d.mesh.PeerLinkClass(peerID); cls == "tp" || cls == "lan" {
+				local = true
+			}
+		}
+		if !local {
+			continue // sharding rides a fast local link only
+		}
+		peers = append(peers, shard.ShardPeer{Host: t.Host, PeerID: peerID})
 	}
 	return peers, nil
 }
@@ -142,6 +154,7 @@ func newShardManager(fc *conf.FileConfig, meshHost *mesh.Host, peerSvc *peerplan
 		svc:      peerSvc,
 		client:   &peerplane.Client{BaseURL: cb, Token: fc.AccessToken, HC: &http.Client{Timeout: 10 * time.Second}},
 		selfHost: fc.AgentName,
+		mesh:     meshHost,
 	}
 	var bins shard.ServeBins
 	var nodeBytes uint64

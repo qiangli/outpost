@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"sort"
 	"strings"
 
@@ -71,9 +72,9 @@ func New(cfg Config) (*Host, error) {
 	opts := []libp2p.Option{
 		libp2p.Identity(priv),
 		libp2p.ListenAddrStrings(listenAddrs(cfg.ListenPort)...),
-		libp2p.EnableNATService(),    // answer AutoNAT dial-backs for peers
-		libp2p.EnableHolePunching(),  // DCUtR — direct connect across NATs
-		libp2p.NATPortMap(),          // best-effort UPnP/NAT-PMP mapping
+		libp2p.EnableNATService(),   // answer AutoNAT dial-backs for peers
+		libp2p.EnableHolePunching(), // DCUtR — direct connect across NATs
+		libp2p.NATPortMap(),         // best-effort UPnP/NAT-PMP mapping
 		libp2p.UserAgent(ua),
 	}
 	// Defaults supply TCP+QUIC+WS transports, Noise+TLS security, yamux,
@@ -172,6 +173,62 @@ func (m *Host) HasDirectConn(peerID string) bool {
 		}
 	}
 	return false
+}
+
+// PeerLinkClass classifies a DIRECT (non-relayed) connection to the peer by its
+// remote address — the ground truth for same-locality that the peerplane's UDP
+// probes miss (they can't dial a zone-less link-local address, and a firewalled
+// LAN drops the echo, so genuinely-local peers come back "unreached"):
+//
+//	"tp"  — link-local / APIPA (169.254.x, fe80:) : a dedicated wired link (TP-Link hub)
+//	"lan" — RFC-1918 / ULA private address          : same LAN (incl. wifi)
+//	"wan" — public address                          : remote
+//	""    — no direct connection (relayed or absent)
+//
+// It returns the strongest class across all direct connections to the peer.
+func (m *Host) PeerLinkClass(peerID string) string {
+	pid, err := peer.Decode(peerID)
+	if err != nil {
+		return ""
+	}
+	best := ""
+	for _, c := range m.h.Network().ConnsToPeer(pid) {
+		if c.Stat().Limited {
+			continue // relayed — not a direct link
+		}
+		best = strongerLinkClass(best, classifyConnAddr(c.RemoteMultiaddr()))
+	}
+	return best
+}
+
+func classifyConnAddr(maddr ma.Multiaddr) string {
+	if maddr == nil {
+		return ""
+	}
+	ipStr, err := maddr.ValueForProtocol(ma.P_IP4)
+	if err != nil {
+		ipStr, _ = maddr.ValueForProtocol(ma.P_IP6)
+	}
+	ip := net.ParseIP(ipStr)
+	if ip == nil || ip.IsLoopback() {
+		return ""
+	}
+	switch {
+	case ip.IsLinkLocalUnicast():
+		return "tp"
+	case ip.IsPrivate():
+		return "lan"
+	default:
+		return "wan"
+	}
+}
+
+func strongerLinkClass(a, b string) string {
+	rank := map[string]int{"": 0, "wan": 1, "lan": 2, "tp": 3}
+	if rank[b] > rank[a] {
+		return b
+	}
+	return a
 }
 
 // Connected reports whether there is any connection (direct or relayed) to peer.
