@@ -7,6 +7,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/qiangli/outpost/internal/agent/brain"
 )
 
 // ShardPeer identifies a shard-ring participant on the mesh: a hostname label
@@ -40,6 +42,9 @@ type ManagerConfig struct {
 	// fetching them with no human staging, and returns the GGUF path prima loads.
 	// nil → identity (model name used as-is; for tests + already-staged hosts).
 	Provision func(ctx context.Context, modelName string) (string, error)
+	// Refiner, when set, lets the pooled LLM (the brain) refine the leader
+	// election. nil → the deterministic bootstrap (most-VRAM) stands.
+	Refiner brain.Refiner
 }
 
 // Manager keeps a current candidate shard Ring up to date: it periodically
@@ -70,6 +75,8 @@ type Manager struct {
 	// provision fetches the model (+ binaries) and returns the GGUF path (default
 	// identity); self-provisioning is what removes human staging.
 	provision func(ctx context.Context, modelName string) (string, error)
+	// refiner is the pooled-LLM hook for the brain (nil → bootstrap stands).
+	refiner brain.Refiner
 
 	mu          sync.Mutex
 	ring        *Ring
@@ -110,6 +117,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 	if m.provision == nil {
 		m.provision = func(_ context.Context, name string) (string, error) { return name, nil }
 	}
+	m.refiner = cfg.Refiner
 	return m
 }
 

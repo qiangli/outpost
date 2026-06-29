@@ -1,18 +1,18 @@
 package shard
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/qiangli/outpost/internal/agent/brain"
+)
 
 // Decider chooses whether to shard a model and which node leads, from the
 // gathered fleet state. The default is DecideShard — deterministic, most-VRAM
 // leads. It is the *bootstrap*: always available, no dependency, so a shard can
-// always form even when the pool is busy or the model is unsure.
-//
-// The "self-think" path the mesh can grow plugs in here as an alternate Decider:
-// package this same state (the per-node capacities + the model) into a prompt and
-// ask the pooled LLM (cloudbox ollama) to refine the partition / leader choice.
-// Bootstrapped by the deterministic Decider — the mesh has to be up to run the
-// LLM that decides how to organize the mesh, so it self-organizes deterministically
-// first, then self-optimizes. The orchestrator gathers the state via PingPeer.
+// always form. The brain (the pooled-LLM Refiner) refines this choice when wired;
+// the deterministic Decider is what it bootstraps from.
 type Decider func(modelBytes uint64, nodes []NodeCapacity) Decision
 
 // gatherViaPing collects candidate capacities by pinging each ring peer over the
@@ -40,14 +40,49 @@ func (m *Manager) gatherViaPing(ctx context.Context, modelBytes, selfBudget uint
 	return nodes, peers
 }
 
-// elect gathers candidate capacities and runs the Decider — no human chooses the
-// leader.
+// elect gathers candidate capacities, decides deterministically (the bootstrap),
+// then lets the brain refine the leader via the pooled LLM when wired — the
+// bootstrap always stands. No human chooses.
 func (m *Manager) elect(ctx context.Context, modelBytes, selfBudget uint64) (Decision, map[string]ShardPeer) {
 	nodes, peers := m.gather(ctx, modelBytes, selfBudget)
 	if len(nodes) == 0 {
 		return Decision{}, nil
 	}
-	return m.decide(modelBytes, nodes), peers
+	bootstrap := m.decide(modelBytes, nodes)
+	final, fromLLM := brain.Decide(ctx, bootstrap, shardPrompt(modelBytes, nodes), m.refiner, parseShardLeader(bootstrap, nodes))
+	if fromLLM {
+		m.log.Info("shard: brain refined the leader", "leader", final.Leader)
+	}
+	return final, peers
+}
+
+// shardPrompt frames the leader decision for the pooled LLM.
+func shardPrompt(modelBytes uint64, nodes []NodeCapacity) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "A model of %d bytes must be served sharded. Candidate nodes (host: model-memory budget in bytes):\n", modelBytes)
+	for _, n := range nodes {
+		fmt.Fprintf(&b, "- %s: %d\n", n.Host, n.Bytes)
+	}
+	b.WriteString("Which single host should LEAD (serve the OpenAI endpoint + drive generation)? Reply with only the host name.")
+	return b.String()
+}
+
+// parseShardLeader turns the LLM's leader pick into a Decision, but only when the
+// pick is a real candidate AND the bootstrap already decided to shard — so the
+// brain refines the leader, never overrides the deterministic fits-or-not verdict.
+func parseShardLeader(bootstrap Decision, nodes []NodeCapacity) func(string) (Decision, bool) {
+	return func(reply string) (Decision, bool) {
+		if !bootstrap.ShouldShard {
+			return Decision{}, false
+		}
+		choice := strings.TrimSpace(reply)
+		for _, n := range nodes {
+			if n.Host == choice {
+				return Decision{ShouldShard: true, Leader: choice, Reason: "brain-elected leader"}, true
+			}
+		}
+		return Decision{}, false
+	}
 }
 
 // autoShard is the autonomous trigger body: elect a leader by capacity (no human
