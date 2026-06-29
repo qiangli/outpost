@@ -1456,8 +1456,11 @@ type MeshService struct {
 
 // ShardConfig is the Ollama sharding sub-feature config (under Ollama).
 type ShardConfig struct {
-	// Enabled turns sharding on (requires Ollama + the mesh data plane).
-	Enabled bool `json:"enabled,omitempty"`
+	// Enabled is a tri-state opt-out: nil → the zero-config default (ON for a
+	// paired, Ollama-on node — an owner-registered node "just works" as a shard
+	// participant); explicit false opts out; true forces on. Mirrors
+	// OllamaPoolEnabled.
+	Enabled *bool `json:"enabled,omitempty"`
 	// Peers is the selected worker hostnames; empty or "auto" = every
 	// reachable same-vicinity mesh peer.
 	Peers []string `json:"peers,omitempty"`
@@ -1465,10 +1468,28 @@ type ShardConfig struct {
 	Role string `json:"role,omitempty"`
 }
 
-// ShardOn reports whether Ollama sharding is enabled. Gated on the mesh data
-// plane (the transport) being on too — sharding rides the mesh forwarder.
+// ShardOn reports whether Ollama sharding is enabled. Zero-config by design:
+// ON by default for a paired, Ollama-on node (an owner-registered node "just
+// works" as a shard participant); explicit Shard.Enabled=false opts out. It
+// states the INTENT — the mesh data plane it rides is auto-enabled as a
+// dependency (see MeshNeeded), so zero-config sharding needs no separate
+// mesh opt-in.
 func (fc *FileConfig) ShardOn() bool {
-	return fc != nil && fc.Shard != nil && fc.Shard.Enabled && fc.MeshOn()
+	if !fc.OllamaOn() || fc.AccessToken == "" {
+		return false // sharding needs Ollama + a cloudbox pairing (owner-registered)
+	}
+	if fc.Shard != nil && fc.Shard.Enabled != nil {
+		return *fc.Shard.Enabled // explicit opt-in/out honored
+	}
+	return true // zero-config default
+}
+
+// MeshNeeded reports whether the libp2p mesh data plane must run — either
+// explicitly enabled (MeshOn) or implicitly because sharding (which rides it)
+// is on. The daemon gates mesh startup on this so zero-config sharding brings
+// its own transport up without a separate opt-in.
+func (fc *FileConfig) MeshNeeded() bool {
+	return fc.MeshOn() || fc.ShardOn()
 }
 
 // OtelOn reports whether the built-in observability proxies are enabled.
