@@ -2,6 +2,7 @@ package shard
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sort"
 	"sync"
@@ -35,6 +36,10 @@ type ManagerConfig struct {
 	// model (MaybeShard). nil → no auto-trigger.
 	LocalLoad func() ([]LocalModel, uint64)
 	APIPort   int // OpenAI port for a leader-served shard (0 → 11434)
+	// Provision ensures the model (+ engine binaries) are present locally,
+	// fetching them with no human staging, and returns the GGUF path prima loads.
+	// nil → identity (model name used as-is; for tests + already-staged hosts).
+	Provision func(ctx context.Context, modelName string) (string, error)
 }
 
 // Manager keeps a current candidate shard Ring up to date: it periodically
@@ -62,6 +67,9 @@ type Manager struct {
 	// gather collects candidate capacities for the election (default
 	// gatherViaPing, over the mesh); injectable so the trigger is unit-testable.
 	gather func(ctx context.Context, modelBytes, selfBudget uint64) ([]NodeCapacity, map[string]ShardPeer)
+	// provision fetches the model (+ binaries) and returns the GGUF path (default
+	// identity); self-provisioning is what removes human staging.
+	provision func(ctx context.Context, modelName string) (string, error)
 
 	mu          sync.Mutex
 	ring        *Ring
@@ -98,6 +106,10 @@ func NewManager(cfg ManagerConfig) *Manager {
 	m.orchestrate = m.Orchestrate
 	m.decide = DecideShard
 	m.gather = m.gatherViaPing
+	m.provision = cfg.Provision
+	if m.provision == nil {
+		m.provision = func(_ context.Context, name string) (string, error) { return name, nil }
+	}
 	return m
 }
 
@@ -190,18 +202,24 @@ func (m *Manager) Ring() *Ring {
 // served model lets the pool advertise it (ActiveModel). Forming again replaces
 // the previous shard.
 func (m *Manager) Form(ctx context.Context, ring *Ring, myRank int, sc ServeConfig) error {
+	gguf, err := m.provision(ctx, sc.Model)
+	if err != nil {
+		return fmt.Errorf("shard: provision %q: %w", sc.Model, err)
+	}
 	plan, err := ring.PlanFor(myRank)
 	if err != nil {
 		return err
 	}
-	sess, err := Start(ctx, m.fwd, plan, plan.LaunchConfigFor(sc))
+	launchSC := sc
+	launchSC.Model = gguf // prima loads the resolved GGUF path
+	sess, err := Start(ctx, m.fwd, plan, plan.LaunchConfigFor(launchSC))
 	if err != nil {
 		return err
 	}
 	m.mu.Lock()
 	prev := m.active
 	m.active = sess
-	m.activeModel = sc.Model
+	m.activeModel = sc.Model // advertise the NAME, not the GGUF path
 	m.mu.Unlock()
 	if prev != nil {
 		prev.Stop()

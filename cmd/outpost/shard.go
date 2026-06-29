@@ -71,6 +71,9 @@ func newShardManager(fc *conf.FileConfig, meshHost *mesh.Host, peerSvc *peerplan
 		Forwarder: meshHost.Forwarder(),
 		Peers:     disc,
 		Bins:      bins,
+		Provision: func(ctx context.Context, name string) (string, error) {
+			return provisionShard(ctx, bins, name)
+		},
 		LocalLoad: func() ([]shard.LocalModel, uint64) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
