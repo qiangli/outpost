@@ -56,6 +56,12 @@ type Manager struct {
 	// orchestrate stands up a full shard with this node as leader (default
 	// Orchestrate); injectable so the auto-trigger decision is testable.
 	orchestrate func(context.Context, string, int, []string) error
+	// decide chooses whether to shard + which node leads (default DecideShard,
+	// deterministic most-VRAM); the LLM "self-think" path swaps in here.
+	decide Decider
+	// gather collects candidate capacities for the election (default
+	// gatherViaPing, over the mesh); injectable so the trigger is unit-testable.
+	gather func(ctx context.Context, modelBytes, selfBudget uint64) ([]NodeCapacity, map[string]ShardPeer)
 
 	mu          sync.Mutex
 	ring        *Ring
@@ -90,6 +96,8 @@ func NewManager(cfg ManagerConfig) *Manager {
 	}
 	m.onForm = m.Form
 	m.orchestrate = m.Orchestrate
+	m.decide = DecideShard
+	m.gather = m.gatherViaPing
 	return m
 }
 

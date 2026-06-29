@@ -149,7 +149,7 @@ func (m *Manager) MaybeShard(ctx context.Context, localModels []LocalModel, loca
 		}
 		if lm.Bytes > localBytes {
 			m.log.Info("shard: auto-trigger", "model", lm.Name, "bytes", lm.Bytes, "local_budget", localBytes)
-			return m.orchestrate(ctx, lm.Name, apiPort, nil)
+			return m.autoShard(ctx, lm, localBytes, apiPort)
 		}
 	}
 	return nil

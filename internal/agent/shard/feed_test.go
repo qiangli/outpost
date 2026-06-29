@@ -21,6 +21,9 @@ func TestRefresh_AutoShards(t *testing.T) {
 		triggered = model
 		return nil
 	}
+	m.gather = func(context.Context, uint64, uint64) ([]NodeCapacity, map[string]ShardPeer) {
+		return []NodeCapacity{{Host: "leader", Bytes: 60 << 30}, {Host: "w", Bytes: 40 << 30}}, nil
+	}
 
 	m.refresh(context.Background())
 
