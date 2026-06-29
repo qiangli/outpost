@@ -49,8 +49,8 @@ on:
         description: "Release tag (e.g. v0.4.5)"
         required: true
       host:
-        description: "Canary host name (must match a cloudbox-paired host)"
-        default: "host-a"
+        description: "Canary host name (blank → the CANARY_HOST secret)"
+        default: ""
       platform:
         description: "Canary host platform"
         default: "darwin-arm64"
@@ -98,12 +98,19 @@ jobs:
             # workflow_run: derive tag from source workflow. GitHub sets
             # head_branch to the tag ref for tag-triggered workflows.
             tag="${{ github.event.workflow_run.head_branch }}"
-            host="host-a"
+            host="${{ secrets.CANARY_HOST }}"
             platform="darwin-arm64"
             dry_run="false"
           fi
+          # The canary host comes from the CANARY_HOST secret (kept out of the
+          # public repo); a manual dispatch may override it via inputs.host.
+          [ -z "$host" ] && host="${{ secrets.CANARY_HOST }}"
           if [ -z "$tag" ]; then
             echo "::error::could not resolve release tag"
+            exit 1
+          fi
+          if [ -z "$host" ]; then
+            echo "::error::canary host unset — set the CANARY_HOST repo secret to a cloudbox-paired host"
             exit 1
           fi
           {
