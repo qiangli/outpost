@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"github.com/spf13/cobra"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/mesh"
@@ -15,6 +18,92 @@ import (
 	"github.com/qiangli/outpost/internal/agent/shard"
 	"github.com/qiangli/outpost/internal/agent/sysinfo"
 )
+
+// shardCmd is the MCP-client CLI for the libp2p-mesh shard control plane: tell a
+// peer to LEAD a shard for a model (no ssh), and read a node's shard readiness.
+func shardCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "shard",
+		Short: "Drive intra-LAN model sharding over the libp2p mesh (no ssh)",
+		Long: `Trigger a paired peer to LEAD a shard for a model — the leader self-provisions
+and orchestrates its same-LAN ring over the mesh — and inspect a node's shard
+readiness. Both subcommands drive the local daemon over MCP.`,
+	}
+	cmd.AddCommand(shardTriggerCmd(), shardStatusCmd())
+	return cmd
+}
+
+func shardTriggerCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "trigger <host> <model>",
+		Short: "Tell a peer host to LEAD a shard for a model over the mesh",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var out struct {
+				OK bool `json:"ok"`
+			}
+			if err := runShardTool(cmd.Context(), "outpost_shard_trigger",
+				map[string]string{"host": args[0], "model": args[1]}, &out); err != nil {
+				return err
+			}
+			fmt.Printf("told %s to lead a shard for %s\n", args[0], args[1])
+			return nil
+		},
+	}
+}
+
+func shardStatusCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "status [host]",
+		Short: "Show this node's (or a peer's) shard readiness over the mesh",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			host := ""
+			if len(args) == 1 {
+				host = args[0]
+			}
+			var out struct {
+				Status *shard.StatusReport `json:"status"`
+			}
+			if err := runShardTool(cmd.Context(), "outpost_shard_status",
+				map[string]string{"host": host}, &out); err != nil {
+				return err
+			}
+			if jsonOut {
+				b, _ := json.MarshalIndent(out.Status, "", "  ")
+				fmt.Println(string(b))
+				return nil
+			}
+			r := out.Status
+			if r == nil {
+				fmt.Println("no status")
+				return nil
+			}
+			fmt.Printf("host:          %s\n", r.Host)
+			fmt.Printf("budget_bytes:  %d\n", r.BudgetBytes)
+			fmt.Printf("server_bin:    %v\n", r.ServerBin)
+			fmt.Printf("worker_bin:    %v\n", r.WorkerBin)
+			fmt.Printf("active_model:  %s\n", r.ActiveModel)
+			fmt.Printf("ring_members:  %d\n", r.RingMembers)
+			for _, m := range r.Models {
+				fmt.Printf("  model %s (%d bytes)\n", m.Name, m.Bytes)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit JSON")
+	return cmd
+}
+
+func runShardTool(ctx context.Context, name string, args, out any) error {
+	session, err := dialMCP(ctx)
+	if err != nil {
+		return err
+	}
+	defer session.close()
+	return session.callTool(ctx, name, args, out)
+}
 
 // peerPlaneDiscoverer adapts the peer-plane (same-LAN tier filter) + cloudbox
 // peer/connect (libp2p-id resolution) to the shard manager's PeerDiscoverer.

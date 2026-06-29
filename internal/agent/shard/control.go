@@ -63,6 +63,24 @@ func (m *Manager) ServeControl() (func(), error) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(m.LocalStatus())
 	})
+	mux.HandleFunc("/lead", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model   string `json:"model"`
+			APIPort int    `json:"api_port"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// This node becomes the leader: orchestrate a shard for the model
+		// (self-provision + drive the workers). Long-running → background it.
+		go func() {
+			if err := m.orchestrate(context.Background(), req.Model, req.APIPort, nil); err != nil {
+				m.log.Warn("shard: lead orchestrate failed", "model", req.Model, "err", err)
+			}
+		}()
+		w.WriteHeader(http.StatusAccepted)
+	})
 	ln, err := net.Listen("tcp", loopback+":0")
 	if err != nil {
 		return nil, err
@@ -124,6 +142,34 @@ func (m *Manager) tellWorker(ctx context.Context, member Member, req FormRequest
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("worker control returned %s", resp.Status)
+	}
+	return nil
+}
+
+// TellLead tells a peer (over the mesh) to LEAD a shard for the model: that node
+// becomes the leader, self-provisions, and orchestrates its workers. This is the
+// fleet trigger — an agent (or, later, cloudbox on a pool request) starts a shard
+// on any node with no ssh, and the system self-drives from there.
+func (m *Manager) TellLead(ctx context.Context, peer ShardPeer, model string, apiPort int) error {
+	ln, err := m.fwd.Listen(loopback+":0", peer.PeerID, ControlService)
+	if err != nil {
+		return err
+	}
+	defer ln.Close()
+
+	body, _ := json.Marshal(map[string]any{"model": model, "api_port": apiPort})
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+ln.Addr().String()+"/lead", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		return fmt.Errorf("lead %s returned %s", peer.Host, resp.Status)
 	}
 	return nil
 }

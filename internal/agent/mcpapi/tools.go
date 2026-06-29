@@ -35,6 +35,7 @@ func (s *Server) registerTools() {
 	s.registerGossipTools()
 	s.registerMeshTools()
 	s.registerMirrorTools()
+	s.registerShardTools()
 }
 
 func (s *Server) registerResources() {

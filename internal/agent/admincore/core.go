@@ -19,6 +19,7 @@
 package admincore
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -89,6 +90,18 @@ type Deps struct {
 	// Closure so admincore doesn't import the peerplane client. Nil when the
 	// host isn't paired / mesh is off.
 	MeshResolver func(service string) ([]MeshResolvedPeer, error)
+
+	// ShardTrigger, when set, tells <host> to LEAD a shard for <model> over
+	// the mesh (no ssh). Closure so admincore doesn't import the shard /
+	// peerplane packages; it captures the shard.Manager + host→peer-id
+	// resolution. Nil when sharding / mesh isn't wired.
+	ShardTrigger func(ctx context.Context, host, model string) error
+
+	// ShardStatus, when set, returns a node's shard readiness over the mesh:
+	// the local node when host == "", otherwise a resolved peer. Returns an
+	// opaque value (a shard.StatusReport) the HTTP layers JSON-encode. Nil
+	// when sharding / mesh isn't wired.
+	ShardStatus func(ctx context.Context, host string) (any, error)
 
 	// AppHealth, when set, returns the latest per-app reachability
 	// measurements (TCP/HTTP probes, no ICMP). Nil when the service

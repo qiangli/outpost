@@ -54,6 +54,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/runtime"
 	"github.com/qiangli/outpost/internal/agent/sandbox"
 	"github.com/qiangli/outpost/internal/agent/selfcheck"
+	"github.com/qiangli/outpost/internal/agent/shard"
 	"github.com/qiangli/outpost/internal/agent/sysinfo"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
 	"github.com/qiangli/outpost/internal/agent/userkube"
@@ -107,7 +108,7 @@ func main() {
 		clusterCmd(), departCmd(), poolCmd(), kubectlCmd(),
 		// MCP-client CLI parity (Phase 1.5):
 		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), unpairCmd(), restartCmd(), mcpCmd(),
-		remoteCmd(), meshCmd(), mirrorCmd(),
+		remoteCmd(), meshCmd(), mirrorCmd(), shardCmd(),
 		docsCmd(), gitCmd(), shellCmd(), versionCmd(), upgradeCmd(), rollbackCmd(), buildCmd(),
 		supervisordCmd(), serviceCmd(), doctorCmd(),
 	)
@@ -673,6 +674,56 @@ func startCmd() *cobra.Command {
 				}
 			}
 
+			// Shard manager — keeps a launch-ready candidate ring up to date
+			// and (over the mesh) tells peers to lead / reports readiness.
+			// Constructed here (not at its errgroup start below) so the
+			// admincore shard closures can capture it. nil when sharding /
+			// mesh / pairing isn't all on. Started in the errgroup further down.
+			shardMgr := newShardManager(fc, meshHost, peerPlaneSvc)
+
+			// resolveShardPeer maps a host name to its mesh ShardPeer via the
+			// cloudbox peer/connect rendezvous (mirrors peerPlaneDiscoverer).
+			resolveShardPeer := func(ctx context.Context, host string) (shard.ShardPeer, error) {
+				cb := cloudboxHTTPBase(fc)
+				if cb == "" {
+					return shard.ShardPeer{}, fmt.Errorf("not paired: no cloudbox base to resolve peer %q", host)
+				}
+				client := &peerplane.Client{BaseURL: cb, Token: fc.AccessToken, HC: &http.Client{Timeout: 10 * time.Second}}
+				target, err := client.Connect(ctx, fc.AgentName, host)
+				if err != nil {
+					return shard.ShardPeer{}, err
+				}
+				if target == nil || target.Peer.PeerID == "" {
+					return shard.ShardPeer{}, fmt.Errorf("peer %q has no resolvable mesh peer id", host)
+				}
+				return shard.ShardPeer{Host: host, PeerID: target.Peer.PeerID}, nil
+			}
+			// shardTrigger tells <host> to LEAD a shard for <model> over the mesh.
+			shardTrigger := func(ctx context.Context, host, model string) error {
+				if shardMgr == nil {
+					return fmt.Errorf("sharding not enabled on this host (needs pairing + mesh + sharding on)")
+				}
+				peer, err := resolveShardPeer(ctx, host)
+				if err != nil {
+					return err
+				}
+				return shardMgr.TellLead(ctx, peer, model, 11434)
+			}
+			// shardStatus returns the local node's (host=="") or a peer's readiness.
+			shardStatus := func(ctx context.Context, host string) (any, error) {
+				if shardMgr == nil {
+					return nil, fmt.Errorf("sharding not enabled on this host (needs pairing + mesh + sharding on)")
+				}
+				if host == "" {
+					return shardMgr.LocalStatus(), nil
+				}
+				peer, err := resolveShardPeer(ctx, host)
+				if err != nil {
+					return nil, err
+				}
+				return shardMgr.PingPeer(ctx, peer)
+			}
+
 			// Construct the shared business-logic layer first. The same
 			// admincore.Server instance feeds adminui (human SPA) and
 			// — soon — mcpapi (agent tools), so the file-save mutex and
@@ -690,6 +741,8 @@ func startCmd() *cobra.Command {
 				MeshStatus:          meshStatus,
 				MeshForward:         meshFwd,
 				MeshResolver:        meshResolver,
+				ShardTrigger:        shardTrigger,
+				ShardStatus:         shardStatus,
 			})
 			if err != nil {
 				return fmt.Errorf("admincore: %w", err)
@@ -1151,7 +1204,8 @@ func startCmd() *cobra.Command {
 			// Shard manager — keeps a launch-ready candidate ring up to date
 			// (same-LAN owner peers discovered via the peer-plane). Discovery
 			// only; forming a shard is gated on a too-big model (v1d).
-			shardMgr := newShardManager(fc, meshHost, peerPlaneSvc)
+			// Constructed earlier (so the admincore shard closures capture it);
+			// started here under the errgroup.
 			if shardMgr != nil {
 				g.Go(func() error {
 					if err := shardMgr.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
