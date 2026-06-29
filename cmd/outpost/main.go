@@ -703,6 +703,11 @@ func startCmd() *cobra.Command {
 				if shardMgr == nil {
 					return fmt.Errorf("sharding not enabled on this host (needs pairing + mesh + sharding on)")
 				}
+				if host == "" || host == "self" || host == "local" {
+					// Lead the shard from THIS node, using its own ring — no mesh
+					// self-dial. The leader self-provisions + drives its workers.
+					return shardMgr.Orchestrate(ctx, model, 11434, nil)
+				}
 				peer, err := resolveShardPeer(ctx, host)
 				if err != nil {
 					return err
