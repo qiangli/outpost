@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
@@ -60,6 +62,9 @@ func newShardManager(fc *conf.FileConfig, meshHost *mesh.Host, peerSvc *peerplan
 	}
 	if nodeBytes == 0 {
 		nodeBytes = detectShardBudget() // zero-config: the node measures its own capacity
+	}
+	if bins.ServerBin == "" {
+		bins = defaultPrimaBins() // zero-config: the node finds its own prima binaries
 	}
 	return shard.NewManager(shard.ManagerConfig{
 		Self:      shard.ShardPeer{Host: fc.AgentName, PeerID: meshHost.PeerID()},
@@ -120,6 +125,24 @@ func detectShardBudget() uint64 {
 		return vram
 	}
 	return info.MemTotalBytes / 10 * 7
+}
+
+// defaultPrimaBins is the zero-config location the daemon looks for the prima
+// binaries when no path is configured: <cache>/outpost/prima/llama-{server,cli}.
+// Fleet upgrade (or binmgr, later) drops them here; the node finds them itself.
+func defaultPrimaBins() shard.ServeBins {
+	dir, err := conf.DefaultCacheDir()
+	if err != nil {
+		return shard.ServeBins{}
+	}
+	base := filepath.Join(dir, "prima")
+	srv := filepath.Join(base, "llama-server")
+	wrk := filepath.Join(base, "llama-cli")
+	if runtime.GOOS == "windows" {
+		srv += ".exe"
+		wrk += ".exe"
+	}
+	return shard.ServeBins{ServerBin: srv, WorkerBin: wrk}
 }
 
 // shardClusterSource composes the existing cluster source (if any) with the
