@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -50,11 +51,52 @@ func newShardManager(fc *conf.FileConfig, meshHost *mesh.Host, peerSvc *peerplan
 		client:   &peerplane.Client{BaseURL: cb, Token: fc.AccessToken, HC: &http.Client{Timeout: 10 * time.Second}},
 		selfHost: fc.AgentName,
 	}
+	var bins shard.ServeBins
+	var nodeBytes uint64
+	if fc.Shard != nil {
+		bins = shard.ServeBins{ServerBin: fc.Shard.ServerBin, WorkerBin: fc.Shard.WorkerBin}
+		nodeBytes = fc.Shard.NodeBytes
+	}
 	return shard.NewManager(shard.ManagerConfig{
 		Self:      shard.ShardPeer{Host: fc.AgentName, PeerID: meshHost.PeerID()},
 		Forwarder: meshHost.Forwarder(),
 		Peers:     disc,
+		Bins:      bins,
+		LocalLoad: func() ([]shard.LocalModel, uint64) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return ollamaLocalModels(ctx, "http://127.0.0.1:11434"), nodeBytes
+		},
 	})
+}
+
+// ollamaLocalModels queries the local ollama /api/tags for this node's models +
+// on-disk sizes (best-effort; empty on any error). The budget pairs with it in
+// LocalLoad to drive the auto-trigger.
+func ollamaLocalModels(ctx context.Context, ollamaURL string) []shard.LocalModel {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ollamaURL+"/api/tags", nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Models []struct {
+			Name string `json:"name"`
+			Size uint64 `json:"size"`
+		} `json:"models"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&out) != nil {
+		return nil
+	}
+	models := make([]shard.LocalModel, 0, len(out.Models))
+	for _, mi := range out.Models {
+		models = append(models, shard.LocalModel{Name: mi.Name, Bytes: mi.Size})
+	}
+	return models
 }
 
 // shardClusterSource composes the existing cluster source (if any) with the

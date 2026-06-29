@@ -1466,6 +1466,14 @@ type ShardConfig struct {
 	Peers []string `json:"peers,omitempty"`
 	// Role is "auto" (default; most-VRAM host leads), "leader", or "worker".
 	Role string `json:"role,omitempty"`
+	// NodeBytes is this node's model-memory budget (VRAM + usable RAM). The
+	// auto-trigger shards a local model larger than this; 0 → auto-trigger OFF
+	// (an operator opt-in — sharding can still be driven explicitly).
+	NodeBytes uint64 `json:"node_bytes,omitempty"`
+	// ServerBin / WorkerBin are this node's Prima binaries (llama-server for a
+	// leader, llama-cli for a worker). Empty → forming fails until deployed.
+	ServerBin string `json:"server_bin,omitempty"`
+	WorkerBin string `json:"worker_bin,omitempty"`
 }
 
 // ShardOn reports whether Ollama sharding is enabled. Zero-config by design:
