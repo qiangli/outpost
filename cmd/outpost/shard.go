@@ -11,6 +11,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/peerplane"
 	"github.com/qiangli/outpost/internal/agent/shard"
+	"github.com/qiangli/outpost/internal/agent/sysinfo"
 )
 
 // peerPlaneDiscoverer adapts the peer-plane (same-LAN tier filter) + cloudbox
@@ -57,6 +58,9 @@ func newShardManager(fc *conf.FileConfig, meshHost *mesh.Host, peerSvc *peerplan
 		bins = shard.ServeBins{ServerBin: fc.Shard.ServerBin, WorkerBin: fc.Shard.WorkerBin}
 		nodeBytes = fc.Shard.NodeBytes
 	}
+	if nodeBytes == 0 {
+		nodeBytes = detectShardBudget() // zero-config: the node measures its own capacity
+	}
 	return shard.NewManager(shard.ManagerConfig{
 		Self:      shard.ShardPeer{Host: fc.AgentName, PeerID: meshHost.PeerID()},
 		Forwarder: meshHost.Forwarder(),
@@ -97,6 +101,25 @@ func ollamaLocalModels(ctx context.Context, ollamaURL string) []shard.LocalModel
 		models = append(models, shard.LocalModel{Name: mi.Name, Bytes: mi.Size})
 	}
 	return models
+}
+
+// detectShardBudget measures this node's model-memory budget with no human
+// config: summed discrete-GPU VRAM when present, else ~70% of system RAM (the
+// safe fraction for unified-memory Apple Silicon and CPU hosts). This is what
+// makes the auto-trigger + capacity election truly zero-config — the node
+// measures its own hardware instead of being told.
+func detectShardBudget() uint64 {
+	info := sysinfo.Collect("")
+	var vram uint64
+	for _, g := range info.GPUs {
+		if !g.UnifiedMemory {
+			vram += g.VRAMTotalBytes
+		}
+	}
+	if vram > 0 {
+		return vram
+	}
+	return info.MemTotalBytes / 10 * 7
 }
 
 // shardClusterSource composes the existing cluster source (if any) with the
