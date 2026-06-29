@@ -96,25 +96,21 @@ func extractPrima(r io.Reader, dir string) error {
 	return nil
 }
 
-// ensureModel pulls modelName via ollama (which verifies the digest — the
-// anti-scam guarantee) when absent, and returns the GGUF blob path prima loads.
+// ensureModel returns the GGUF blob path prima loads, fetching the model first
+// only when the node doesn't already have it. An already-present model resolves
+// straight from the on-disk ollama manifest — NO running ollama daemon required —
+// so a node that holds the GGUF can shard even with ollama down; ollama is needed
+// only to PULL a missing model (it verifies the digest — the anti-scam guarantee).
 func ensureModel(ctx context.Context, ollamaURL, modelName string) (string, error) {
-	if !ollamaHasModel(ctx, ollamaURL, modelName) {
-		if err := ollamaPull(ctx, ollamaURL, modelName); err != nil {
-			return "", fmt.Errorf("pull %q: %w", modelName, err)
+	if path, err := resolveGGUF(modelName); err == nil {
+		if _, statErr := os.Stat(path); statErr == nil {
+			return path, nil // on disk already — no daemon needed
 		}
+	}
+	if err := ollamaPull(ctx, ollamaURL, modelName); err != nil {
+		return "", fmt.Errorf("pull %q: %w", modelName, err)
 	}
 	return resolveGGUF(modelName)
-}
-
-func ollamaHasModel(ctx context.Context, ollamaURL, name string) bool {
-	want := strings.TrimSuffix(name, ":latest")
-	for _, m := range ollamaLocalModels(ctx, ollamaURL) {
-		if m.Name == name || strings.TrimSuffix(m.Name, ":latest") == want {
-			return true
-		}
-	}
-	return false
 }
 
 // ollamaPull runs POST /api/pull to completion (ollama streams progress + a final
