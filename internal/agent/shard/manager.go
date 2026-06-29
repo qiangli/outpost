@@ -46,6 +46,9 @@ type Manager struct {
 	// onForm is the action taken to stand up a rank (default Form); injectable
 	// so the orchestration control plane can be tested without launching.
 	onForm func(context.Context, *Ring, int, ServeConfig) error
+	// orchestrate stands up a full shard with this node as leader (default
+	// Orchestrate); injectable so the auto-trigger decision is testable.
+	orchestrate func(context.Context, string, int, []string) error
 
 	mu          sync.Mutex
 	ring        *Ring
@@ -73,6 +76,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		bins:     cfg.Bins,
 	}
 	m.onForm = m.Form
+	m.orchestrate = m.Orchestrate
 	return m
 }
 

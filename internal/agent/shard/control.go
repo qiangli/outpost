@@ -123,3 +123,30 @@ func (m *Manager) tellWorker(ctx context.Context, member Member, req FormRequest
 	}
 	return nil
 }
+
+// LocalModel is a model present on this node, with its on-disk size.
+type LocalModel struct {
+	Name  string
+	Bytes uint64
+}
+
+// MaybeShard is the auto-trigger: for the first local model too big to serve on
+// this node alone (but a same-LAN ring exists to spread it), it orchestrates a
+// shard with this node as leader. Idempotent — skips the already-active model.
+// The daemon calls this with the local ollama models + this node's memory budget.
+func (m *Manager) MaybeShard(ctx context.Context, localModels []LocalModel, localBytes uint64, apiPort int) error {
+	if m.Ring() == nil {
+		return nil // no same-LAN peers to shard across
+	}
+	active := m.ActiveModel()
+	for _, lm := range localModels {
+		if lm.Name == active {
+			return nil // already serving this sharded model
+		}
+		if lm.Bytes > localBytes {
+			m.log.Info("shard: auto-trigger", "model", lm.Name, "bytes", lm.Bytes, "local_budget", localBytes)
+			return m.orchestrate(ctx, lm.Name, apiPort, nil)
+		}
+	}
+	return nil
+}
