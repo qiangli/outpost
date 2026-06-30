@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
@@ -33,6 +34,14 @@ type Rendezvous struct {
 	signal      *peerplane.Client
 	log         *slog.Logger
 	interval    time.Duration
+
+	// hostPeers maps a paired host name → its libp2p peer id, learned each
+	// tick from the connect/dial loop (the same cloudbox host↔peer-id
+	// resolution shard discovery uses). It's the bridge that lets a
+	// hostname-keyed caller (peer-status rows) ask the mesh — which knows
+	// peers only by id — for the live link class to that host.
+	mu        sync.Mutex
+	hostPeers map[string]string
 }
 
 // NewRendezvous builds the rendezvous client for a mesh host. cloudboxURL +
@@ -52,7 +61,37 @@ func NewRendezvous(host *Host, agentName, cloudboxURL, accessToken string, log *
 		signal:      &peerplane.Client{BaseURL: cloudboxURL, Token: accessToken, HC: hc},
 		log:         log,
 		interval:    60 * time.Second,
+		hostPeers:   make(map[string]string),
 	}
+}
+
+// LinkClassForHost returns the mesh link class ("tp"/"lan"/"wan"/"") of the
+// DIRECT connection to the named paired host, or "" when the host's peer id
+// isn't known yet (no rendezvous tick has resolved it) or there's no direct
+// link. The class is computed live from the current connection state — the
+// host→peer-id map is only the lookup key. This is the accurate same-LAN
+// signal peer-status overlays on cloudbox's egress-IP heuristic.
+func (r *Rendezvous) LinkClassForHost(host string) string {
+	if r == nil {
+		return ""
+	}
+	r.mu.Lock()
+	peerID := r.hostPeers[host]
+	r.mu.Unlock()
+	if peerID == "" {
+		return ""
+	}
+	return r.host.PeerLinkClass(peerID)
+}
+
+// rememberPeer records the host→peer-id association learned during a tick.
+func (r *Rendezvous) rememberPeer(host, peerID string) {
+	if host == "" || peerID == "" {
+		return
+	}
+	r.mu.Lock()
+	r.hostPeers[host] = peerID
+	r.mu.Unlock()
 }
 
 // Run announces + discovers on a timer until ctx is cancelled.
@@ -152,6 +191,9 @@ func (r *Rendezvous) dial(ctx context.Context, peerID string, addrs []string, la
 	if pid == h.ID() {
 		return // ourselves
 	}
+	// Record host→peer-id (regardless of dial outcome) so peer-status can ask
+	// for this host's live link class even when the link is currently relayed.
+	r.rememberPeer(label, peerID)
 	maddrs := make([]ma.Multiaddr, 0, len(addrs))
 	for _, a := range addrs {
 		m, err := ma.NewMultiaddr(strings.TrimSpace(a))

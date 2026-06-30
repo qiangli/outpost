@@ -18,6 +18,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -40,27 +41,24 @@ func peersCmd() *cobra.Command {
 	return cmd
 }
 
-// peersStatusCmd queries cloudbox's GET /api/v1/peers — the status board
-// over the hosts this account can see (owned + shared): online state, a
-// same-LAN/remote location hint, and the build/OS/arch details each host
-// last reported. Unlike the other `peers` subcommands (which read the
-// daemon's local discovery cache via MCP), this calls cloudbox directly
-// with the host's access_token, so it works from any paired machine.
+// peersStatusCmd shows cloudbox's GET /api/v1/peers status board over the
+// hosts this account can see (owned + shared): online state, a same-LAN/remote
+// location hint, and the build/OS/arch details each host last reported.
+//
+// It prefers the running daemon's MCP outpost_peers_status tool, which
+// overlays the ACCURATE same-LAN signal — the mesh data plane's direct-link
+// class — onto cloudbox's egress-IP location heuristic (the heuristic
+// false-negatives, reporting "remote" for hosts that are actually on the same
+// LAN). When the daemon isn't reachable it falls back to calling cloudbox
+// directly with the host's access_token (the raw heuristic), so the command
+// still works from any paired machine even without the daemon.
 func peersStatusCmd() *cobra.Command {
 	var jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "Show cloudbox's status board for peers this account can see (online/location/version/os)",
+		Short: "Show the status board for peers this account can see (online/location/version/os)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfgPath, err := conf.DefaultConfigPath()
-			if err != nil {
-				return err
-			}
-			fc, err := conf.LoadFile(cfgPath)
-			if err != nil {
-				return fmt.Errorf("load config: %w", err)
-			}
-			peers, err := peerstatus.Fetch(cmd.Context(), cloudboxHTTPBase(fc), fc.AccessToken, nil)
+			peers, err := fetchPeersStatus(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -107,6 +105,33 @@ func orDash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// fetchPeersStatus gets the peer status board, preferring the running daemon's
+// MCP outpost_peers_status tool (which corrects the location hint with the mesh
+// direct-link class) and falling back to a direct cloudbox query (the raw
+// egress-IP heuristic) when the daemon isn't reachable.
+func fetchPeersStatus(ctx context.Context) ([]peerstatus.Peer, error) {
+	if session, err := dialMCP(ctx); err == nil {
+		defer session.close()
+		var out struct {
+			Peers []peerstatus.Peer `json:"peers"`
+		}
+		if err := session.callTool(ctx, "outpost_peers_status", map[string]any{}, &out); err == nil {
+			return out.Peers, nil
+		}
+		// Daemon reachable but the tool errored (e.g. unpaired) — fall through
+		// to the direct path, which surfaces an equivalent cloudbox error.
+	}
+	cfgPath, err := conf.DefaultConfigPath()
+	if err != nil {
+		return nil, err
+	}
+	fc, err := conf.LoadFile(cfgPath)
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+	return peerstatus.Fetch(ctx, cloudboxHTTPBase(fc), fc.AccessToken, nil)
 }
 
 // peersListCmd surfaces the daemon's live discovery cache via MCP

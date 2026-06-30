@@ -91,6 +91,14 @@ type Deps struct {
 	// host isn't paired / mesh is off.
 	MeshResolver func(service string) ([]MeshResolvedPeer, error)
 
+	// MeshLinkClassByHost, when set, returns the live mesh link class
+	// ("tp"/"lan"/"wan"/"") of the DIRECT connection to a paired host —
+	// the accurate same-LAN signal that overrides cloudbox's egress-IP
+	// location heuristic in PeerStatus. Closure so admincore doesn't import
+	// the mesh package; it captures the rendezvous's host→peer-id map. Nil
+	// when the mesh data plane is off.
+	MeshLinkClassByHost func(host string) string
+
 	// ShardTrigger, when set, tells <host> to LEAD a shard for <model> over
 	// the mesh (no ssh). Closure so admincore doesn't import the shard /
 	// peerplane packages; it captures the shard.Manager + host→peer-id
