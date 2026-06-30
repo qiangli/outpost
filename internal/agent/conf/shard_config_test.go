@@ -52,8 +52,16 @@ func TestMeshNeeded_ShardCascade(t *testing.T) {
 		t.Error("MeshNeeded must be true when mesh is explicitly on")
 	}
 
-	bothOff := &FileConfig{OllamaEnabled: true, AccessToken: "tok", Shard: &ShardConfig{Enabled: bp(false)}}
-	if bothOff.MeshNeeded() {
-		t.Error("MeshNeeded must be false when both mesh and shard are off")
+	// Mesh now defaults ON for paired hosts (zero-config peer reachability), so an
+	// unset mesh flag still needs the mesh even with sharding off.
+	defaultOn := &FileConfig{OllamaEnabled: true, AccessToken: "tok", Shard: &ShardConfig{Enabled: bp(false)}}
+	if !defaultOn.MeshNeeded() {
+		t.Error("MeshNeeded must be true by default (mesh defaults ON when the flag is unset)")
+	}
+
+	// Explicit opt-out (mesh_enabled=false) with sharding off is the only way off.
+	optedOut := &FileConfig{MeshEnabled: bp(false), OllamaEnabled: true, AccessToken: "tok", Shard: &ShardConfig{Enabled: bp(false)}}
+	if optedOut.MeshNeeded() {
+		t.Error("MeshNeeded must be false when mesh is explicitly opted out and shard is off")
 	}
 }

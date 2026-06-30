@@ -615,9 +615,14 @@ func startCmd() *cobra.Command {
 					Logger:     slog.Default(),
 				})
 				if merr != nil {
-					return fmt.Errorf("mesh host: %w", merr)
+					// Non-fatal: the mesh is best-effort peer connectivity and is
+					// now default-on fleet-wide — a libp2p start failure must NEVER
+					// take down the daemon (that would strand a remote host). Log
+					// and continue without the mesh data plane.
+					slog.Warn("mesh: host failed to start; continuing without mesh data plane", "err", merr)
+				} else {
+					meshHost = mh
 				}
-				meshHost = mh
 			}
 			meshStatus := func() *admincore.MeshStatusView {
 				if meshHost == nil {

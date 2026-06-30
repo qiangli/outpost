@@ -1442,8 +1442,21 @@ func (fc *FileConfig) ActrunnerInstanceResolved() string {
 	return ""
 }
 
+// MeshOn reports whether this outpost runs the libp2p mesh data plane (the peer
+// node carrying authenticated, NAT-traversing peer↔peer streams). Default ON for
+// paired hosts — zero-config peer reachability; opt out with an explicit
+// mesh_enabled=false. The boot path additionally gates on a paired access token
+// (cloudbox is the rendezvous, so an unpaired host has no signaler to find peers
+// through). Enabling the mesh alone exposes nothing — the forwarder carries only
+// services you explicitly add.
 func (fc *FileConfig) MeshOn() bool {
-	return fc != nil && fc.MeshEnabled != nil && *fc.MeshEnabled
+	if fc == nil {
+		return false
+	}
+	if fc.MeshEnabled == nil {
+		return true // default ON; explicit mesh_enabled=false opts out
+	}
+	return *fc.MeshEnabled
 }
 
 // MeshService is one local loopback service persistently exposed over the mesh.
