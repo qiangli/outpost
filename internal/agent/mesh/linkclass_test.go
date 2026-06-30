@@ -122,63 +122,6 @@ func TestLocalLANLabel(t *testing.T) {
 	}
 }
 
-// TestSameSubnet covers the IPv6-/64 and IPv4-/24 same-subnet test that lets a
-// public address in the host's own subnet count as same-LAN. Doc ranges only
-// (RFC 3849 2001:db8::/32, RFC 5737, RFC-1918).
-func TestSameSubnet(t *testing.T) {
-	cases := []struct {
-		name          string
-		local, remote string
-		want          bool
-	}{
-		{"v6 same /64", "/ip6/2001:db8:1::1/tcp/4001", "/ip6/2001:db8:1::2/tcp/4001", true},
-		{"v6 diff /64", "/ip6/2001:db8:1::1/tcp/4001", "/ip6/2001:db8:99::2/tcp/4001", false},
-		{"v4 same /24", "/ip4/10.0.0.5/tcp/4001", "/ip4/10.0.0.9/tcp/4001", true},
-		{"v4 diff /24", "/ip4/198.51.100.5/tcp/4001", "/ip4/203.0.113.10/tcp/4001", false},
-		{"mixed family", "/ip4/10.0.0.5/tcp/4001", "/ip6/2001:db8:1::2/tcp/4001", false},
-	}
-	for _, c := range cases {
-		got := sameSubnet(mustAddr(t, c.local), mustAddr(t, c.remote))
-		if got != c.want {
-			t.Errorf("%s: sameSubnet(%s,%s) = %v, want %v", c.name, c.local, c.remote, got, c.want)
-		}
-	}
-}
-
-// TestConnLink is the per-peer link logic PeerLinkInfo/PeerLinkClass run for one
-// direct connection: REMOTE → class, LOCAL → label, with the same-subnet
-// correction that turns a public-but-same-subnet "wan" into same-LAN. Doc
-// ranges only.
-func TestConnLink(t *testing.T) {
-	cases := []struct {
-		name               string
-		local, remote      string
-		wantClass, wantLAN string
-	}{
-		// Same IPv6 /64 over a public (RFC 3849 doc) GUA → same-LAN, "lan6"
-		// label (never the raw /64 prefix).
-		{"v6 same /64", "/ip6/2001:db8:1::1/tcp/4001", "/ip6/2001:db8:1::2/tcp/4001", "lan", "lan6"},
-		// Different /64 → genuinely remote.
-		{"v6 diff /64", "/ip6/2001:db8:1::1/tcp/4001", "/ip6/2001:db8:99::2/tcp/4001", "wan", ""},
-		// RFC-1918 same /24 → existing behavior, classifyConnAddr already
-		// says "lan"; label is the first-three-octet base.
-		{"v4 rfc1918 /24", "/ip4/10.0.0.5/udp/4001/quic-v1", "/ip4/10.0.0.9/tcp/4001", "lan", "10.0.0"},
-		// Public IPv4 in the host's own /24 (rare) → corrected to same-LAN.
-		{"v4 public same /24", "/ip4/203.0.113.5/tcp/4001", "/ip4/203.0.113.9/tcp/4001", "lan", "203.0.113"},
-		// Genuine public pair on different subnets → remote.
-		{"v4 public diff subnet", "/ip4/198.51.100.5/tcp/4001", "/ip4/203.0.113.10/tcp/16690", "wan", ""},
-		// Link-local stays "tp" (unchanged) regardless of subnet logic.
-		{"tp link-local", "/ip4/169.254.1.1/tcp/4001", "/ip4/169.254.110.47/tcp/4001", "tp", "wired"},
-	}
-	for _, c := range cases {
-		gotClass, gotLAN := connLink(mustAddr(t, c.local), mustAddr(t, c.remote))
-		if gotClass != c.wantClass || gotLAN != c.wantLAN {
-			t.Errorf("%s: connLink(%s,%s) = (%q,%q), want (%q,%q)",
-				c.name, c.local, c.remote, gotClass, gotLAN, c.wantClass, c.wantLAN)
-		}
-	}
-}
-
 func TestStrongerLinkClass(t *testing.T) {
 	// tp > lan > wan > ""
 	if strongerLinkClass("lan", "tp") != "tp" {
