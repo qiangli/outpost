@@ -25,7 +25,7 @@ const primaReleaseBase = "https://github.com/qiangli/prima.cpp/releases/download
 // When a node's on-disk marker differs (or is absent), ensureBinaries re-fetches —
 // this is what rolls a binary change (e.g. the ZMQ→nng MPL-free rebuild) out to
 // nodes that already hold an older build instead of keeping the stale one.
-const expectedPrimaVersion = "nng-2"
+const expectedPrimaVersion = "nng-3"
 
 // provisionShard is the daemon's self-provisioner: it fetches the prima binaries
 // and the model with NO human staging (over the daemon's own credentials), and
