@@ -7,7 +7,6 @@ import (
 	"net"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -15,16 +14,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	mdns "github.com/libp2p/go-libp2p/p2p/discovery/mdns"
-	swarm "github.com/libp2p/go-libp2p/p2p/net/swarm"
 	ma "github.com/multiformats/go-multiaddr"
 )
-
-// meshLinkLocalHeadStart is how long every non-link-local dial is delayed past
-// its happy-eyeballs-assigned delay when a link-local IPv4 (169.254/16 APIPA —
-// a direct wired crosslink) candidate is present. It gives the wired link a
-// head start so it wins the dial race, without skipping the others (an
-// unreachable advertised 169.254 must still fall back).
-const meshLinkLocalHeadStart = 50 * time.Millisecond
 
 // Config configures the mesh host.
 type Config struct {
@@ -89,10 +80,9 @@ func New(cfg Config) (*Host, error) {
 	opts := []libp2p.Option{
 		libp2p.Identity(priv),
 		libp2p.ListenAddrStrings(listenAddrs(cfg.ListenPort)...),
-		libp2p.EnableNATService(),         // answer AutoNAT dial-backs for peers
-		libp2p.EnableHolePunching(),       // DCUtR — direct connect across NATs
-		libp2p.NATPortMap(),               // best-effort UPnP/NAT-PMP mapping
-		libp2p.SwarmOpts(swarm.WithDialRanker(meshDialRanker)), // prefer a direct wired crosslink (169.254) over Wi-Fi/IPv6
+		libp2p.EnableNATService(),   // answer AutoNAT dial-backs for peers
+		libp2p.EnableHolePunching(), // DCUtR — direct connect across NATs
+		libp2p.NATPortMap(),         // best-effort UPnP/NAT-PMP mapping
 		libp2p.UserAgent(ua),
 	}
 	// Defaults supply TCP+QUIC+WS transports, Noise+TLS security, yamux,
@@ -295,65 +285,6 @@ func connLink(local, remote ma.Multiaddr) (class, lan string) {
 	return class, localLANLabel(local)
 }
 
-// isLinkLocalV4 reports whether the multiaddr carries an IPv4 link-local
-// (APIPA) address in 169.254.0.0/16 — a direct point-to-point wired crosslink.
-// It deliberately does NOT treat IPv6 link-local (fe80::/10) as preferred:
-// those are undialable without a zone id, so promoting them would only delay
-// the dials that can actually connect. Reuses addrIP (the same
-// IP4-then-IP6 multiaddr extraction classifyConnAddr/addrIP use).
-func isLinkLocalV4(a ma.Multiaddr) bool {
-	ip := addrIP(a)
-	if ip == nil {
-		return false
-	}
-	v4 := ip.To4()
-	if v4 == nil {
-		return false // not IPv4 (an IPv6 addr, even fe80::, is never preferred here)
-	}
-	return v4[0] == 169 && v4[1] == 254
-}
-
-// meshDialRanker is the custom happy-eyeballs schedule that makes the outpost
-// mesh PREFER a direct wired crosslink (IPv4 169.254/16 / APIPA) over Wi-Fi /
-// IPv6 when a same-wired-link peer pair has both. swarm.DefaultDialRanker
-// buckets 169.254 into the same "private" group as a Wi-Fi 10.0.0 address —
-// co-equal, never preferred — so an IPv6-GUA / Wi-Fi dial wins the race and
-// becomes the single surviving connection; the wired link never wins.
-//
-// The fix only perturbs peers that actually advertise a link-local IPv4 addr
-// (wired-capable pairs): when none is present we return DefaultDialRanker's
-// schedule unchanged, keeping the blast radius to exactly those pairs. When one
-// IS present, the link-local addrs dial immediately (Delay 0) and every other
-// addr is held back to at least meshLinkLocalHeadStart so the wired link wins —
-// but the others still fire after the head start, so an unreachable advertised
-// 169.254 (the OS fast-fails the unroutable dial) falls back cleanly.
-func meshDialRanker(addrs []ma.Multiaddr) []network.AddrDelay {
-	base := swarm.DefaultDialRanker(addrs)
-	hasLinkLocal := false
-	for _, ad := range base {
-		if isLinkLocalV4(ad.Addr) {
-			hasLinkLocal = true
-			break
-		}
-	}
-	if !hasLinkLocal {
-		return base
-	}
-	out := make([]network.AddrDelay, len(base))
-	for i, ad := range base {
-		if isLinkLocalV4(ad.Addr) {
-			out[i] = network.AddrDelay{Addr: ad.Addr, Delay: 0}
-			continue
-		}
-		delay := ad.Delay
-		if delay < meshLinkLocalHeadStart {
-			delay = meshLinkLocalHeadStart
-		}
-		out[i] = network.AddrDelay{Addr: ad.Addr, Delay: delay}
-	}
-	return out
-}
-
 // addrIP extracts the IPv4/IPv6 net.IP from a multiaddr (nil if absent/bad) —
 // the same IP4-then-IP6 extraction classifyConnAddr/localLANLabel use.
 func addrIP(maddr ma.Multiaddr) net.IP {
@@ -503,25 +434,7 @@ func (m *Host) dialableAddrs() []string {
 		out = append(out, s)
 	}
 	sort.Strings(out)
-	// Belt-and-suspenders for the dial ranker: lead the announced-addr set with
-	// any link-local IPv4 (169.254/16 — a direct wired crosslink) so our own
-	// advertised order also prefers the wired link. Stable: link-local-v4 addrs
-	// move to the front (keeping their relative order), the rest stay as-sorted.
-	sort.SliceStable(out, func(i, j int) bool {
-		return isLinkLocalV4Str(out[i]) && !isLinkLocalV4Str(out[j])
-	})
 	return out
-}
-
-// isLinkLocalV4Str reports whether a multiaddr STRING carries an IPv4 link-local
-// (169.254/16) address — the string-side mirror of isLinkLocalV4, used to order
-// dialableAddrs without re-parsing into ma.Multiaddr.
-func isLinkLocalV4Str(s string) bool {
-	m, err := ma.NewMultiaddr(s)
-	if err != nil {
-		return false
-	}
-	return isLinkLocalV4(m)
 }
 
 func (m *Host) addrStrings() []string {

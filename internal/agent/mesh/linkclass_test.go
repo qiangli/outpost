@@ -1,11 +1,9 @@
 package mesh
 
 import (
-	"reflect"
 	"testing"
 
 	"github.com/libp2p/go-libp2p/core/network"
-	swarm "github.com/libp2p/go-libp2p/p2p/net/swarm"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
@@ -178,57 +176,6 @@ func TestConnLink(t *testing.T) {
 			t.Errorf("%s: connLink(%s,%s) = (%q,%q), want (%q,%q)",
 				c.name, c.local, c.remote, gotClass, gotLAN, c.wantClass, c.wantLAN)
 		}
-	}
-}
-
-// TestIsLinkLocalV4 covers the wired-crosslink preference predicate: ONLY IPv4
-// 169.254.0.0/16 (APIPA) is preferred. fe80 (IPv6 link-local) is deliberately
-// NOT — it's undialable without a zone id. Doc/generic ranges only.
-func TestIsLinkLocalV4(t *testing.T) {
-	cases := []struct {
-		addr string
-		want bool
-	}{
-		{"/ip4/169.254.10.5/udp/4001/quic-v1", true}, // APIPA wired crosslink
-		{"/ip4/10.0.0.5/udp/4001/quic-v1", false},    // RFC-1918 Wi-Fi LAN
-		{"/ip4/203.0.113.10/tcp/16690", false},       // public (RFC 5737 TEST-NET-3)
-		{"/ip6/fe80::1/tcp/4001", false},             // IPv6 link-local — NOT preferred
-		{"/ip6/2001:db8::1/tcp/4001", false},         // IPv6 doc GUA (RFC 3849)
-	}
-	for _, c := range cases {
-		if got := isLinkLocalV4(mustAddr(t, c.addr)); got != c.want {
-			t.Errorf("isLinkLocalV4(%s) = %v, want %v", c.addr, got, c.want)
-		}
-	}
-}
-
-// TestMeshDialRanker asserts the wired link (169.254) dials immediately while
-// every other addr gets at least the head start — and that a peer with NO
-// link-local addr is left exactly as swarm.DefaultDialRanker schedules it (the
-// blast-radius guard). Doc/generic ranges only.
-func TestMeshDialRanker(t *testing.T) {
-	wired := mustAddr(t, "/ip4/169.254.10.5/udp/4001/quic-v1")
-	wifi := mustAddr(t, "/ip4/10.0.0.5/udp/4001/quic-v1")
-	pub := mustAddr(t, "/ip4/203.0.113.10/udp/4001/quic-v1")
-
-	got := meshDialRanker([]ma.Multiaddr{wired, wifi, pub})
-	for _, ad := range got {
-		switch {
-		case isLinkLocalV4(ad.Addr):
-			if ad.Delay != 0 {
-				t.Errorf("link-local %s: Delay = %v, want 0", ad.Addr, ad.Delay)
-			}
-		default:
-			if ad.Delay < meshLinkLocalHeadStart {
-				t.Errorf("non-link-local %s: Delay = %v, want >= %v", ad.Addr, ad.Delay, meshLinkLocalHeadStart)
-			}
-		}
-	}
-
-	// No link-local present → identical to DefaultDialRanker (unperturbed).
-	noLL := []ma.Multiaddr{wifi, pub}
-	if !reflect.DeepEqual(meshDialRanker(noLL), swarm.DefaultDialRanker(noLL)) {
-		t.Errorf("meshDialRanker perturbed a pure-Wi-Fi/remote peer; want DefaultDialRanker unchanged")
 	}
 }
 
