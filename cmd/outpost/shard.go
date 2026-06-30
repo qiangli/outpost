@@ -154,7 +154,7 @@ func (d *peerPlaneDiscoverer) SameLANPeers(ctx context.Context) ([]shard.ShardPe
 		peerID := target.Peer.PeerID
 		// Fast local link if the peerplane RTT-tiered it LAN/TP, OR the mesh holds
 		// a DIRECT connection over a private/link-local address. The latter rescues
-		// link-local (TP-Link) + firewalled LANs the UDP prober reports "unreached"
+		// link-local (a direct wired link) + firewalled LANs the UDP prober reports "unreached"
 		// — the mesh connection's own remote address is the ground truth.
 		local := t.Tier == peerplane.TierLAN || t.Tier == peerplane.TierTP
 		if !local && d.mesh != nil {

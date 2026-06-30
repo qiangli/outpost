@@ -75,7 +75,7 @@ func newTestHost(t *testing.T) *Host {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := New(Config{ListenPort: 0, PrivKey: priv})
+	h, err := New(Config{ListenPort: 0, PrivKey: priv, DisableMDNS: true})
 	if err != nil {
 		t.Fatalf("new host: %v", err)
 	}
@@ -88,7 +88,7 @@ func newTestHostWithRelay(t *testing.T, relayAddr string) *Host {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := New(Config{ListenPort: 0, PrivKey: priv, RelayAddrs: []string{relayAddr}})
+	h, err := New(Config{ListenPort: 0, PrivKey: priv, RelayAddrs: []string{relayAddr}, DisableMDNS: true})
 	if err != nil {
 		t.Fatalf("new host with relay: %v", err)
 	}

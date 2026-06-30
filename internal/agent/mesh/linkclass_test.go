@@ -11,9 +11,9 @@ func TestClassifyConnAddr(t *testing.T) {
 		{"/ip4/10.0.0.5/tcp/4001", "lan"},            // RFC-1918 wifi LAN
 		{"/ip4/192.168.1.9/udp/4001/quic-v1", "lan"}, // RFC-1918 LAN
 		{"/ip4/172.16.4.4/tcp/4001", "lan"},          // RFC-1918 LAN
-		{"/ip4/169.254.110.47/tcp/4001", "tp"},       // APIPA / link-local = direct wired (TP-Link)
+		{"/ip4/169.254.110.47/tcp/4001", "tp"},       // APIPA / link-local = direct wired link
 		{"/ip6/fe80::1/tcp/4001", "tp"},              // IPv6 link-local
-		{"/ip4/76.103.216.225/tcp/16690", "wan"},     // public
+		{"/ip4/203.0.113.10/tcp/16690", "wan"},       // public (RFC 5737 TEST-NET-3 doc range)
 		{"/ip4/127.0.0.1/tcp/4001", ""},              // loopback ignored
 	}
 	for _, c := range cases {

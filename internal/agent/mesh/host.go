@@ -12,6 +12,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	mdns "github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
@@ -35,6 +36,11 @@ type Config struct {
 	// reachable (same-LAN/same-vicinity needs no relay).
 	RelayAddrs []string
 	Logger     *slog.Logger
+	// DisableMDNS turns off local-LAN mDNS peer discovery. Production leaves it
+	// false (mDNS on — same-LAN peers connect directly). Tests set it true so
+	// real multicast can't discover sibling test hosts (or real outposts on the
+	// LAN) and perturb exact connected-peer-count assertions.
+	DisableMDNS bool
 }
 
 // Host is the outpost's libp2p peer — the data-plane node of the mesh. It is
@@ -42,10 +48,11 @@ type Config struct {
 // and DCUtR hole-punching, so it can form direct peer↔peer links across NATs
 // and different subnets once a rendezvous (cloudbox) supplies peer addresses.
 type Host struct {
-	cfg Config
-	h   host.Host
-	log *slog.Logger
-	fwd *Forwarder
+	cfg  Config
+	h    host.Host
+	log  *slog.Logger
+	fwd  *Forwarder
+	mdns mdns.Service // local-LAN peer discovery; nil when it failed to start
 }
 
 // New builds the libp2p host with the persistent (or supplied) mesh identity.
@@ -94,6 +101,21 @@ func New(cfg Config) (*Host, error) {
 	}
 	m := &Host{cfg: cfg, h: h, log: log}
 	m.fwd = newForwarder(m, log) // registers the forward stream handler
+
+	// Local-LAN mDNS discovery: advertise our on-link addresses and dial
+	// same-LAN siblings DIRECTLY, instead of hole-punching over the public IP
+	// the cloudbox rendezvous hands over. Non-fatal — a multicast/socket
+	// failure (locked-down network, no multicast) degrades to the existing
+	// relay/rendezvous path; libp2p still prefers a direct link and falls back
+	// to the relay on its own.
+	if !cfg.DisableMDNS {
+		if svc, err := startMDNS(h, log); err != nil {
+			log.Warn("mesh: mDNS LAN discovery unavailable; using relay/rendezvous only", "err", err)
+		} else {
+			m.mdns = svc
+		}
+	}
+
 	return m, nil
 }
 
@@ -139,11 +161,19 @@ func (m *Host) Run(ctx context.Context) error {
 	)
 	<-ctx.Done()
 	m.log.Info("mesh: shutting down", "peer_id", m.h.ID().String())
+	if m.mdns != nil {
+		_ = m.mdns.Close()
+	}
 	return m.h.Close()
 }
 
 // Close shuts the host down (for callers not using Run, e.g. tests).
-func (m *Host) Close() error { return m.h.Close() }
+func (m *Host) Close() error {
+	if m.mdns != nil {
+		_ = m.mdns.Close()
+	}
+	return m.h.Close()
+}
 
 // PeerID returns this host's stable libp2p peer ID (string form).
 func (m *Host) PeerID() string { return m.h.ID().String() }
@@ -180,7 +210,7 @@ func (m *Host) HasDirectConn(peerID string) bool {
 // probes miss (they can't dial a zone-less link-local address, and a firewalled
 // LAN drops the echo, so genuinely-local peers come back "unreached"):
 //
-//	"tp"  — link-local / APIPA (169.254.x, fe80:) : a dedicated wired link (TP-Link hub)
+//	"tp"  — link-local / APIPA (169.254.x, fe80:) : a dedicated point-to-point wired link
 //	"lan" — RFC-1918 / ULA private address          : same LAN (incl. wifi)
 //	"wan" — public address                          : remote
 //	""    — no direct connection (relayed or absent)
