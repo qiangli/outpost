@@ -178,7 +178,9 @@ func newShardManager(fc *conf.FileConfig, meshHost *mesh.Host, peerSvc *peerplan
 		Bins:      bins,
 		LogDir:    filepath.Dir(bins.ServerBin), // prima stdout+stderr → <prima dir>/prima-rank<N>.log
 		Provision: func(ctx context.Context, name string) (string, error) {
-			return provisionShard(ctx, bins, name)
+			// Tier-(b) of ensureModel: fetch a missing model's GGUF from a same-LAN
+			// mesh peer over the forwarder before falling back to an ollama pull.
+			return provisionShard(ctx, bins, name, meshHost.Forwarder(), disc)
 		},
 		LocalLoad: func() ([]shard.LocalModel, uint64) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

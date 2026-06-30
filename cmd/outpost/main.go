@@ -1224,6 +1224,21 @@ func startCmd() *cobra.Command {
 					}
 					return nil
 				})
+				// LAN peer-to-peer model transfer: serve THIS node's on-disk model
+				// store (manifests + blobs) read-only over the mesh, so a peer
+				// provisioning a model it lacks fetches the GGUF from here instead
+				// of re-pulling from the ollama registry. Mirrors ServeControl.
+				if meshHost != nil {
+					if cleanup, err := serveModelBlobs(meshHost.Forwarder()); err != nil {
+						slog.Warn("model-blobs: serve failed", "err", err)
+					} else {
+						g.Go(func() error {
+							<-gctx.Done()
+							cleanup()
+							return nil
+						})
+					}
+				}
 			}
 
 			if cfg.AgentName == "" {

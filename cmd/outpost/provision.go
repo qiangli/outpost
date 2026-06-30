@@ -25,11 +25,11 @@ const primaReleaseBase = "https://github.com/qiangli/prima.cpp/releases/download
 // and the model with NO human staging (over the daemon's own credentials), and
 // returns the GGUF path prima loads. Idempotent — already-present binaries +
 // models are reused. This is what dissolves the "needs ssh to stage" boundary.
-func provisionShard(ctx context.Context, bins shard.ServeBins, modelName string) (string, error) {
+func provisionShard(ctx context.Context, bins shard.ServeBins, modelName string, fwd shard.Forwarder, peers shard.PeerDiscoverer) (string, error) {
 	if err := ensureBinaries(ctx, bins); err != nil {
 		return "", fmt.Errorf("binaries: %w", err)
 	}
-	return ensureModel(ctx, "http://127.0.0.1:11434", modelName)
+	return ensureModel(ctx, "http://127.0.0.1:11434", modelName, fwd, peers)
 }
 
 // ensureBinaries downloads + extracts the prima release for this platform into
@@ -123,19 +123,54 @@ func extractPrima(r io.Reader, dir string) error {
 }
 
 // ensureModel returns the GGUF blob path prima loads, fetching the model first
-// only when the node doesn't already have it. An already-present model resolves
-// straight from the on-disk ollama manifest — NO running ollama daemon required —
-// so a node that holds the GGUF can shard even with ollama down; ollama is needed
-// only to PULL a missing model (it verifies the digest — the anti-scam guarantee).
-func ensureModel(ctx context.Context, ollamaURL, modelName string) (string, error) {
+// only when the node doesn't already have it. It is three-tier:
+//
+//	(a) on disk already — resolve straight from the on-disk ollama manifest, NO
+//	    running ollama daemon required, so a node that holds the GGUF can shard
+//	    even with ollama down;
+//	(b) a same-LAN mesh peer already has it — fetch the GGUF over the mesh
+//	    forwarder (LAN-fast, no internet round-trip) instead of re-pulling;
+//	(c) pull from the ollama registry (it verifies the digest — the anti-scam
+//	    guarantee). This is the unchanged fallback when no peer has the model.
+//
+// fwd/peers may be nil (mesh / sharding not wired) — tier (b) is then skipped.
+func ensureModel(ctx context.Context, ollamaURL, modelName string, fwd shard.Forwarder, peers shard.PeerDiscoverer) (string, error) {
+	// (a) on disk already — no daemon needed.
 	if path, err := resolveGGUF(modelName); err == nil {
 		if _, statErr := os.Stat(path); statErr == nil {
-			return path, nil // on disk already — no daemon needed
+			fmt.Fprintf(os.Stderr, "ensureModel: %q satisfied from local store\n", modelName)
+			return path, nil
 		}
 	}
+	// (b) fetch from a same-LAN mesh peer that already holds it.
+	if fwd != nil && peers != nil {
+		if lanPeers, err := peers.SameLANPeers(ctx); err == nil {
+			for _, p := range lanPeers {
+				if p.PeerID == "" {
+					continue
+				}
+				got, ferr := fetchModelFromPeer(ctx, fwd, p.PeerID, modelName)
+				if ferr != nil {
+					fmt.Fprintf(os.Stderr, "ensureModel: peer %s transfer failed: %v\n", p.Host, ferr)
+					continue
+				}
+				if !got {
+					continue // peer doesn't have the model — try the next
+				}
+				if path, rerr := resolveGGUF(modelName); rerr == nil {
+					if _, statErr := os.Stat(path); statErr == nil {
+						fmt.Fprintf(os.Stderr, "ensureModel: %q fetched from peer %s\n", modelName, p.Host)
+						return path, nil
+					}
+				}
+			}
+		}
+	}
+	// (c) pull from the ollama registry (the unchanged fallback).
 	if err := ollamaPull(ctx, ollamaURL, modelName); err != nil {
 		return "", fmt.Errorf("pull %q: %w", modelName, err)
 	}
+	fmt.Fprintf(os.Stderr, "ensureModel: %q pulled from ollama registry\n", modelName)
 	return resolveGGUF(modelName)
 }
 
