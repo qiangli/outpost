@@ -21,6 +21,12 @@ import (
 // the fork's release, per-platform tarballs (prima-<goos>-<goarch>.tar.gz).
 const primaReleaseBase = "https://github.com/qiangli/prima.cpp/releases/download/shard-binaries"
 
+// expectedPrimaVersion is the VERSION marker shipped inside the release tarball.
+// When a node's on-disk marker differs (or is absent), ensureBinaries re-fetches —
+// this is what rolls a binary change (e.g. the ZMQ→nng MPL-free rebuild) out to
+// nodes that already hold an older build instead of keeping the stale one.
+const expectedPrimaVersion = "nng-1"
+
 // provisionShard is the daemon's self-provisioner: it fetches the prima binaries
 // and the model with NO human staging (over the daemon's own credentials), and
 // returns the GGUF path prima loads. Idempotent — already-present binaries +
@@ -35,14 +41,18 @@ func provisionShard(ctx context.Context, bins shard.ServeBins, modelName string,
 // ensureBinaries downloads + extracts the prima release for this platform into
 // the bins dir when the binaries are missing.
 func ensureBinaries(ctx context.Context, bins shard.ServeBins) error {
+	dir := filepath.Dir(bins.ServerBin)
 	have := false
 	if _, e1 := os.Stat(bins.ServerBin); e1 == nil {
 		if _, e2 := os.Stat(bins.WorkerBin); e2 == nil {
-			have = true
+			// Present — but re-fetch when the on-disk VERSION marker doesn't match,
+			// so a binary change (e.g. the MPL-free nng rebuild) reaches nodes
+			// holding an older build instead of keeping the stale one.
+			v, _ := os.ReadFile(filepath.Join(dir, "VERSION"))
+			have = strings.TrimSpace(string(v)) == expectedPrimaVersion
 		}
 	}
 	if !have {
-		dir := filepath.Dir(bins.ServerBin)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
@@ -104,7 +114,7 @@ func extractPrima(r io.Reader, dir string) error {
 		}
 		base := filepath.Base(hdr.Name)
 		switch base {
-		case "llama-server", "llama-cli", "llama-server.exe", "llama-cli.exe":
+		case "llama-server", "llama-cli", "llama-server.exe", "llama-cli.exe", "VERSION":
 		default:
 			continue
 		}
