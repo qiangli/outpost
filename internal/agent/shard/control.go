@@ -152,7 +152,7 @@ func (m *Manager) tellWorker(ctx context.Context, member Member, req FormRequest
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("worker control returned %s: %s", resp.Status, bytes.TrimSpace(b))
 	}
