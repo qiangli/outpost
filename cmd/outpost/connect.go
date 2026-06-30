@@ -58,7 +58,7 @@ password from stdin so the calling agent can supply it
 programmatically.
 
 Pass --keep-alive to hold the process open and ping cloudbox every
-30 minutes. Each ping slides cloudbox's idle TTL forward (it slides
+20 minutes. Each ping slides cloudbox's idle TTL forward (it slides
 on any authed request past the halfway point), so the cookie stays
 valid until the absolute 8 h cap. Useful for long-running agentic
 flows that would otherwise hit EAUTHREQUIRED mid-run.
@@ -139,7 +139,7 @@ func runCookieOnlyKeepAlive(ctx context.Context, host string) error {
 	if cookie == "" {
 		return fmt.Errorf("no cached cookie for %q; run `outpost connect --ttl infinite %s` first to seed one", host, host)
 	}
-	fmt.Fprintf(os.Stderr, "Keep-alive (cookie-only): pinging every 30 min until SIGTERM or absolute expiry.\n")
+	fmt.Fprintf(os.Stderr, "Keep-alive (cookie-only): pinging every 20 min until SIGTERM or absolute expiry.\n")
 	// Empty password/user signals the loop has no creds for auto-renew on
 	// fatal auth. The existing fatal-exit behavior is preserved for this
 	// daemon-friendly path: a supervisor (launchd / systemd) is expected
@@ -245,15 +245,15 @@ func runConnect(ctx context.Context, host, userFlag string, fromStdin, keepAlive
 	if !keepAlive {
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "Keep-alive: pinging every 30 min until SIGTERM or absolute expiry.\n")
+	fmt.Fprintf(os.Stderr, "Keep-alive: pinging every 20 min until SIGTERM or absolute expiry.\n")
 	return runKeepAlive(ctx, fc, bearer, host, cookie, password, user, ttlSeconds)
 }
 
 // runKeepAlive holds the process open, hitting /h/<host>/elev/ssh/ping
-// every 30 minutes to slide the cloudbox idle TTL. Cloudbox issues a
-// fresh Set-Cookie header when the cookie crosses its halfway-point
-// (30 min into the 1 h window), so we capture the refreshed value and
-// rewrite the cache file.
+// every 20 minutes to slide the cloudbox idle TTL. Cloudbox issues a
+// fresh Set-Cookie header once the cookie is past its halfway point
+// (< 30 min left of the 1 h window), so we capture the refreshed value
+// and rewrite the cache file.
 //
 // When `password` and `user` are non-empty the loop is "self-healing":
 // on a fatalPingError that the disk-cookie self-heal couldn't resolve,
@@ -416,11 +416,15 @@ func runKeepAlive(ctx context.Context, fc *conf.FileConfig, bearer, host, cookie
 	}
 }
 
-// keepAliveInterval is the ping cadence. Cloudbox slides the cookie past
-// its halfway mark (30 min for a 1 h idle TTL), so pinging at 30 min is
-// the largest safe gap. Smaller would also work; bigger lets the cookie
-// briefly expire between pings.
-var keepAliveInterval = 30 * time.Minute
+// keepAliveInterval is the ping cadence. Cloudbox only slides the cookie once
+// it's in the SECOND HALF of its 1 h idle TTL (the refresh fires when < 30 min
+// remain), so a ping must land inside that window with margin. Pinging at 30 min
+// lands EXACTLY on the boundary — it slid only by the thin margin of network
+// latency and missed under any timing jitter, forcing needless re-elevations
+// around each hour. 20 min (TTL/3) puts a ping at ~40 min with ~20 min to spare,
+// so the slide reliably fires every cycle. Smaller still works; never use the
+// exact halfway point.
+var keepAliveInterval = 20 * time.Minute
 
 // keepAliveMaxConsecutiveFailures bounds the retry budget for transient
 // ping errors. At max-backoff (5 min) this is ~50 min of total wait,
