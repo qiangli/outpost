@@ -283,6 +283,11 @@ func (m *Manager) watchSession(sess *Session, model string, logw io.Closer) {
 	if logw != nil {
 		logw.Close()
 	}
+	// Unwind the mesh wiring even when prima exited on its own. The ring uses
+	// FIXED forward ports (shard-signal/shard-data), so a crash that leaves the
+	// listeners bound makes the NEXT form fail with "address already in use".
+	// Stop is idempotent (already-dead process → Kill no-ops, cleanup runs once).
+	sess.Stop()
 	m.mu.Lock()
 	cleared := m.active == sess
 	if cleared {
