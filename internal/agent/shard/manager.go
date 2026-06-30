@@ -90,6 +90,7 @@ type Manager struct {
 	ring        *Ring
 	active      *Session
 	activeModel string
+	lastExit    string // last prima exit (model + error) — surfaced in status for remote diagnosis
 }
 
 // NewManager builds a shard manager. Defaults: 30s discover interval, the
@@ -294,10 +295,24 @@ func (m *Manager) watchSession(sess *Session, model string, logw io.Closer) {
 		m.active = nil
 		m.activeModel = ""
 	}
+	if err != nil {
+		m.lastExit = fmt.Sprintf("%s: %v", model, err)
+	} else {
+		m.lastExit = fmt.Sprintf("%s: exited cleanly", model)
+	}
 	m.mu.Unlock()
 	if cleared {
 		m.log.Warn("shard: prima exited — cleared active shard", "model", model, "err", err)
 	}
+}
+
+// LastExit returns a description of the most recent prima exit on this node
+// (model + error), or "" if none. It's surfaced in the status report so a
+// worker-rank crash is visible over the mesh — no ssh into the box needed.
+func (m *Manager) LastExit() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastExit
 }
 
 // Stop tears down the active shard on this node (if any).

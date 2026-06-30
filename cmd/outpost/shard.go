@@ -86,6 +86,9 @@ func shardStatusCmd() *cobra.Command {
 			fmt.Printf("worker_bin:    %v\n", r.WorkerBin)
 			fmt.Printf("active_model:  %s\n", r.ActiveModel)
 			fmt.Printf("ring_members:  %d\n", r.RingMembers)
+			if r.LastExit != "" {
+				fmt.Printf("last_exit:     %s\n", r.LastExit)
+			}
 			for _, m := range r.Models {
 				fmt.Printf("  model %s (%d bytes)\n", m.Name, m.Bytes)
 			}

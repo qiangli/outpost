@@ -21,6 +21,7 @@ type StatusReport struct {
 	WorkerBin   bool         `json:"worker_bin"` // prima llama-cli present on disk
 	ActiveModel string       `json:"active_model,omitempty"`
 	RingMembers int          `json:"ring_members"`
+	LastExit    string       `json:"last_exit,omitempty"` // most recent prima exit (model + error)
 }
 
 // LocalStatus builds this node's report from live manager state (no network).
@@ -37,6 +38,7 @@ func (m *Manager) LocalStatus() StatusReport {
 		ServerBin:   fileExists(m.bins.ServerBin),
 		WorkerBin:   fileExists(m.bins.WorkerBin),
 		ActiveModel: m.ActiveModel(),
+		LastExit:    m.LastExit(),
 	}
 	if r := m.Ring(); r != nil {
 		rep.RingMembers = len(r.Members)
