@@ -315,6 +315,15 @@ func (m *Manager) LastExit() string {
 	return m.lastExit
 }
 
+// noteExit records a worker-rank form failure in the status diagnostic, so a
+// leader's async /form can surface why a worker didn't stand up — visible over
+// the mesh via /status, no ssh into the box.
+func (m *Manager) noteExit(model, detail string) {
+	m.mu.Lock()
+	m.lastExit = fmt.Sprintf("%s: %s", model, detail)
+	m.mu.Unlock()
+}
+
 // Stop tears down the active shard on this node (if any).
 func (m *Manager) Stop() {
 	m.mu.Lock()

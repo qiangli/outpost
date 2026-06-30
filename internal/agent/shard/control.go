@@ -54,11 +54,22 @@ func (m *Manager) ServeControl() (func(), error) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := m.onForm(r.Context(), &req.Ring, req.MyRank, m.serveConfig(req)); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
+		// Stand the rank up in the BACKGROUND on a detached context, then 202.
+		// Forming self-provisions + launches prima, which can take long enough that
+		// holding this mesh-forwarded POST open until it returns risks a "connection
+		// reset by peer". The leader no longer blocks on the worker's full form; a
+		// worker failure is surfaced via the worker's last_exit (read over /status).
+		sc := m.serveConfig(req)
+		ring := req.Ring
+		rank := req.MyRank
+		model := req.Model
+		go func() {
+			if err := m.onForm(context.Background(), &ring, rank, sc); err != nil {
+				m.log.Warn("shard: worker form failed", "rank", rank, "model", model, "err", err)
+				m.noteExit(model, "worker form failed: "+err.Error())
+			}
+		}()
+		w.WriteHeader(http.StatusAccepted)
 	})
 	mux.HandleFunc("/status", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
