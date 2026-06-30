@@ -10,6 +10,7 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
+	ma "github.com/multiformats/go-multiaddr"
 )
 
 func TestLoadOrCreateKeyPersists(t *testing.T) {
@@ -54,6 +55,56 @@ func TestHostsConnectDirect(t *testing.T) {
 	}
 	if len(h1.Status().ListenAddrs) == 0 {
 		t.Fatal("host should report listen addrs")
+	}
+}
+
+// TestStatusPeerDetail verifies Status() carries per-connected-peer link
+// detail: after a direct dial the connected peer shows Direct=true, at least
+// one Remote multiaddr, and a LinkClass consistent with the strongest class of
+// those remote addrs (the test host advertises whatever interface addrs it has,
+// so we assert the wiring is consistent rather than a fixed class — the
+// classification of specific link-local / LAN / WAN addrs is covered by the
+// linkclass table tests).
+func TestStatusPeerDetail(t *testing.T) {
+	h1 := newTestHost(t)
+	defer h1.Close()
+	h2 := newTestHost(t)
+	defer h2.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	ai := peer.AddrInfo{ID: h2.LibP2PHost().ID(), Addrs: h2.LibP2PHost().Addrs()}
+	if err := h1.LibP2PHost().Connect(ctx, ai); err != nil {
+		t.Fatalf("connect h1->h2: %v", err)
+	}
+
+	st := h1.Status()
+	if len(st.Peers) != 1 {
+		t.Fatalf("Status().Peers = %d entries, want 1", len(st.Peers))
+	}
+	pc := st.Peers[0]
+	if pc.ID != h2.PeerID() {
+		t.Errorf("peer id = %q, want %q", pc.ID, h2.PeerID())
+	}
+	if !pc.Direct {
+		t.Error("a non-relayed dial should be reported Direct=true")
+	}
+	if len(pc.Remote) == 0 {
+		t.Fatal("peer detail should carry at least one remote multiaddr")
+	}
+	// LinkClass must equal the strongest class derived from the reported
+	// remote addrs — proving the detail-building wiring (not just the count).
+	want := ""
+	for _, r := range pc.Remote {
+		m, err := ma.NewMultiaddr(r)
+		if err != nil {
+			t.Fatalf("remote %q is not a valid multiaddr: %v", r, err)
+		}
+		want = strongerLinkClass(want, classifyConnAddr(m))
+	}
+	if pc.LinkClass != want {
+		t.Errorf("link class = %q, want %q (derived from remote addrs %v)", pc.LinkClass, want, pc.Remote)
 	}
 }
 

@@ -629,10 +629,20 @@ func startCmd() *cobra.Command {
 					return nil
 				}
 				s := meshHost.Status()
+				peers := make([]admincore.MeshPeerConnView, 0, len(s.Peers))
+				for _, p := range s.Peers {
+					peers = append(peers, admincore.MeshPeerConnView{
+						ID:        p.ID,
+						Direct:    p.Direct,
+						LinkClass: p.LinkClass,
+						Remote:    p.Remote,
+					})
+				}
 				return &admincore.MeshStatusView{
 					PeerID:         s.PeerID,
 					ListenAddrs:    s.ListenAddrs,
 					ConnectedPeers: s.ConnectedPeers,
+					Peers:          peers,
 				}
 			}
 			// Mesh rendezvous client — uses cloudbox's peer-signal surface to

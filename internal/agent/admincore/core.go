@@ -171,9 +171,22 @@ type PeerTierView struct {
 // MeshStatusView is the libp2p mesh host's live status (rendered into SafeView
 // + the status surfaces). Nil/absent when the mesh data plane is off.
 type MeshStatusView struct {
-	PeerID         string   `json:"peer_id"`
-	ListenAddrs    []string `json:"listen_addrs,omitempty"`
-	ConnectedPeers int      `json:"connected_peers"`
+	PeerID         string             `json:"peer_id"`
+	ListenAddrs    []string           `json:"listen_addrs,omitempty"`
+	ConnectedPeers int                `json:"connected_peers"`
+	Peers          []MeshPeerConnView `json:"peers,omitempty"`
+}
+
+// MeshPeerConnView is the per-connected-peer link detail (which remote
+// address + link class each peer is reached over) for the LOCAL mesh-status
+// debug surface. Raw remote addrs are intentionally surfaced here (owner
+// inspecting their own daemon over loopback) — this is NOT the cross-account
+// peer-status API, which never returns raw IPs.
+type MeshPeerConnView struct {
+	ID        string   `json:"id"`
+	Direct    bool     `json:"direct"`
+	LinkClass string   `json:"link_class"`
+	Remote    []string `json:"remote,omitempty"`
 }
 
 // AppHealthView is one app's reachability measurement (rendered into SafeView).

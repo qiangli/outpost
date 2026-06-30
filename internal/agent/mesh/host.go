@@ -11,6 +11,7 @@ import (
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	mdns "github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	ma "github.com/multiformats/go-multiaddr"
@@ -301,9 +302,23 @@ func (m *Host) addrStrings() []string {
 
 // Status is a snapshot for admincore / status surfaces.
 type Status struct {
-	PeerID         string   `json:"peer_id"`
-	ListenAddrs    []string `json:"listen_addrs"`
-	ConnectedPeers int      `json:"connected_peers"`
+	PeerID         string     `json:"peer_id"`
+	ListenAddrs    []string   `json:"listen_addrs"`
+	ConnectedPeers int        `json:"connected_peers"`
+	Peers          []PeerConn `json:"peers,omitempty"`
+}
+
+// PeerConn is the per-connected-peer link detail for the local mesh-status
+// debug surface: which remote address(es) the peer is reached over and the
+// strongest link class across its direct connections. This is a LOCAL
+// loopback/admin view (the owner inspecting their own daemon) — raw remote
+// addrs are fine here and deliberately NOT surfaced by the cross-account
+// peer-status API.
+type PeerConn struct {
+	ID        string   `json:"id"`         // peer id (string form)
+	Direct    bool     `json:"direct"`     // at least one non-relayed connection
+	LinkClass string   `json:"link_class"` // strongest of its direct conns: tp>lan>wan; "" if relayed/none
+	Remote    []string `json:"remote"`     // remote multiaddr string(s)
 }
 
 // Status returns a live snapshot of the mesh host.
@@ -312,5 +327,55 @@ func (m *Host) Status() Status {
 		PeerID:         m.h.ID().String(),
 		ListenAddrs:    m.addrStrings(),
 		ConnectedPeers: len(m.h.Network().Peers()),
+		Peers:          m.peerConns(),
 	}
+}
+
+// peerConns builds the per-connected-peer link detail by walking every
+// connection to each connected peer: it records the remote multiaddrs, marks
+// the peer Direct when any connection is non-relayed, and computes LinkClass as
+// the strongest class across its DIRECT connections (relayed conns don't count
+// toward locality). Reuses the same classifyConnAddr/strongerLinkClass helpers
+// PeerLinkClass uses.
+func (m *Host) peerConns() []PeerConn {
+	peers := m.h.Network().Peers()
+	out := make([]PeerConn, 0, len(peers))
+	for _, pid := range peers {
+		conns := m.h.Network().ConnsToPeer(pid)
+		if len(conns) == 0 {
+			continue
+		}
+		pc := PeerConn{ID: pid.String()}
+		for _, c := range conns {
+			raddr := c.RemoteMultiaddr()
+			pc.Remote = append(pc.Remote, raddr.String())
+			if isRelayed(c) {
+				continue // relayed — not a direct link, no class
+			}
+			pc.Direct = true
+			pc.LinkClass = strongerLinkClass(pc.LinkClass, classifyConnAddr(raddr))
+		}
+		out = append(out, pc)
+	}
+	return out
+}
+
+// isRelayed reports whether a connection rides the circuit relay (i.e. it is
+// not a direct peer-to-peer link). A relayed conn is marked Limited by libp2p
+// and its remote multiaddr carries the /p2p-circuit component.
+func isRelayed(c connStat) bool {
+	if c.Stat().Limited {
+		return true
+	}
+	if a := c.RemoteMultiaddr(); a != nil && strings.Contains(a.String(), "/p2p-circuit") {
+		return true
+	}
+	return false
+}
+
+// connStat is the slice of network.Conn that isRelayed needs — kept narrow so
+// the relay check is unit-testable without a full libp2p connection.
+type connStat interface {
+	Stat() network.ConnStats
+	RemoteMultiaddr() ma.Multiaddr
 }

@@ -221,6 +221,20 @@ func meshStatusCmd() *cobra.Command {
 			} else {
 				fmt.Printf("peer_id:         %s\n", out.Status.PeerID)
 				fmt.Printf("connected_peers: %d\n", out.Status.ConnectedPeers)
+				for _, p := range out.Status.Peers {
+					link := p.LinkClass
+					if link == "" {
+						link = "-"
+					}
+					reach := "relayed"
+					if p.Direct {
+						reach = "direct"
+					}
+					fmt.Printf("  peer %s  %s  link=%s\n", abbrevPeerID(p.ID), reach, link)
+					for _, r := range p.Remote {
+						fmt.Printf("    remote %s\n", r)
+					}
+				}
 				for _, a := range out.Status.ListenAddrs {
 					fmt.Printf("  listen %s\n", a)
 				}
@@ -315,6 +329,17 @@ func meshUnlistenCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// abbrevPeerID shortens a peer id for readability while keeping it greppable:
+// the leading prefix + an ellipsis + the trailing suffix (libp2p peer ids are
+// long base58; the tail is the distinguishing part operators eyeball).
+func abbrevPeerID(id string) string {
+	const head, tail = 12, 6
+	if len(id) <= head+tail+1 {
+		return id
+	}
+	return id[:head] + "…" + id[len(id)-tail:]
 }
 
 func runMeshTool(ctx context.Context, name string, args, out any) error {

@@ -3,8 +3,75 @@ package mesh
 import (
 	"testing"
 
+	"github.com/libp2p/go-libp2p/core/network"
 	ma "github.com/multiformats/go-multiaddr"
 )
+
+// fakeConn is a minimal connStat for exercising isRelayed without a live
+// libp2p connection.
+type fakeConn struct {
+	limited bool
+	remote  ma.Multiaddr
+}
+
+func (c fakeConn) Stat() network.ConnStats {
+	return network.ConnStats{Stats: network.Stats{Limited: c.limited}}
+}
+func (c fakeConn) RemoteMultiaddr() ma.Multiaddr { return c.remote }
+
+func mustAddr(t *testing.T, s string) ma.Multiaddr {
+	t.Helper()
+	m, err := ma.NewMultiaddr(s)
+	if err != nil {
+		t.Fatalf("%s: %v", s, err)
+	}
+	return m
+}
+
+func TestIsRelayed(t *testing.T) {
+	cases := []struct {
+		name string
+		c    fakeConn
+		want bool
+	}{
+		{"direct LAN", fakeConn{false, mustAddr(t, "/ip4/10.0.0.5/tcp/4001")}, false},
+		{"direct TP", fakeConn{false, mustAddr(t, "/ip4/169.254.110.47/tcp/4001")}, false},
+		{"direct WAN", fakeConn{false, mustAddr(t, "/ip4/203.0.113.10/tcp/16690")}, false},
+		{"limited flag", fakeConn{true, mustAddr(t, "/ip4/10.0.0.5/tcp/4001")}, true},
+		{"p2p-circuit addr", fakeConn{false, mustAddr(t, "/ip4/203.0.113.10/tcp/16690/p2p-circuit")}, true},
+	}
+	for _, c := range cases {
+		if got := isRelayed(c.c); got != c.want {
+			t.Errorf("%s: isRelayed = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestPeerLinkClassDerivation mirrors the strongest-class-across-direct-conns
+// rule peerConns uses: a peer dialed over both Wi-Fi (lan) and a wired link
+// (tp) reports the stronger "tp"; a relayed conn contributes no class.
+func TestPeerLinkClassDerivation(t *testing.T) {
+	conns := []fakeConn{
+		{false, mustAddr(t, "/ip4/10.0.0.5/tcp/4001")},               // lan
+		{false, mustAddr(t, "/ip4/169.254.110.47/udp/4001/quic-v1")}, // tp
+		{true, mustAddr(t, "/ip4/203.0.113.10/tcp/16690")},           // relayed → ignored
+	}
+	best := ""
+	direct := false
+	for _, c := range conns {
+		if isRelayed(c) {
+			continue
+		}
+		direct = true
+		best = strongerLinkClass(best, classifyConnAddr(c.RemoteMultiaddr()))
+	}
+	if !direct {
+		t.Fatal("expected a direct connection")
+	}
+	if best != "tp" {
+		t.Errorf("strongest link class = %q, want %q", best, "tp")
+	}
+}
 
 func TestClassifyConnAddr(t *testing.T) {
 	cases := []struct{ addr, want string }{
