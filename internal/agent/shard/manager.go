@@ -3,7 +3,10 @@ package shard
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -45,6 +48,9 @@ type ManagerConfig struct {
 	// Refiner, when set, lets the pooled LLM (the brain) refine the leader
 	// election. nil → the deterministic bootstrap (most-VRAM) stands.
 	Refiner brain.Refiner
+	// LogDir, when set, is where each rank's prima stdout+stderr is captured
+	// (<LogDir>/prima-rank<N>.log) — the exit reason when a shard process dies.
+	LogDir string
 }
 
 // Manager keeps a current candidate shard Ring up to date: it periodically
@@ -77,6 +83,8 @@ type Manager struct {
 	provision func(ctx context.Context, modelName string) (string, error)
 	// refiner is the pooled-LLM hook for the brain (nil → bootstrap stands).
 	refiner brain.Refiner
+	// logDir is where each rank's prima output is captured (empty → discarded).
+	logDir string
 
 	mu          sync.Mutex
 	ring        *Ring
@@ -118,6 +126,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		m.provision = func(_ context.Context, name string) (string, error) { return name, nil }
 	}
 	m.refiner = cfg.Refiner
+	m.logDir = cfg.LogDir
 	return m
 }
 
@@ -220,8 +229,16 @@ func (m *Manager) Form(ctx context.Context, ring *Ring, myRank int, sc ServeConf
 	}
 	launchSC := sc
 	launchSC.Model = gguf // prima loads the resolved GGUF path
-	sess, err := Start(ctx, m.fwd, plan, plan.LaunchConfigFor(launchSC))
+	lc := plan.LaunchConfigFor(launchSC)
+	logw := m.primaLog(myRank)
+	if logw != nil {
+		lc.LogWriter = logw
+	}
+	sess, err := Start(ctx, m.fwd, plan, lc)
 	if err != nil {
+		if logw != nil {
+			logw.Close()
+		}
 		return err
 	}
 	m.mu.Lock()
@@ -233,7 +250,49 @@ func (m *Manager) Form(ctx context.Context, ring *Ring, myRank int, sc ServeConf
 		prev.Stop()
 	}
 	m.log.Info("shard: formed", "model", sc.Model, "rank", myRank, "members", len(ring.Members))
+	// Watch the process: when prima exits (clean or crash) clear the active state
+	// so a re-trigger re-forms instead of no-opping on a dead shard, and surface
+	// the exit (the captured prima-rank<N>.log says why).
+	go m.watchSession(sess, sc.Model, logw)
 	return nil
+}
+
+// primaLog opens this rank's prima stdout+stderr sink, truncated. Returns nil
+// when no log dir is configured or the file can't be opened — prima then runs
+// with its output discarded (the prior behavior).
+func (m *Manager) primaLog(rank int) io.WriteCloser {
+	if m.logDir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(m.logDir, 0o755); err != nil {
+		return nil
+	}
+	f, err := os.OpenFile(filepath.Join(m.logDir, fmt.Sprintf("prima-rank%d.log", rank)),
+		os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil
+	}
+	return f
+}
+
+// watchSession blocks until the shard's prima process exits, then clears the
+// active state (if this is still the live session) and closes its log. A dead
+// shard that left activeModel set is what made a re-trigger a no-op.
+func (m *Manager) watchSession(sess *Session, model string, logw io.Closer) {
+	err := sess.Wait()
+	if logw != nil {
+		logw.Close()
+	}
+	m.mu.Lock()
+	cleared := m.active == sess
+	if cleared {
+		m.active = nil
+		m.activeModel = ""
+	}
+	m.mu.Unlock()
+	if cleared {
+		m.log.Warn("shard: prima exited — cleared active shard", "model", model, "err", err)
+	}
 }
 
 // Stop tears down the active shard on this node (if any).

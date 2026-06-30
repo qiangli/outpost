@@ -173,6 +173,7 @@ func newShardManager(fc *conf.FileConfig, meshHost *mesh.Host, peerSvc *peerplan
 		Forwarder: meshHost.Forwarder(),
 		Peers:     disc,
 		Bins:      bins,
+		LogDir:    filepath.Dir(bins.ServerBin), // prima stdout+stderr → <prima dir>/prima-rank<N>.log
 		Provision: func(ctx context.Context, name string) (string, error) {
 			return provisionShard(ctx, bins, name)
 		},
