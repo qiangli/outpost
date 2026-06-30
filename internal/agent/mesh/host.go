@@ -250,7 +250,7 @@ func (m *Host) PeerLinkInfo(peerID string) LinkInfo {
 		if c.Stat().Limited {
 			continue // relayed — not a direct link
 		}
-		cls := classifyConnAddr(c.RemoteMultiaddr())
+		cls, lan := connLink(c.LocalMultiaddr(), c.RemoteMultiaddr())
 		if cls == "" {
 			continue // loopback / unclassifiable — no locality signal
 		}
@@ -258,10 +258,87 @@ func (m *Host) PeerLinkInfo(peerID string) LinkInfo {
 		// it always reflects the strongest link the peer is reached over.
 		if strongerLinkClass(info.Class, cls) == cls && cls != info.Class {
 			info.Class = cls
-			info.LAN = localLANLabel(c.LocalMultiaddr())
+			info.LAN = lan
 		}
 	}
 	return info
+}
+
+// connLink computes a single direct connection's link class AND LAN label from
+// its REMOTE addr (class) and LOCAL addr (label). It layers a same-subnet
+// correction over classifyConnAddr: a peer reached over a PUBLIC address that
+// shares THIS host's own subnet — same IPv6 /64 or same IPv4 /24 — is genuinely
+// same-LAN (same link), exactly as an RFC-1918 address is for IPv4. So a "wan"
+// classification whose remote sits in the local subnet is corrected to "lan"
+// with a stable label: "lan6" for an IPv6 /64 (NEVER the raw prefix — that is
+// the user's real address) and the first-three-octet base for an IPv4 /24
+// (same shape localLANLabel emits for private nets). tp (link-local) and a
+// genuine wan (different prefix) are unchanged.
+func connLink(local, remote ma.Multiaddr) (class, lan string) {
+	class = classifyConnAddr(remote)
+	if class == "" {
+		return "", ""
+	}
+	if class == "wan" && sameSubnet(local, remote) {
+		return "lan", subnetLabel(remote)
+	}
+	return class, localLANLabel(local)
+}
+
+// addrIP extracts the IPv4/IPv6 net.IP from a multiaddr (nil if absent/bad) —
+// the same IP4-then-IP6 extraction classifyConnAddr/localLANLabel use.
+func addrIP(maddr ma.Multiaddr) net.IP {
+	if maddr == nil {
+		return nil
+	}
+	ipStr, err := maddr.ValueForProtocol(ma.P_IP4)
+	if err != nil {
+		ipStr, _ = maddr.ValueForProtocol(ma.P_IP6)
+	}
+	return net.ParseIP(ipStr)
+}
+
+// sameSubnet reports whether local and remote are in the same locally-attached
+// subnet: both IPv6 in the same /64, or both IPv4 in the same /24. Same /64 is
+// same-LAN for IPv6 the way RFC-1918 is for IPv4 — which is why a public IPv6
+// GUA in the host's own /64 must not be mistaken for a remote (wan) peer.
+func sameSubnet(local, remote ma.Multiaddr) bool {
+	l, r := addrIP(local), addrIP(remote)
+	if l == nil || r == nil {
+		return false
+	}
+	l4, r4 := l.To4(), r.To4()
+	if (l4 == nil) != (r4 == nil) {
+		return false // mixed address family
+	}
+	if l4 != nil { // both IPv4 — compare /24
+		return l4[0] == r4[0] && l4[1] == r4[1] && l4[2] == r4[2]
+	}
+	l16, r16 := l.To16(), r.To16() // both IPv6 — compare /64 (first 8 bytes)
+	if l16 == nil || r16 == nil {
+		return false
+	}
+	for i := 0; i < 8; i++ {
+		if l16[i] != r16[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// subnetLabel derives the same-subnet LAN label for a corrected (public but
+// same-subnet) link: the IPv4 /24 base ("a.b.c") or the stable IPv6 token
+// "lan6" — deliberately NOT the raw /64 prefix, which would leak the user's
+// real address onto the peer board.
+func subnetLabel(remote ma.Multiaddr) string {
+	ip := addrIP(remote)
+	if ip == nil {
+		return ""
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return fmt.Sprintf("%d.%d.%d", v4[0], v4[1], v4[2])
+	}
+	return "lan6"
 }
 
 // localLANLabel derives a short label naming the local LAN/path a link uses from
