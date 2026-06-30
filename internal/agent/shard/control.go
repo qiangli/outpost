@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"time"
 )
 
 // ControlService is the mesh-forwarder service name the shard-control endpoint
@@ -115,7 +116,18 @@ func (m *Manager) ServeControl() (func(), error) {
 // stand up its rank, then forms its own. The caller (the trigger) decides when
 // and which model. Fail-fast: a worker that won't form aborts the whole form.
 func (m *Manager) Orchestrate(ctx context.Context, model string, apiPort int, extra []string) error {
-	ring := m.Ring()
+	// The mesh resolve/forward to a peer flakes transiently (a momentary flap can
+	// drop the candidate ring or reset the form POST). Wait briefly for the ring
+	// if it's momentarily empty rather than failing the whole trigger.
+	var ring *Ring
+	for attempt := 0; attempt < 5; attempt++ {
+		if ring = m.Ring(); ring != nil {
+			break
+		}
+		if !sleepCtx(ctx, 6*time.Second) {
+			return ctx.Err()
+		}
+	}
 	if ring == nil {
 		return fmt.Errorf("shard: no candidate ring (no same-LAN peers)")
 	}
@@ -124,8 +136,20 @@ func (m *Manager) Orchestrate(ctx context.Context, model string, apiPort int, ex
 			continue // self = leader; formed last, below
 		}
 		req := FormRequest{Ring: *ring, MyRank: member.Rank, Model: model, APIPort: apiPort, Extra: extra}
-		if err := m.tellWorker(ctx, member, req); err != nil {
-			return fmt.Errorf("shard: form worker %s (rank %d): %w", member.Host, member.Rank, err)
+		// Retry a worker through a transient mesh failure (resolve flake / forward
+		// reset) instead of aborting the whole form on the first hiccup.
+		var werr error
+		for attempt := 0; attempt < 5; attempt++ {
+			if werr = m.tellWorker(ctx, member, req); werr == nil {
+				break
+			}
+			m.log.Warn("shard: tellWorker transient failure, retrying", "host", member.Host, "attempt", attempt+1, "err", werr)
+			if !sleepCtx(ctx, time.Duration(2*(attempt+1))*time.Second) {
+				return ctx.Err()
+			}
+		}
+		if werr != nil {
+			return fmt.Errorf("shard: form worker %s (rank %d): %w", member.Host, member.Rank, werr)
 		}
 	}
 	err := m.onForm(ctx, ring, 0, ServeConfig{
@@ -138,6 +162,16 @@ func (m *Manager) Orchestrate(ctx context.Context, model string, apiPort int, ex
 		go m.monitorRing(ring, model, apiPort)
 	}
 	return err
+}
+
+// sleepCtx sleeps for d or until ctx is cancelled; returns false if cancelled.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
+	}
 }
 
 // tellWorker forwards to a worker's shard-control endpoint over the mesh and

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/qiangli/outpost/internal/agent/shard"
@@ -32,10 +33,42 @@ const expectedPrimaVersion = "nng-3"
 // returns the GGUF path prima loads. Idempotent — already-present binaries +
 // models are reused. This is what dissolves the "needs ssh to stage" boundary.
 func provisionShard(ctx context.Context, bins shard.ServeBins, modelName string, fwd shard.Forwarder, peers shard.PeerDiscoverer) (string, error) {
+	// Kill any orphaned prima from a previous form before re-provisioning. The
+	// async launch detaches prima from the daemon ctx, so a torn-down or
+	// restarted form can leave a worker/leader running — it holds the data ports
+	// AND the binary inode, which blocks both the re-fetch's overwrite and a
+	// fresh bind ("Address in use"). Targeted: only this shard's own prima
+	// binaries by exact path, never the daemon, never a loose pattern.
+	killStalePrima(bins.ServerBin)
+	killStalePrima(bins.WorkerBin)
 	if err := ensureBinaries(ctx, bins); err != nil {
 		return "", fmt.Errorf("binaries: %w", err)
 	}
 	return ensureModel(ctx, "http://127.0.0.1:11434", modelName, fwd, peers)
+}
+
+// killStalePrima SIGKILLs any process whose command line contains exactly this
+// prima binary path — an orphan from a prior form. Unix-only (pgrep); a no-op on
+// Windows and when nothing matches. It only ever targets the shard's own compute
+// children (the prima binary by exact path), never the outpost daemon.
+func killStalePrima(binPath string) {
+	if binPath == "" || runtime.GOOS == "windows" {
+		return
+	}
+	out, err := exec.Command("pgrep", "-f", binPath).Output()
+	if err != nil {
+		return // pgrep exits non-zero when nothing matches
+	}
+	self := os.Getpid()
+	for _, f := range strings.Fields(string(out)) {
+		pid, err := strconv.Atoi(f)
+		if err != nil || pid == self {
+			continue
+		}
+		if p, e := os.FindProcess(pid); e == nil {
+			_ = p.Kill()
+		}
+	}
 }
 
 // ensureBinaries downloads + extracts the prima release for this platform into
