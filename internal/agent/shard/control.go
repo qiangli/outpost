@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 )
@@ -141,7 +142,8 @@ func (m *Manager) tellWorker(ctx context.Context, member Member, req FormRequest
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("worker control returned %s", resp.Status)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("worker control returned %s: %s", resp.Status, bytes.TrimSpace(b))
 	}
 	return nil
 }

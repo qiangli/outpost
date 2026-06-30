@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -34,29 +35,54 @@ func provisionShard(ctx context.Context, bins shard.ServeBins, modelName string)
 // ensureBinaries downloads + extracts the prima release for this platform into
 // the bins dir when the binaries are missing.
 func ensureBinaries(ctx context.Context, bins shard.ServeBins) error {
+	have := false
 	if _, e1 := os.Stat(bins.ServerBin); e1 == nil {
 		if _, e2 := os.Stat(bins.WorkerBin); e2 == nil {
-			return nil
+			have = true
 		}
 	}
-	dir := filepath.Dir(bins.ServerBin)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+	if !have {
+		dir := filepath.Dir(bins.ServerBin)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		asset := fmt.Sprintf("prima-%s-%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, primaReleaseBase+"/"+asset, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("fetch %s: %s", asset, resp.Status)
+		}
+		if err := extractPrima(resp.Body, dir); err != nil {
+			return err
+		}
 	}
-	asset := fmt.Sprintf("prima-%s-%s.tar.gz", runtime.GOOS, runtime.GOARCH)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, primaReleaseBase+"/"+asset, nil)
-	if err != nil {
-		return err
+	// Ad-hoc sign on macOS — an unsigned arm64 Mach-O is SIGKILLed at exec by the
+	// kernel, and a downloaded release artifact carries no signature valid for THIS
+	// host. Applies whether freshly fetched or already on disk (a prior unsigned
+	// fetch), so a worker self-provisioned before this fix gets repaired too.
+	adhocSignDarwin(bins.ServerBin, bins.WorkerBin)
+	return nil
+}
+
+// adhocSignDarwin ad-hoc code-signs the given binaries on macOS (no-op elsewhere)
+// so a freshly-downloaded, unsigned prima binary can exec on Apple Silicon.
+func adhocSignDarwin(paths ...string) {
+	if runtime.GOOS != "darwin" {
+		return
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		_ = exec.Command("codesign", "--force", "--sign", "-", p).Run()
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetch %s: %s", asset, resp.Status)
-	}
-	return extractPrima(resp.Body, dir)
 }
 
 // extractPrima unpacks the llama-server + llama-cli executables from a tar.gz
