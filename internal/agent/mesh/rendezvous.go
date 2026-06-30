@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	ma "github.com/multiformats/go-multiaddr"
@@ -165,9 +166,20 @@ func (r *Rendezvous) dial(ctx context.Context, peerID string, addrs []string, la
 	h.Peerstore().AddAddrs(pid, maddrs, peerstore.TempAddrTTL)
 	dctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	// Plain Connect is a no-op when ANY connection exists — including a relayed
+	// one. If we're connected ONLY via the cloudbox relay (no direct link), force
+	// a direct dial to upgrade: otherwise a same-LAN peer stays stranded on the
+	// slow relay and shard discovery (which requires a direct lan/tp link) drops
+	// it. ForceDirectDial makes the swarm dial the peer's direct addrs, skipping
+	// relay; once a direct link exists HasDirectConn is true and this path is
+	// skipped, and a genuinely-remote peer simply keeps failing the upgrade and
+	// stays on the relay — so nothing healthy is disturbed.
+	if h.Network().Connectedness(pid) == network.Connected && !r.host.HasDirectConn(peerID) {
+		dctx = network.WithForceDirectDial(dctx, "mesh-direct-upgrade")
+	}
 	if err := h.Connect(dctx, peer.AddrInfo{ID: pid, Addrs: maddrs}); err != nil {
 		r.log.Debug("mesh: dial failed", "peer", label, "err", err)
 		return
 	}
-	r.log.Info("mesh: connected to peer", "peer", label, "peer_id", peerID)
+	r.log.Info("mesh: connected to peer", "peer", label, "peer_id", peerID, "direct", r.host.HasDirectConn(peerID))
 }
