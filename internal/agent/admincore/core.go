@@ -103,6 +103,12 @@ type Deps struct {
 	// when sharding / mesh isn't wired.
 	ShardStatus func(ctx context.Context, host string) (any, error)
 
+	// ShardLog, when set, returns a node's recent prima-rank shard logs over
+	// the mesh: the local node when host == "", otherwise a resolved peer.
+	// Closure (captures the shard.Manager + host→peer-id resolution). Nil when
+	// sharding / mesh isn't wired.
+	ShardLog func(ctx context.Context, host string) (string, error)
+
 	// AppHealth, when set, returns the latest per-app reachability
 	// measurements (TCP/HTTP probes, no ICMP). Nil when the service
 	// isn't wired.

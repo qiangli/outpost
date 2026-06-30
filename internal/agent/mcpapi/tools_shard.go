@@ -23,6 +23,10 @@ type shardStatusOut struct {
 	Status any `json:"status"`
 }
 
+type shardLogOut struct {
+	Log string `json:"log"`
+}
+
 func (s *Server) registerShardTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "outpost_shard_trigger",
@@ -43,5 +47,16 @@ func (s *Server) registerShardTools() {
 			return apiErrResult[shardStatusOut](err)
 		}
 		return nil, shardStatusOut{Status: rep}, nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_shard_log",
+		Description: "Tail a node's captured prima-rank shard logs over the mesh (the per-rank stdout+stderr a crashed or stuck shard left behind). Empty host = this local node; otherwise pings the named paired peer over the mesh — the fetch itself is the reachability proof, no ssh.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in shardStatusIn) (*mcp.CallToolResult, shardLogOut, error) {
+		text, err := s.core.ShardLog(ctx, in.Host)
+		if err != nil {
+			return apiErrResult[shardLogOut](err)
+		}
+		return nil, shardLogOut{Log: text}, nil
 	})
 }

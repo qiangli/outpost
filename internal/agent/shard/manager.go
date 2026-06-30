@@ -5,14 +5,21 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/qiangli/outpost/internal/agent/brain"
 )
+
+// readinessDeadline bounds how long a leader waits for its ring to become
+// serveable before tearing the stuck shard down — freeing the serving port a
+// never-joining worker would otherwise zombie at "503 Loading model".
+const readinessDeadline = 3 * time.Minute
 
 // ShardPeer identifies a shard-ring participant on the mesh: a hostname label
 // plus its libp2p peer id (what the forwarder dials).
@@ -313,6 +320,91 @@ func (m *Manager) LastExit() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.lastExit
+}
+
+// RecentPrimaLogs returns the tail of every captured prima-rank log on this
+// node: each <logDir>/prima-rank<N>.log prefixed with a "==== <name> ===="
+// header and its last maxLines lines. Returns "" when no log dir is configured
+// or none exist. This is the self-diagnosis surface — the exit reason a crashed
+// rank left behind, readable over the mesh (via /log) with no ssh into the box.
+func (m *Manager) RecentPrimaLogs(maxLines int) string {
+	if m.logDir == "" {
+		return ""
+	}
+	files, err := filepath.Glob(filepath.Join(m.logDir, "prima-rank*.log"))
+	if err != nil || len(files) == 0 {
+		return ""
+	}
+	sort.Strings(files)
+	var b strings.Builder
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+		if maxLines > 0 && len(lines) > maxLines {
+			lines = lines[len(lines)-maxLines:]
+		}
+		fmt.Fprintf(&b, "==== %s ====\n", filepath.Base(f))
+		b.WriteString(strings.Join(lines, "\n"))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// monitorRing is the leader's readiness watchdog (spawned by Orchestrate after
+// rank 0 forms). It polls the served OpenAI /health every 5s until it returns
+// 200 (ring ready → serving) or readinessDeadline passes. On timeout it pulls
+// each worker's prima log over the mesh — so the worker's error lands in THIS
+// (leader) node's log — and tears the stuck shard down (Stop frees the ports +
+// clears state), instead of zombie-ing the serving port forever.
+func (m *Manager) monitorRing(ring *Ring, model string, apiPort int) {
+	healthURL := fmt.Sprintf("http://%s:%d/health", loopback, apiPort)
+	deadline := time.Now().Add(readinessDeadline)
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for {
+		<-t.C
+		if primaHealthy(healthURL) {
+			m.log.Info("shard: ring ready — serving", "model", model, "members", len(ring.Members))
+			return
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+	}
+	m.log.Warn("shard: ring not ready, tearing down stuck shard", "model", model, "after", readinessDeadline)
+	for _, member := range ring.Members {
+		if member.Rank == 0 {
+			continue // the leader itself
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		logText, err := m.PeerLog(ctx, ShardPeer{Host: member.Host, PeerID: member.PeerID})
+		cancel()
+		if err != nil {
+			logText = "<unavailable: " + err.Error() + ">"
+		}
+		m.log.Warn("shard: worker log", "host", member.Host, "rank", member.Rank, "log", logText)
+	}
+	m.Stop()
+}
+
+// primaHealthy reports whether the leader's served OpenAI endpoint answers 200
+// (the ring formed and the model finished loading).
+func primaHealthy(healthURL string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 // noteExit records a worker-rank form failure in the status diagnostic, so a

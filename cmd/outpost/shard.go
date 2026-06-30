@@ -29,7 +29,7 @@ func shardCmd() *cobra.Command {
 and orchestrates its same-LAN ring over the mesh — and inspect a node's shard
 readiness. Both subcommands drive the local daemon over MCP.`,
 	}
-	cmd.AddCommand(shardTriggerCmd(), shardStatusCmd())
+	cmd.AddCommand(shardTriggerCmd(), shardStatusCmd(), shardLogCmd())
 	return cmd
 }
 
@@ -97,6 +97,33 @@ func shardStatusCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit JSON")
 	return cmd
+}
+
+func shardLogCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "log [host]",
+		Short: "Tail this node's (or a peer's) captured prima-rank shard logs over the mesh",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			host := ""
+			if len(args) == 1 {
+				host = args[0]
+			}
+			var out struct {
+				Log string `json:"log"`
+			}
+			if err := runShardTool(cmd.Context(), "outpost_shard_log",
+				map[string]string{"host": host}, &out); err != nil {
+				return err
+			}
+			if out.Log == "" {
+				fmt.Println("no shard logs")
+				return nil
+			}
+			fmt.Print(out.Log)
+			return nil
+		},
+	}
 }
 
 func runShardTool(ctx context.Context, name string, args, out any) error {

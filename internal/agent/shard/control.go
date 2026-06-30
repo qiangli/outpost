@@ -75,6 +75,10 @@ func (m *Manager) ServeControl() (func(), error) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(m.LocalStatus())
 	})
+	mux.HandleFunc("/log", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, m.RecentPrimaLogs(200))
+	})
 	mux.HandleFunc("/lead", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Model   string `json:"model"`
@@ -124,9 +128,16 @@ func (m *Manager) Orchestrate(ctx context.Context, model string, apiPort int, ex
 			return fmt.Errorf("shard: form worker %s (rank %d): %w", member.Host, member.Rank, err)
 		}
 	}
-	return m.onForm(ctx, ring, 0, ServeConfig{
+	err := m.onForm(ctx, ring, 0, ServeConfig{
 		Model: model, ServerBin: m.bins.ServerBin, WorkerBin: m.bins.WorkerBin, APIPort: apiPort, Extra: extra,
 	})
+	if err == nil {
+		// Leader formed: watch the ring become serveable, and if no worker joins
+		// before readinessDeadline, capture each worker's prima log here and tear
+		// the stuck shard down — so a never-joining worker can't zombie the port.
+		go m.monitorRing(ring, model, apiPort)
+	}
+	return err
 }
 
 // tellWorker forwards to a worker's shard-control endpoint over the mesh and

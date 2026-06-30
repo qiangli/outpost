@@ -42,3 +42,20 @@ func (s *Server) ShardStatus(ctx context.Context, host string) (any, error) {
 	}
 	return rep, nil
 }
+
+// ShardLog returns the local node's (host == "") or a peer's recent prima-rank
+// shard logs over the mesh — the captured exit reason a crashed shard left
+// behind, no ssh.
+func (s *Server) ShardLog(ctx context.Context, host string) (string, error) {
+	if s.deps.ShardLog == nil {
+		return "", badRequest("%s", shardOffMsg)
+	}
+	text, err := s.deps.ShardLog(ctx, host)
+	if err != nil {
+		if AsAPIError(err) != nil {
+			return "", err
+		}
+		return "", upstream("%s", err.Error())
+	}
+	return text, nil
+}

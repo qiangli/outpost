@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"time"
 )
 
 // StatusReport is a node's shard-readiness, returned over the mesh shard-control
@@ -74,6 +76,37 @@ func (m *Manager) PingPeer(ctx context.Context, peer ShardPeer) (*StatusReport, 
 		return nil, err
 	}
 	return &rep, nil
+}
+
+// PeerLog forwards to a peer's shard-control /log over the mesh and returns the
+// tail of its captured prima-rank logs — the worker's own exit reason surfaced
+// on the leader, no ssh. Mirrors PingPeer, with a short HTTP timeout.
+func (m *Manager) PeerLog(ctx context.Context, peer ShardPeer) (string, error) {
+	ln, err := m.fwd.Listen(loopback+":0", peer.PeerID, ControlService)
+	if err != nil {
+		return "", err
+	}
+	defer ln.Close()
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+ln.Addr().String()+"/log", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("peer %s: log status %s", peer.Host, resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
 }
 
 func fileExists(p string) bool {

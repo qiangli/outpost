@@ -734,6 +734,20 @@ func startCmd() *cobra.Command {
 				}
 				return shardMgr.PingPeer(ctx, peer)
 			}
+			// shardLog returns the local node's (host=="") or a peer's prima logs.
+			shardLog := func(ctx context.Context, host string) (string, error) {
+				if shardMgr == nil {
+					return "", fmt.Errorf("sharding not enabled on this host (needs pairing + mesh + sharding on)")
+				}
+				if host == "" {
+					return shardMgr.RecentPrimaLogs(200), nil
+				}
+				peer, err := resolveShardPeer(ctx, host)
+				if err != nil {
+					return "", err
+				}
+				return shardMgr.PeerLog(ctx, peer)
+			}
 
 			// Construct the shared business-logic layer first. The same
 			// admincore.Server instance feeds adminui (human SPA) and
@@ -754,6 +768,7 @@ func startCmd() *cobra.Command {
 				MeshResolver:        meshResolver,
 				ShardTrigger:        shardTrigger,
 				ShardStatus:         shardStatus,
+				ShardLog:            shardLog,
 			})
 			if err != nil {
 				return fmt.Errorf("admincore: %w", err)
