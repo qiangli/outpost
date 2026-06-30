@@ -66,22 +66,30 @@ func NewRendezvous(host *Host, agentName, cloudboxURL, accessToken string, log *
 }
 
 // LinkClassForHost returns the mesh link class ("tp"/"lan"/"wan"/"") of the
-// DIRECT connection to the named paired host, or "" when the host's peer id
-// isn't known yet (no rendezvous tick has resolved it) or there's no direct
-// link. The class is computed live from the current connection state — the
-// host→peer-id map is only the lookup key. This is the accurate same-LAN
-// signal peer-status overlays on cloudbox's egress-IP heuristic.
+// DIRECT connection to the named paired host. Back-compat shim over
+// LinkInfoForHost (which also carries the LAN label).
 func (r *Rendezvous) LinkClassForHost(host string) string {
+	return r.LinkInfoForHost(host).Class
+}
+
+// LinkInfoForHost returns the mesh link class AND the LAN label (which local
+// LAN the direct link rides over) for the named paired host, or a zero
+// LinkInfo when the host's peer id isn't known yet or there's no direct link.
+// The class+label are computed live from the current connection state — the
+// host→peer-id map is only the lookup key. This is the accurate same-LAN signal
+// (enriched with WHICH lan) that peer-status overlays on cloudbox's egress-IP
+// heuristic.
+func (r *Rendezvous) LinkInfoForHost(host string) LinkInfo {
 	if r == nil {
-		return ""
+		return LinkInfo{}
 	}
 	r.mu.Lock()
 	peerID := r.hostPeers[host]
 	r.mu.Unlock()
 	if peerID == "" {
-		return ""
+		return LinkInfo{}
 	}
-	return r.host.PeerLinkClass(peerID)
+	return r.host.PeerLinkInfo(peerID)
 }
 
 // rememberPeer records the host→peer-id association learned during a tick.

@@ -91,13 +91,14 @@ type Deps struct {
 	// host isn't paired / mesh is off.
 	MeshResolver func(service string) ([]MeshResolvedPeer, error)
 
-	// MeshLinkClassByHost, when set, returns the live mesh link class
-	// ("tp"/"lan"/"wan"/"") of the DIRECT connection to a paired host —
-	// the accurate same-LAN signal that overrides cloudbox's egress-IP
-	// location heuristic in PeerStatus. Closure so admincore doesn't import
-	// the mesh package; it captures the rendezvous's host→peer-id map. Nil
-	// when the mesh data plane is off.
-	MeshLinkClassByHost func(host string) string
+	// MeshLinkInfoByHost, when set, returns the live mesh link class
+	// ("tp"/"lan"/"wan"/"") AND the LAN label of the DIRECT connection to a
+	// paired host — the accurate same-LAN signal that overrides cloudbox's
+	// egress-IP location heuristic in PeerStatus, enriched with WHICH LAN the
+	// link rides over. Closure so admincore doesn't import the mesh package; it
+	// captures the rendezvous's host→peer-id map. Nil when the mesh data plane
+	// is off.
+	MeshLinkInfoByHost func(host string) MeshLinkInfo
 
 	// ShardTrigger, when set, tells <host> to LEAD a shard for <model> over
 	// the mesh (no ssh). Closure so admincore doesn't import the shard /
@@ -187,6 +188,16 @@ type MeshPeerConnView struct {
 	Direct    bool     `json:"direct"`
 	LinkClass string   `json:"link_class"`
 	Remote    []string `json:"remote,omitempty"`
+}
+
+// MeshLinkInfo is the mesh direct-link class plus the LAN label of the path to
+// a paired host, fed by Deps.MeshLinkInfoByHost into PeerStatus's location
+// override. Class is "tp"/"lan"/"wan"/"" (same vocabulary as the old
+// link-class signal); LAN names which local LAN the link uses (e.g. "wired",
+// "10.0.0") and is "" when there's no LAN label.
+type MeshLinkInfo struct {
+	Class string
+	LAN   string
 }
 
 // AppHealthView is one app's reachability measurement (rendered into SafeView).

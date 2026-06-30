@@ -206,6 +206,17 @@ func (m *Host) HasDirectConn(peerID string) bool {
 	return false
 }
 
+// LinkInfo is the per-peer direct-link summary the peer-status overlay needs:
+// the strongest direct link Class (tp/lan/wan; "" when relayed/absent) PLUS a
+// LAN label naming WHICH local LAN that strongest link rides over. The class
+// collapses every private network into "lan", so a node on Wi-Fi *and* a wired
+// crosslink can't tell its peers apart by class alone — the LAN label (derived
+// from the winning connection's LOCAL multiaddr) is what disambiguates them.
+type LinkInfo struct {
+	Class string // strongest direct-link class: tp>lan>wan; "" if relayed/none
+	LAN   string // local LAN label of the winning conn (see localLANLabel); "" if none
+}
+
 // PeerLinkClass classifies a DIRECT (non-relayed) connection to the peer by its
 // remote address — the ground truth for same-locality that the peerplane's UDP
 // probes miss (they can't dial a zone-less link-local address, and a firewalled
@@ -217,19 +228,78 @@ func (m *Host) HasDirectConn(peerID string) bool {
 //	""    — no direct connection (relayed or absent)
 //
 // It returns the strongest class across all direct connections to the peer.
+// Kept for back-compat; implemented via PeerLinkInfo.
 func (m *Host) PeerLinkClass(peerID string) string {
+	return m.PeerLinkInfo(peerID).Class
+}
+
+// PeerLinkInfo returns the strongest direct-link class to the peer AND the LAN
+// label of the local interface that strongest link uses. It walks every direct
+// (non-relayed) connection, keeps the one whose REMOTE-addr class wins
+// (tp>lan>wan), and derives LinkInfo.LAN from THAT connection's LOCAL multiaddr
+// — because the class alone collapses all private LANs into "lan", but the
+// local subnet/interface identifies which one (Wi-Fi vs. a wired crosslink vs.
+// a second LAN).
+func (m *Host) PeerLinkInfo(peerID string) LinkInfo {
 	pid, err := peer.Decode(peerID)
 	if err != nil {
-		return ""
+		return LinkInfo{}
 	}
-	best := ""
+	info := LinkInfo{}
 	for _, c := range m.h.Network().ConnsToPeer(pid) {
 		if c.Stat().Limited {
 			continue // relayed — not a direct link
 		}
-		best = strongerLinkClass(best, classifyConnAddr(c.RemoteMultiaddr()))
+		cls := classifyConnAddr(c.RemoteMultiaddr())
+		if cls == "" {
+			continue // loopback / unclassifiable — no locality signal
+		}
+		// Take the LAN label from the connection whose class STRICTLY wins, so
+		// it always reflects the strongest link the peer is reached over.
+		if strongerLinkClass(info.Class, cls) == cls && cls != info.Class {
+			info.Class = cls
+			info.LAN = localLANLabel(c.LocalMultiaddr())
+		}
 	}
-	return best
+	return info
+}
+
+// localLANLabel derives a short label naming the local LAN/path a link uses from
+// the connection's LOCAL multiaddr — the only place the specific LAN (not just
+// "private") is observable. The class can't tell two private LANs apart; this
+// can:
+//
+//	link-local (IPv4 169.254.0.0/16, IPv6 fe80::/10) → "wired" (direct point-to-point crosslink)
+//	private    (RFC-1918 10/8, 172.16/12, 192.168/16) → subnet base, e.g. "10.0.0" (first three octets)
+//	private    (ULA fc00::/7)                          → "ula"
+//	public / loopback / unparseable                    → "" (no LAN label)
+func localLANLabel(localAddr ma.Multiaddr) string {
+	if localAddr == nil {
+		return ""
+	}
+	ipStr, err := localAddr.ValueForProtocol(ma.P_IP4)
+	isV4 := err == nil
+	if !isV4 {
+		if ipStr, err = localAddr.ValueForProtocol(ma.P_IP6); err != nil {
+			return ""
+		}
+	}
+	ip := net.ParseIP(ipStr)
+	if ip == nil || ip.IsLoopback() {
+		return ""
+	}
+	if ip.IsLinkLocalUnicast() {
+		return "wired" // 169.254.x / fe80: — a dedicated point-to-point wired link
+	}
+	if !ip.IsPrivate() {
+		return "" // public address — no LAN label
+	}
+	if isV4 {
+		if v4 := ip.To4(); v4 != nil {
+			return fmt.Sprintf("%d.%d.%d", v4[0], v4[1], v4[2]) // /24 base
+		}
+	}
+	return "ula" // ULA fc00::/7 — short prefix label
 }
 
 func classifyConnAddr(maddr ma.Multiaddr) string {

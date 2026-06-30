@@ -25,22 +25,28 @@ func (s *Server) PeerStatus(ctx context.Context) ([]peerstatus.Peer, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.deps.MeshLinkClassByHost != nil {
+	if s.deps.MeshLinkInfoByHost != nil {
 		for i := range peers {
-			peers[i].Location = overrideLocation(
-				peers[i].Location, s.deps.MeshLinkClassByHost(peers[i].Host))
+			li := s.deps.MeshLinkInfoByHost(peers[i].Host)
+			peers[i].Location = overrideLocation(peers[i].Location, li.Class, li.LAN)
 		}
 	}
 	return peers, nil
 }
 
 // overrideLocation corrects cloudbox's egress-IP location heuristic with the
-// mesh link class when a direct link exists. tp/lan (link-local / RFC-1918)
-// are definitively same-LAN; wan (public remote addr) is definitively remote;
-// "" (no direct link / relay-only) falls back to whatever cloudbox computed.
-func overrideLocation(cloudboxLoc, linkClass string) string {
+// mesh link class when a direct link exists. tp/lan (link-local / RFC-1918) are
+// definitively same-LAN — and when the mesh knows WHICH local LAN the link
+// rides over (lan, e.g. "wired" / "10.0.0") it enriches the answer to
+// "same_lan via <lan>"; with no LAN label it degrades gracefully to a flat
+// "same_lan". wan (public remote addr) is definitively remote; "" (no direct
+// link / relay-only) falls back to whatever cloudbox computed.
+func overrideLocation(cloudboxLoc, linkClass, lan string) string {
 	switch linkClass {
 	case "tp", "lan":
+		if lan != "" {
+			return "same_lan via " + lan
+		}
 		return "same_lan"
 	case "wan":
 		return "remote"

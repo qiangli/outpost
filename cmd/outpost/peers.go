@@ -71,6 +71,10 @@ func peersStatusCmd() *cobra.Command {
 				fmt.Println("No peers visible. Is this host paired (`outpost status`), and do you own or share any hosts?")
 				return nil
 			}
+			// tabwriter auto-sizes every column to its widest cell, so the
+			// LOCATION column grows to fit the enriched "same_lan via <lan>"
+			// values (e.g. "same_lan via wired", "same_lan via 10.0.0") without
+			// breaking alignment of the columns that follow.
 			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 			fmt.Fprintln(w, "HOST\tONLINE\tLOCATION\tVERSION\tOS/ARCH\tMODE\tACCESS")
 			for _, p := range peers {

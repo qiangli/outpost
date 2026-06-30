@@ -94,6 +94,34 @@ func TestClassifyConnAddr(t *testing.T) {
 	}
 }
 
+// TestLocalLANLabel covers the LOCAL-multiaddr → LAN-label mapping that names
+// WHICH lan a direct link rides over (the class alone collapses every private
+// network into "lan"): link-local ⇒ "wired", RFC-1918 ⇒ /24 subnet base,
+// public/loopback ⇒ "".
+func TestLocalLANLabel(t *testing.T) {
+	cases := []struct{ addr, want string }{
+		{"/ip4/169.254.13.7/tcp/4001", "wired"},      // APIPA link-local = wired crosslink
+		{"/ip6/fe80::1/tcp/4001", "wired"},           // IPv6 link-local = wired crosslink
+		{"/ip4/10.0.0.5/udp/4001/quic-v1", "10.0.0"}, // RFC-1918 /8 → subnet base
+		{"/ip4/192.168.1.42/tcp/4001", "192.168.1"},  // RFC-1918 /16 → subnet base
+		{"/ip4/172.16.4.9/tcp/4001", "172.16.4"},     // RFC-1918 /12 → subnet base
+		{"/ip4/203.0.113.10/tcp/16690", ""},          // public (RFC 5737 TEST-NET-3) → no label
+		{"/ip4/127.0.0.1/tcp/4001", ""},              // loopback → no label
+	}
+	for _, c := range cases {
+		m, err := ma.NewMultiaddr(c.addr)
+		if err != nil {
+			t.Fatalf("%s: %v", c.addr, err)
+		}
+		if got := localLANLabel(m); got != c.want {
+			t.Errorf("localLANLabel(%s) = %q, want %q", c.addr, got, c.want)
+		}
+	}
+	if got := localLANLabel(nil); got != "" {
+		t.Errorf("localLANLabel(nil) = %q, want \"\"", got)
+	}
+}
+
 func TestStrongerLinkClass(t *testing.T) {
 	// tp > lan > wan > ""
 	if strongerLinkClass("lan", "tp") != "tp" {

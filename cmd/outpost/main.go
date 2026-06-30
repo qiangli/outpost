@@ -654,13 +654,17 @@ func startCmd() *cobra.Command {
 					meshRdv = mesh.NewRendezvous(meshHost, fc.AgentName, cb, fc.AccessToken, slog.Default())
 				}
 			}
-			// Live mesh link class per paired host — the accurate same-LAN
-			// signal that overrides cloudbox's egress-IP location heuristic in
-			// admincore.PeerStatus. nil-safe: returns "" when the rendezvous is
-			// off, which leaves the cloudbox hint untouched.
-			var meshLinkClassByHost func(host string) string
+			// Live mesh link class + LAN label per paired host — the accurate
+			// same-LAN signal (enriched with WHICH lan the direct link rides
+			// over) that overrides cloudbox's egress-IP location heuristic in
+			// admincore.PeerStatus. nil-safe: a zero MeshLinkInfo leaves the
+			// cloudbox hint untouched.
+			var meshLinkInfoByHost func(host string) admincore.MeshLinkInfo
 			if meshRdv != nil {
-				meshLinkClassByHost = meshRdv.LinkClassForHost
+				meshLinkInfoByHost = func(host string) admincore.MeshLinkInfo {
+					li := meshRdv.LinkInfoForHost(host)
+					return admincore.MeshLinkInfo{Class: li.Class, LAN: li.LAN}
+				}
 			}
 			// Adapter so admincore can drive the forwarder (expose/listen)
 			// without importing the mesh package.
@@ -789,7 +793,7 @@ func startCmd() *cobra.Command {
 				MeshStatus:          meshStatus,
 				MeshForward:         meshFwd,
 				MeshResolver:        meshResolver,
-				MeshLinkClassByHost: meshLinkClassByHost,
+				MeshLinkInfoByHost:  meshLinkInfoByHost,
 				ShardTrigger:        shardTrigger,
 				ShardStatus:         shardStatus,
 				ShardLog:            shardLog,
