@@ -8,13 +8,23 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/peerstore"
 	mdns "github.com/libp2p/go-libp2p/p2p/discovery/mdns"
+	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 )
 
 // mdnsServiceTag is a CUSTOM mDNS service name so only our outposts discover
 // each other on the LAN — not arbitrary libp2p apps that happen to share the
 // segment. (libp2p's default would be "_p2p._udp".)
 const mdnsServiceTag = "dhnt-outpost-mesh"
+
+// mdnsService is the subset of mdns.Service the Host lifecycle needs — an
+// interface so the supervisor's restart logic is unit-testable behind a fake,
+// without real multicast. (*mdns.Service satisfies it.)
+type mdnsService interface {
+	Start() error
+	Close() error
+}
 
 // mdnsNotifee reacts to peers discovered via local-network mDNS multicast by
 // dialing their on-link addresses, forming a DIRECT LAN connection. This is the
@@ -35,9 +45,19 @@ func (n *mdnsNotifee) HandlePeerFound(pi peer.AddrInfo) {
 	if n.h.Network().Connectedness(pi.ID) == network.Connected {
 		return // already connected (direct or via the rendezvous path)
 	}
-	// host.Connect dials the discovered on-link addrs → a direct LAN link.
+	// The peer is advertised on the LAN but NOT currently connected. This covers
+	// the reliability case the daemon-restart bug exposed: a peer that dropped
+	// and came back with NEW ephemeral addrs, or one whose prior dial is parked
+	// in libp2p's dial backoff so a plain Connect (which trusts stale peerstore
+	// addrs) never retries. Refresh the peerstore with the freshly-discovered
+	// on-link addrs, clear any dial backoff, and force a DIRECT dial.
+	n.h.Peerstore().AddAddrs(pi.ID, pi.Addrs, peerstore.TempAddrTTL)
+	if sw, ok := n.h.Network().(*swarm.Swarm); ok {
+		sw.Backoff().Clear(pi.ID)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	ctx = network.WithForceDirectDial(ctx, "mesh-mdns-rediscover")
 	if err := n.h.Connect(ctx, pi); err != nil {
 		n.log.Debug("mesh mdns: LAN peer dial failed", "peer", pi.ID, "err", err)
 		return

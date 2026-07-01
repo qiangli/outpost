@@ -7,13 +7,14 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	mdns "github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
@@ -49,11 +50,22 @@ type Config struct {
 // and DCUtR hole-punching, so it can form direct peer↔peer links across NATs
 // and different subnets once a rendezvous (cloudbox) supplies peer addresses.
 type Host struct {
-	cfg  Config
-	h    host.Host
-	log  *slog.Logger
-	fwd  *Forwarder
-	mdns mdns.Service // local-LAN peer discovery; nil when it failed to start
+	cfg Config
+	h   host.Host
+	log *slog.Logger
+	fwd *Forwarder
+
+	// mDNS lifecycle. newMDNS builds a fresh (started) LAN-discovery service;
+	// it is nil when mDNS is disabled (DisableMDNS / tests). mdns is the active
+	// service, guarded by mdnsMu — the supervisor (superviseMDNS) swaps it when
+	// it (re)starts, and Close/Run tear it down. A nil newMDNS makes the
+	// supervisor a no-op.
+	mdnsMu  sync.Mutex
+	mdns    mdnsService
+	newMDNS func() (mdnsService, error)
+	// mdnsRefresh overrides the proactive-refresh cadence; 0 = mdnsRefreshInterval.
+	// Only tests set it (to exercise the supervisor without minute-long waits).
+	mdnsRefresh time.Duration
 }
 
 // New builds the libp2p host with the persistent (or supplied) mesh identity.
@@ -109,15 +121,118 @@ func New(cfg Config) (*Host, error) {
 	// failure (locked-down network, no multicast) degrades to the existing
 	// relay/rendezvous path; libp2p still prefers a direct link and falls back
 	// to the relay on its own.
+	//
+	// The factory (not a one-shot start) is what lets superviseMDNS restart the
+	// service if libp2p's mDNS goroutines die/go-silent after a network blip or
+	// a daemon restart — the reliability bug this addresses. We do an initial
+	// start here so same-LAN discovery works immediately; the supervisor
+	// (started from Run) keeps it alive thereafter.
 	if !cfg.DisableMDNS {
-		if svc, err := startMDNS(h, log); err != nil {
-			log.Warn("mesh: mDNS LAN discovery unavailable; using relay/rendezvous only", "err", err)
-		} else {
-			m.mdns = svc
+		m.newMDNS = func() (mdnsService, error) { return startMDNS(h, log) }
+		if err := m.restartMDNS(); err != nil {
+			log.Warn("mesh: mDNS LAN discovery unavailable at start; supervisor will retry", "err", err)
 		}
 	}
 
 	return m, nil
+}
+
+// restartMDNS (re)builds the LAN-discovery service under mdnsMu: it closes any
+// running instance, constructs+starts a fresh one via newMDNS, and stores it.
+// On failure it leaves m.mdns == nil so the supervisor knows to retry sooner.
+// A nil newMDNS (mDNS disabled) is a no-op.
+func (m *Host) restartMDNS() error {
+	m.mdnsMu.Lock()
+	defer m.mdnsMu.Unlock()
+	if m.newMDNS == nil {
+		return nil
+	}
+	if m.mdns != nil {
+		_ = m.mdns.Close()
+		m.mdns = nil
+	}
+	svc, err := m.newMDNS()
+	if err != nil {
+		return err
+	}
+	m.mdns = svc
+	return nil
+}
+
+// mdnsHealthy reports whether an mDNS service is currently active (nil-safe).
+func (m *Host) mdnsHealthy() bool {
+	m.mdnsMu.Lock()
+	defer m.mdnsMu.Unlock()
+	return m.mdns != nil
+}
+
+// closeMDNS tears down the active mDNS service (nil-safe) and disables further
+// (re)starts, so Close/Run shutdown is clean.
+func (m *Host) closeMDNS() {
+	m.mdnsMu.Lock()
+	defer m.mdnsMu.Unlock()
+	m.newMDNS = nil
+	if m.mdns != nil {
+		_ = m.mdns.Close()
+		m.mdns = nil
+	}
+}
+
+// mDNS supervisor cadence. libp2p's mDNS service exposes no health signal, so
+// the supervisor proactively rebuilds it on a slow cadence (recovering a
+// silently-dead multicast listener within one interval) and retries fast, with
+// exponential backoff, whenever a (re)start fails.
+const (
+	mdnsRefreshInterval = 2 * time.Minute
+	mdnsRetryBackoffMin = 5 * time.Second
+	mdnsRetryBackoffMax = 2 * time.Minute
+)
+
+// superviseMDNS keeps LAN discovery alive for the life of ctx. On a healthy
+// service it refreshes every mdnsRefreshInterval (the only way to recover a
+// silently-dead libp2p mDNS, which has no error channel); after a failed
+// (re)start it retries on an exponential backoff. It is a no-op when mDNS is
+// disabled. Started from Run; returns on ctx cancellation.
+func (m *Host) superviseMDNS(ctx context.Context) {
+	m.mdnsMu.Lock()
+	enabled := m.newMDNS != nil
+	m.mdnsMu.Unlock()
+	if !enabled {
+		return
+	}
+	refresh := m.mdnsRefresh
+	if refresh <= 0 {
+		refresh = mdnsRefreshInterval
+	}
+	// backoff/failing govern the retry cadence ONLY after a failed (re)start;
+	// on the healthy path we proactively rebuild every refresh interval — the
+	// sole way to recover a libp2p mDNS service that died silently (no error
+	// channel), which is what the reconnect bug exposed.
+	backoff := mdnsRetryBackoffMin
+	failing := false
+	for {
+		wait := refresh
+		if failing {
+			wait = backoff
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		if m.newMDNS == nil { // closed concurrently
+			return
+		}
+		if err := m.restartMDNS(); err != nil {
+			failing = true
+			backoff = min(backoff*2, mdnsRetryBackoffMax)
+			m.log.Warn("mesh mdns: (re)start failed; will retry", "err", err, "retry_in", backoff)
+			continue
+		}
+		failing = false
+		backoff = mdnsRetryBackoffMin
+		m.log.Info("mesh mdns: LAN discovery (re)started")
+	}
 }
 
 func listenAddrs(port int) []string {
@@ -160,19 +275,21 @@ func (m *Host) Run(ctx context.Context) error {
 		"peer_id", m.h.ID().String(),
 		"addrs", m.addrStrings(),
 	)
+	// Keep LAN mDNS discovery alive (restart it if it dies/goes silent) for the
+	// life of the host. Returns on ctx cancellation.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); m.superviseMDNS(ctx) }()
 	<-ctx.Done()
+	wg.Wait()
 	m.log.Info("mesh: shutting down", "peer_id", m.h.ID().String())
-	if m.mdns != nil {
-		_ = m.mdns.Close()
-	}
+	m.closeMDNS()
 	return m.h.Close()
 }
 
 // Close shuts the host down (for callers not using Run, e.g. tests).
 func (m *Host) Close() error {
-	if m.mdns != nil {
-		_ = m.mdns.Close()
-	}
+	m.closeMDNS()
 	return m.h.Close()
 }
 
