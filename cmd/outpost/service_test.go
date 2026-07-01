@@ -46,10 +46,10 @@ func TestRenderLaunchDaemonPlist(t *testing.T) {
 	assertContains(t, "launchd daemon plist", got,
 		"<string>io.dhnt.outpost</string>",
 		"<string>/opt/outpost</string>",
-		"<string>supervisord</string>",       // supervisor, not start
-		"<key>UserName</key><string>dev</string>", // drop to the regular user
-		"<key>RunAtLoad</key><true/>",              // start at boot
-		"<key>KeepAlive</key><true/>",              // auto-restart
+		"<string>supervisord</string>",               // supervisor, not start
+		"<key>UserName</key><string>dev</string>",    // drop to the regular user
+		"<key>RunAtLoad</key><true/>",                // start at boot
+		"<key>KeepAlive</key><true/>",                // auto-restart
 		"<key>HOME</key><string>/Users/dev</string>", // HOME for config/cache resolution
 	)
 }
@@ -58,7 +58,7 @@ func TestRenderSystemdSystemUnit(t *testing.T) {
 	got := renderSystemdSystemUnit("/opt/outpost", "dev")
 	assertContains(t, "systemd system unit", got,
 		"ExecStart=/opt/outpost supervisord",
-		"User=dev",                  // drop to the regular user
+		"User=dev", // drop to the regular user
 		"Restart=on-failure",
 		"WantedBy=multi-user.target", // boot, before any login
 		"network-online.target",
@@ -72,10 +72,10 @@ func TestRenderWindowsStartupTask(t *testing.T) {
 		"-TaskName 'outpost'",
 		`-Execute 'C:\outpost.exe'`,
 		"-Argument 'supervisord'",
-		"-AtStartup",            // boot, not logon
+		"-AtStartup", // boot, not logon
 		`-UserId 'EXAMPLE\Dev'`,
-		"-LogonType S4U",        // run as user, no stored password
-		"-RunLevel Limited",     // regular user, not elevated
+		"-LogonType S4U",    // run as user, no stored password
+		"-RunLevel Limited", // regular user, not elevated
 	)
 	assertAbsent(t, "windows startup task", got, "-AtLogOn", "Interactive")
 }

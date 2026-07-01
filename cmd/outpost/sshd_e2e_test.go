@@ -166,8 +166,8 @@ func TestIsLANAddressLiteral(t *testing.T) {
 		{"10.0.0.211", true},
 		{"::1", true},
 		{"fe80::1", true},
-		{"host-f", false},      // paired host name → cloudbox flow
-		{"host-a", false},    // paired host name → cloudbox flow
+		{"host-f", false}, // paired host name → cloudbox flow
+		{"host-a", false}, // paired host name → cloudbox flow
 		{"corp.example.com", false},
 		{"", false},
 	}

@@ -284,10 +284,14 @@ type ptyDrain struct {
 	buf    strings.Builder
 	done   chan struct{}
 	master io.ReadWriter
+	closer io.Closer
 }
 
 func newPtyDrain(master io.ReadWriter) *ptyDrain {
 	d := &ptyDrain{done: make(chan struct{}), master: master}
+	if closer, ok := master.(io.Closer); ok {
+		d.closer = closer
+	}
 	go d.pump()
 	return d
 }
@@ -344,7 +348,8 @@ func (d *ptyDrain) discardSnapshot() {
 func (d *ptyDrain) waitFor(needle string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if strings.Contains(d.snapshot(), needle) {
+		snap := d.snapshot()
+		if strings.Contains(snap, needle) || strings.Contains(terminalPlain(snap), needle) {
 			return true
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -352,4 +357,37 @@ func (d *ptyDrain) waitFor(needle string, timeout time.Duration) bool {
 	return false
 }
 
-func (d *ptyDrain) stop() { <-d.done }
+func (d *ptyDrain) stop() {
+	if d.closer != nil {
+		_ = d.closer.Close()
+	}
+	select {
+	case <-d.done:
+	case <-time.After(time.Second):
+	}
+}
+
+func terminalPlain(s string) string {
+	var out []rune
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch {
+		case r == '\b' || r == 0x7f:
+			if len(out) > 0 {
+				out = out[:len(out)-1]
+			}
+		case r == '\x1b' && i+1 < len(runes) && runes[i+1] == '[':
+			i += 2
+			for i < len(runes) {
+				if runes[i] >= 0x40 && runes[i] <= 0x7e {
+					break
+				}
+				i++
+			}
+		default:
+			out = append(out, r)
+		}
+	}
+	return string(out)
+}

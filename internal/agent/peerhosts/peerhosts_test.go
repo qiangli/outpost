@@ -43,7 +43,7 @@ func TestRegistry_PopulatesFromServer(t *testing.T) {
 			"hosts": []map[string]string{
 				{"host": "host-c"},
 				{"host": "Host-b"}, // mixed-case → lowered
-				{"host": ""},           // skipped
+				{"host": ""},       // skipped
 			},
 		})
 	}))
