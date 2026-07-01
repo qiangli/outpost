@@ -169,6 +169,16 @@ type RegistryPushPayload struct {
 	// unchanged.
 	Cluster *ClusterCapacity `json:"cluster,omitempty"`
 
+	// LANEndpoint is the direct LAN inference URL (e.g.
+	// "http://192.0.2.10:11435/v1") this host serves when the operator has
+	// opted into the same-LAN direct-inference listener (lan_inference).
+	// Cloudbox may hand it to a caller it detects on the same LAN so the
+	// caller reaches this outpost's LLM directly — bypassing the cloudbox
+	// relay for lower latency — while still falling back to the Bearer-authed
+	// cloudbox /v1 gateway for remote callers. Empty (omitted) on every host
+	// that hasn't enabled lan_inference — the common case.
+	LANEndpoint string `json:"lan_endpoint,omitempty"`
+
 	// ContentHash is sha256 over the stable fields of the model list
 	// (name, digest, size, family, parameter_size, quantization,
 	// capabilities, context_length — NOT modified_at, which Ollama

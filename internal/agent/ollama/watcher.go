@@ -97,6 +97,12 @@ type Config struct {
 	// byte-identical to the single-machine shape.
 	Cluster ClusterSource
 
+	// LANEndpoint is the direct same-LAN inference URL to advertise in each
+	// push (RegistryPushPayload.LANEndpoint), e.g.
+	// "http://192.0.2.10:11435/v1". Empty (the common case) omits the field
+	// from the wire — set by main.go only when fc.LANInferenceOn().
+	LANEndpoint string
+
 	// PollInterval overrides the /api/tags poll cadence. Zero → default.
 	PollInterval time.Duration
 
@@ -584,6 +590,7 @@ func (w *Watcher) push(ctx context.Context, models []ModelInfo, contentHash stri
 		Capacity:    capReport,
 		ContentHash: contentHash,
 		Cluster:     cluster,
+		LANEndpoint: w.cfg.LANEndpoint,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

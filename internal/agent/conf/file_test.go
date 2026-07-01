@@ -143,6 +143,52 @@ func TestOllamaPoolOn(t *testing.T) {
 	}
 }
 
+// TestLANInferenceOn — same-LAN direct inference is gated by OllamaOn
+// AND, unlike the pool, defaults OFF (nil ⇒ off) because it is a LAN-trust
+// endpoint that must be an explicit opt-in.
+func TestLANInferenceOn(t *testing.T) {
+	off := false
+	on := true
+	for _, tt := range []struct {
+		name string
+		fc   *FileConfig
+		want bool
+	}{
+		{"nil-fc", nil, false},
+		{"ollama-off", &FileConfig{OllamaEnabled: false}, false},
+		{"ollama-on-lan-unset-default-off", &FileConfig{OllamaEnabled: true}, false},
+		{"ollama-on-lan-explicit-on", &FileConfig{OllamaEnabled: true, LANInferenceEnabled: &on}, true},
+		{"ollama-on-lan-explicit-off", &FileConfig{OllamaEnabled: true, LANInferenceEnabled: &off}, false},
+		{"ollama-off-lan-on-ignored", &FileConfig{OllamaEnabled: false, LANInferenceEnabled: &on}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.fc.LANInferenceOn(); got != tt.want {
+				t.Errorf("LANInferenceOn()=%v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestLANInferencePortOrDefault — 11435 default, configured value wins.
+func TestLANInferencePortOrDefault(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		fc   *FileConfig
+		want int
+	}{
+		{"nil-fc", nil, 11435},
+		{"unset", &FileConfig{}, 11435},
+		{"zero", &FileConfig{LANInferencePort: 0}, 11435},
+		{"explicit", &FileConfig{LANInferencePort: 12000}, 12000},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.fc.LANInferencePortOrDefault(); got != tt.want {
+				t.Errorf("LANInferencePortOrDefault()=%d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestEnsureAppSSOSecrets — boot-time safety net. Apps with
 // TrustCloudIdentity:true but no SSOSecret get a freshly minted
 // 32-byte hex secret; persisted to disk; other apps untouched.

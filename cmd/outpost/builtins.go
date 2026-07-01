@@ -63,6 +63,7 @@ func builtinsShowCmd() *cobra.Command {
 			row("sandbox", view.Sandbox.Enabled)
 			row("ollama", view.Ollama.Enabled)
 			row("ollama_pool", view.OllamaPoolEnabled)
+			row("lan_inference", view.LANInferenceEnabled)
 			row("mesh", view.MeshEnabled)
 			row("loom", view.LoomEnabled)
 			row("zot", view.ZotEnabled)
@@ -97,6 +98,8 @@ func builtinsSetCmd() *cobra.Command {
 		updateMode, autoUpgradeLegacy, autoRollback                                                                                                                                    string
 		mesh                                                                                                                                                                           string
 		meshPort                                                                                                                                                                       int
+		lanInference                                                                                                                                                                   string
+		lanInferencePort                                                                                                                                                               int
 		loom                                                                                                                                                                           string
 		loomPort                                                                                                                                                                       int
 		zot                                                                                                                                                                            string
@@ -245,6 +248,12 @@ func builtinsSetCmd() *cobra.Command {
 			if cmd.Flags().Changed("mesh-port") {
 				params.MeshPort = &meshPort
 			}
+			if params.LANInference, err = parseToggle("lan-inference", lanInference); err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("lan-inference-port") {
+				params.LANInferencePort = &lanInferencePort
+			}
 			if params.Shard, err = parseToggle("shard", shard); err != nil {
 				return err
 			}
@@ -340,6 +349,8 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&clearSSHForwardSockets, "clear-ssh-forward-sockets", false, "Reset ssh-forward-sockets to the auto-detect default set")
 	cmd.Flags().StringVar(&mesh, "mesh", "", "on|off - libp2p mesh data plane (peer-to-peer transport under shard-RPC/peer-backup; needs pairing)")
 	cmd.Flags().IntVar(&meshPort, "mesh-port", 0, "TCP+QUIC listen port for the mesh host (0 = ephemeral)")
+	cmd.Flags().StringVar(&lanInference, "lan-inference", "", "on|off - serve local LLM inference directly to same-LAN callers (LAN-TRUST: no per-request auth; needs Ollama on + pairing; default off)")
+	cmd.Flags().IntVar(&lanInferencePort, "lan-inference-port", 0, "TCP port the LAN inference listener binds on 0.0.0.0 (0 = default 11435; must differ from the inference server's 11434)")
 	cmd.Flags().StringVar(&loom, "loom", "", "on|off - run the loom git forge (Gitea, managed external binary) on loopback, auto-exposed over the mesh as 'git'")
 	cmd.Flags().IntVar(&loomPort, "loom-port", 0, "loom's loopback HTTP port (0 = default 3000)")
 	cmd.Flags().StringVar(&zot, "zot", "", "on|off - run the Zot OCI registry (managed external binary) on loopback, auto-exposed over the mesh as 'registry'")

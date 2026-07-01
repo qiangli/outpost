@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/exec"
@@ -1218,6 +1219,53 @@ func startCmd() *cobra.Command {
 					}
 				}
 			}
+			// LAN inference listener — same-LAN direct inference (P2P
+			// serving plane P0). When the operator opted in (lan_inference),
+			// bind a LAN-reachable listener that reverse-proxies the OpenAI
+			// /v1 + Ollama /api surface to the local inference server
+			// (127.0.0.1:11434 — Ollama, or the shard leader's llama-server),
+			// so a same-LAN caller reaches this host's LLM directly, bypassing
+			// the cloudbox relay for lower latency. This is a LAN-TRUST
+			// endpoint: it is NOT authenticated per-request — the operator
+			// opting in accepts that the LAN is trusted. Untrusted / org
+			// networks leave it off and use the Bearer-authed cloudbox /v1
+			// gateway. Non-fatal: a bind failure logs + degrades (the daemon
+			// keeps running; only the direct-LAN shortcut is unavailable).
+			if fc.LANInferenceOn() {
+				target := ollamaURL
+				if target == "" {
+					target = "http://127.0.0.1:11434"
+				}
+				lanPort := fc.LANInferencePortOrDefault()
+				if tu, perr := url.Parse(target); perr != nil {
+					slog.Warn("lan inference: bad target URL — skipping", "target", target, "err", perr)
+				} else {
+					rp := httputil.NewSingleHostReverseProxy(tu)
+					mux := http.NewServeMux()
+					mux.Handle("/v1/", rp)
+					mux.Handle("/api/", rp)
+					addr := fmt.Sprintf("0.0.0.0:%d", lanPort)
+					if ln, lerr := net.Listen("tcp", addr); lerr != nil {
+						slog.Warn("lan inference: listen failed — continuing without direct-LAN inference", "addr", addr, "err", lerr)
+					} else {
+						lanSrv := &http.Server{Handler: mux}
+						slog.Info("lan inference: serving direct same-LAN inference (LAN-trust, no per-request auth)", "addr", addr, "target", target)
+						g.Go(func() error {
+							if serr := lanSrv.Serve(ln); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
+								return serr
+							}
+							return nil
+						})
+						g.Go(func() error {
+							<-gctx.Done()
+							sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+							defer cancel()
+							return lanSrv.Shutdown(sctx)
+						})
+					}
+				}
+			}
+
 			// Folder-watcher scheduler. Runs whether or not Backup
 			// is enabled — Apply with a nil/disabled config just
 			// keeps the cron with no entries; the admin UI can
@@ -1541,6 +1589,15 @@ func startCmd() *cobra.Command {
 						CloudboxURL: cbBase,
 						AccessToken: fc.AccessToken,
 						Capacity:    ollamaSvc,
+					}
+					// Same-LAN direct inference: when the operator opted in,
+					// advertise this host's LAN inference URL so cloudbox can
+					// hand it to same-LAN callers (they reach the LLM directly,
+					// bypassing the relay). Empty when no private LAN IPv4 is
+					// found — omitempty drops the field and cloudbox advertises
+					// nothing. The listener itself is wired below in the errgroup.
+					if fc.LANInferenceOn() {
+						ocfg.LANEndpoint = ollama.LANEndpoint(fc.LANInferencePortOrDefault())
 					}
 					// When an intra-home cluster backend is configured,
 					// attach its descriptor source so each push advertises

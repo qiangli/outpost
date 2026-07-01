@@ -227,6 +227,27 @@ type FileConfig struct {
 	// the most useful behavior for the typical operator.
 	OllamaPoolEnabled *bool `json:"ollama_pool_enabled,omitempty"`
 
+	// LANInferenceEnabled opts this outpost into serving its local LLM
+	// inference DIRECTLY to same-LAN callers, bypassing the cloudbox relay
+	// for lower latency. When on, the daemon binds a LAN-reachable listener
+	// (0.0.0.0:LANInferencePort) that reverse-proxies the OpenAI /v1 + /api
+	// surface to the local inference server (127.0.0.1:11434 — Ollama, or
+	// the shard leader's llama-server), and advertises that URL to cloudbox
+	// in the LLM-pool registry push (RegistryPushPayload.LANEndpoint).
+	//
+	// This is a LAN-TRUST endpoint: it is NOT authenticated per-request, so
+	// enabling it means the operator acknowledges their LAN is trusted.
+	// Untrusted / org networks should leave it OFF and use the Bearer-authed
+	// cloudbox /v1 gateway instead. Default OFF (explicit opt-in); also
+	// requires the local Ollama proxy on + pairing (cloudbox is what hands
+	// the LAN endpoint to same-LAN callers), same as OllamaPoolEnabled.
+	LANInferenceEnabled *bool `json:"lan_inference_enabled,omitempty"`
+
+	// LANInferencePort is the TCP port the LAN inference listener binds on
+	// all interfaces (0.0.0.0). Default 11435 — deliberately distinct from
+	// the inference server's own 11434 so the two don't collide.
+	LANInferencePort int `json:"lan_inference_port,omitempty"`
+
 	// PeerPlaneEnabled opts this outpost into the p2p peer-plane locality
 	// service: announce interface candidates to cloudbox's signaler, run a
 	// probe responder, and measure RTT to peers to classify TP/LAN/WAN
@@ -1350,6 +1371,33 @@ func (fc *FileConfig) OllamaPoolOn() bool {
 		return true
 	}
 	return *fc.OllamaPoolEnabled
+}
+
+// LANInferenceOn reports whether this outpost serves its local LLM
+// inference directly to same-LAN callers (the lan_inference toggle). Like
+// OllamaPoolOn it is a strict extension of the local Ollama proxy — false
+// when Ollama is off. Unlike the pool, it defaults OFF (nil ⇒ off): it is
+// a LAN-TRUST endpoint (no per-request auth), so it must be an explicit
+// opt-in by an operator who accepts that their LAN is trusted. The boot
+// path additionally gates on inference being reachable and on pairing
+// (cloudbox is what advertises the LAN endpoint to same-LAN callers).
+func (fc *FileConfig) LANInferenceOn() bool {
+	if !fc.OllamaOn() {
+		return false
+	}
+	if fc.LANInferenceEnabled == nil {
+		return false // default OFF — explicit opt-in for a LAN-trust listener
+	}
+	return *fc.LANInferenceEnabled
+}
+
+// LANInferencePortOrDefault returns the configured LAN inference listen
+// port, or 11435 (kept distinct from the inference server's own 11434).
+func (fc *FileConfig) LANInferencePortOrDefault() int {
+	if fc != nil && fc.LANInferencePort > 0 {
+		return fc.LANInferencePort
+	}
+	return 11435
 }
 
 // PeerPlaneOn reports whether this outpost runs the p2p peer-plane locality

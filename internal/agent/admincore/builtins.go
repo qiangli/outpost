@@ -66,6 +66,14 @@ type BuiltinsParams struct {
 	// TCP+QUIC listen port (0 = ephemeral). nil = leave unchanged.
 	Mesh     *bool `json:"mesh,omitempty"`
 	MeshPort *int  `json:"mesh_port,omitempty"`
+	// LANInference toggles the same-LAN direct-inference listener: a
+	// LAN-reachable reverse proxy to the local inference server, advertised
+	// to cloudbox so same-LAN callers reach this host's LLM directly (lower
+	// latency, bypassing the relay). LANInferencePort sets its listen port
+	// (0 = default 11435). This is a LAN-TRUST endpoint (no per-request
+	// auth) — an explicit opt-in. nil = leave unchanged.
+	LANInference     *bool `json:"lan_inference,omitempty"`
+	LANInferencePort *int  `json:"lan_inference_port,omitempty"`
 	// Shard is the Ollama sharding sub-feature: serve a model bigger than one
 	// node by splitting it across mesh peers. nil = leave unchanged; *bool=false
 	// opts OUT of the zero-config default (on for an owner-registered Ollama
@@ -179,6 +187,12 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	if p.MeshPort != nil {
 		fc.MeshPort = *p.MeshPort
 	}
+	if p.LANInference != nil {
+		fc.LANInferenceEnabled = p.LANInference
+	}
+	if p.LANInferencePort != nil {
+		fc.LANInferencePort = *p.LANInferencePort
+	}
 	if p.Shard != nil {
 		if fc.Shard == nil {
 			fc.Shard = &conf.ShardConfig{}
@@ -283,7 +297,7 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil && p.Mesh == nil && p.MeshPort == nil && p.Loom == nil && p.LoomPort == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil
+	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.Loom == nil && p.LoomPort == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil
 	if p.UpdateMode != nil {
 		if !conf.ValidUpdateMode(*p.UpdateMode) {
 			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")

@@ -110,14 +110,41 @@ tool, or wipe `agent.json` by hand.
 | Container sandbox (filtered) | `sandbox_enabled` | `builtins set --sandbox` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Ollama daemon proxy | `ollama_enabled` | `builtins set --ollama` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Ollama LLM-pool participation | `ollama_pool_enabled` | `builtins set --ollama-pool` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
+| Same-LAN direct inference | `lan_inference_enabled` | `builtins set --lan-inference` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
+| Same-LAN direct inference port | `lan_inference_port` | `builtins set --lan-inference-port` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Cluster join | `cluster.enabled` | `builtins set --cluster` | Inbound > Cluster | `outpost_set_builtins` | Restart |
 | Cloudbox-pushed self-upgrade | `update_mode` | `builtins set --update=auto\|manual\|never` | Inbound > Built-ins | `outpost_set_builtins` | Live |
 | Auto-rollback watchdog (destructive revert) | `auto_rollback_enabled` | `builtins set --auto-rollback=on\|off` | Inbound > Built-ins | `outpost_set_builtins` | Live |
 
 All built-in toggles default to ON when the JSON key is absent (old
 configs) so an upgrade doesn't silently disable features. The
-exceptions are `podman_enabled` / `sandbox_enabled` / `ollama_enabled`
-which are plain `bool` (default off — explicit opt-in).
+exceptions are `podman_enabled` / `sandbox_enabled` / `ollama_enabled` /
+`lan_inference_enabled` which are plain opt-ins (default off).
+
+### Same-LAN direct inference (LAN-trust)
+
+`lan_inference_enabled` binds a **LAN-reachable** listener on
+`0.0.0.0:<lan_inference_port>` (default `11435`, kept distinct from the
+inference server's own `11434`) that reverse-proxies the OpenAI `/v1/*`
+and Ollama `/api/*` surface to the local inference server at
+`127.0.0.1:11434` (Ollama, or — when a shard is active — the shard
+leader's llama-server, which also serves the OpenAI `/v1` API on 11434).
+A caller on the same LAN can then reach this host's LLM **directly**,
+bypassing the cloudbox relay for lower latency. When on (and paired),
+the outpost also advertises the endpoint to cloudbox in the LLM-pool
+registry push as `lan_endpoint`
+(`http://<primary-private-LAN-IPv4>:<lan_inference_port>/v1`), so
+cloudbox can hand it to callers it detects on the same LAN.
+
+**This is a LAN-TRUST endpoint. It is NOT authenticated per-request.**
+Enabling it means the operator acknowledges their LAN is trusted —
+anyone who can reach the port can use the local inference server.
+Untrusted or shared/org networks should leave `lan_inference_enabled`
+**off** and use the Bearer-authed cloudbox `/v1` gateway instead (which
+authenticates every request). The toggle requires the local Ollama proxy
+on and pairing (cloudbox is what advertises the LAN endpoint to same-LAN
+callers). A bind failure is non-fatal — it logs and degrades without
+taking the daemon down.
 
 ### Container sandbox provider
 
