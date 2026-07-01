@@ -131,6 +131,15 @@ type Deps struct {
 	// bearer is required at the HTTP layer.
 	MountUpgradeRoute func(rg *gin.RouterGroup)
 
+	// MountWarmRoute, if non-nil, is invoked during RegisterRoutes with
+	// the root group so the warm-serving package can attach
+	// POST /admin/warm (cloudbox-driven load/shard/unload of warm
+	// models). Same trust model as MountUpgradeRoute — tunnel-as-auth-
+	// boundary, no bearer at the HTTP layer — and mounted only on paired
+	// hosts. Decoupled as a closure so agent doesn't import the warm
+	// package.
+	MountWarmRoute func(rg *gin.RouterGroup)
+
 	// UpdateMode is the closure /apps calls to surface the current
 	// host's update policy (auto/manual/never). Reported alongside
 	// version/os/arch so cloudbox's SPA can render the right badge
@@ -243,6 +252,13 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	// /apps and /healthz. See upgrade.MountRoute for the rationale.
 	if deps.MountUpgradeRoute != nil && deps.AccessToken != "" {
 		deps.MountUpgradeRoute(rg)
+	}
+
+	// Cloudbox-driven warm-serving control (POST /admin/warm). Same
+	// tunnel-as-auth-boundary model + paired-only gate as the upgrade
+	// route above.
+	if deps.MountWarmRoute != nil && deps.AccessToken != "" {
+		deps.MountWarmRoute(rg)
 	}
 
 	// Tier-3 interactive shell. WS upgrade; the cloud also gates on

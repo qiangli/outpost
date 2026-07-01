@@ -57,9 +57,11 @@ import (
 	"github.com/qiangli/outpost/internal/agent/selfcheck"
 	"github.com/qiangli/outpost/internal/agent/shard"
 	"github.com/qiangli/outpost/internal/agent/sysinfo"
+	"github.com/qiangli/outpost/internal/agent/sysload"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
 	"github.com/qiangli/outpost/internal/agent/userkube"
 	"github.com/qiangli/outpost/internal/agent/vknode"
+	"github.com/qiangli/outpost/internal/agent/warm"
 	"github.com/qiangli/outpost/internal/scheduler"
 	"github.com/qiangli/outpost/internal/telemetry"
 )
@@ -803,6 +805,55 @@ func startCmd() *cobra.Command {
 				return fmt.Errorf("admincore: %w", err)
 			}
 
+			// Considerate warm-serving plane (P3). The sysload profiler
+			// samples CPU/memory/load, learns a per-hour-of-day baseline,
+			// and answers Busy() / WarmBudgetBytes(); the warm executor
+			// keeps a small conservative set of models resident (zero
+			// cold-start) but YIELDS to the user's own work the moment the
+			// host is busy, restoring when idle. Default ON for a paired
+			// Ollama node (WarmServingOn); opt out with
+			// warm_serving_enabled=false. Wired below into the watcher push
+			// (WarmBudgetBytes/Busy advertisement) and the /admin/warm
+			// route, and started in the errgroup.
+			var (
+				loadProfiler *sysload.Profiler
+				warmExec     *warm.Executor
+				hostMemTotal uint64
+			)
+			if fc.WarmServingOn() {
+				hostMemTotal = sysinfo.Collect("").MemTotalBytes
+				var sysloadPath string
+				if cd, _ := conf.ResolveCacheDir(); cd != "" {
+					sysloadPath = filepath.Join(cd, "sysload.json")
+				}
+				loadProfiler = sysload.New(sysload.Config{
+					Path: sysloadPath,
+					Frac: fc.WarmBudgetFracOrDefault(),
+				})
+				// The executor drives the local Ollama daemon (+ the shard
+				// manager, when wired) and persists the desired warm set
+				// through admincore. Only on a paired host — cloudbox is what
+				// asks a host to warm a model.
+				if fc.AccessToken != "" {
+					warmOllamaURL := ollamaURL
+					if warmOllamaURL == "" {
+						warmOllamaURL = "http://127.0.0.1:11434"
+					}
+					var shardCtl warm.ShardControl
+					if shardMgr != nil {
+						shardCtl = shardMgr // avoid a non-nil interface wrapping a nil *Manager
+					}
+					warmExec = warm.New(warm.Config{
+						Ollama:         warm.NewOllamaClient(warmOllamaURL),
+						Shard:          shardCtl,
+						Gauge:          loadProfiler,
+						UsableMem:      func() uint64 { return hostMemTotal },
+						Desired:        fc.WarmDesired,
+						PersistDesired: core.SetWarmDesired,
+					})
+				}
+			}
+
 			// Persisted boot counter, reported to cloudbox each /apps
 			// poll so the fleet health-gate can detect a crash-loop
 			// (boot_count jumping > 1 inside a rollout bake window).
@@ -1332,6 +1383,16 @@ func startCmd() *cobra.Command {
 				}
 			}
 
+			// Considerate warm-serving plane: the load profiler (samples +
+			// learns the baseline) and the warm supervisor (the yield/restore
+			// loop). Both self-disable when their gate wasn't met (nil).
+			if loadProfiler != nil {
+				g.Go(func() error { return loadProfiler.Run(gctx) })
+			}
+			if warmExec != nil {
+				g.Go(func() error { return warmExec.RunSupervisor(gctx) })
+			}
+
 			if cfg.AgentName == "" {
 				fmt.Fprintln(os.Stderr, "Not yet configured — open the Admin UI to pair this host with the portal.")
 				slog.Info("outpost: awaiting first-run pairing through admin UI")
@@ -1448,6 +1509,9 @@ func startCmd() *cobra.Command {
 				SelfName:              cfg.AgentName,
 				MountUpgradeRoute: func(rg *gin.RouterGroup) {
 					upgrade.MountRoute(rg, upgradeWorker)
+				},
+				MountWarmRoute: func(rg *gin.RouterGroup) {
+					warm.MountRoute(rg, warmExec)
 				},
 				UpdateMode: func() string {
 					cur, _ := conf.LoadFile(cfgPath)
@@ -1589,6 +1653,16 @@ func startCmd() *cobra.Command {
 						CloudboxURL: cbBase,
 						AccessToken: fc.AccessToken,
 						Capacity:    ollamaSvc,
+					}
+					// Warm-serving advertisement: fold this host's live
+					// warm-preload budget (0 when busy) + busy state into each
+					// registry push so cloudbox can make considerate warm
+					// decisions. Advisory — the /admin/warm executor re-checks
+					// the live budget before actually loading.
+					if loadProfiler != nil {
+						ocfg.WarmStatus = func() (int64, bool) {
+							return loadProfiler.WarmBudgetBytes(hostMemTotal), loadProfiler.Busy()
+						}
 					}
 					// Same-LAN direct inference: when the operator opted in,
 					// advertise this host's LAN inference URL so cloudbox can

@@ -103,6 +103,14 @@ type Config struct {
 	// from the wire — set by main.go only when fc.LANInferenceOn().
 	LANEndpoint string
 
+	// WarmStatus, when set, supplies the host's warm-serving signal folded
+	// into each push: bytes is the conservative, load-aware warm-preload
+	// budget (0 when the host is busy) and busy is the current busy state
+	// (RegistryPushPayload.WarmBudgetBytes / Busy). Closure so the watcher
+	// doesn't import the sysload profiler; nil keeps both fields at their
+	// zero (omitted) values — the pre-warm-serving shape.
+	WarmStatus func() (bytes int64, busy bool)
+
 	// PollInterval overrides the /api/tags poll cadence. Zero → default.
 	PollInterval time.Duration
 
@@ -591,6 +599,9 @@ func (w *Watcher) push(ctx context.Context, models []ModelInfo, contentHash stri
 		ContentHash: contentHash,
 		Cluster:     cluster,
 		LANEndpoint: w.cfg.LANEndpoint,
+	}
+	if w.cfg.WarmStatus != nil {
+		payload.WarmBudgetBytes, payload.Busy = w.cfg.WarmStatus()
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

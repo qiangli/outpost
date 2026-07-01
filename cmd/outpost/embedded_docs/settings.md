@@ -110,6 +110,9 @@ tool, or wipe `agent.json` by hand.
 | Container sandbox (filtered) | `sandbox_enabled` | `builtins set --sandbox` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Ollama daemon proxy | `ollama_enabled` | `builtins set --ollama` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Ollama LLM-pool participation | `ollama_pool_enabled` | `builtins set --ollama-pool` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
+| Warm serving (considerate) | `warm_serving_enabled` | `builtins set --warm-serving` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
+| Warm budget fraction | `warm_budget_frac` | `builtins set --warm-budget-frac` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
+| Warm desired set (persisted) | `warm_desired` | — (managed by `/admin/warm`) | — | — | Live |
 | Same-LAN direct inference | `lan_inference_enabled` | `builtins set --lan-inference` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Same-LAN direct inference port | `lan_inference_port` | `builtins set --lan-inference-port` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Cluster join | `cluster.enabled` | `builtins set --cluster` | Inbound > Cluster | `outpost_set_builtins` | Restart |
@@ -145,6 +148,69 @@ authenticates every request). The toggle requires the local Ollama proxy
 on and pairing (cloudbox is what advertises the LAN endpoint to same-LAN
 callers). A bind failure is non-fatal — it logs and degrades without
 taking the daemon down.
+
+### Warm serving (adaptive, considerate, always-on)
+
+`warm_serving_enabled` (default **ON** for a paired Ollama node) runs the
+considerate warm-serving plane: the outpost keeps a small, conservative
+set of LLM models **warm** (resident, zero cold-start) but **yields** the
+machine to the user's own work the moment they get busy — unloading warm
+models when system load is high and restoring them when the host goes
+idle again.
+
+Two moving parts:
+
+- A **system-load profiler** samples CPU utilization, available memory,
+  and the load average every ~30 s, and learns a rolling **per-hour-of-
+  day baseline** of "normal" load over days (persisted to
+  `<cacheDir>/outpost/sysload.json`, so it survives restarts). It reports
+  the host as **busy** when the current load is meaningfully above this
+  hour's baseline **or** above absolute safety thresholds. Defaults:
+  sustained CPU **>60%**, or available memory **<25%**. The verdict is
+  **debounced** — a condition must hold ~2 min to enter busy, and the
+  host must be quiet ~5 min to leave it — so a brief spike never yanks
+  warm models.
+- The **warm budget** is the conservative memory the host will dedicate
+  to warm preload: `warm_budget_frac` × usable memory (default **0.33**,
+  leaving ~2/3 for the OS and the user's apps — e.g. ~10 GB on a 32 GB
+  host). It drops to **0 whenever the host is busy**, so the host fully
+  yields. `warm_budget_frac` is clamped to `(0, 1]`.
+
+The **desired warm set** (`warm_desired`) is the list of models cloudbox
+last asked this host to keep warm. A supervisor loop unloads that set
+while the host is busy and restores it (within the current budget) once
+idle — so even mid-request the host protects the user's other work and
+self-heals when quiet. `warm_desired` is persisted but managed by the
+control endpoint, not edited directly.
+
+Each LLM-pool registry push advertises the live signal to cloudbox:
+`warm_budget_bytes` (0 when busy) and `busy`. These are advisory — the
+control endpoint below re-checks the live budget before acting.
+
+**Control endpoint — `POST /admin/warm`** (cloudbox → outpost through the
+matrix tunnel; same tunnel-as-auth-boundary trust as `/admin/upgrade`, no
+bearer at the HTTP layer, mounted only on paired hosts). Body:
+
+```json
+{ "model": "<name>", "mode": "load" | "shard" | "unload" }
+```
+
+- `load` — make the model resident with a persistent keep-alive
+  (`keep_alive: -1`), pulling it first if missing. Idempotent.
+- `shard` — ensure a shard is formed+serving the model (reuses the shard
+  manager). Idempotent — a no-op if it's already the active shard model.
+- `unload` — release the model (`keep_alive: 0`) and tear down the shard
+  if it's the active one.
+
+A `load`/`shard` that would exceed the warm budget (or arrives while the
+host is busy) is skipped, not forced. Reply:
+
+```json
+{ "status": "...", "active_model": "...", "busy": false, "warm_budget_bytes": 0 }
+```
+
+where `status` is one of `loaded` / `already_resident` / `shard_started`
+/ `already_active` / `unloaded` / `skipped_busy` / `over_budget`.
 
 ### Container sandbox provider
 

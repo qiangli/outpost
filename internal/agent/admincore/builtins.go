@@ -31,13 +31,21 @@ type BuiltinsParams struct {
 	// settable here on the loopback admin plane — the cloud-facing surface
 	// has no path to it, which is what keeps "read-only by default" a real
 	// guarantee rather than a default.
-	Files                  *bool           `json:"files,omitempty"`
-	FilesAllowWrite        *bool           `json:"files_allow_write,omitempty"`
-	FilesScope             *string         `json:"files_scope,omitempty"`
-	Podman                 *bool           `json:"podman,omitempty"`
-	Sandbox                *bool           `json:"sandbox,omitempty"`
-	Ollama                 *bool           `json:"ollama,omitempty"`
-	OllamaPool             *bool           `json:"ollama_pool,omitempty"`
+	Files           *bool   `json:"files,omitempty"`
+	FilesAllowWrite *bool   `json:"files_allow_write,omitempty"`
+	FilesScope      *string `json:"files_scope,omitempty"`
+	Podman          *bool   `json:"podman,omitempty"`
+	Sandbox         *bool   `json:"sandbox,omitempty"`
+	Ollama          *bool   `json:"ollama,omitempty"`
+	OllamaPool      *bool   `json:"ollama_pool,omitempty"`
+	// WarmServing toggles the adaptive, considerate warm-serving plane:
+	// keep a small conservative set of models resident (zero cold-start),
+	// yielding (unloading) whenever the host is busy with the user's own
+	// work and restoring when idle. Default ON for a paired Ollama node.
+	// WarmBudgetFrac sets the fraction of usable memory dedicated to warm
+	// preload (clamped to (0,1]; default 0.33). nil = leave unchanged.
+	WarmServing            *bool           `json:"warm_serving,omitempty"`
+	WarmBudgetFrac         *float64        `json:"warm_budget_frac,omitempty"`
 	Otel                   *bool           `json:"otel,omitempty"`
 	OtelPool               *bool           `json:"otel_pool,omitempty"`
 	Ycode                  *bool           `json:"ycode,omitempty"`
@@ -181,6 +189,15 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	if p.OllamaPool != nil {
 		fc.OllamaPoolEnabled = p.OllamaPool
 	}
+	if p.WarmServing != nil {
+		fc.WarmServingEnabled = p.WarmServing
+	}
+	if p.WarmBudgetFrac != nil {
+		if *p.WarmBudgetFrac <= 0 || *p.WarmBudgetFrac > 1 {
+			return BuiltinsResult{}, badRequest("warm_budget_frac must be in the range (0, 1]")
+		}
+		fc.WarmBudgetFrac = *p.WarmBudgetFrac
+	}
 	if p.Mesh != nil {
 		fc.MeshEnabled = p.Mesh
 	}
@@ -297,7 +314,7 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.Loom == nil && p.LoomPort == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil
+	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.Loom == nil && p.LoomPort == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil
 	if p.UpdateMode != nil {
 		if !conf.ValidUpdateMode(*p.UpdateMode) {
 			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")

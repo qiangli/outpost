@@ -179,6 +179,22 @@ type RegistryPushPayload struct {
 	// that hasn't enabled lan_inference — the common case.
 	LANEndpoint string `json:"lan_endpoint,omitempty"`
 
+	// WarmBudgetBytes is the conservative, load-aware memory the host is
+	// willing to dedicate to keeping models warm (resident, zero
+	// cold-start). It is a fraction of usable memory while the host is
+	// idle and drops to 0 the moment the host is busy with the user's own
+	// work — the "considerate" signal cloudbox reads to decide whether
+	// (and how big a model) to ask this host to keep warm. Omitted (0) on
+	// pre-warm-serving outposts. Advisory: the outpost's own /admin/warm
+	// executor re-checks the live budget before actually loading.
+	WarmBudgetBytes int64 `json:"warm_budget_bytes,omitempty"`
+
+	// Busy is true when the host is currently busy with non-LLM work (the
+	// debounced system-load verdict). Cloudbox reads it to hold off warm
+	// requests to a host that's yielding to its user. Omitted (false) on
+	// pre-warm-serving outposts and on an idle host.
+	Busy bool `json:"busy,omitempty"`
+
 	// ContentHash is sha256 over the stable fields of the model list
 	// (name, digest, size, family, parameter_size, quantization,
 	// capabilities, context_length — NOT modified_at, which Ollama

@@ -227,6 +227,30 @@ type FileConfig struct {
 	// the most useful behavior for the typical operator.
 	OllamaPoolEnabled *bool `json:"ollama_pool_enabled,omitempty"`
 
+	// WarmServingEnabled opts this outpost into the adaptive, considerate,
+	// always-on warm-serving plane: it keeps a small, conservative set of
+	// LLM models WARM (resident, zero cold-start) but YIELDS (unloads) the
+	// moment the user is busy with other work, restoring them when idle.
+	// Pointer-bool with WarmServingOn() so existing configs (written before
+	// warm serving shipped) default to ON whenever Ollama is on — the
+	// useful behavior. Explicit false opts out. The boot path additionally
+	// gates on pairing (cloudbox is what asks a host to warm a model).
+	WarmServingEnabled *bool `json:"warm_serving_enabled,omitempty"`
+
+	// WarmBudgetFrac is the fraction of usable memory the host will
+	// dedicate to warm preload (the conservative resident set). Default
+	// 0.33 (WarmBudgetFracOrDefault) — leaves ~2/3 for the OS + the user's
+	// own apps (e.g. ~10 GB on a 32 GB host). Clamped to (0,1]; out-of-range
+	// falls back to the default. The budget drops to 0 whenever the host is
+	// busy, so this is the idle-time ceiling, not a reservation.
+	WarmBudgetFrac float64 `json:"warm_budget_frac,omitempty"`
+
+	// WarmDesired is the persisted DESIRED warm set — the models cloudbox
+	// last asked this host to keep warm. The considerate supervisor unloads
+	// this set while the host is busy and restores it (within the current
+	// warm budget) once idle. Persisted so the intent survives restarts.
+	WarmDesired []string `json:"warm_desired,omitempty"`
+
 	// LANInferenceEnabled opts this outpost into serving its local LLM
 	// inference DIRECTLY to same-LAN callers, bypassing the cloudbox relay
 	// for lower latency. When on, the daemon binds a LAN-reachable listener
@@ -1371,6 +1395,32 @@ func (fc *FileConfig) OllamaPoolOn() bool {
 		return true
 	}
 	return *fc.OllamaPoolEnabled
+}
+
+// WarmServingOn reports whether this outpost runs the considerate
+// warm-serving plane. Like OllamaPoolOn it is a strict extension of the
+// local Ollama proxy — false when Ollama is off. When WarmServingEnabled
+// is nil the default is ON (keeping a conservative resident set warm is
+// the useful behavior, and it's considerate by construction — it yields
+// on busy). Explicit false opts out. The boot path additionally gates on
+// pairing (cloudbox is what asks a host to warm a model).
+func (fc *FileConfig) WarmServingOn() bool {
+	if !fc.OllamaOn() {
+		return false
+	}
+	if fc.WarmServingEnabled == nil {
+		return true
+	}
+	return *fc.WarmServingEnabled
+}
+
+// WarmBudgetFracOrDefault returns the configured warm-budget fraction,
+// or 0.33 when unset / out of the (0,1] range.
+func (fc *FileConfig) WarmBudgetFracOrDefault() float64 {
+	if fc != nil && fc.WarmBudgetFrac > 0 && fc.WarmBudgetFrac <= 1 {
+		return fc.WarmBudgetFrac
+	}
+	return 0.33
 }
 
 // LANInferenceOn reports whether this outpost serves its local LLM

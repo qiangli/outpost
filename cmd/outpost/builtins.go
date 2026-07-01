@@ -63,6 +63,8 @@ func builtinsShowCmd() *cobra.Command {
 			row("sandbox", view.Sandbox.Enabled)
 			row("ollama", view.Ollama.Enabled)
 			row("ollama_pool", view.OllamaPoolEnabled)
+			row("warm_serving", view.WarmServingEnabled)
+			fmt.Printf("  %-22s  %.2f\n", "warm_budget_frac", view.WarmBudgetFrac)
 			row("lan_inference", view.LANInferenceEnabled)
 			row("mesh", view.MeshEnabled)
 			row("loom", view.LoomEnabled)
@@ -96,6 +98,8 @@ func builtinsSetCmd() *cobra.Command {
 		files, filesAllowWrite, filesScope                                                                                                                                             string
 		clusterMode                                                                                                                                                                    string
 		updateMode, autoUpgradeLegacy, autoRollback                                                                                                                                    string
+		warmServing                                                                                                                                                                    string
+		warmBudgetFrac                                                                                                                                                                 float64
 		mesh                                                                                                                                                                           string
 		meshPort                                                                                                                                                                       int
 		lanInference                                                                                                                                                                   string
@@ -176,6 +180,12 @@ func builtinsSetCmd() *cobra.Command {
 			}
 			if params.OllamaPool, err = parseToggle("ollama-pool", ollamaPool); err != nil {
 				return err
+			}
+			if params.WarmServing, err = parseToggle("warm-serving", warmServing); err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("warm-budget-frac") {
+				params.WarmBudgetFrac = &warmBudgetFrac
 			}
 			if params.Otel, err = parseToggle("otel", otel); err != nil {
 				return err
@@ -334,6 +344,8 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&sandbox, "sandbox", "", "on|off — filtered container sandbox (strips privileged/host-ns/binds/caps/devices; needs podman)")
 	cmd.Flags().StringVar(&ollama, "ollama", "", "on|off")
 	cmd.Flags().StringVar(&ollamaPool, "ollama-pool", "", "on|off — share local Ollama with cloudbox's pool")
+	cmd.Flags().StringVar(&warmServing, "warm-serving", "", "on|off — considerate always-on warm serving: keep a small model set resident, yield when the host is busy (default on for a paired Ollama node)")
+	cmd.Flags().Float64Var(&warmBudgetFrac, "warm-budget-frac", 0, "fraction of usable memory dedicated to warm preload (0<frac<=1; default 0.33; drops to 0 when the host is busy)")
 	cmd.Flags().StringVar(&otel, "otel", "", "on|off — expose ycode's embedded Prom/Alertmanager/VLogs/Jaeger as built-in apps")
 	cmd.Flags().StringVar(&otelPool, "otel-pool", "", "on|off — allow cloudbox to federate queries across this host's observability stack")
 	cmd.Flags().StringVar(&ycodeShare, "ycode-share", "", "on|off — expose ycode's home/landing page through the matrix tunnel (default on when ycode is on)")

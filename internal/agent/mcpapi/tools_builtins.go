@@ -28,6 +28,8 @@ type builtinsIn struct {
 	Sandbox                *bool           `json:"sandbox,omitempty" jsonschema:"Toggle the filtered container sandbox proxy (strips privileged/host-ns/host-binds/caps/devices, injects resource caps; needs podman)"`
 	Ollama                 *bool           `json:"ollama,omitempty" jsonschema:"Toggle the built-in ollama proxy"`
 	OllamaPool             *bool           `json:"ollama_pool,omitempty" jsonschema:"Participate in cloudbox's multi-host LLM pool (requires Ollama on)"`
+	WarmServing            *bool           `json:"warm_serving,omitempty" jsonschema:"Toggle the adaptive, considerate warm-serving plane: keep a small conservative set of models resident (zero cold-start), yielding (unloading) whenever the host is busy with the user's own work and restoring when idle. Default ON for a paired Ollama node."`
+	WarmBudgetFrac         *float64        `json:"warm_budget_frac,omitempty" jsonschema:"Fraction of usable memory dedicated to warm preload (clamped to (0,1]; default 0.33 — leaves ~2/3 for the OS and the user's apps). The budget drops to 0 whenever the host is busy."`
 	Otel                   *bool           `json:"otel,omitempty" jsonschema:"Expose ycode's embedded observability stack (Prom/Alertmanager/VictoriaLogs/Jaeger/Perses) as built-in apps"`
 	OtelPool               *bool           `json:"otel_pool,omitempty" jsonschema:"Allow cloudbox to federate queries / fan-out alert rules across this host's observability stack (requires Otel on)"`
 	YcodeShare             *bool           `json:"ycode_share,omitempty" jsonschema:"Expose ycode-backed UI surfaces through the matrix tunnel (requires Ycode on; default on)"`
@@ -84,6 +86,8 @@ func (s *Server) registerBuiltinsTools() {
 			Sandbox:                in.Sandbox,
 			Ollama:                 in.Ollama,
 			OllamaPool:             in.OllamaPool,
+			WarmServing:            in.WarmServing,
+			WarmBudgetFrac:         in.WarmBudgetFrac,
 			Otel:                   in.Otel,
 			OtelPool:               in.OtelPool,
 			YcodeShare:             in.YcodeShare,

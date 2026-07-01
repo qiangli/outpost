@@ -193,6 +193,9 @@ type SafeView struct {
 	Sandbox                 BuiltinView      `json:"sandbox"`
 	Ollama                  BuiltinView      `json:"ollama"`
 	OllamaPoolEnabled       bool             `json:"ollama_pool_enabled"`
+	WarmServingEnabled      bool             `json:"warm_serving_enabled"`
+	WarmBudgetFrac          float64          `json:"warm_budget_frac,omitempty"`
+	WarmDesired             []string         `json:"warm_desired,omitempty"`
 	LANInferenceEnabled     bool             `json:"lan_inference_enabled"`
 	LANInferencePort        int              `json:"lan_inference_port,omitempty"`
 	MeshEnabled             bool             `json:"mesh_enabled"`
@@ -301,6 +304,9 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		Sandbox:                toBuiltinView(fc.SandboxOn(), s.detector.Podman()),
 		Ollama:                 toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
 		OllamaPoolEnabled:      fc.OllamaPoolOn(),
+		WarmServingEnabled:     fc.WarmServingOn(),
+		WarmBudgetFrac:         fc.WarmBudgetFracOrDefault(),
+		WarmDesired:            fc.WarmDesired,
 		LANInferenceEnabled:    fc.LANInferenceOn(),
 		LANInferencePort:       fc.LANInferencePort,
 		MeshEnabled:            fc.MeshOn(),
