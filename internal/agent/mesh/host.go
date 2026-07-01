@@ -371,14 +371,70 @@ func (m *Host) PeerLinkInfo(peerID string) LinkInfo {
 		if cls == "" {
 			continue // loopback / unclassifiable — no locality signal
 		}
+		lan := localLANLabel(c.LocalMultiaddr())
+		// Same-/64 IPv6 GUA = same residential LAN segment. A link classified
+		// "wan" purely because its endpoints are public IPv6 addresses is
+		// actually on-LAN when local and remote share a /64 — ISPs delegate at
+		// least a /64 per home, so two hosts in it sit on one L2 segment. Upgrade
+		// wan→lan and label it by the shared prefix (classifyConnAddr, seeing only
+		// the remote GUA, can't tell this apart from a truly-remote GUA).
+		if cls == "wan" {
+			if pfx := sharedV6LAN(c.LocalMultiaddr(), c.RemoteMultiaddr()); pfx != "" {
+				cls = "lan"
+				lan = pfx
+			}
+		}
 		// Take the LAN label from the connection whose class STRICTLY wins, so
 		// it always reflects the strongest link the peer is reached over.
 		if strongerLinkClass(info.Class, cls) == cls && cls != info.Class {
 			info.Class = cls
-			info.LAN = localLANLabel(c.LocalMultiaddr())
+			info.LAN = lan
 		}
 	}
 	return info
+}
+
+// sharedV6LAN returns a /64 prefix label (e.g. "2001:db8:0:1") when both
+// multiaddrs carry a GLOBAL-unicast IPv6 address in the same /64 — the signal
+// that two hosts sit on the same residential LAN segment even though their
+// addresses are public GUAs. Empty when either side is missing, not IPv6, not
+// global unicast (loopback / link-local / ULA / private), or in a different /64.
+func sharedV6LAN(local, remote ma.Multiaddr) string {
+	l := globalV6(local)
+	r := globalV6(remote)
+	if l == nil || r == nil {
+		return ""
+	}
+	for i := 0; i < 8; i++ { // /64 = the first 8 bytes
+		if l[i] != r[i] {
+			return ""
+		}
+	}
+	return fmt.Sprintf("%x:%x:%x:%x",
+		uint16(l[0])<<8|uint16(l[1]), uint16(l[2])<<8|uint16(l[3]),
+		uint16(l[4])<<8|uint16(l[5]), uint16(l[6])<<8|uint16(l[7]))
+}
+
+// globalV6 extracts a 16-byte global-unicast IPv6 address from a multiaddr, or
+// nil when the addr isn't IPv6 or isn't global unicast. IsPrivate covers ULA
+// (fc00::/7); link-local, loopback, multicast, and unspecified are excluded too.
+func globalV6(maddr ma.Multiaddr) net.IP {
+	if maddr == nil {
+		return nil
+	}
+	s, err := maddr.ValueForProtocol(ma.P_IP6)
+	if err != nil {
+		return nil
+	}
+	ip := net.ParseIP(s)
+	if ip == nil || ip.To16() == nil || ip.To4() != nil {
+		return nil // not a parseable IPv6 address
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() || ip.IsPrivate() || ip.IsUnspecified() {
+		return nil
+	}
+	return ip.To16()
 }
 
 // localLANLabel derives a short label naming the local LAN/path a link uses from

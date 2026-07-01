@@ -85,6 +85,9 @@ type Manager struct {
 	// gather collects candidate capacities for the election (default
 	// gatherViaPing, over the mesh); injectable so the trigger is unit-testable.
 	gather func(ctx context.Context, modelBytes, selfBudget uint64) ([]NodeCapacity, map[string]ShardPeer)
+	// ping reports a peer's shard readiness/capability (default PingPeer, over
+	// the mesh); injectable so readyRing is unit-testable without a live mesh.
+	ping func(ctx context.Context, peer ShardPeer) (*StatusReport, error)
 	// provision fetches the model (+ binaries) and returns the GGUF path (default
 	// identity); self-provisioning is what removes human staging.
 	provision func(ctx context.Context, modelName string) (string, error)
@@ -129,6 +132,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 	m.orchestrate = m.Orchestrate
 	m.decide = DecideShard
 	m.gather = m.gatherViaPing
+	m.ping = m.PingPeer
 	m.provision = cfg.Provision
 	if m.provision == nil {
 		m.provision = func(_ context.Context, name string) (string, error) { return name, nil }

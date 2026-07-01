@@ -137,3 +137,24 @@ func TestStrongerLinkClass(t *testing.T) {
 		t.Error("tp should stay over lan")
 	}
 }
+
+// TestSharedV6LAN covers the same-/64 IPv6-GUA → LAN upgrade: two hosts whose
+// public IPv6 addresses share a /64 sit on one residential LAN segment, so a
+// link classifyConnAddr would call "wan" is actually on-LAN.
+func TestSharedV6LAN(t *testing.T) {
+	cases := []struct{ local, remote, want string }{
+		{"/ip6/2001:db8:1:2::1/tcp/4001", "/ip6/2001:db8:1:2:94ef:d551:1178:26e7/udp/4001/quic-v1", "2001:db8:1:2"}, // same /64
+		{"/ip6/2001:db8:1:2::1/tcp/4001", "/ip6/2001:db8:9:9::5/tcp/4001", ""},                                          // different /64
+		{"/ip6/fd00::1/tcp/4001", "/ip6/fd00::2/tcp/4001", ""},                                                                       // ULA (private), not global
+		{"/ip6/fe80::1/tcp/4001", "/ip6/2001:db8:1:2::2/tcp/4001", ""},                                                         // link-local on one side
+		{"/ip4/10.0.0.5/tcp/4001", "/ip4/10.0.0.6/tcp/4001", ""},                                                                     // IPv4
+	}
+	for _, c := range cases {
+		if got := sharedV6LAN(mustAddr(t, c.local), mustAddr(t, c.remote)); got != c.want {
+			t.Errorf("sharedV6LAN(%s, %s) = %q, want %q", c.local, c.remote, got, c.want)
+		}
+	}
+	if got := sharedV6LAN(nil, mustAddr(t, "/ip6/2001:db8:1:2::2/tcp/4001")); got != "" {
+		t.Errorf("sharedV6LAN(nil, ...) = %q, want \"\"", got)
+	}
+}

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -15,6 +17,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/mesh"
 	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/peerplane"
+	"github.com/qiangli/outpost/internal/agent/peerstatus"
 	"github.com/qiangli/outpost/internal/agent/shard"
 	"github.com/qiangli/outpost/internal/agent/sysinfo"
 )
@@ -138,30 +141,69 @@ func runShardTool(ctx context.Context, name string, args, out any) error {
 // peerPlaneDiscoverer adapts the peer-plane (same-LAN tier filter) + cloudbox
 // peer/connect (libp2p-id resolution) to the shard manager's PeerDiscoverer.
 type peerPlaneDiscoverer struct {
-	svc      *peerplane.Service
-	client   *peerplane.Client
-	selfHost string
-	mesh     *mesh.Host
+	svc       *peerplane.Service
+	client    *peerplane.Client
+	selfHost  string
+	mesh      *mesh.Host
+	rdvPeerID func(host string) string // host → peer id from the rendezvous (reliable), nil-ok
+
+	platMu    sync.Mutex
+	platCache map[string]string // host → "goos/goarch", last-good (survives cloudbox blips)
+
+	idMu    sync.Mutex
+	idCache map[string]string // host → libp2p peer id, last-good (survives rendezvous blips)
 }
 
 func (d *peerPlaneDiscoverer) SameLANPeers(ctx context.Context) ([]shard.ShardPeer, error) {
+	// Engine-compatibility gate: a worker runs a prima engine built for its own
+	// platform, and today the gpt-oss engine ships only for the leader's platform
+	// — so a same-LAN box on a different OS/arch (e.g. a Windows peer that shares
+	// this host's IPv6 /64) can't run a rank and would only poison the form. Drop
+	// it here, before it ever enters the candidate ring. (When per-platform engines
+	// ship, this should gate on a reported engine version instead of the leader's
+	// platform.) Fail-open when the platform is unknown so discovery still works.
+	plat := d.peerPlatforms(ctx)
+	selfPlat := runtime.GOOS + "/" + runtime.GOARCH
 	var peers []shard.ShardPeer
 	for _, t := range d.svc.Snapshot() {
-		target, err := d.client.Connect(ctx, d.selfHost, t.Host)
-		if err != nil || target == nil || target.Peer.PeerID == "" {
-			continue // can't resolve a libp2p id → skip
+		if p, ok := plat[t.Host]; ok && p != selfPlat {
+			slog.Debug("shard discover: drop incompatible platform", "host", t.Host, "plat", p, "self", selfPlat)
+			continue // incompatible platform — can't run the engine
 		}
-		peerID := target.Peer.PeerID
+		// Resolve the host's libp2p peer id. Prefer the rendezvous's own
+		// host→peer-id map — the id the mesh actually connected with — because the
+		// per-call cloudbox peer/connect can momentarily return an empty id on a
+		// stale announce even while a direct mesh link is up. Fall back to a fresh
+		// cloudbox resolve, then to the last-good cached id.
+		peerID := ""
+		if d.rdvPeerID != nil {
+			peerID = d.rdvPeerID(t.Host)
+		}
+		if peerID == "" {
+			if target, err := d.client.Connect(ctx, d.selfHost, t.Host); err == nil && target != nil {
+				peerID = target.Peer.PeerID
+			}
+		}
+		if peerID == "" {
+			peerID = d.cachedPeerID(t.Host)
+		}
+		if peerID == "" {
+			continue // never resolved a libp2p id for this host → skip
+		}
+		d.rememberPeerID(t.Host, peerID)
 		// Fast local link if the peerplane RTT-tiered it LAN/TP, OR the mesh holds
 		// a DIRECT connection over a private/link-local address. The latter rescues
 		// link-local (a direct wired link) + firewalled LANs the UDP prober reports "unreached"
 		// — the mesh connection's own remote address is the ground truth.
 		local := t.Tier == peerplane.TierLAN || t.Tier == peerplane.TierTP
-		if !local && d.mesh != nil {
-			if cls := d.mesh.PeerLinkClass(peerID); cls == "tp" || cls == "lan" {
+		meshCls := ""
+		if d.mesh != nil {
+			meshCls = d.mesh.PeerLinkClass(peerID)
+			if meshCls == "tp" || meshCls == "lan" {
 				local = true
 			}
 		}
+		slog.Debug("shard discover: peer eval", "host", t.Host, "tier", t.Tier, "mesh_class", meshCls, "local", local)
 		if !local {
 			continue // sharding rides a fast local link only
 		}
@@ -170,9 +212,55 @@ func (d *peerPlaneDiscoverer) SameLANPeers(ctx context.Context) ([]shard.ShardPe
 	return peers, nil
 }
 
+// cachedPeerID returns the last-good libp2p peer id resolved for host, or "".
+func (d *peerPlaneDiscoverer) cachedPeerID(host string) string {
+	d.idMu.Lock()
+	defer d.idMu.Unlock()
+	return d.idCache[host]
+}
+
+// rememberPeerID records the libp2p peer id resolved for host, so a later
+// rendezvous blip that returns no id can fall back to it.
+func (d *peerPlaneDiscoverer) rememberPeerID(host, id string) {
+	d.idMu.Lock()
+	defer d.idMu.Unlock()
+	if d.idCache == nil {
+		d.idCache = map[string]string{}
+	}
+	d.idCache[host] = id
+}
+
+// peerPlatforms returns host → "goos/goarch" from cloudbox's peer status board
+// (the OS/arch each host last reported). Used by SameLANPeers to keep only
+// engine-compatible workers in the shard ring. Returns an empty map on any fetch
+// failure so the platform gate fails OPEN (no filter) rather than blocking a
+// shard when cloudbox is briefly unreachable.
+func (d *peerPlaneDiscoverer) peerPlatforms(ctx context.Context) map[string]string {
+	d.platMu.Lock()
+	defer d.platMu.Unlock()
+	if d.platCache == nil {
+		d.platCache = map[string]string{}
+	}
+	// Merge a fresh fetch into the cache; on failure we keep the last-good map so
+	// a transient cloudbox blip (e.g. a tunnel reconnect) can't disable the gate
+	// and let an incompatible peer back into the ring. A host's OS/arch is stable.
+	if ps, err := peerstatus.Fetch(ctx, d.client.BaseURL, d.client.Token, d.client.HC); err == nil {
+		for _, p := range ps {
+			if p.OS != "" && p.Arch != "" {
+				d.platCache[p.Host] = p.OS + "/" + p.Arch
+			}
+		}
+	}
+	out := make(map[string]string, len(d.platCache))
+	for k, v := range d.platCache {
+		out[k] = v
+	}
+	return out
+}
+
 // newShardManager builds the shard manager when sharding is on and the mesh +
 // peer-plane are both up; nil otherwise (the daemon then starts nothing).
-func newShardManager(fc *conf.FileConfig, meshHost *mesh.Host, peerSvc *peerplane.Service) *shard.Manager {
+func newShardManager(fc *conf.FileConfig, meshHost *mesh.Host, peerSvc *peerplane.Service, rdv *mesh.Rendezvous) *shard.Manager {
 	if !fc.ShardOn() || meshHost == nil || peerSvc == nil {
 		return nil
 	}
@@ -185,6 +273,9 @@ func newShardManager(fc *conf.FileConfig, meshHost *mesh.Host, peerSvc *peerplan
 		client:   &peerplane.Client{BaseURL: cb, Token: fc.AccessToken, HC: &http.Client{Timeout: 10 * time.Second}},
 		selfHost: fc.AgentName,
 		mesh:     meshHost,
+	}
+	if rdv != nil {
+		disc.rdvPeerID = rdv.PeerIDForHost
 	}
 	var bins shard.ServeBins
 	var nodeBytes uint64

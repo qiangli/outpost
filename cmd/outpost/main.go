@@ -706,7 +706,7 @@ func startCmd() *cobra.Command {
 			// Constructed here (not at its errgroup start below) so the
 			// admincore shard closures can capture it. nil when sharding /
 			// mesh / pairing isn't all on. Started in the errgroup further down.
-			shardMgr := newShardManager(fc, meshHost, peerPlaneSvc)
+			shardMgr := newShardManager(fc, meshHost, peerPlaneSvc, meshRdv)
 
 			// resolveShardPeer maps a host name to its mesh ShardPeer via the
 			// cloudbox peer/connect rendezvous (mirrors peerPlaneDiscoverer).

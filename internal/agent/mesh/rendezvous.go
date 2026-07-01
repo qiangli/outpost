@@ -44,6 +44,24 @@ type Rendezvous struct {
 	// peers only by id — for the live link class to that host.
 	mu        sync.Mutex
 	hostPeers map[string]string
+
+	// dialState holds the per-peer reconnect-sweep backoff so a flapping or
+	// unreachable peer isn't force-dialed every ~30s. A same-LAN peer that
+	// reconnects and stays connected is skipped by peersToRedial (never re-dialed
+	// by the sweep); a genuinely-remote peer that connects-via-relay then drops
+	// gets its re-dial interval grown 30s→1m→2m→…→10m so the churn dies and the
+	// mesh peer set stabilizes. Guarded by its own mutex, separate from mu.
+	dialMu    sync.Mutex
+	dialState map[peer.ID]*peerDial
+}
+
+// peerDial is the reconnect-sweep backoff record for one peer: how long the
+// current backoff window is, when it was last dialed, and the earliest instant
+// the sweep may dial it again.
+type peerDial struct {
+	backoff      time.Duration
+	lastDialAt   time.Time
+	nextEligible time.Time
 }
 
 // NewRendezvous builds the rendezvous client for a mesh host. cloudboxURL +
@@ -64,6 +82,7 @@ func NewRendezvous(host *Host, agentName, cloudboxURL, accessToken string, log *
 		log:         log,
 		interval:    60 * time.Second,
 		hostPeers:   make(map[string]string),
+		dialState:   make(map[peer.ID]*peerDial),
 	}
 }
 
@@ -92,6 +111,20 @@ func (r *Rendezvous) LinkInfoForHost(host string) LinkInfo {
 		return LinkInfo{}
 	}
 	return r.host.PeerLinkInfo(peerID)
+}
+
+// PeerIDForHost returns the libp2p peer id learned for host during rendezvous,
+// or "" if none is known yet. This is the reliable host→peer-id source — the id
+// the mesh actually connected with — independent of a per-call cloudbox
+// peer/connect round-trip (which can momentarily return an empty id on a stale
+// announce).
+func (r *Rendezvous) PeerIDForHost(host string) string {
+	if r == nil {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.hostPeers[host]
 }
 
 // rememberPeer records the host→peer-id association learned during a tick.
@@ -141,7 +174,54 @@ func (r *Rendezvous) Run(ctx context.Context) error {
 const (
 	sweepInterval = 30 * time.Second
 	sweepJitter   = 10 * time.Second
+
+	// Per-peer reconnect-sweep backoff bounds. A peer's re-dial interval starts
+	// at sweepBackoffMin and doubles each time it's re-dialed soon after the last
+	// attempt (flapping/failing), capped at sweepBackoffMax; it resets to the min
+	// once the peer has stayed connected long enough that the sweep didn't touch
+	// it for > 3× its current backoff.
+	sweepBackoffMin = 30 * time.Second
+	sweepBackoffMax = 10 * time.Minute
 )
+
+// sweepEligible reports whether the reconnect sweep may dial this peer now. A
+// peer with no backoff record yet is always eligible; otherwise it's eligible
+// only once its nextEligible instant has passed.
+func (r *Rendezvous) sweepEligible(pid peer.ID, now time.Time) bool {
+	r.dialMu.Lock()
+	defer r.dialMu.Unlock()
+	st := r.dialState[pid]
+	if st == nil {
+		return true
+	}
+	return !now.Before(st.nextEligible)
+}
+
+// noteDial records a sweep dial attempt against a peer and advances its backoff.
+// A fresh peer starts at sweepBackoffMin. A peer re-dialed soon after its last
+// attempt (within 3× its current backoff) is treated as flapping/failing and its
+// backoff doubles (capped at sweepBackoffMax); a peer that stayed connected long
+// enough that the sweep left it alone for > 3× its backoff resets to the min.
+func (r *Rendezvous) noteDial(pid peer.ID, now time.Time) {
+	r.dialMu.Lock()
+	defer r.dialMu.Unlock()
+	st := r.dialState[pid]
+	if st == nil {
+		r.dialState[pid] = &peerDial{
+			backoff:      sweepBackoffMin,
+			lastDialAt:   now,
+			nextEligible: now.Add(sweepBackoffMin),
+		}
+		return
+	}
+	if now.Sub(st.lastDialAt) > 3*st.backoff {
+		st.backoff = sweepBackoffMin
+	} else {
+		st.backoff = min(st.backoff*2, sweepBackoffMax)
+	}
+	st.lastDialAt = now
+	st.nextEligible = now.Add(st.backoff)
+}
 
 // reconnectSweep runs sweepOnce on a jittered ~30s cadence until ctx cancels.
 func (r *Rendezvous) reconnectSweep(ctx context.Context) {
@@ -235,6 +315,14 @@ func (r *Rendezvous) redialPeer(ctx context.Context, t redialTarget) {
 	if pid == h.ID() {
 		return
 	}
+	// Per-peer backoff: a peer still inside its backoff window is skipped with
+	// zero work; each attempt advances its window (grows on flap, resets after a
+	// long stable stretch).
+	now := time.Now()
+	if !r.sweepEligible(pid, now) {
+		return
+	}
+	r.noteDial(pid, now)
 	// Re-resolve fresh candidates from cloudbox (best-effort). This is the same
 	// resolve the discover tick uses; here it feeds the peerstore before a
 	// force-dial rather than a plain Connect.

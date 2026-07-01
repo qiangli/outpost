@@ -131,6 +131,14 @@ func (m *Manager) Orchestrate(ctx context.Context, model string, apiPort int, ex
 	if ring == nil {
 		return fmt.Errorf("shard: no candidate ring (no same-LAN peers)")
 	}
+	// Readiness-gate the ring: a same-LAN peer that can't answer the shard
+	// readiness ping (sharding off, no worker binary, wrong platform) drops out
+	// and the ranks re-number, instead of aborting the form or hanging the prima
+	// ring on a rank that never comes up. Same gate the election uses.
+	ring = m.readyRing(ctx, ring)
+	if len(ring.Members) < 2 {
+		return fmt.Errorf("shard: same-LAN peers found but none are shard-ready (no worker answered the readiness ping)")
+	}
 	for _, member := range ring.Members {
 		if member.Rank == 0 {
 			continue // self = leader; formed last, below
@@ -162,6 +170,38 @@ func (m *Manager) Orchestrate(ctx context.Context, model string, apiPort int, ex
 		go m.monitorRing(ring, model, apiPort)
 	}
 	return err
+}
+
+// readyRing rebuilds base to include only peers that are actually shard-ready:
+// they answer the readiness ping AND report a worker binary on disk. A same-LAN
+// peer that's reachable but can't run a rank — no prima worker binary (e.g. a
+// Windows box), sharding effectively inert — is dropped rather than aborting the
+// form or hanging the prima ring on a rank that never comes up. Ranks are
+// re-assigned contiguously (self = rank 0) so PlanFor's layer split matches the
+// peers that actually join.
+func (m *Manager) readyRing(ctx context.Context, base *Ring) *Ring {
+	self := Member{Rank: 0, Host: m.self.Host, PeerID: m.self.PeerID}
+	if base == nil {
+		return &Ring{Members: []Member{self}}
+	}
+	members := []Member{self}
+	for _, member := range base.Members {
+		if member.Host == m.self.Host {
+			continue
+		}
+		p := ShardPeer{Host: member.Host, PeerID: member.PeerID}
+		rep, err := m.ping(ctx, p)
+		if err != nil {
+			m.log.Info("shard: peer unreachable, dropping from ring", "host", member.Host, "err", err)
+			continue
+		}
+		if !rep.WorkerBin {
+			m.log.Info("shard: peer has no worker binary, dropping from ring", "host", member.Host)
+			continue
+		}
+		members = append(members, Member{Rank: len(members), Host: member.Host, PeerID: member.PeerID})
+	}
+	return &Ring{Members: members}
 }
 
 // sleepCtx sleeps for d or until ctx is cancelled; returns false if cancelled.
