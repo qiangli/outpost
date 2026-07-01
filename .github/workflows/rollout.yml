@@ -227,6 +227,22 @@ jobs:
           host="${{ steps.cfg.outputs.host }}"
           target="${{ steps.envelope.outputs.commit }}"
           target_short="${target:0:12}"
+          # A canary can only CONVERGE from the advisory push if it self-applies
+          # — i.e. update_mode=auto. A manual/never host correctly no-ops the
+          # envelope (Force=false), so waiting for it would just burn the 2-minute
+          # cap and report a confusing "did not converge". /api/hosts reports the
+          # host's update_mode, so query it first and fail FAST with the fix. (The
+          # fan-out step already tolerates manual/never hosts — they land as
+          # non-"ok" warnings, not failures; only the canary must be auto.)
+          mode=$(curl -fsS \
+            -H "Authorization: Bearer $CLOUDBOX_FLEET_UPGRADE_TOKEN" \
+            "${CLOUDBOX_BASE_URL}/api/hosts" \
+            | jq -r ".hosts[] | select(.name == \"$host\") | .update_mode // \"\"")
+          if [ "$mode" != "auto" ]; then
+            echo "::error::canary host '$host' is update_mode='${mode:-unknown}', not 'auto' — it won't self-apply the advisory canary push, so it can never converge (this is correct host behavior, not a bug). Fix: run 'outpost builtins set --update=auto' on '$host', or pick an auto host as the canary (CANARY_HOST secret / workflow_dispatch 'host' input), then re-run this workflow."
+            exit 1
+          fi
+          echo "canary '$host' is update_mode=auto — waiting for convergence to $target_short"
           for i in $(seq 1 24); do
             sleep 5
             live=$(curl -fsS \
