@@ -1,9 +1,11 @@
 package adminui
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"path/filepath"
 	"sync/atomic"
@@ -238,20 +240,32 @@ func TestLocalAppProxy(t *testing.T) {
 
 	adminTest := httptest.NewServer(s.engine)
 	t.Cleanup(adminTest.Close)
-	client := &http.Client{}
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
 
-	// Admin APIs remain session-gated.
-	resp, err := client.Get(adminTest.URL + "/api/config")
+	// Without a session cookie: 401.
+	resp, err := client.Get(adminTest.URL + "/fake/hello/world")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
 	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated /api/config: got %d, want 401", resp.StatusCode)
+		t.Fatalf("unauthenticated /fake/...: got %d, want 401", resp.StatusCode)
 	}
 	_ = resp.Body.Close()
 
-	// Local app proxy calls are loopback-local and do not require an admin
-	// session.
+	// Log in.
+	loginBody, _ := json.Marshal(map[string]string{"user": user, "password": "secret"})
+	resp, err = client.Post(adminTest.URL+"/api/login", "application/json", bytes.NewReader(loginBody))
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("login status %d body=%s", resp.StatusCode, body)
+	}
+	_ = resp.Body.Close()
+
+	// Authenticated proxy call.
 	resp, err = client.Get(adminTest.URL + "/fake/hello/world?q=1")
 	if err != nil {
 		t.Fatalf("proxy: %v", err)
@@ -259,7 +273,7 @@ func TestLocalAppProxy(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("local /fake/...: got %d body=%s", resp.StatusCode, body)
+		t.Fatalf("authenticated /fake/...: got %d body=%s", resp.StatusCode, body)
 	}
 	if string(body) != "hello" {
 		t.Fatalf("body = %q, want hello", body)

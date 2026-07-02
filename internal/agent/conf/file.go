@@ -1575,20 +1575,19 @@ type MeshService struct {
 // convention `bashy <name> start|status|stop`. It can optionally be published
 // as a cloudbox app and as an outpost mesh service.
 type BashyService struct {
-	Name               string   `json:"name"`
-	Enabled            bool     `json:"enabled,omitempty"`
-	AppName            string   `json:"app_name,omitempty"`
-	AppPort            int      `json:"app_port,omitempty"`
-	RequireLogin       bool     `json:"require_login,omitempty"`
-	TrustCloudIdentity bool     `json:"trust_cloud_identity,omitempty"`
-	MeshService        string   `json:"mesh_service,omitempty"`
-	RootURL            string   `json:"root_url,omitempty"`
-	Args               []string `json:"args,omitempty"`
+	Name         string   `json:"name"`
+	Enabled      bool     `json:"enabled,omitempty"`
+	AppName      string   `json:"app_name,omitempty"`
+	AppPort      int      `json:"app_port,omitempty"`
+	RequireLogin bool     `json:"require_login,omitempty"`
+	MeshService  string   `json:"mesh_service,omitempty"`
+	RootURL      string   `json:"root_url,omitempty"`
+	Args         []string `json:"args,omitempty"`
 }
 
 func DefaultBashyServices() []BashyService {
 	return []BashyService{
-		{Name: "loom", AppName: "loom", AppPort: 13100, RequireLogin: true, TrustCloudIdentity: true, MeshService: "git"},
+		{Name: "loom", AppName: "loom", AppPort: 31880, RequireLogin: true, MeshService: "git"},
 	}
 }
 

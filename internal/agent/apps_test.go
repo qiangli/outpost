@@ -228,14 +228,13 @@ func TestSetProxyWrap_AppliesMiddleware(t *testing.T) {
 //  2. Opted-in (TrustCloudIdentity=true) cloud-origin: upstream sees the
 //     full identity set — X-Periscope-User/Role passthrough plus the
 //     Authelia/oauth2-proxy Remote-* aliases derived from them.
-//  3. Loopback spoof defense: attacker-stamped identity is stripped. With
-//     the toggle off, no identity reaches upstream; with the toggle on,
-//     outpost replaces it with the local loopback identity.
+//  3. Spoof defense (loopback, no X-Forwarded-Prefix): attacker stamps
+//     Remote-User on the request; upstream MUST see it stripped, both
+//     with the toggle off AND on.
 func TestProxy_IdentityHeaders_Gated(t *testing.T) {
 	type seen struct {
 		periscopeUser, periscopeRole               string
 		remoteUser, remoteEmail, remoteName, group string
-		webauthUser, webauthEmail, webauthName     string
 		sig, ts, prefix                            string
 	}
 	gotCh := make(chan seen, 1)
@@ -248,9 +247,6 @@ func TestProxy_IdentityHeaders_Gated(t *testing.T) {
 			remoteEmail:   r.Header.Get("Remote-Email"),
 			remoteName:    r.Header.Get("Remote-Name"),
 			group:         r.Header.Get("Remote-Groups"),
-			webauthUser:   r.Header.Get("X-WEBAUTH-USER"),
-			webauthEmail:  r.Header.Get("X-WEBAUTH-EMAIL"),
-			webauthName:   r.Header.Get("X-WEBAUTH-FULLNAME"),
 			sig:           r.Header.Get("X-Outpost-Identity-Sig"),
 			ts:            r.Header.Get("X-Outpost-Identity-Ts"),
 			prefix:        r.Header.Get("X-Forwarded-Prefix"),
@@ -335,9 +331,6 @@ func TestProxy_IdentityHeaders_Gated(t *testing.T) {
 		if got.remoteName != "alice" {
 			t.Errorf("Remote-Name = %q, want alice", got.remoteName)
 		}
-		if got.webauthUser != "alice@example.com" || got.webauthEmail != "alice@example.com" || got.webauthName != "alice" {
-			t.Errorf("X-WEBAUTH identity = (%q,%q,%q), want alice@example.com/alice@example.com/alice", got.webauthUser, got.webauthEmail, got.webauthName)
-		}
 		if got.group != "admin" {
 			t.Errorf("Remote-Groups = %q, want admin", got.group)
 		}
@@ -348,11 +341,9 @@ func TestProxy_IdentityHeaders_Gated(t *testing.T) {
 		toggle bool
 	}{
 		{"spoof rejected with toggle off", false},
-		{"spoof replaced with loopback identity", true},
+		{"spoof rejected with toggle on", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("USER", "localdev")
-			t.Setenv("LOGNAME", "ignored")
 			reg := NewAppRegistry()
 			if err := reg.RegisterFromConfig(conf.AppConfig{
 				Name: "app", Scheme: "http", Host: uhost, Port: uport, Enabled: true,
@@ -371,9 +362,6 @@ func TestProxy_IdentityHeaders_Gated(t *testing.T) {
 			req.Header.Set("Remote-User", "attacker@example.com")
 			req.Header.Set("Remote-Email", "attacker@example.com")
 			req.Header.Set("Remote-Groups", "admin")
-			req.Header.Set("X-WEBAUTH-USER", "attacker@example.com")
-			req.Header.Set("X-WEBAUTH-EMAIL", "attacker@example.com")
-			req.Header.Set("X-WEBAUTH-FULLNAME", "attacker")
 			req.Header.Set("X-Periscope-User", "attacker@example.com")
 			req.Header.Set("X-Periscope-Role", "admin")
 			resp, err := http.DefaultClient.Do(req)
@@ -382,17 +370,9 @@ func TestProxy_IdentityHeaders_Gated(t *testing.T) {
 			}
 			_ = resp.Body.Close()
 			got := read(t)
-			if !tc.toggle && (got.periscopeUser != "" || got.remoteUser != "" || got.remoteEmail != "" ||
-				got.remoteName != "" || got.group != "" || got.periscopeRole != "" || got.webauthUser != "" ||
-				got.webauthEmail != "" || got.webauthName != "") {
+			if got.periscopeUser != "" || got.remoteUser != "" || got.remoteEmail != "" ||
+				got.remoteName != "" || got.group != "" || got.periscopeRole != "" {
 				t.Errorf("spoof leaked: %+v", got)
-			}
-			if tc.toggle {
-				if got.periscopeUser != "localdev" || got.remoteUser != "localdev" || got.remoteEmail != "localdev@localhost" ||
-					got.remoteName != "localdev" || got.group != "admin" || got.periscopeRole != "admin" ||
-					got.webauthUser != "localdev" || got.webauthEmail != "localdev@localhost" || got.webauthName != "localdev" {
-					t.Errorf("loopback identity not stamped as expected: %+v", got)
-				}
 			}
 		})
 	}

@@ -395,17 +395,13 @@ func (s *Server) registerRoutes() {
 		api.POST("/outbound/:path/disconnect", s.handleDisconnectOutbound)
 	}
 
-	// Local-access proxy via NoRoute fallback. The listener is loopback-only;
-	// admin/API routes stay session-gated, while local app routes are the
-	// frictionless developer path.
+	// Local-access proxy via NoRoute fallback (session-gated).
 	s.engine.NoRoute(s.handleLocalAppProxy)
 }
 
 // handleLocalAppProxy is the NoRoute fallback. Strips the first path
 // segment as the app/outbound name and forwards to the corresponding
-// registry. This path is intentionally unauthenticated because the admin
-// listener is loopback-only and the app proxy itself sanitizes any
-// trusted-header identity before stamping local loopback identity.
+// registry. Requires a valid admin session cookie.
 func (s *Server) handleLocalAppProxy(c *gin.Context) {
 	p := strings.TrimPrefix(c.Request.URL.Path, "/")
 	if p == "" {
@@ -422,6 +418,13 @@ func (s *Server) handleLocalAppProxy(c *gin.Context) {
 	localMatch := cd.Apps != nil && cd.Apps.LookupTarget(name) != nil
 	if !outboundMatch && !localMatch {
 		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	if cookie, err := c.Cookie(cookieName); err != nil || cookie == "" {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "login required"})
+		return
+	} else if _, ok := s.sessions.Validate(cookie); !ok {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "session expired"})
 		return
 	}
 	upstreamPath := "/"
