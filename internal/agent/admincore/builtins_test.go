@@ -9,12 +9,13 @@ import (
 func TestSetBuiltinsPersistsGenericBashyServices(t *testing.T) {
 	core, cfgPath := newTestCore(t)
 	services := []conf.BashyService{{
-		Name:         "loom",
-		Enabled:      true,
-		AppName:      "loom",
-		AppPort:      3000,
-		RequireLogin: true,
-		MeshService:  "git",
+		Name:               "loom",
+		Enabled:            true,
+		AppName:            "loom",
+		AppPort:            3000,
+		RequireLogin:       true,
+		TrustCloudIdentity: true,
+		MeshService:        "git",
 	}}
 	res, err := core.SetBuiltins(BuiltinsParams{BashyServices: services})
 	if err != nil {
@@ -29,5 +30,8 @@ func TestSetBuiltinsPersistsGenericBashyServices(t *testing.T) {
 	}
 	if len(fc.BashyServices) != 1 || fc.BashyServices[0].Name != "loom" || !fc.BashyServices[0].Enabled {
 		t.Fatalf("bashy service not persisted: %+v", fc.BashyServices)
+	}
+	if !fc.BashyServices[0].RequireLogin || !fc.BashyServices[0].TrustCloudIdentity {
+		t.Fatalf("bashy service auth flags not persisted: %+v", fc.BashyServices[0])
 	}
 }

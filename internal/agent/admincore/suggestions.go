@@ -31,6 +31,9 @@ type Suggestion struct {
 	Note     string `json:"note,omitempty"`     // human-readable hint
 	Existing bool   `json:"existing,omitempty"` // already registered with this name
 	Managed  bool   `json:"managed,omitempty"`  // bashy start/status/stop service
+	// Defaults used when a managed bashy service is enabled from the UI.
+	RequireLogin       bool `json:"require_login,omitempty"`
+	TrustCloudIdentity bool `json:"trust_cloud_identity,omitempty"`
 }
 
 // AppSuggestions probes well-known socket paths and the local ycode
@@ -89,15 +92,17 @@ func bashyServiceSuggestions(fc *conf.FileConfig) []Suggestion {
 			continue
 		}
 		out = append(out, Suggestion{
-			Name:     d.AppName,
-			Scheme:   "http",
-			Host:     "127.0.0.1",
-			Port:     d.AppPort,
-			Role:     "user",
-			Source:   "bashyService",
-			Note:     "managed by outpost via `bashy " + d.Name + " start|status|stop`",
-			Existing: enabled[d.Name],
-			Managed:  true,
+			Name:               d.AppName,
+			Scheme:             "http",
+			Host:               "127.0.0.1",
+			Port:               d.AppPort,
+			Role:               "user",
+			Source:             "bashyService",
+			Note:               "managed by outpost via `bashy " + d.Name + " start|status|stop`",
+			Existing:           enabled[d.Name],
+			Managed:            true,
+			RequireLogin:       d.RequireLogin,
+			TrustCloudIdentity: d.TrustCloudIdentity,
 		})
 	}
 	return out

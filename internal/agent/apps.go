@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -141,6 +142,9 @@ var identityHeaders = []string{
 	"Remote-Email",
 	"Remote-Name",
 	"Remote-Groups",
+	"X-Webauth-User",
+	"X-Webauth-Email",
+	"X-Webauth-Fullname",
 	"X-Outpost-Identity-Sig",
 	"X-Outpost-Identity-Ts",
 }
@@ -157,6 +161,30 @@ func remoteNameFromEmail(s string) string {
 		return ""
 	}
 	return s[:at]
+}
+
+func isLoopbackRemote(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func localLoopbackIdentity() (user, email, role string) {
+	user = strings.TrimSpace(os.Getenv("USER"))
+	if user == "" {
+		user = strings.TrimSpace(os.Getenv("LOGNAME"))
+	}
+	if user == "" {
+		user = "local"
+	}
+	email = user
+	if !strings.Contains(email, "@") {
+		email += "@localhost"
+	}
+	return user, email, "admin"
 }
 
 func NewAppRegistry() *AppRegistry {
@@ -430,14 +458,22 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 			for _, h := range identityHeaders {
 				pr.Out.Header.Del(h)
 			}
-			// Re-emit identity only when (a) the app opted in via
-			// TrustCloudIdentity, and (b) the request came through the
-			// matrix tunnel (X-Forwarded-Prefix present). Cloudbox is
-			// the only entity allowed to source these values; loopback
-			// requests carry no cloudbox vouch.
-			if trustIdentity && pr.In.Header.Get("X-Forwarded-Prefix") != "" {
-				user := pr.In.Header.Get("X-Periscope-User")
-				role := pr.In.Header.Get("X-Periscope-Role")
+			// Re-emit identity only when the app opted in via
+			// TrustCloudIdentity and the identity source is vouched:
+			// cloudbox supplies X-Periscope-* on matrix-origin
+			// requests, while direct loopback requests use the local OS
+			// user. Non-loopback direct requests never source identity.
+			if trustIdentity {
+				user := ""
+				email := ""
+				role := ""
+				if pr.In.Header.Get("X-Forwarded-Prefix") != "" {
+					user = pr.In.Header.Get("X-Periscope-User")
+					email = user
+					role = pr.In.Header.Get("X-Periscope-Role")
+				} else if isLoopbackRemote(pr.In.RemoteAddr) {
+					user, email, role = localLoopbackIdentity()
+				}
 				if user != "" {
 					// Pass through the existing Periscope names so apps
 					// written against the cooperative-web-apps doc keep
@@ -449,9 +485,14 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 					// Sonarr/Radarr External, etc.) accept it without
 					// custom code.
 					pr.Out.Header.Set("Remote-User", user)
-					pr.Out.Header.Set("Remote-Email", user)
-					if name := remoteNameFromEmail(user); name != "" {
+					pr.Out.Header.Set("X-WEBAUTH-USER", user)
+					if email != "" {
+						pr.Out.Header.Set("Remote-Email", email)
+						pr.Out.Header.Set("X-WEBAUTH-EMAIL", email)
+					}
+					if name := remoteNameFromEmail(email); name != "" {
 						pr.Out.Header.Set("Remote-Name", name)
+						pr.Out.Header.Set("X-WEBAUTH-FULLNAME", name)
 					}
 				}
 				if role != "" {

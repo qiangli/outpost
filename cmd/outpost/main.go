@@ -2464,6 +2464,7 @@ func effectiveBashyServices(fc *conf.FileConfig) []conf.BashyService {
 			svc.AppName = "loom"
 			svc.AppPort = fc.LoomPortOrDefault()
 			svc.RequireLogin = true
+			svc.TrustCloudIdentity = true
 			svc.MeshService = "git"
 			byName["loom"] = svc
 		}
@@ -2488,7 +2489,8 @@ func registerBashyServiceApps(fc *conf.FileConfig, reg *agent.AppRegistry) error
 			name = svc.Name
 		}
 		if err := reg.RegisterWithMeta(name, fmt.Sprintf("http://127.0.0.1:%d", svc.AppPort), agent.AppMeta{
-			RequireLogin: svc.RequireLogin,
+			RequireLogin:       svc.RequireLogin,
+			TrustCloudIdentity: svc.TrustCloudIdentity,
 		}); err != nil {
 			return err
 		}

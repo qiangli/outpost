@@ -387,6 +387,9 @@ func upsertBashyService(services *[]conf.BashyService, svc conf.BashyService, en
 			if svc.RequireLogin {
 				existing.RequireLogin = true
 			}
+			if svc.TrustCloudIdentity {
+				existing.TrustCloudIdentity = true
+			}
 			(*services)[i] = existing
 			return
 		}

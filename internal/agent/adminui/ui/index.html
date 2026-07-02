@@ -932,7 +932,8 @@ function renderSuggestions(host, suggestions, cfg) {
               enabled: true,
               app_name: s.name,
               app_port: s.port || 0,
-              require_login: true,
+              require_login: !!s.require_login,
+              trust_cloud_identity: !!s.trust_cloud_identity,
               mesh_service: s.name === 'loom' ? 'git' : '',
             });
             await api('POST', '/api/config/builtins', {bashy_services: services});
