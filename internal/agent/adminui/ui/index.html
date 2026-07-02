@@ -902,7 +902,7 @@ function buildAdvancedSettingsSection(cfg) {
 // and either a one-click [Add] button (when not yet registered) or
 // a "(already registered)" tag. Re-renders the page after a
 // successful add so the new app appears in the list immediately.
-function renderSuggestions(host, suggestions) {
+function renderSuggestions(host, suggestions, cfg) {
   host.innerHTML = '';
   if (suggestions.length === 0) {
     host.append(el('p', {class: 'hint'}, 'No suggestions on this host.'));
@@ -925,15 +925,28 @@ function renderSuggestions(host, suggestions) {
       addBtn.addEventListener('click', async () => {
         addBtn.disabled = true;
         try {
-          await api('POST', '/api/apps', {
-            name: s.name,
-            scheme: s.scheme,
-            host: s.host || '',
-            port: s.port || 0,
-            socket: s.socket || '',
-            enabled: true,
-            require_login: false,
-          });
+          if (s.managed) {
+            const services = [...(cfg.bashy_services || [])].filter(x => x.name !== s.name);
+            services.push({
+              name: s.name,
+              enabled: true,
+              app_name: s.name,
+              app_port: s.port || 0,
+              require_login: true,
+              mesh_service: s.name === 'loom' ? 'git' : '',
+            });
+            await api('POST', '/api/config/builtins', {bashy_services: services});
+          } else {
+            await api('POST', '/api/apps', {
+              name: s.name,
+              scheme: s.scheme,
+              host: s.host || '',
+              port: s.port || 0,
+              socket: s.socket || '',
+              enabled: true,
+              require_login: false,
+            });
+          }
           msg('ok', `Registered ${s.name}.`);
           render();
         } catch (e) {
@@ -2580,7 +2593,7 @@ function renderMain(status, cfg) {
     suggLoaded = true;
     try {
       const res = await api('GET', '/api/apps/suggestions');
-      renderSuggestions(suggList, res.suggestions || []);
+      renderSuggestions(suggList, res.suggestions || [], cfg);
     } catch (e) {
       suggList.append(el('p', {class: 'hint'}, 'Suggestions unavailable: ' + (e.message || 'fetch failed')));
     }

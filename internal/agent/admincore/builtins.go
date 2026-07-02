@@ -90,11 +90,11 @@ type BuiltinsParams struct {
 	Shard      *bool    `json:"shard,omitempty"`
 	ShardPeers []string `json:"shard_peers,omitempty"`
 	ShardRole  *string  `json:"shard_role,omitempty"`
-	// Loom toggles running the loom git forge (Gitea) as a managed external
-	// binary on a loopback port, auto-exposed over the mesh as `git`. LoomPort
-	// sets its HTTP port (0 = default 3000). nil = leave unchanged.
+	// Back-compat convenience for the generic bashy service "loom".
 	Loom     *bool `json:"loom,omitempty"`
 	LoomPort *int  `json:"loom_port,omitempty"`
+	// BashyServices replaces the whole generic service set when non-nil.
+	BashyServices []conf.BashyService `json:"bashy_services,omitempty"`
 	// Zot toggles running the Zot OCI registry as a managed external binary on a
 	// loopback port, auto-exposed over the mesh as `registry`. ZotPort sets its
 	// HTTP port (0 = default 5000). nil = leave unchanged.
@@ -234,6 +234,19 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	if p.LoomPort != nil {
 		fc.LoomPort = *p.LoomPort
 	}
+	if p.Loom != nil || p.LoomPort != nil {
+		upsertBashyService(&fc.BashyServices, conf.BashyService{
+			Name:         "loom",
+			Enabled:      p.Loom == nil || *p.Loom,
+			AppName:      "loom",
+			AppPort:      fc.LoomPortOrDefault(),
+			RequireLogin: true,
+			MeshService:  "git",
+		}, p.Loom, p.LoomPort)
+	}
+	if p.BashyServices != nil {
+		fc.BashyServices = normalizeBashyServices(p.BashyServices)
+	}
 	if p.Zot != nil {
 		fc.ZotEnabled = p.Zot
 	}
@@ -314,7 +327,7 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.Loom == nil && p.LoomPort == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil
+	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.Loom == nil && p.LoomPort == nil && p.BashyServices == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil
 	if p.UpdateMode != nil {
 		if !conf.ValidUpdateMode(*p.UpdateMode) {
 			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")
@@ -338,4 +351,62 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	// the operator pull the trigger when their batch is done.
 	restart := fc.AgentName != "" && !updateModeOnly
 	return BuiltinsResult{OK: true, RestartPending: restart}, nil
+}
+
+func upsertBashyService(services *[]conf.BashyService, svc conf.BashyService, enabled *bool, port *int) {
+	if services == nil {
+		return
+	}
+	name := strings.TrimSpace(svc.Name)
+	if name == "" {
+		return
+	}
+	svc.Name = name
+	if svc.AppName == "" {
+		svc.AppName = name
+	}
+	if svc.AppPort == 0 && port != nil {
+		svc.AppPort = *port
+	}
+	if enabled != nil {
+		svc.Enabled = *enabled
+	}
+	for i := range *services {
+		if (*services)[i].Name == name {
+			existing := (*services)[i]
+			existing.Enabled = svc.Enabled
+			if svc.AppName != "" {
+				existing.AppName = svc.AppName
+			}
+			if svc.AppPort != 0 {
+				existing.AppPort = svc.AppPort
+			}
+			if svc.MeshService != "" {
+				existing.MeshService = svc.MeshService
+			}
+			if svc.RequireLogin {
+				existing.RequireLogin = true
+			}
+			(*services)[i] = existing
+			return
+		}
+	}
+	*services = append(*services, svc)
+}
+
+func normalizeBashyServices(in []conf.BashyService) []conf.BashyService {
+	out := make([]conf.BashyService, 0, len(in))
+	seen := map[string]bool{}
+	for _, svc := range in {
+		svc.Name = strings.TrimSpace(svc.Name)
+		if svc.Name == "" || seen[svc.Name] {
+			continue
+		}
+		seen[svc.Name] = true
+		if svc.AppName == "" {
+			svc.AppName = svc.Name
+		}
+		out = append(out, svc)
+	}
+	return out
 }

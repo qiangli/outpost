@@ -299,6 +299,12 @@ type FileConfig struct {
 	// restart. See docs/mesh-app-platform.md.
 	MeshServices []MeshService `json:"mesh_services,omitempty"`
 
+	// BashyServices are generic service lifecycles managed by outpost through
+	// the convention `bashy <name> start|status|stop`. When enabled, outpost
+	// starts the service, restarts it if status reports stopped, stops it on
+	// shutdown, and can publish it as both a cloudbox app and a mesh service.
+	BashyServices []BashyService `json:"bashy_services,omitempty"`
+
 	// LoomEnabled opts this outpost into running the loom git forge (Gitea) as a
 	// managed external binary (coreutils/external/loom via pkg/binmgr — not
 	// compiled in) on a loopback port, auto-exposed over the mesh as the `git`
@@ -1563,6 +1569,26 @@ type MeshService struct {
 	Name string `json:"name"`
 	// Addr is the local loopback address to bridge to (e.g. "127.0.0.1:3000").
 	Addr string `json:"addr"`
+}
+
+// BashyService is one generic local service supervised by outpost through the
+// convention `bashy <name> start|status|stop`. It can optionally be published
+// as a cloudbox app and as an outpost mesh service.
+type BashyService struct {
+	Name         string   `json:"name"`
+	Enabled      bool     `json:"enabled,omitempty"`
+	AppName      string   `json:"app_name,omitempty"`
+	AppPort      int      `json:"app_port,omitempty"`
+	RequireLogin bool     `json:"require_login,omitempty"`
+	MeshService  string   `json:"mesh_service,omitempty"`
+	RootURL      string   `json:"root_url,omitempty"`
+	Args         []string `json:"args,omitempty"`
+}
+
+func DefaultBashyServices() []BashyService {
+	return []BashyService{
+		{Name: "loom", AppName: "loom", AppPort: 3000, RequireLogin: true, MeshService: "git"},
+	}
 }
 
 // ShardConfig is the Ollama sharding sub-feature config (under Ollama).

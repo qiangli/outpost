@@ -8,11 +8,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
 // Suggestion is one auto-detected local app the operator can register
@@ -27,6 +30,7 @@ type Suggestion struct {
 	Source   string `json:"source"`             // "wellKnown" | "ycodeManifest"
 	Note     string `json:"note,omitempty"`     // human-readable hint
 	Existing bool   `json:"existing,omitempty"` // already registered with this name
+	Managed  bool   `json:"managed,omitempty"`  // bashy start/status/stop service
 }
 
 // AppSuggestions probes well-known socket paths and the local ycode
@@ -58,7 +62,66 @@ func (s *Server) AppSuggestions() ([]Suggestion, error) {
 		sug.Existing = registered[sug.Name]
 		out = append(out, *sug)
 	}
+	for _, sug := range bashyServiceSuggestions(fc) {
+		if registered[sug.Name] {
+			sug.Existing = true
+		}
+		out = append(out, sug)
+	}
 	return out, nil
+}
+
+func bashyServiceSuggestions(fc *conf.FileConfig) []Suggestion {
+	if _, err := exec.LookPath("bashy"); err != nil {
+		return nil
+	}
+	enabled := map[string]bool{}
+	if fc != nil {
+		for _, svc := range fc.BashyServices {
+			if svc.Enabled {
+				enabled[svc.Name] = true
+			}
+		}
+	}
+	out := []Suggestion{}
+	for _, d := range defaultBashyServiceDescriptors() {
+		if !bashyServiceAvailable(d.Name) {
+			continue
+		}
+		out = append(out, Suggestion{
+			Name:     d.AppName,
+			Scheme:   "http",
+			Host:     "127.0.0.1",
+			Port:     d.AppPort,
+			Role:     "user",
+			Source:   "bashyService",
+			Note:     "managed by outpost via `bashy " + d.Name + " start|status|stop`",
+			Existing: enabled[d.Name],
+			Managed:  true,
+		})
+	}
+	return out
+}
+
+func defaultBashyServiceDescriptors() []conf.BashyService {
+	return conf.DefaultBashyServices()
+}
+
+func bashyServiceAvailable(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	for _, sub := range []string{"start", "status", "stop"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		cmd := exec.CommandContext(ctx, "bashy", name, sub, "--help")
+		err := cmd.Run()
+		cancel()
+		if err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // wellKnownPodmanCandidates returns the per-OS list of paths where

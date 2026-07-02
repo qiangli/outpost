@@ -31,7 +31,6 @@ import (
 
 	actrunner "github.com/qiangli/coreutils/external/actrunner"
 	kopia "github.com/qiangli/coreutils/external/kopia"
-	loom "github.com/qiangli/coreutils/external/loom"
 	seaweedfs "github.com/qiangli/coreutils/external/seaweedfs"
 	zot "github.com/qiangli/coreutils/external/zot"
 
@@ -272,6 +271,9 @@ func startCmd() *cobra.Command {
 
 			apps, err := buildAppRegistry(fc, cfg.Apps)
 			if err != nil {
+				return err
+			}
+			if err := registerBashyServiceApps(fc, apps); err != nil {
 				return err
 			}
 			// Built-in local-daemon proxies (podman, ollama). The admin UI
@@ -1034,35 +1036,7 @@ func startCmd() *cobra.Command {
 				return adminSrv.Serve(gctx)
 			})
 
-			// Loom git forge (wrap-harness tool lifecycle): run Gitea as a
-			// managed external binary on a loopback port + auto-expose it over
-			// the mesh as "git". The binary is downloaded/verified/cached by
-			// binmgr (coreutils/external/loom) — NOT compiled into outpost.
-			// Non-fatal: a fetch/launch failure logs + degrades.
-			if fc.LoomOn() {
-				loomPort := fc.LoomPortOrDefault()
-				loomData := "loom"
-				if cd, _ := conf.ResolveCacheDir(); cd != "" {
-					loomData = filepath.Join(cd, "loom")
-				}
-				g.Go(func() error {
-					inst, lerr := loom.Start(gctx, loom.Options{
-						Addr: "127.0.0.1", Port: loomPort, DataDir: loomData,
-						Stdout: io.Discard, Stderr: io.Discard,
-					})
-					if lerr != nil {
-						slog.Warn("loom git forge: not started", "err", lerr)
-						return nil
-					}
-					slog.Info("loom git forge serving", "url", inst.URL, "gitea", inst.Version)
-					if meshHost != nil {
-						meshHost.Forwarder().Expose("git", inst.Addr)
-						slog.Info("loom: exposed over the mesh as 'git'", "addr", inst.Addr)
-					}
-					<-gctx.Done()
-					return inst.Stop()
-				})
-			}
+			startBashyServiceSupervisors(g, gctx, fc, meshHost)
 
 			// Zot OCI registry (wrap-harness tool lifecycle): run Zot as a
 			// managed external binary on a loopback port + auto-expose it over the
@@ -2466,6 +2440,167 @@ func buildAppRegistry(fc *conf.FileConfig, envSpecs string) (*agent.AppRegistry,
 		}
 	}
 	return reg, nil
+}
+
+func effectiveBashyServices(fc *conf.FileConfig) []conf.BashyService {
+	byName := map[string]conf.BashyService{}
+	for _, svc := range conf.DefaultBashyServices() {
+		byName[svc.Name] = svc
+	}
+	if fc != nil {
+		for _, svc := range fc.BashyServices {
+			if strings.TrimSpace(svc.Name) == "" {
+				continue
+			}
+			if svc.AppName == "" {
+				svc.AppName = svc.Name
+			}
+			byName[svc.Name] = svc
+		}
+		if fc.LoomOn() {
+			svc := byName["loom"]
+			svc.Name = "loom"
+			svc.Enabled = true
+			svc.AppName = "loom"
+			svc.AppPort = fc.LoomPortOrDefault()
+			svc.RequireLogin = true
+			svc.MeshService = "git"
+			byName["loom"] = svc
+		}
+	}
+	out := make([]conf.BashyService, 0, len(byName))
+	for _, svc := range byName {
+		out = append(out, svc)
+	}
+	return out
+}
+
+func registerBashyServiceApps(fc *conf.FileConfig, reg *agent.AppRegistry) error {
+	if reg == nil {
+		return nil
+	}
+	for _, svc := range effectiveBashyServices(fc) {
+		if !svc.Enabled || svc.AppPort <= 0 {
+			continue
+		}
+		name := svc.AppName
+		if name == "" {
+			name = svc.Name
+		}
+		if err := reg.RegisterWithMeta(name, fmt.Sprintf("http://127.0.0.1:%d", svc.AppPort), agent.AppMeta{
+			RequireLogin: svc.RequireLogin,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func startBashyServiceSupervisors(g *errgroup.Group, ctx context.Context, fc *conf.FileConfig, meshHost *mesh.Host) {
+	if g == nil {
+		return
+	}
+	for _, svc := range effectiveBashyServices(fc) {
+		if !svc.Enabled {
+			continue
+		}
+		svc := svc
+		g.Go(func() error {
+			return superviseBashyService(ctx, fc, svc, meshHost)
+		})
+	}
+}
+
+func superviseBashyService(ctx context.Context, fc *conf.FileConfig, svc conf.BashyService, meshHost *mesh.Host) error {
+	if svc.Name == "" {
+		return nil
+	}
+	addr := ""
+	if svc.AppPort > 0 {
+		addr = fmt.Sprintf("127.0.0.1:%d", svc.AppPort)
+		if meshHost != nil && svc.MeshService != "" {
+			meshHost.Forwarder().Expose(svc.MeshService, addr)
+			slog.Info("bashy service exposed over mesh", "service", svc.Name, "mesh_service", svc.MeshService, "addr", addr)
+		}
+	}
+	if err := startBashyService(ctx, fc, svc); err != nil {
+		slog.Warn("bashy service: start failed", "service", svc.Name, "err", err)
+	}
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := runBashyServiceCommand(stopCtx, svc, "stop", nil); err != nil {
+			slog.Warn("bashy service: stop failed", "service", svc.Name, "err", err)
+		}
+	}()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			ok, err := bashyServiceRunning(ctx, svc)
+			if err != nil || !ok {
+				if err := startBashyService(ctx, fc, svc); err != nil {
+					slog.Warn("bashy service: restart failed", "service", svc.Name, "err", err)
+				}
+			}
+		}
+	}
+}
+
+func startBashyService(ctx context.Context, fc *conf.FileConfig, svc conf.BashyService) error {
+	args := append([]string{}, svc.Args...)
+	if svc.RootURL != "" {
+		args = append(args, "--root-url", svc.RootURL)
+	} else if svc.Name == "loom" {
+		if root := bashyServiceCloudboxRoot(fc, svc); root != "" {
+			args = append(args, "--root-url", root)
+		}
+	}
+	if svc.Name == "loom" && svc.AppPort > 0 && svc.AppPort != 3000 {
+		args = append(args, "--port", strconv.Itoa(svc.AppPort))
+	}
+	return runBashyServiceCommand(ctx, svc, "start", args)
+}
+
+func bashyServiceRunning(ctx context.Context, svc conf.BashyService) (bool, error) {
+	out, err := outputBashyServiceCommand(ctx, svc, "status", nil)
+	if err != nil {
+		return false, err
+	}
+	text := strings.ToLower(string(out))
+	return !strings.Contains(text, "stopped") && !strings.Contains(text, "not running"), nil
+}
+
+func runBashyServiceCommand(ctx context.Context, svc conf.BashyService, verb string, extra []string) error {
+	_, err := outputBashyServiceCommand(ctx, svc, verb, extra)
+	return err
+}
+
+func outputBashyServiceCommand(ctx context.Context, svc conf.BashyService, verb string, extra []string) ([]byte, error) {
+	args := []string{svc.Name, verb}
+	args = append(args, extra...)
+	cmd := exec.CommandContext(ctx, "bashy", args...)
+	return cmd.CombinedOutput()
+}
+
+func bashyServiceCloudboxRoot(fc *conf.FileConfig, svc conf.BashyService) string {
+	base := cloudboxHTTPBase(fc)
+	if base == "" || fc == nil || fc.AgentName == "" {
+		return ""
+	}
+	appName := svc.AppName
+	if appName == "" {
+		appName = svc.Name
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + "/matrix/h/" + url.PathEscape(fc.AgentName) + "/app/" + url.PathEscape(appName) + "/"
+	return u.String()
 }
 
 func registerCmd() *cobra.Command {
