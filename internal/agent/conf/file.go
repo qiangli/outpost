@@ -311,7 +311,7 @@ type FileConfig struct {
 	// service. The wrap-harness "tool lifecycle" builtin. Default OFF.
 	LoomEnabled *bool `json:"loom_enabled,omitempty"`
 
-	// LoomPort is loom's loopback HTTP port (default 13100).
+	// LoomPort is loom's loopback HTTP port (default 31880).
 	LoomPort int `json:"loom_port,omitempty"`
 
 	// ZotEnabled opts this outpost into running the Zot OCI registry as a managed
@@ -1472,12 +1472,12 @@ func (fc *FileConfig) LoomOn() bool {
 	return fc != nil && fc.LoomEnabled != nil && *fc.LoomEnabled
 }
 
-// LoomPortOrDefault returns the configured loom port, or 13100.
+// LoomPortOrDefault returns the configured loom port, or 31880.
 func (fc *FileConfig) LoomPortOrDefault() int {
 	if fc != nil && fc.LoomPort > 0 {
 		return fc.LoomPort
 	}
-	return 13100
+	return 31880
 }
 
 func (fc *FileConfig) ZotOn() bool {
