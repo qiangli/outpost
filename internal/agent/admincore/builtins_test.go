@@ -12,7 +12,7 @@ func TestSetBuiltinsPersistsGenericBashyServices(t *testing.T) {
 		Name:               "loom",
 		Enabled:            true,
 		AppName:            "loom",
-		AppPort:            3000,
+		AppPort:            13100,
 		RequireLogin:       true,
 		TrustCloudIdentity: true,
 		MeshService:        "git",

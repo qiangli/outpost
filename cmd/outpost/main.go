@@ -2561,7 +2561,7 @@ func startBashyService(ctx context.Context, fc *conf.FileConfig, svc conf.BashyS
 			args = append(args, "--root-url", root)
 		}
 	}
-	if svc.Name == "loom" && svc.AppPort > 0 && svc.AppPort != 3000 {
+	if svc.Name == "loom" && svc.AppPort > 0 && svc.AppPort != 13100 {
 		args = append(args, "--port", strconv.Itoa(svc.AppPort))
 	}
 	return runBashyServiceCommand(ctx, svc, "start", args)
