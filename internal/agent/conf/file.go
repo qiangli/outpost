@@ -305,6 +305,14 @@ type FileConfig struct {
 	// shutdown, and can publish it as both a cloudbox app and a mesh service.
 	BashyServices []BashyService `json:"bashy_services,omitempty"`
 
+	// BashyVersion pins the bashy release the daemon auto-installs when bashy
+	// is missing (the self-heal path for supervised services). Empty or
+	// "latest" fetches the newest release; a tag (e.g. "v0.3.0") pins it. In
+	// production, pin it — an unpinned "latest" means a restart can silently
+	// pull a new bashy. The pin governs only the auto-install of a MISSING
+	// bashy; an already-installed bashy on PATH is used as-is.
+	BashyVersion string `json:"bashy_version,omitempty"`
+
 	// LoomEnabled opts this outpost into running the loom git forge (Gitea) as a
 	// managed external binary (coreutils/external/loom via pkg/binmgr — not
 	// compiled in) on a loopback port, auto-exposed over the mesh as the `git`

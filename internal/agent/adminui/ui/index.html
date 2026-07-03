@@ -849,6 +849,24 @@ function buildAdvancedSettingsSection(cfg) {
     }
   });
 
+  // --- Bashy userland (version pin for supervised services) ----------------
+  const bvForm = el('form', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.4rem 0.8rem;align-items:center'});
+  const bvIn = el('input', {type: 'text', name: 'bashy_version', value: cfg.bashy_version || '', placeholder: "empty / 'latest' = newest; e.g. v0.3.0"});
+  bvForm.append(el('label', {for: 'bashy_version'}, el('code', {class: 'key-hint'}, 'bashy_version')), bvIn);
+  const bvBtn = el('button', {type: 'button'}, 'Save bashy version');
+  bvBtn.addEventListener('click', async () => {
+    bvBtn.disabled = true;
+    try {
+      const res = await api('POST', '/api/config/builtins', {bashy_version: bvIn.value.trim()});
+      msg('ok', 'Bashy version saved.');
+      noteRestartPending(res);
+    } catch (e) {
+      msg('err', e.message || 'Save failed');
+    } finally {
+      bvBtn.disabled = false;
+    }
+  });
+
   // --- Admin users textarea ------------------------------------------------
   const adminUsersList = (cfg.admin_users || []).join('\n');
   const adminUsersIn = el('textarea', {rows: 3, placeholder: 'one email per line; empty = anyone with OS password is admin'}, adminUsersList);
@@ -885,6 +903,15 @@ function buildAdvancedSettingsSection(cfg) {
         ? ('State: ' + cl.state + (cl.member_count ? ' · ' + cl.member_count + ' node(s)' : '') +
            (cl.aggregate_vram_bytes ? ' · ' + Math.round(cl.aggregate_vram_bytes / (1<<30)) + ' GiB aggregate' : ''))
         : 'Empty endpoint = single-machine pool member. Outpost only probes; it never launches the backend.')),
+
+    el('h3', {style: 'margin:1.2rem 0 0.4rem;font-size:1rem'}, 'Bashy userland'),
+    bvForm,
+    el('div', {style: 'margin-top:0.6rem'}, bvBtn),
+    el('p', {class: 'hint', style: 'margin-top:0.3rem'},
+      'Pin the bashy release the daemon auto-installs when bashy is missing ' +
+      '(the self-heal for supervised services like loom). Pin in production — ' +
+      "an empty / 'latest' value means a restart can silently pull a new bashy. " +
+      'An already-installed bashy on PATH is used as-is.'),
 
     el('h3', {style: 'margin:1.2rem 0 0.4rem;font-size:1rem'}, 'Admin allowlist'),
     el('p', {class: 'hint'},

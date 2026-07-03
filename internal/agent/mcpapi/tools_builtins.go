@@ -46,6 +46,7 @@ type builtinsIn struct {
 	Loom                   *bool               `json:"loom,omitempty" jsonschema:"Toggle running the loom git forge (Gitea) as a managed external binary on a loopback port, auto-exposed over the mesh as the 'git' service. Downloaded/verified/cached by binmgr — not compiled in."`
 	LoomPort               *int                `json:"loom_port,omitempty" jsonschema:"loom's loopback HTTP port (0 = default 31880)"`
 	BashyServices          []conf.BashyService `json:"bashy_services,omitempty" jsonschema:"Generic bashy-managed services. Each enabled row is supervised by outpost through 'bashy <name> start|status|stop' and may publish a cloudbox app and mesh service."`
+	BashyVersion           *string             `json:"bashy_version,omitempty" jsonschema:"Pin the bashy release the daemon auto-installs when bashy is missing (empty/'latest' = newest; e.g. v0.3.0). Pin in production so a restart can't silently pull a new bashy."`
 	Zot                    *bool               `json:"zot,omitempty" jsonschema:"Toggle running the Zot OCI registry as a managed external binary on a loopback port, auto-exposed over the mesh as the 'registry' service (serves container images + Ollama models). Downloaded/verified/cached by binmgr — not compiled in."`
 	ZotPort                *int                `json:"zot_port,omitempty" jsonschema:"zot's loopback HTTP port (0 = default 5000)"`
 	Seaweedfs              *bool               `json:"seaweedfs,omitempty" jsonschema:"Toggle running SeaweedFS (object/blob store, S3 gateway) as a managed external binary on a loopback port, auto-exposed over the mesh as the 's3' service. Can also back zot's blob store. Downloaded/verified/cached by binmgr — not compiled in."`
@@ -105,6 +106,7 @@ func (s *Server) registerBuiltinsTools() {
 			Loom:                   in.Loom,
 			LoomPort:               in.LoomPort,
 			BashyServices:          in.BashyServices,
+			BashyVersion:           in.BashyVersion,
 			Zot:                    in.Zot,
 			ZotPort:                in.ZotPort,
 			Seaweedfs:              in.Seaweedfs,

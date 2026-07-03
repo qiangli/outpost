@@ -40,6 +40,21 @@ type bashyBinaryResolver struct {
 	mu        sync.Mutex
 	cached    string
 	lastFetch time.Time
+	// version pins the release the self-heal auto-install fetches ("" or
+	// "latest" = newest). It governs ONLY the auto-install when bashy is
+	// absent — an already-installed bashy on PATH is used as-is (the resolver
+	// self-heals a missing userland; it does not enforce a version over an
+	// operator's existing install). Pin it in production so an outpost restart
+	// can't silently pull a new bashy.
+	version string
+}
+
+// SetVersion pins the bashy release the self-heal auto-install fetches. Called
+// once at boot from the resolved FileConfig.
+func (r *bashyBinaryResolver) SetVersion(v string) {
+	r.mu.Lock()
+	r.version = strings.TrimSpace(v)
+	r.mu.Unlock()
 }
 
 // bashyResolver is the process-wide resolver shared by every supervised service.
@@ -81,8 +96,12 @@ func (r *bashyBinaryResolver) Path(ctx context.Context) (string, error) {
 			(bashyAutoInstallBackoff - time.Since(r.lastFetch)).Round(time.Second))
 	}
 	r.lastFetch = time.Now()
-	slog.Info("bashy not found on PATH or common locations; fetching latest release to self-heal")
-	p, err := ensureBashy(ctx, bashyResolveOptions{})
+	version := r.version
+	if version == "" {
+		version = "latest"
+	}
+	slog.Info("bashy not found on PATH or common locations; fetching to self-heal", "version", version)
+	p, err := ensureBashy(ctx, bashyResolveOptions{Version: r.version})
 	if err != nil {
 		return "", fmt.Errorf("bashy auto-install failed (will retry): %w", err)
 	}

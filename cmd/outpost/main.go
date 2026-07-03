@@ -2500,6 +2500,12 @@ func startBashyServiceSupervisors(g *errgroup.Group, ctx context.Context, fc *co
 	if g == nil {
 		return
 	}
+	// Pin (or leave at latest) the bashy release the self-heal auto-install
+	// fetches when bashy is missing. Read once at boot; changing it schedules
+	// a restart, which re-enters here.
+	if fc != nil {
+		bashyResolver.SetVersion(fc.BashyVersion)
+	}
 	for _, svc := range effectiveBashyServices(fc) {
 		if !svc.Enabled {
 			continue

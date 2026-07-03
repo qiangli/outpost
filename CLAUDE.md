@@ -459,11 +459,17 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   **Self-heal for a missing bashy** (`cmd/outpost/bashy.go` `bashyResolver`): the
   supervisor never trusts `bashy` to be on the (narrow, launchd/systemd) daemon PATH
   — it resolves via `$OUTPOST_BASHY_BIN` → PATH → outpost-adjacent + common install
-  dirs, and if bashy is genuinely absent it **auto-installs the latest release via
-  `binmgr`** (same path as `outpost bashy --install`), throttled by a 5-min backoff.
-  A resolve failure is non-fatal: the 30s loop retries, so a service recovers as
-  soon as bashy is installed or the network returns — a missing userland
-  self-remediates instead of failing forever. Four-surface toggle unchanged
+  dirs, and if bashy is genuinely absent it **auto-installs via `binmgr`** (same
+  path as `outpost bashy --install`), throttled by a 5-min backoff. The fetched
+  release is governed by **`bashy_version`** (`FileConfig.BashyVersion`, four-surface:
+  admincore `SetBuiltins` → restart, `outpost_set_builtins` MCP, `builtins set
+  --bashy-version` CLI, `bashy_version` SafeView/UI row): empty/`latest` = newest, a
+  tag pins it. **Pin it in production** — an unpinned `latest` means a restart can
+  silently pull a new bashy. The pin governs only the auto-install of a *missing*
+  bashy; an already-installed bashy on PATH is used as-is. A resolve failure is
+  non-fatal: the 30s loop retries, so a service recovers as soon as bashy is
+  installed or the network returns — a missing userland self-remediates instead of
+  failing forever. Loom's own four-surface toggle unchanged
   (`SetBuiltins` Loom/LoomPort → restart, `outpost_set_builtins` MCP, `builtins set
   --loom[-port]` CLI, `loom_enabled` SafeView row).
 - **Zot builtin — the OCI registry (wrap-harness *tool lifecycle*).** Identical

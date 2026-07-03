@@ -201,6 +201,7 @@ type SafeView struct {
 	MeshEnabled             bool                `json:"mesh_enabled"`
 	MeshPort                int                 `json:"mesh_port,omitempty"`
 	BashyServices           []conf.BashyService `json:"bashy_services,omitempty"`
+	BashyVersion            string              `json:"bashy_version,omitempty"`
 	ShardEnabled            bool                `json:"shard_enabled"`
 	LoomEnabled             bool                `json:"loom_enabled"`
 	LoomPort                int                 `json:"loom_port,omitempty"`
@@ -312,6 +313,7 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		LANInferencePort:       fc.LANInferencePort,
 		MeshEnabled:            fc.MeshOn(),
 		BashyServices:          fc.BashyServices,
+		BashyVersion:           fc.BashyVersion,
 		ShardEnabled:           fc.ShardOn(),
 		LoomEnabled:            fc.LoomOn(),
 		LoomPort:               fc.LoomPort,
