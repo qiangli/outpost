@@ -2580,9 +2580,16 @@ func runBashyServiceCommand(ctx context.Context, svc conf.BashyService, verb str
 }
 
 func outputBashyServiceCommand(ctx context.Context, svc conf.BashyService, verb string, extra []string) ([]byte, error) {
+	// Resolve (and, if missing, self-heal by auto-installing) the bashy binary
+	// rather than trusting it to be on the daemon's PATH. A launchd/systemd
+	// daemon has a narrow PATH, and a host may simply not have bashy yet.
+	bin, err := bashyResolver.Path(ctx)
+	if err != nil {
+		return nil, err
+	}
 	args := []string{svc.Name, verb}
 	args = append(args, extra...)
-	cmd := exec.CommandContext(ctx, "bashy", args...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	return cmd.CombinedOutput()
 }
 

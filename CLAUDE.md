@@ -445,19 +445,27 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   (`outpost mesh service add git 127.0.0.1:3000`) or an OCI registry
   (`… add registry 127.0.0.1:5000`) — over the mesh persistently; a peer reaches
   it with `outpost mesh listen <peer-id> git`.
-- **Loom builtin — the git forge (wrap-harness *tool lifecycle*).** `LoomEnabled`
-  (`LoomOn()`) + `LoomPort` (default 3000): when on, the daemon runs **Gitea as a
-  managed external binary** — downloaded/sha256-verified/cached by
-  `coreutils/pkg/binmgr`, launched via `coreutils/external/loom.Start` on a
-  loopback port, and **auto-exposed over the mesh as `git`** (boot block in
-  `main.go`, next to the admin errgroup; calls `meshHost.Forwarder().Expose`).
-  **Gitea is NOT compiled into outpost** — it's a downloaded external on its own
-  release cadence (the lean-core model, docs/external-binary-builtins.md). Loom is
-  also the bashy "OS of binaries" entry (`bashy loom serve`) using the same
-  coreutils code in-process. Four-surface like the other builtins (`SetBuiltins`
-  Loom/LoomPort → restart, `outpost_set_builtins` MCP, `builtins set
-  --loom[-port]` CLI, `loom_enabled` SafeView row). Non-fatal: a fetch/launch
-  failure logs + degrades.
+- **Loom builtin — the git forge, now a supervised *bashy service*.** `LoomEnabled`
+  (`LoomOn()`) + `LoomPort` (default **31880**, aligned with bashy/coreutils'
+  `loom.DefaultPort`): when on, loom is no longer launched via an in-process
+  `loom.Start` — it is a **`conf.BashyService`** (`DefaultBashyServices()`), and the
+  daemon supervises it through the convention **`bashy <name> start|status|stop`**
+  (`startBashyServiceSupervisors` → `superviseBashyService` in `main.go`): start on
+  boot, 30s health-check + restart-on-`stopped`, stop on shutdown, **auto-expose over
+  the mesh as `git`**, and register as a cloudbox app (`RegisterWithMeta`,
+  `RequireLogin`). Gitea itself is still a binmgr-managed external (not compiled in),
+  fetched by `bashy loom` — the lean-core model. The generic `BashyService`
+  supervisor drives any `bashy <svc>` lifecycle; loom is the seed entry.
+  **Self-heal for a missing bashy** (`cmd/outpost/bashy.go` `bashyResolver`): the
+  supervisor never trusts `bashy` to be on the (narrow, launchd/systemd) daemon PATH
+  — it resolves via `$OUTPOST_BASHY_BIN` → PATH → outpost-adjacent + common install
+  dirs, and if bashy is genuinely absent it **auto-installs the latest release via
+  `binmgr`** (same path as `outpost bashy --install`), throttled by a 5-min backoff.
+  A resolve failure is non-fatal: the 30s loop retries, so a service recovers as
+  soon as bashy is installed or the network returns — a missing userland
+  self-remediates instead of failing forever. Four-surface toggle unchanged
+  (`SetBuiltins` Loom/LoomPort → restart, `outpost_set_builtins` MCP, `builtins set
+  --loom[-port]` CLI, `loom_enabled` SafeView row).
 - **Zot builtin — the OCI registry (wrap-harness *tool lifecycle*).** Identical
   pattern to loom: `ZotEnabled`/`ZotPort` (default 5000), four-surface; the daemon
   runs **Zot** (project-zot/zot, Apache-2.0) as a managed external binary via
