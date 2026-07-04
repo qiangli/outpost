@@ -21,9 +21,14 @@ on:
 jobs:
   sdlc:
     # Proceed only when the OWNER applied sdlc:go (or the owner dispatched manually).
-    # Forge permission already restricts label create/assign to write users; this is
-    # the belt-and-suspenders check that the actor IS the repo owner.
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.label.name == 'sdlc:go' && github.event.sender.login == github.repository_owner) }}
+    # Forge permission already restricts label create/assign to write users; this
+    # also checks the actor IS the repo owner.
+    # NOTE — Gitea compatibility: Gitea does NOT populate github.event.label for
+    # issue-label events (GitHub does). So gate on the issue's labels ARRAY
+    # (contains(...issue.labels.*.name...)), NOT github.event.label.name — the latter
+    # is empty on Gitea and the job silently skips. sender.login + repository_owner
+    # ARE populated on both. (Gitea's action for a label add is "label_updated".)
+    if: ${{ github.event_name == 'workflow_dispatch' || (contains(github.event.issue.labels.*.name, 'sdlc:go') && github.event.sender.login == github.repository_owner) }}
     # act_runner registered against the local loom forge, ON the mesh host — the
     # conductor (codex/claude) uses the operator's subscription login here, never a
     # public runner or API-key billing. Prereqs on the runner: bashy (+ deploy creds
@@ -37,6 +42,14 @@ jobs:
       ISSUE_TITLE: ${{ github.event.issue.title || inputs.issue_title }}
       ISSUE_BODY: ${{ github.event.issue.body || inputs.issue_body }}
     steps:
+      # A host-executor act_runner job gets a MINIMAL PATH (no ~/bin, no homebrew),
+      # so `bashy`/`codex` aren't found. Prepend the dirs they live in.
+      - name: PATH (host runner minimal PATH)
+        run: |
+          for d in "$HOME/bin" /opt/homebrew/bin "$HOME/.local/bin" /usr/local/bin; do
+            echo "$d" >> "$GITHUB_PATH"
+          done
+
       # Local-first checkout: clone from loom via `bashy git`, NOT actions/checkout
       # (which act_runner would fetch from github.com per Gitea's DEFAULT_ACTIONS_URL).
       # Keeps the loop github-free — loom is the only source.
