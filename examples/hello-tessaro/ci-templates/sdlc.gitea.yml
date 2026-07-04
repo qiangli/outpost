@@ -1,0 +1,79 @@
+# COPY-ME → .gitea/workflows/sdlc.yml in your LOOM repo. The loom-native, uniform
+# SDLC loop, run by act_runner on your mesh host — the local-first replacement for a
+# GitHub self-hosted-runner workflow. loom is the source of truth; the deploy target
+# (github-pages | native | podman | dks | preview) is just a deploy.md target.
+# See docs/sdlc-deploy-targets-design.md.
+name: sdlc
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+    inputs:
+      issue_title: { description: "request title", required: true }
+      issue_body:  { description: "request body", required: false }
+      target:      { description: "deploy.md target", required: false, default: "github-pages" }
+
+jobs:
+  sdlc:
+    # act_runner registered against the local loom forge, ON the mesh host — the
+    # conductor (codex/claude) uses the operator's subscription login here, never a
+    # public runner or API-key billing. Prereqs on the runner: bashy (+ deploy creds
+    # via `bashy secrets`) and the conductor CLI, subscription-logged-in.
+    runs-on: [self-hosted, sdlc]
+    env:
+      SDLC_CONDUCTOR: ${{ vars.SDLC_CONDUCTOR || 'codex' }}
+      SDLC_TARGET: ${{ inputs.target || vars.SDLC_TARGET || 'github-pages' }}
+      SDLC_PUBLIC_URL: ${{ vars.SDLC_PUBLIC_URL }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      ISSUE_TITLE: ${{ github.event.issue.title || inputs.issue_title }}
+      ISSUE_BODY: ${{ github.event.issue.body || inputs.issue_body }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare request
+        run: |
+          set -euo pipefail
+          grep -qxF '.bashy/' .gitignore 2>/dev/null || echo '.bashy/' >> .gitignore
+          mkdir -p .bashy/sdlc/runs
+          { printf '%s\n\n' "$ISSUE_TITLE"; printf '%s\n' "${ISSUE_BODY:-}"; } > .bashy/sdlc/request.md
+
+      - name: Conductor implements (private, on the mesh host)
+        id: sdlc
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          bashy sdlc tick \
+            --no-config --conductor "$SDLC_CONDUCTOR" \
+            --intake-provider loom --intake-repo "$GITHUB_REPOSITORY" \
+            --issue-file .bashy/sdlc/request.md \
+            --runs-dir .bashy/sdlc/runs --cwd "$PWD" --timeout 45m \
+            2>&1 | tee .bashy/sdlc/conductor.log
+          echo "ref=$(awk '/sdlc reference:/{print $3; exit}' .bashy/sdlc/conductor.log)" >> "$GITHUB_OUTPUT"
+
+      - name: Push to loom (source of truth)
+        id: push
+        run: |
+          set -euo pipefail
+          bashy git add -A
+          msg="sdlc: ${ISSUE_TITLE}"
+          [ -n "${ISSUE_NUMBER:-}" ] && msg="$msg"$'\n\n'"Closes #${ISSUE_NUMBER}"   # Gitea auto-closes the loom issue
+          if bashy git commit -m "$msg"; then
+            bashy git push origin HEAD
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy (uniform handler — any target)
+        run: bashy dag deploy.md "deploy-${SDLC_TARGET}"
+
+      - name: Verify the live target
+        if: env.SDLC_PUBLIC_URL != ''
+        run: bashy sdlc verify --url "$SDLC_PUBLIC_URL" --timeout 60s
+
+      - name: Resolve the run
+        if: steps.sdlc.outputs.ref != ''
+        run: |
+          bashy sdlc resolve "${{ steps.sdlc.outputs.ref }}" \
+            --runs-dir .bashy/sdlc/runs --status resolved --by act_runner \
+            --note "Deployed via deploy-${SDLC_TARGET}${SDLC_PUBLIC_URL:+ and verified at $SDLC_PUBLIC_URL}."

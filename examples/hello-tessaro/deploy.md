@@ -26,6 +26,17 @@ image tag; Argo CD reconciles); podman pulls + restarts the image.
 
 ## Tasks
 
+### deploy-preview
+Build + run locally for review — the local-dev preview that unifies with the live
+loop (same repo, same deploy.md; only the target differs). Expose it to peers over
+the mesh: `outpost mesh service add hello-tessaro-preview 127.0.0.1:8080`.
+Effects: write
+
+```bash
+DEPLOY_MODE=native "$BASHY" dag deploy.md deploy-dev
+echo ">> preview: http://127.0.0.1:8080  (mesh-expose: outpost mesh service add hello-tessaro-preview 127.0.0.1:8080)"
+```
+
 ### deploy-dev
 Deploy to dev. dev is permissive and auto-deployed; this is the fast inner loop.
 Effects: write
