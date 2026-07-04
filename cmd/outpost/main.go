@@ -2455,6 +2455,13 @@ func effectiveBashyServices(fc *conf.FileConfig) []conf.BashyService {
 			if svc.AppName == "" {
 				svc.AppName = svc.Name
 			}
+			// Inherit the default Command base (e.g. sdlc → ["sdlc","service"]) so
+			// an operator can enable a service without re-declaring its argv.
+			if len(svc.Command) == 0 {
+				if def, ok := byName[svc.Name]; ok {
+					svc.Command = def.Command
+				}
+			}
 			byName[svc.Name] = svc
 		}
 		if fc.LoomOn() {
@@ -2593,7 +2600,14 @@ func outputBashyServiceCommand(ctx context.Context, svc conf.BashyService, verb 
 	if err != nil {
 		return nil, err
 	}
-	args := []string{svc.Name, verb}
+	// The base argv is svc.Command when set (e.g. ["sdlc","service"] →
+	// `bashy sdlc service start`), else just the service name (`bashy loom start`).
+	base := svc.Command
+	if len(base) == 0 {
+		base = []string{svc.Name}
+	}
+	args := append([]string{}, base...)
+	args = append(args, verb)
 	args = append(args, extra...)
 	cmd := exec.CommandContext(ctx, bin, args...)
 	return cmd.CombinedOutput()

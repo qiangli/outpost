@@ -1,0 +1,4 @@
+/hello-tessaro
+/hello-tessaro-*
+*.previous
+/tmp/

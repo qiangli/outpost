@@ -1,0 +1,70 @@
+# COPY-ME TEMPLATE → .github/workflows/deploy.yml when hello-tessaro is its own repo.
+#
+# THE LABEL IS THE TRIGGER. Adding `deploy:<env>` to an issue fires this workflow
+# — the public deploy handoff. The conductor applies the label after a green gate
+# (policy: auto), or a human applies it to promote (policy: required). Agent
+# execution never runs here; this Action only deploys.
+name: deploy
+on:
+  issues:
+    types: [labeled]
+
+# One deploy per env at a time; a newer promote supersedes an in-flight one.
+concurrency:
+  group: deploy-${{ github.event.label.name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write        # to comment the outcome back on the issue
+  pages: write         # for the GitHub Pages target
+  id-token: write      # for actions/deploy-pages
+
+jobs:
+  deploy:
+    # Gate on the deploy:* family; ignore every other label add.
+    if: startsWith(github.event.label.name, 'deploy:')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve target env from the label
+        run: |
+          env="${LABEL#deploy:}"           # deploy:qa → qa
+          case "$env" in
+            dev|qa|prod) echo "ENV=$env" >> "$GITHUB_ENV" ;;
+            *) echo "::error::unknown deploy env '$env'"; exit 1 ;;
+          esac
+        env:
+          LABEL: ${{ github.event.label.name }}
+
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.26" }
+
+      # --- Choose ONE deploy target below. Example A: GitHub Pages. ---
+      - name: Build the static site (example)
+        run: |
+          mkdir -p public
+          go build -o /tmp/hello-tessaro .
+          echo "deployed $ENV @ $(git rev-parse --short HEAD)" > public/index.html
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: public }
+      - id: pages
+        if: env.ENV == 'prod'          # only prod publishes to Pages in this example
+        uses: actions/deploy-pages@v4
+
+      # --- Example B (server / DO droplet): replace the Pages steps above with ---
+      #   - run: ./deploy/wrapper.sh --env "$ENV" --url "$ARTIFACT_URL" --sha256 "$SHA"
+      #     (or: doctl apps create-deployment ... ; ssh <droplet> 'systemctl restart ...')
+
+      - name: Report outcome on the issue
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const ok = '${{ job.status }}' === 'success'
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `Deploy to **${process.env.ENV}** ${ok ? 'succeeded ✅' : 'failed ❌'} (${context.sha.slice(0,7)}).`
+            })

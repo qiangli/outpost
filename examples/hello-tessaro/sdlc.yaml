@@ -1,0 +1,51 @@
+# sdlc.yaml — makes hello-tessaro operable by `bashy sdlc` (the automated SDLC
+# control plane). A human runs the same pipeline by hand; `bashy sdlc` runs it
+# unattended under the policies below. See bashy/docs/local-loom-sdlc-control-plane.md.
+#
+# Try it:  cd outpost/examples/hello-tessaro && bashy sdlc doctor
+#          bashy sdlc tick --issue "add a /status route"        # one round
+#          bashy sdlc pages once                                # fully-auto single shot
+
+# The orchestrator agent that plans → implements → tests. It drives bashy
+# sprint/weave and delegates coding to the agent fleet.
+conductor:
+  agent: claude
+
+# Independent QA/review pass before approval (optional; omit to fold into conductor).
+qa:
+  agent: codex
+
+# Where requests come from. provider: github | gitea | loom | local.
+# NOTE: real GitHub issue *fetch* is the P2a gap being built — until then GitHub
+# intake is passed via --issue/--issue-file and loom is the fetching provider.
+intake:
+  provider: github
+  repository: qiangli/hello-tessaro
+  query: "is:issue is:open no:assignee"
+  labels: [bug, enhancement]
+
+# Deploy targets. staging = the pre-prod gate; production = the live surface.
+# command/healthcheck/rollback become executable via the P2c deploy-adapter work;
+# today they are the rollout brief the conductor executes.
+deployment:
+  staging:
+    name: qa
+    environment: qa
+    command: "./deploy/wrapper.sh --env qa"
+    healthcheck: "curl -fsS http://127.0.0.1:8081/healthz"
+    rollback: "./deploy/wrapper.sh --env qa --rollback"
+  production:
+    name: prod
+    environment: prod
+    command: "./deploy/wrapper.sh --env prod"
+    healthcheck: "curl -fsS http://127.0.0.1:8082/healthz"
+    rollback: "./deploy/wrapper.sh --env prod --rollback"
+
+# Automation posture. The scaffold defaults to human-gated production; flip
+# prod_approval to `auto` for the fully-automatic loop (the `pages once` model).
+policies:
+  qa: required           # a QA pass must accept before approval
+  prod_approval: required # required = human approves; auto = deploy on green
+
+metadata:
+  app: hello-tessaro

@@ -1,0 +1,26 @@
+# COPY-ME TEMPLATE. When hello-tessaro becomes its own repo, move this to
+# .github/workflows/test.yml (GitHub) and/or .gitea/workflows/ci.yml (loom).
+# It cannot live in outpost/examples/ as an active workflow — GitHub only runs
+# workflows from the repo-root .github/workflows/. The SAME job is the gate for
+# both a human PR check and the `bashy sdlc` conductor's merge gate.
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go build -trimpath -ldflags "-X main.Commit=${GITHUB_SHA::7}" -o /tmp/hello-tessaro .
+      - name: smoke /healthz + /version
+        run: |
+          APP_ENV=dev HELLO_TESSARO_REQUIRE_HMAC=false HELLO_TESSARO_ADDR=127.0.0.1:8080 /tmp/hello-tessaro &
+          for i in $(seq 1 30); do curl -fsS localhost:8080/healthz && break; sleep 1; done
+          curl -fsS localhost:8080/version

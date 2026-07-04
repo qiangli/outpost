@@ -1591,11 +1591,23 @@ type BashyService struct {
 	MeshService  string   `json:"mesh_service,omitempty"`
 	RootURL      string   `json:"root_url,omitempty"`
 	Args         []string `json:"args,omitempty"`
+	// Command overrides the base argv the supervisor invokes as
+	// `bashy <Command...> {start|status|stop}`. Empty defaults to [Name] (so
+	// loom → `bashy loom start`). Set it for services whose lifecycle lives under
+	// a subcommand, e.g. the SDLC loop uses ["sdlc","service"] →
+	// `bashy sdlc service start`.
+	Command []string `json:"command,omitempty"`
 }
 
 func DefaultBashyServices() []BashyService {
 	return []BashyService{
 		{Name: "loom", AppName: "loom", AppPort: 31880, RequireLogin: true, MeshService: "git"},
+		// The always-on SDLC loop (the durable trigger daemon). Opt-in
+		// (Enabled:false): a host running unattended agent work sets Enabled +
+		// Args (repo/config paths) in agent.json. No AppPort/mesh — it is a
+		// background loop, not a proxied app. Supervised via
+		// `bashy sdlc service {start,status,stop}`.
+		{Name: "sdlc", Command: []string{"sdlc", "service"}},
 	}
 }
 
