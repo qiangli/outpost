@@ -28,7 +28,20 @@ jobs:
       ISSUE_TITLE: ${{ github.event.issue.title || inputs.issue_title }}
       ISSUE_BODY: ${{ github.event.issue.body || inputs.issue_body }}
     steps:
-      - uses: actions/checkout@v4
+      # Local-first checkout: clone from loom via `bashy git`, NOT actions/checkout
+      # (which act_runner would fetch from github.com per Gitea's DEFAULT_ACTIONS_URL).
+      # Keeps the loop github-free — loom is the only source.
+      - name: Checkout from loom
+        env:
+          SERVER: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          host="${SERVER#http*://}"
+          bashy git clone "http://x-access-token:${TOKEN}@${host}/${REPO}.git" .
+          [ -n "${SHA:-}" ] && bashy git checkout "$SHA" || true
 
       - name: Prepare request
         run: |
