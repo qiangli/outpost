@@ -22,8 +22,10 @@ permissions:
 
 jobs:
   deploy:
-    # Gate on the deploy:* family; ignore every other label add.
-    if: startsWith(github.event.label.name, 'deploy:')
+    # Gate on the deploy:* family AND require the OWNER to have applied it. The
+    # deploy:* labels are owner-only (create + assign) — forge write-permission
+    # restricts them, and this checks the actor is the repo owner.
+    if: ${{ startsWith(github.event.label.name, 'deploy:') && github.event.sender.login == github.repository_owner }}
     runs-on: ubuntu-latest
     steps:
       - name: Resolve target env from the label

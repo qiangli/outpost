@@ -4,9 +4,14 @@
 # (github-pages | native | podman | dks | preview) is just a deploy.md target.
 # See docs/sdlc-deploy-targets-design.md.
 name: sdlc
+# TRIGGER = an owner-applied label, NOT issue-open. Anyone may file an issue (a
+# request); only the owner adding `sdlc:go` fires the conductor. Adding a label
+# already requires write/triage on the repo (GitHub + Gitea), so an issue-filer
+# can't trigger SDLC — no user/permission management needed. Keep `sdlc:*` labels
+# owner-only (the default: don't grant write to untrusted users).
 on:
   issues:
-    types: [opened]
+    types: [labeled]
   workflow_dispatch:
     inputs:
       issue_title: { description: "request title", required: true }
@@ -15,6 +20,10 @@ on:
 
 jobs:
   sdlc:
+    # Proceed only when the OWNER applied sdlc:go (or the owner dispatched manually).
+    # Forge permission already restricts label create/assign to write users; this is
+    # the belt-and-suspenders check that the actor IS the repo owner.
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.label.name == 'sdlc:go' && github.event.sender.login == github.repository_owner) }}
     # act_runner registered against the local loom forge, ON the mesh host — the
     # conductor (codex/claude) uses the operator's subscription login here, never a
     # public runner or API-key billing. Prereqs on the runner: bashy (+ deploy creds
