@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hello-tessaro.fullname" . }}
+  labels: {{- include "hello-tessaro.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: {{- include "hello-tessaro.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "hello-tessaro.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: hello-tessaro
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+          env:
+            - name: APP_ENV
+              value: {{ .Values.env | quote }}
+            - name: HELLO_TESSARO_ADDR
+              value: "0.0.0.0:{{ .Values.service.port }}"
+            - name: HELLO_TESSARO_REQUIRE_HMAC
+              value: {{ .Values.requireHmac | quote }}
+            {{- if .Values.adminEmails }}
+            - name: HELLO_TESSARO_ADMIN_EMAILS
+              value: {{ join "," .Values.adminEmails | quote }}
+            {{- end }}
+            - name: HELLO_TESSARO_SSO_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "hello-tessaro.ssoSecretName" . }}
+                  key: sso-secret
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]

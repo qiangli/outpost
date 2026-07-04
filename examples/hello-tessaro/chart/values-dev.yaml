@@ -1,0 +1,11 @@
+# dev — fast inner loop; inline SSO secret (dev-only), latest image, auto-synced.
+env: dev
+replicaCount: 1
+image:
+  tag: latest
+# DEV ONLY: an inline secret is fine here; qa/prod use a Sealed Secret.
+ssoSecret: dev-only-not-a-real-secret
+adminEmails:
+  - liqiang@gmail.com
+podDisruptionBudget:
+  enabled: false

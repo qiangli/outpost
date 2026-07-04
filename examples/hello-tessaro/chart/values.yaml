@@ -1,0 +1,50 @@
+# Base values — overridden per environment by values-{dev,qa,prod}.yaml.
+# The SAME image runs in every env (12-factor); only config differs.
+
+image:
+  repository: ghcr.io/qiangli/hello-tessaro
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# APP_ENV — dev | qa | prod. Set per env in values-<env>.yaml.
+env: prod
+
+replicaCount: 1
+
+# require_hmac rejects cloud requests without a valid SSO-HMAC signature.
+# Keep true — the pod is reachable inside the cluster, not just loopback.
+requireHmac: true
+
+# App-internal admin allowlist (RBAC over the verified Remote-User).
+adminEmails: []
+
+# SSO secret sourcing. Prefer a pre-provisioned Secret (a per-env Sealed
+# Secret in prod/qa); the inline value is for dev/testing only.
+#   ssoSecretName — name of an existing Secret with key "sso-secret".
+#   ssoSecret     — inline value; the chart creates the Secret (DEV ONLY).
+ssoSecretName: ""
+ssoSecret: ""
+
+service:
+  port: 8080
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+# Default-deny NetworkPolicy per namespace (env isolation). Allows DNS egress
+# and same-namespace ingress; the cloudbox/outpost reverse-proxy reaches the
+# Service from within the tenant. Set proxyNamespaceLabel to also admit a
+# labelled proxy namespace.
+networkPolicy:
+  enabled: true
+  proxyNamespaceLabel: ""
+
+# PodDisruptionBudget — enable in prod (replicaCount > 1).
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1

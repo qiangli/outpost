@@ -100,6 +100,13 @@ mirrors outpost's own self-upgrade worker.
 -t hello-tessaro .` — the *same* image runs bare-metal, in podman, or as a DKS pod
 (the deployment-mode contract; only networking/persistence differ).
 
+**dev/qa/prod on DKS (GitOps)**: the Helm chart is in `chart/` and the Argo CD
+ApplicationSet in `gitops/` deploys three isolated environments
+(`hello-tessaro-{dev,qa,prod}`) promoted by git — bump the image tag in the next
+env's `values-<env>.yaml` (gate the prod PR). Default-deny NetworkPolicy per
+namespace + per-env Sealed Secret keep them isolated. See `gitops/README.md`. The
+appstore one-click entry is `appstore/apps/hello-tessaro/`.
+
 ## Fully-automated SDLC (`bashy sdlc`)
 
 `sdlc.yaml` makes this app operable by the shipped SDLC control plane:

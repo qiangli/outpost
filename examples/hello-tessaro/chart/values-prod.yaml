@@ -1,0 +1,20 @@
+# prod — HA (2 replicas + PDB), pinned image, secret from a per-env Sealed Secret.
+# Promotion INTO prod = bump image.tag here via a GATED PR (required review) —
+# the git equivalent of applying the deploy:prod baton label.
+env: prod
+replicaCount: 2
+image:
+  tag: "0.1.0"
+ssoSecretName: hello-tessaro-prod-sso   # provided by a SealedSecret (see gitops/)
+adminEmails:
+  - liqiang@gmail.com
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1

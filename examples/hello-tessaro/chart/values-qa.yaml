@@ -1,0 +1,11 @@
+# qa — pre-prod gate; pinned image, secret from a per-env Sealed Secret.
+# Promotion INTO qa = bump image.tag here (a git commit; Argo CD reconciles).
+env: qa
+replicaCount: 1
+image:
+  tag: "0.1.0"
+ssoSecretName: hello-tessaro-qa-sso   # provided by a SealedSecret (see gitops/)
+adminEmails:
+  - liqiang@gmail.com
+podDisruptionBudget:
+  enabled: false

@@ -1,0 +1,39 @@
+# Argo CD ApplicationSet — dev/qa/prod as three namespaces from ONE chart.
+# The env config (image tag, secret ref, replicas) lives per-env in the chart's
+# values-<env>.yaml. Promotion = a git commit that bumps image.tag in the next
+# env's values file; Argo CD reconciles. Gate the values-prod.yaml PR (required
+# review) — the git equivalent of applying the deploy:prod baton label.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: hello-tessaro
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - env: dev
+          - env: qa
+          - env: prod
+  template:
+    metadata:
+      name: "hello-tessaro-{{.env}}"
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/qiangli/outpost.git
+        targetRevision: main
+        path: examples/hello-tessaro/chart
+        helm:
+          valueFiles:
+            - values.yaml
+            - "values-{{.env}}.yaml"
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "hello-tessaro-{{.env}}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true

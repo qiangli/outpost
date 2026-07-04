@@ -1,0 +1,11 @@
+apiVersion: v2
+name: hello-tessaro
+description: Reference "custom app on tessaro" — one binary, per-env config, DKS-deployable.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/qiangli/outpost/tree/main/examples/hello-tessaro
+icon: https://raw.githubusercontent.com/qiangli/outpost/main/examples/hello-tessaro/chart/icon.svg
+maintainers:
+  - name: dhnt
+    email: liqiang@gmail.com
