@@ -24,20 +24,21 @@ intake:
   query: "is:issue is:open no:assignee"
   labels: [bug, enhancement]
 
-# Deploy targets. staging = the pre-prod gate; production = the live surface.
-# command/healthcheck/rollback become executable via the P2c deploy-adapter work;
-# today they are the rollout brief the conductor executes.
+# Deploy targets. The deploy HANDLER is `bashy dag deploy.md deploy-<env>` (the
+# committed, reviewed pipeline in ./deploy.md) — it runs on the TARGET host with
+# that host's creds, isolated from the dev conductor. staging = the pre-prod gate;
+# production = the live surface. See docs/sdlc-deploy-targets-design.md.
 deployment:
   staging:
     name: qa
     environment: qa
-    command: "./deploy/wrapper.sh --env qa"
+    command: "bashy dag deploy.md deploy-qa"
     healthcheck: "curl -fsS http://127.0.0.1:8081/healthz"
     rollback: "./deploy/wrapper.sh --env qa --rollback"
   production:
     name: prod
     environment: prod
-    command: "./deploy/wrapper.sh --env prod"
+    command: "bashy dag deploy.md deploy-prod"
     healthcheck: "curl -fsS http://127.0.0.1:8082/healthz"
     rollback: "./deploy/wrapper.sh --env prod --rollback"
 
