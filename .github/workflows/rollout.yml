@@ -211,6 +211,7 @@ jobs:
           echo "✓ canary upgrade succeeded on host: $host"
 
       - name: Wait for canary host to converge
+        id: canary_wait
         if: steps.cfg.outputs.dry_run != 'true'
         env:
           CLOUDBOX_BASE_URL: ${{ secrets.CLOUDBOX_BASE_URL }}
@@ -231,16 +232,21 @@ jobs:
           # — i.e. update_mode=auto. A manual/never host correctly no-ops the
           # envelope (Force=false), so waiting for it would just burn the 2-minute
           # cap and report a confusing "did not converge". /api/hosts reports the
-          # host's update_mode, so query it first and fail FAST with the fix. (The
-          # fan-out step already tolerates manual/never hosts — they land as
-          # non-"ok" warnings, not failures; only the canary must be auto.)
+          # host's update_mode, so query it first.
           mode=$(curl -fsS \
             -H "Authorization: Bearer $CLOUDBOX_FLEET_UPGRADE_TOKEN" \
             "${CLOUDBOX_BASE_URL}/api/hosts" \
             | jq -r ".hosts[] | select(.name == \"$host\") | .update_mode // \"\"")
           if [ "$mode" != "auto" ]; then
-            echo "::error::canary host '$host' is update_mode='${mode:-unknown}', not 'auto' — it won't self-apply the advisory canary push, so it can never converge (this is correct host behavior, not a bug). Fix: run 'outpost builtins set --update=auto' on '$host', or pick an auto host as the canary (CANARY_HOST secret / workflow_dispatch 'host' input), then re-run this workflow."
-            exit 1
+            # A manual/never canary is a valid host config, NOT a release failure.
+            # The release already published; failing the build here just red-flags
+            # a green release over an operational choice. WARN, skip the push
+            # rollout (canary bake + fan-out), and let update_mode=auto hosts
+            # reconcile via the pull puller (GET /api/v1/fleet/target). For the
+            # faster push path, point the canary at an auto host.
+            echo "::warning::canary host '$host' is update_mode='${mode:-unknown}', not 'auto' — skipping the push rollout (canary bake + fan-out). The release is published; update_mode=auto hosts converge via the pull puller. To use the faster push path, set an update=auto canary (run 'outpost builtins set --update=auto' on '$host', or pick an auto host via the CANARY_HOST secret / workflow_dispatch 'host' input) and re-run."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           echo "canary '$host' is update_mode=auto — waiting for convergence to $target_short"
           for i in $(seq 1 24); do
@@ -260,7 +266,7 @@ jobs:
           exit 1
 
       - name: Health-gate the canary before fan-out
-        if: steps.cfg.outputs.dry_run != 'true'
+        if: steps.cfg.outputs.dry_run != 'true' && steps.canary_wait.outputs.skip != 'true'
         env:
           CLOUDBOX_BASE_URL: ${{ secrets.CLOUDBOX_BASE_URL }}
           CLOUDBOX_FLEET_UPGRADE_TOKEN: ${{ secrets.CLOUDBOX_FLEET_UPGRADE_TOKEN }}
@@ -293,7 +299,7 @@ jobs:
           echo "✓ canary healthy after bake (verdict=$verdict) — proceeding to fan-out"
 
       - name: Fan-out to remaining fleet
-        if: steps.cfg.outputs.dry_run != 'true'
+        if: steps.cfg.outputs.dry_run != 'true' && steps.canary_wait.outputs.skip != 'true'
         env:
           CLOUDBOX_BASE_URL: ${{ secrets.CLOUDBOX_BASE_URL }}
           CLOUDBOX_FLEET_UPGRADE_TOKEN: ${{ secrets.CLOUDBOX_FLEET_UPGRADE_TOKEN }}
