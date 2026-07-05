@@ -33,6 +33,7 @@ import (
 	kopia "github.com/qiangli/coreutils/external/kopia"
 	seaweedfs "github.com/qiangli/coreutils/external/seaweedfs"
 	zot "github.com/qiangli/coreutils/external/zot"
+	"github.com/qiangli/coreutils/pkg/secrets"
 
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/admincore"
@@ -2610,7 +2611,37 @@ func outputBashyServiceCommand(ctx context.Context, svc conf.BashyService, verb 
 	args = append(args, verb)
 	args = append(args, extra...)
 	cmd := exec.CommandContext(ctx, bin, args...)
+	// Inject the host's cloudbox-vault secrets (rendered through the local
+	// binding template) into the long-running service process, so a service that
+	// needs GITHUB_TOKEN etc. gets it with no human step. Only at start — the
+	// verb that launches the daemon; status/stop are quick control calls polled
+	// every 30s and must not hit cloudbox each time. The child stays decoupled —
+	// it just reads env vars.
+	if verb == "start" && svc.SecretsEnvOn() {
+		if env := bashyServiceSecretsEnv(ctx, bin); len(env) > 0 {
+			cmd.Env = append(os.Environ(), env...)
+		}
+	}
 	return cmd.CombinedOutput()
+}
+
+// bashyServiceSecretsEnv runs `bashy secrets env` and returns "NAME=value"
+// entries for injection into a supervised service. Best-effort: any failure
+// (offline, no secrets token, no binding template) yields nil and the service
+// simply starts without injected secrets — matching `secrets env`'s own
+// never-break-startup contract. `.Output()` (stdout only) keeps stderr warnings
+// like "cloudbox unreachable; using cache" out of the parsed set.
+func bashyServiceSecretsEnv(ctx context.Context, bin string) []string {
+	out, err := exec.CommandContext(ctx, bin, "secrets", "env").Output()
+	if err != nil {
+		return nil
+	}
+	m := secrets.ParseEnv(out)
+	env := make([]string, 0, len(m))
+	for k, v := range m {
+		env = append(env, k+"="+v)
+	}
+	return env
 }
 
 func bashyServiceCloudboxRoot(fc *conf.FileConfig, svc conf.BashyService) string {

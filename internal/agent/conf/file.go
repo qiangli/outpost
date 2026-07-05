@@ -1597,7 +1597,20 @@ type BashyService struct {
 	// a subcommand, e.g. the SDLC loop uses ["sdlc","service"] →
 	// `bashy sdlc service start`.
 	Command []string `json:"command,omitempty"`
+	// SecretsEnv, unless explicitly false, makes the supervisor inject the host's
+	// `bashy secrets env` (the cloudbox vault rendered through the local binding
+	// template) into the service's environment at START — so a service that needs
+	// GITHUB_TOKEN etc. gets it with no human step now that the host is paired,
+	// while staying fully decoupled from the vault (it just reads env vars). Only
+	// at start (the verb that launches the long-running process); status/stop are
+	// quick control calls that must not hit cloudbox on every 30s poll. Opt out
+	// with "secrets_env": false.
+	SecretsEnv *bool `json:"secrets_env,omitempty"`
 }
+
+// SecretsEnvOn reports whether the supervisor should inject `bashy secrets env`
+// into this service at start. Default ON (nil), opt out with secrets_env:false.
+func (s BashyService) SecretsEnvOn() bool { return s.SecretsEnv == nil || *s.SecretsEnv }
 
 func DefaultBashyServices() []BashyService {
 	return []BashyService{
