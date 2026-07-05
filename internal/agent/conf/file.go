@@ -1608,6 +1608,15 @@ func DefaultBashyServices() []BashyService {
 		// background loop, not a proxied app. Supervised via
 		// `bashy sdlc service {start,status,stop}`.
 		{Name: "sdlc", Command: []string{"sdlc", "service"}},
+		// The scheduler daemon (bashy's modern cron). Opt-in (Enabled:false):
+		// a host that runs scheduled jobs — e.g. the GitHub→loom issue mirror
+		// (`bashy schedule add --every 5m -- bashy sdlc mirror …`) — sets
+		// Enabled in agent.json so the jobs survive reboots. Inert by itself
+		// (fires whatever jobs the user registered); distinct from the `sdlc`
+		// conductor service, which is the sandboxed agent loop. No AppPort/mesh
+		// — a background loop, not a proxied app. Supervised via
+		// `bashy schedule {start,status,stop}`.
+		{Name: "schedule", Command: []string{"schedule"}},
 	}
 }
 
