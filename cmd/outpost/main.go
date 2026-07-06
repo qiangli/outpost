@@ -694,10 +694,16 @@ func startCmd() *cobra.Command {
 					if c.Service == "" || c.PeerID == "" {
 						continue
 					}
-					if bound, cerr := meshHost.Forwarder().Listen(c.PeerID, c.Service, c.LocalAddr); cerr != nil {
+					// NOTE: the raw Forwarder.Listen arg order is (localAddr,
+					// peerID, service) — NOT admincore's (peerID, service,
+					// localAddr). Passing them in the wrong order binds on the
+					// peer-id string and silently no-ops the consume at boot
+					// (the v0.13.3 bug). The listener binds immediately; the
+					// per-connection stream connects lazily once the mesh links up.
+					if lis, cerr := meshHost.Forwarder().Listen(c.LocalAddr, c.PeerID, c.Service); cerr != nil {
 						slog.Warn("mesh consume: failed to establish forward", "service", c.Service, "peer", c.PeerID, "err", cerr)
 					} else {
-						slog.Info("mesh consume: forwarding", "service", c.Service, "peer", c.PeerID, "local", bound)
+						slog.Info("mesh consume: forwarding", "service", c.Service, "peer", c.PeerID, "local", lis.Addr().String())
 					}
 				}
 			}
