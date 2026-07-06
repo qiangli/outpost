@@ -124,3 +124,48 @@ the same protocol will pair with the public portal the same way an
 official binary does. PRs welcome.
 
 Release notes: <https://github.com/qiangli/outpost/releases>.
+
+## Testing a release build (QA) — this section is a `bashy dag`
+
+A QA host verifies a *published* build (no source build, no Go — only bashy, which
+self-provisions git/coreutils) with:
+
+```bash
+OUTPOST_TEST_VERSION=v1.2.3-dev bashy dag README.md qa
+```
+
+It downloads the release artifact for **this** host's OS/arch, verifies sha256, and
+runs a runtime smoke — the same steps a human would follow, kept executable so the
+docs can't drift from what CI runs. `OTEL_*` is honored, so a failure is reported
+to the dev conductor's telemetry backend (it dispatches the fleet to fix it).
+
+## Tasks
+
+### qa
+Download `$OUTPOST_TEST_VERSION` for this OS/arch, verify sha256, smoke it.
+Effects: write
+```bash
+set -e
+REPO="${OUTPOST_REPO:-qiangli/outpost}"
+VER="${OUTPOST_TEST_VERSION:?set OUTPOST_TEST_VERSION to the tag to test, e.g. v1.2.3-dev}"
+os=$(bashy uname -s | tr 'A-Z' 'a-z'); case "$os" in *darwin*) os=darwin;; *linux*) os=linux;; *) os=windows;; esac
+arch=$(bashy uname -m); case "$arch" in arm64|aarch64) arch=arm64;; x86_64|amd64) arch=amd64;; esac
+ext=""; [ "$os" = windows ] && ext=.exe
+base="https://github.com/${REPO}/releases/download/${VER}"
+asset="outpost-${VER}-${os}-${arch}${ext}"
+echo ">> QA ${VER} on ${os}/${arch} — ${asset}"
+bashy curl -fsSL -o "/tmp/${asset}" "${base}/${asset}"
+if bashy curl -fsSL -o "/tmp/out.sha256" "${base}/outpost-${VER}-${os}-${arch}.sha256" 2>/dev/null; then
+  want=$(grep -oiE '[0-9a-f]{64}' "/tmp/out.sha256" | head -1)
+  got=$(bashy sha256sum "/tmp/${asset}" | grep -oiE '[0-9a-f]{64}' | head -1)
+  [ "$want" = "$got" ] || { echo "FAIL sha256"; exit 1; }
+  echo ">> sha256 verified"
+fi
+chmod +x "/tmp/${asset}" 2>/dev/null || true
+BIN="/tmp/${asset}"
+"$BIN" version | head -1
+[ "$("$BIN" shell -c 'echo runtime-ok')" = "runtime-ok" ] || { echo "FAIL: shell -c"; exit 1; }
+[ "$("$BIN" shell -c 'printf "a\nb\n" | grep b')" = "b" ] || { echo "FAIL: in-process pipe"; exit 1; }
+"$BIN" git --version >/dev/null 2>&1 || { echo "FAIL: git surface"; exit 1; }
+echo ">> QA PASS ${VER} ${os}/${arch}"
+```

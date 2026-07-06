@@ -69,7 +69,13 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           mkdir -p dist
-          out="dist/outpost-${RELEASE_TAG}-${GOOS}-${GOARCH}"
+          # Stamp + name the binary with the BASE version (strip any pre-release
+          # suffix, e.g. v1.2.3-dev -> v1.2.3). So a `-dev` PRE-RELEASE and the
+          # final release are BYTE-IDENTICAL: prod promotes the tested bytes by
+          # re-publishing the same assets under the final tag, no rebuild. The
+          # `-dev` lives only in the git tag / release name, never in the binary.
+          BASE="${RELEASE_TAG%%-*}"
+          out="dist/outpost-${BASE}-${GOOS}-${GOARCH}"
           # Windows binaries get the .exe extension so Windows hosts
           # download a file the OS recognizes as executable; the
           # publish step strips .exe when parsing the os/arch from the
@@ -78,7 +84,7 @@ jobs:
             out="${out}.exe"
           fi
           go build \
-            -ldflags "-X github.com/qiangli/outpost/internal/agent.releaseTag=${RELEASE_TAG}" \
+            -ldflags "-X github.com/qiangli/outpost/internal/agent.releaseTag=${BASE}" \
             -trimpath \
             -o "${out}" \
             ./cmd/outpost
@@ -87,10 +93,14 @@ jobs:
           # native runner in the `smoke` job below, which gates `publish`.
 
       - name: sha256
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           cd dist
-          shasum -a 256 outpost-* > outpost-${{ github.ref_name }}-${{ matrix.os }}-${{ matrix.arch }}.sha256
-          cat outpost-${{ github.ref_name }}-${{ matrix.os }}-${{ matrix.arch }}.sha256
+          BASE="${RELEASE_TAG%%-*}"
+          f="outpost-${BASE}-${{ matrix.os }}-${{ matrix.arch }}.sha256"
+          shasum -a 256 outpost-* > "$f"
+          cat "$f"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -149,15 +159,16 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ github.ref_name }}"
-          bin="dist/outpost-${tag}-${{ matrix.os }}-${{ matrix.arch }}"
+          base="${tag%%-*}"   # binary is stamped with the base version, even for a -dev pre-release
+          bin="dist/outpost-${base}-${{ matrix.os }}-${{ matrix.arch }}"
           if [ "${{ matrix.os }}" = "windows" ]; then
             bin="${bin}.exe"
           fi
           chmod +x "$bin" 2>/dev/null || true
-          echo "== version --json (boots + self-reports the right tag) =="
+          echo "== version --json (boots + self-reports the base version) =="
           out=$("$bin" version --json)
           echo "$out"
-          echo "$out" | grep -q "$tag" || { echo "::error::version did not report tag $tag"; exit 1; }
+          echo "$out" | grep -q "$base" || { echo "::error::version did not report $base"; exit 1; }
           echo "== --help (initializes the full cobra command tree) =="
           "$bin" --help >/dev/null
           echo "== docs settings (reads the embedded FS) =="
@@ -224,9 +235,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          # A pre-release tag (v1.2.3-dev) publishes as a GitHub PRE-RELEASE, which
+          # `/releases/latest` (the installer) skips — so users never download the
+          # untested build. QA downloads it by explicit tag; prod later promotes
+          # the same assets to the final release.
+          pre=""
+          [ "${TAG}" != "${TAG%%-*}" ] && pre="--prerelease"
           gh release create "${TAG}" \
             --title "${TAG}" \
             --notes-file /tmp/release-notes.md \
+            $pre \
             dist/outpost-*
           # Capture the per-asset download URLs for the webhook payload.
           # GitHub formats them deterministically:
@@ -235,6 +253,10 @@ jobs:
           echo "base=${base}" >> "$GITHUB_OUTPUT"
 
       - name: build webhook payload
+        # Skip the fleet-notify webhook for a PRE-RELEASE (v1.2.3-dev): the fleet
+        # must never auto-upgrade to an untested build. Only the final release
+        # (no `-` suffix) notifies cloudbox / triggers canary→fleet rollout.
+        if: ${{ !contains(github.ref_name, '-') }}
         id: payload
         env:
           TAG: ${{ github.ref_name }}
@@ -274,6 +296,7 @@ jobs:
           echo "path=payload.json" >> "$GITHUB_OUTPUT"
 
       - name: post to cloudbox
+        if: ${{ !contains(github.ref_name, '-') }}   # pre-releases don't notify the fleet
         env:
           URL: ${{ secrets.CLOUDBOX_RELEASE_WEBHOOK_URL }}
           SECRET: ${{ secrets.CLOUDBOX_RELEASE_WEBHOOK_SECRET }}
