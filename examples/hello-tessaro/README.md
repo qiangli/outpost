@@ -12,7 +12,7 @@ A minimal, dependency-free (stdlib-only) cooperative web app that demonstrates
   `sdlc.yaml` so the whole loop can run **fully automatically** under `bashy sdlc`.
 
 Copy this directory, delete the demo handlers in `main.go`, and keep the wiring.
-The reusable core is `internal/tessaro/` (the contract) + `internal/config/` (env
+The reusable core is the `coopauth` SDK (`coreutils/pkg/coopauth`) + `internal/config/` (env
 loading) — those you keep verbatim.
 
 ## Two usages, one pipeline
@@ -50,7 +50,7 @@ gate, app = authz.
 - outpost fences `/admin/danger` for web callers via `lan_only_paths` **before**
   the app sees it; `RequireLocal` is defense in depth.
 - outpost stamps `Remote-User`/`Remote-Groups` + an HMAC signature; the app
-  **verifies the signature** (`tessaro.VerifyOutpost`) before trusting identity.
+  **verifies the signature** (`coopauth.VerifyOutpost`) before trusting identity.
 - `Remote-Groups: admin` means "cloud-vouched admin tier", NOT app admin — the
   app maps it onto its own RBAC (`AdminEmails`). Superadmin is never cloud-granted.
 
@@ -128,7 +128,6 @@ work — see `docs/custom-app-on-tessaro.md`.
 ```
 hello-tessaro/
 ├── main.go                     # the demo app (routes) — replace with yours
-├── internal/tessaro/           # KEEP: the cooperative-app contract (prefix, HMAC, gates)
 ├── internal/config/            # KEEP: 12-factor per-env loader
 ├── config.{dev,qa,prod}.json   # non-secret per-env defaults (secrets come from env)
 ├── sdlc.yaml                   # bashy sdlc operating config

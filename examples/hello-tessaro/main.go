@@ -15,8 +15,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/qiangli/coreutils/pkg/coopauth"
 	"github.com/qiangli/outpost/examples/hello-tessaro/internal/config"
-	"github.com/qiangli/outpost/examples/hello-tessaro/internal/tessaro"
 )
 
 // Build metadata, injected via -ldflags "-X main.Version=... -X main.Commit=...".
@@ -51,11 +51,13 @@ func main() {
 		log.Warn("require_hmac is on but SSO secret is empty; cloud requests will be rejected until HELLO_TESSARO_SSO_SECRET is set")
 	}
 
-	guard := &tessaro.Guard{
-		Secret:      []byte(cfg.SSOSecret),
-		RequireHMAC: cfg.RequireHMAC,
-		AdminEmails: cfg.AdminSet(),
-		Log:         log,
+	guard := &coopauth.Guard{
+		Policy: coopauth.Policy{
+			Secret:      []byte(cfg.SSOSecret),
+			RequireHMAC: cfg.RequireHMAC,
+			AdminEmails: cfg.AdminSet(),
+		},
+		Log: log,
 	}
 
 	mux := http.NewServeMux()
@@ -107,7 +109,7 @@ func index(cfg config.Config) http.HandlerFunc {
 		// The public route has no auth middleware, so read the raw (unverified)
 		// stamp just to show what outpost saw — never trust it for a decision.
 		who := "anonymous"
-		if raw := tessaro.IdentityFrom(r); raw.User != "" {
+		if raw := coopauth.IdentityFrom(r); raw.User != "" {
 			who = raw.User + " (" + raw.Groups + ")"
 		}
 		page(w, r, "hello-tessaro", fmt.Sprintf(`
@@ -118,13 +120,13 @@ func index(cfg config.Config) http.HandlerFunc {
   <li><a href="admin">/admin</a> — admins only</li>
   <li><a href="admin/danger">/admin/danger</a> — LAN-only (404 over the web)</li>
   <li><a href="api/link">/api/link</a> — JSON body with a proxy-safe path</li>
-</ul>`, html.EscapeString(cfg.Env), html.EscapeString(Commit), html.EscapeString(who), tessaro.ArrivedViaCloud(r)))
+</ul>`, html.EscapeString(cfg.Env), html.EscapeString(Commit), html.EscapeString(who), coopauth.ArrivedViaCloud(r)))
 	}
 }
 
 func userPage() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, _ := tessaro.IdentityOf(r)
+		id, _ := coopauth.IdentityOf(r)
 		page(w, r, "your area", fmt.Sprintf(`<p>Signed in as <b>%s</b>. This route requires a verified cloud identity.</p>`,
 			html.EscapeString(id.User)))
 	})
@@ -132,7 +134,7 @@ func userPage() http.Handler {
 
 func adminPage() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, _ := tessaro.IdentityOf(r)
+		id, _ := coopauth.IdentityOf(r)
 		page(w, r, "admin", fmt.Sprintf(`<p>Admin surface. You are <b>%s</b>.</p>
 <p>Enforced by the app's admin allowlist (RBAC), not by cloudbox.</p>`, html.EscapeString(id.User)))
 	})
@@ -151,9 +153,9 @@ func dangerPage() http.Handler {
 // server-side with PrefixPath.
 func apiLink(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
-		"self":   tessaro.PrefixPath(r, "/api/link"),
-		"app":    tessaro.PrefixPath(r, "/app"),
-		"origin": tessaro.ExternalBase(r),
+		"self":   coopauth.PrefixPath(r, "/api/link"),
+		"app":    coopauth.PrefixPath(r, "/app"),
+		"origin": coopauth.ExternalBase(r),
 	})
 }
 
@@ -165,7 +167,7 @@ func page(w http.ResponseWriter, r *http.Request, title, body string) {
 <base href="%s"><title>%s</title></head><body>
 <h1>%s</h1>%s
 <hr><p><a href="">home</a></p></body></html>`,
-		html.EscapeString(tessaro.BaseHref(r)), html.EscapeString(title), html.EscapeString(title), body)
+		html.EscapeString(coopauth.BaseHref(r)), html.EscapeString(title), html.EscapeString(title), body)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

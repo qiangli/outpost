@@ -35,7 +35,7 @@ Superadmin is **not** grantable from the cloud. `/admin/danger` is `lan_only_pat
 (outpost 404s it for web callers) and gated by `RequireLocal`. A real app adds an
 OS-auth step there (a PAM `/admin/login` against the operator's own OS account).
 The scaffold leaves that as a documented extension point (`TODO(superadmin)` in
-`internal/tessaro/guard.go`).
+the `coopauth` SDK (`coreutils/pkg/coopauth/guard.go`)).
 
 ## Remove a user (reverse order)
 
