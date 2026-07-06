@@ -1,0 +1,45 @@
+# The deploy baton (cross-host promotion). NOTHING custom — this is standard
+# Gitea Actions: `sdlc promote --env <env> --from <prev>` applies deploy:<env>,
+# and the matching job runs ONLY on that env's host runner (runs-on env:<env>),
+# which holds that env's creds (bashy secrets, host-scoped). The loom/dev side
+# only ROUTES the job; it never holds qa/prod creds.
+#
+# Each job just calls the single deploy entry point for its env:
+#   bashy dag .bashy/sdlc/deploy deploy-<env>
+# (the folder resolves to .bashy/sdlc/deploy/DAG.md). Copy a deploy-<env> job
+# per environment you run.
+#
+# Setup per env host: the env owner registers an act_runner against the central
+# loom with label `env:<env>` and puts that env's deploy creds in the host vault.
+# Trust note: the workflow is defined in this repo (owner-controlled) but runs on
+# the env owner's runner with the env owner's creds — same-org: trusted; cross-org:
+# gate via Gitea "approve workflow runs" + keep the step fixed to `bashy dag`.
+name: deploy
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  deploy-dev:
+    # Gitea does not populate github.event.label, so match on the issue's labels.
+    if: contains(github.event.issue.labels.*.name, 'deploy:dev')
+    runs-on: [self-hosted, "env:dev"]
+    steps:
+      - uses: actions/checkout@v4
+      - run: bashy dag .bashy/sdlc/deploy deploy-dev
+
+  deploy-qa:
+    if: contains(github.event.issue.labels.*.name, 'deploy:qa')
+    runs-on: [self-hosted, "env:qa"]
+    steps:
+      - uses: actions/checkout@v4
+      - run: bashy dag .bashy/sdlc/deploy deploy-qa
+
+  deploy-prod:
+    # Owner-gated: `sdlc promote --env prod` won't apply deploy:prod without
+    # approval (prod_approval), so this job never fires unmet.
+    if: contains(github.event.issue.labels.*.name, 'deploy:prod')
+    runs-on: [self-hosted, "env:prod"]
+    steps:
+      - uses: actions/checkout@v4
+      - run: bashy dag .bashy/sdlc/deploy deploy-prod

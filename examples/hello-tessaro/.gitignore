@@ -2,3 +2,6 @@
 /hello-tessaro-*
 *.previous
 /tmp/
+
+# bashy generated output (runs, caches) — NOT config
+.bashy/generated/
