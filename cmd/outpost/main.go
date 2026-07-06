@@ -1186,7 +1186,7 @@ func startCmd() *cobra.Command {
 							backoff = 5 * time.Second
 						}
 						slog.Info("act_runner: starting CI daemon", "instance", instance)
-						derr := actrunner.Daemon(gctx, "", arData)
+						derr := actrunner.Daemon(gctx, "", arData, telemetry.ChildEnv("act_runner")...)
 						if gctx.Err() != nil {
 							return nil
 						}
@@ -2653,9 +2653,17 @@ func outputBashyServiceCommand(ctx context.Context, svc conf.BashyService, verb 
 	// verb that launches the daemon; status/stop are quick control calls polled
 	// every 30s and must not hit cloudbox each time. The child stays decoupled —
 	// it just reads env vars.
-	if verb == "start" && svc.SecretsEnvOn() {
-		if env := bashyServiceSecretsEnv(ctx, bin); len(env) > 0 {
-			cmd.Env = append(os.Environ(), env...)
+	if verb == "start" {
+		// Join the existing OTel telemetry plane under this service's OWN
+		// service.name (loom, …) — not "outpost" — so its deploy activity is
+		// filterable when an agent supervises a deployment via the observability
+		// backend. No-op unless an OTLP endpoint is configured on the host.
+		extraEnv := telemetry.ChildEnv(svc.Name)
+		if svc.SecretsEnvOn() {
+			extraEnv = append(extraEnv, bashyServiceSecretsEnv(ctx, bin)...)
+		}
+		if len(extraEnv) > 0 {
+			cmd.Env = append(os.Environ(), extraEnv...)
 		}
 	}
 	return cmd.CombinedOutput()

@@ -49,6 +49,23 @@ import (
 // is unset.
 const DefaultServiceName = "outpost"
 
+// ChildEnv returns the OTEL environment additions to hand a supervised child
+// process (loom, act_runner, …) so it self-exports into the SAME telemetry
+// plane as this outpost — under its OWN service.name, not "outpost". The child
+// already inherits os.Environ() (which carries OTEL_EXPORTER_OTLP_ENDPOINT +
+// OTEL_RESOURCE_ATTRIBUTES when configured on the host); this only OVERRIDES
+// service.name so the deploy path (loom Actions, the act_runner job) shows up as
+// a distinct service an agent can filter on when supervising a deployment via
+// the existing observability backend (query_traces / query_logs / search_logs).
+// Returns nil when no OTLP endpoint is configured, keeping the no-op posture.
+// Appended AFTER os.Environ() so it wins (exec takes the last value of a dup key).
+func ChildEnv(serviceName string) []string {
+	if serviceName == "" || os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" {
+		return nil
+	}
+	return []string{"OTEL_SERVICE_NAME=" + serviceName}
+}
+
 // Provider holds the OTEL SDK lifetime for this process.
 type Provider struct {
 	TracerProvider *sdktrace.TracerProvider // nil in no-op mode
