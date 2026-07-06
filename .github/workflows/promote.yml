@@ -16,6 +16,15 @@
 name: promote
 
 on:
+  # Primary trigger: push a BARE vX.Y.Z tag (the promotion baton). release.yml only
+  # fires on `v*-dev`, so this tag never rebuilds — it byte-promotes the tested
+  # pre-release. `!v*-*` excludes -dev / -rc / any hyphenated pre-release tag.
+  push:
+    tags:
+      - 'v*'
+      - '!v*-*'
+  # Manual fallback (e.g. re-run after a transient webhook failure, or promote a
+  # version whose tag already exists).
   workflow_dispatch:
     inputs:
       version:
@@ -37,7 +46,8 @@ jobs:
       - name: normalize version
         id: v
         env:
-          IN: ${{ github.event.inputs.version }}
+          # tag-push → the tag name; manual dispatch → the input.
+          IN: ${{ github.event.inputs.version || github.ref_name }}
         run: |
           v="${IN#v}"                     # strip an optional leading v
           case "$v" in
@@ -52,7 +62,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           VER: ${{ steps.v.outputs.ver }}
-          REQUIRED: ${{ github.event.inputs.required_os }}
+          REQUIRED: ${{ github.event.inputs.required_os || 'darwin linux windows' }}
         run: |
           # Every required OS must have promoted this version (refs/qa/<ver>/<os>).
           missing=""
@@ -112,7 +122,7 @@ jobs:
           COMMIT: ${{ steps.src.outputs.commit }}
         run: |
           printf '%s\n' \
-            "Promoted from ${DEV} after per-OS QA (${{ github.event.inputs.required_os }})." \
+            "Promoted from ${DEV} after per-OS QA (${{ github.event.inputs.required_os || 'darwin linux windows' }})." \
             "Byte-identical to the tested pre-release — no rebuild." > /tmp/notes.md
           gh release create "${VER}" \
             --title "${VER}" \

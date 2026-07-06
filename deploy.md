@@ -93,16 +93,18 @@ GATED, tag-driven, byte-promoted. The pipeline is:
 2. Per-OS QA pollers (`scripts/qa-poller.sh` / this repo's README `qa` dag) download
    those exact bytes, run the minimal won't-brick smoke, and on pass create
    `refs/qa/vX.Y.Z/<os>`.
-3. Once the required OS set is green, dispatch `.github/workflows/promote.yml`
-   (`gh workflow run promote.yml -f version=vX.Y.Z`) — it re-checks the gate,
-   downloads the tested pre-release, and publishes the OFFICIAL `vX.Y.Z --latest`
-   from those exact bytes (NO rebuild), then fires the fleet-notify webhook.
+3. Once the required OS set is green, **push the bare `vX.Y.Z` tag**
+   (`git tag vX.Y.Z && git push origin vX.Y.Z`) — that fires
+   `.github/workflows/promote.yml`, which re-checks the gate, downloads the tested
+   pre-release, and publishes the OFFICIAL `vX.Y.Z --latest` from those exact bytes
+   (NO rebuild — release.yml only builds `-dev`), then fires the fleet-notify webhook.
+   (`gh workflow run promote.yml -f version=vX.Y.Z` is the manual fallback.)
 The paired bashy release must match (outpost carries DefaultBashyVersion) — see
 docs/cicd-strategy.md + docs/sdlc-deploy-targets-design.md.
 Effects: write
 ```bash
-echo ">> prod is a MANUAL, gated promotion — do NOT auto-run from this dag."
+echo ">> prod is a gated, tag-triggered promotion — do NOT auto-run from this dag."
 echo ">> gate: refs/qa/<ver>/<os> for the required OS set must be green."
-echo ">> then: gh workflow run promote.yml -f version=vX.Y.Z  (byte-promote, no rebuild)."
-exit 1   # never auto-fire prod; promote.yml is workflow_dispatch on purpose
+echo ">> then: git tag vX.Y.Z && git push origin vX.Y.Z  (fires promote.yml; byte-promote, no rebuild)."
+exit 1   # the operator fires prod by pushing the bare tag, never this dag
 ```
