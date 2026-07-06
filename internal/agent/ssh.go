@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -1214,6 +1215,19 @@ type exitStatusMsg struct {
 func handleSSHSession(ctx context.Context, sc *ssh.ServerConn, ch ssh.Channel, reqs <-chan *ssh.Request, sftpEnabled bool, allowAgentForward bool) {
 	defer ch.Close()
 
+	// A single SSH session must never be able to strand the whole daemon. An
+	// exec that detaches a grandchild (e.g. a Windows `Start-Process` /
+	// scheduled-task launch) has been observed to panic somewhere in the
+	// runner/pipe teardown; without this recover that panic propagates out of
+	// this bare goroutine and crashes the process (the machine goes offline
+	// until the supervisor restarts it). Recover, log, and let the deferred
+	// ch.Close() end just this session.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("ssh session: recovered from panic", "panic", r, "stack", string(debug.Stack()))
+		}
+	}()
+
 	var (
 		ptyTerm string
 		ptyCols uint16
@@ -1516,6 +1530,11 @@ func execOutputPipe(dst io.Writer) (*io.PipeWriter, <-chan struct{}) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("ssh exec: recovered from pipe-copy panic", "panic", r)
+			}
+		}()
 		_, _ = io.Copy(dst, pr)
 		_ = pr.Close()
 	}()

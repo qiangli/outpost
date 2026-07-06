@@ -103,7 +103,80 @@ hole-punched link (cloudbox brokers the introduction; the bytes go
 peer-to-peer). On the worker, Expose a local service; on the leader, Listen for
 it and point a client (e.g. llama-server --rpc) at the printed local address.`,
 	}
-	cmd.AddCommand(meshStatusCmd(), meshExposeCmd(), meshUnexposeCmd(), meshListenCmd(), meshUnlistenCmd(), meshServiceCmd(), meshDialCmd())
+	cmd.AddCommand(meshStatusCmd(), meshExposeCmd(), meshUnexposeCmd(), meshListenCmd(), meshUnlistenCmd(), meshServiceCmd(), meshConsumeCmd(), meshDialCmd())
+	return cmd
+}
+
+// meshConsumeCmd manages persistent mesh CONSUMES (the dial side of the wrap
+// harness): the declarative form of `mesh listen`, re-established on every boot
+// by peer id — so a cross-host dependency (e.g. an act_runner reaching a loom on
+// another host) survives a restart, which a one-shot `mesh dial` does not.
+func meshConsumeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "consume",
+		Short: "Manage persistent mesh consumes (dial by peer id; survive restarts)",
+		Long: `A persisted consume is re-established over the mesh on every boot — the
+declarative, restart-durable form of 'mesh dial'/'mesh listen'. It dials by peer
+id (not the cloudbox resolver), so it's stable across restarts. Use it for a
+cross-host dependency that must be up at boot, e.g. an act_runner that reaches a
+loom forge exposed on another host.`,
+	}
+	var local string
+	add := &cobra.Command{
+		Use:   "add <service> <peer-id>",
+		Short: "Persistently consume a remote mesh service by peer id",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var out struct {
+				Addr string `json:"addr"`
+			}
+			if err := runMeshTool(cmd.Context(), "outpost_mesh_consume_set",
+				map[string]string{"service": args[0], "peer_id": args[1], "local_addr": local}, &out); err != nil {
+				return err
+			}
+			fmt.Printf("persistently consuming %s from peer %s -> %s\n", args[0], args[1], out.Addr)
+			return nil
+		},
+	}
+	add.Flags().StringVar(&local, "local", "", "Fixed local listen address so the forward is stable (e.g. 127.0.0.1:31880)")
+	rm := &cobra.Command{
+		Use:   "rm <service>",
+		Short: "Remove a persistent mesh consume",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var out struct {
+				OK bool `json:"ok"`
+			}
+			if err := runMeshTool(cmd.Context(), "outpost_mesh_consume_rm",
+				map[string]string{"service": args[0], "local_addr": local}, &out); err != nil {
+				return err
+			}
+			fmt.Printf("removed mesh consume %s\n", args[0])
+			return nil
+		},
+	}
+	rm.Flags().StringVar(&local, "local", "", "Local address of the consume to remove (must match)")
+	ls := &cobra.Command{
+		Use:   "ls",
+		Short: "List persistent mesh consumes",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			var out struct {
+				Consumes []struct {
+					Service   string `json:"service"`
+					PeerID    string `json:"peer_id"`
+					LocalAddr string `json:"local_addr"`
+				} `json:"consumes"`
+			}
+			if err := runMeshTool(cmd.Context(), "outpost_mesh_consumes", struct{}{}, &out); err != nil {
+				return err
+			}
+			for _, c := range out.Consumes {
+				fmt.Printf("%s <- peer %s -> %s\n", c.Service, c.PeerID, c.LocalAddr)
+			}
+			return nil
+		},
+	}
+	cmd.AddCommand(add, rm, ls)
 	return cmd
 }
 

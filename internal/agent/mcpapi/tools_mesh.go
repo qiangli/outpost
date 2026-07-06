@@ -54,6 +54,25 @@ type meshDialOut struct {
 	Host string `json:"host"`
 }
 
+type meshConsumeIn struct {
+	Service   string `json:"service" jsonschema:"The remote mesh service name to reach (e.g. git)"`
+	PeerID    string `json:"peer_id" jsonschema:"The libp2p peer id of the host exposing the service"`
+	LocalAddr string `json:"local_addr,omitempty" jsonschema:"Fixed local listen address so the forward is stable across restarts (e.g. 127.0.0.1:31880)"`
+}
+
+type meshConsumeRmIn struct {
+	Service   string `json:"service" jsonschema:"The service name of the consume to remove"`
+	LocalAddr string `json:"local_addr,omitempty" jsonschema:"The local address of the consume to remove (must match)"`
+}
+
+type meshConsumeSetOut struct {
+	Addr string `json:"addr"`
+}
+
+type meshConsumesOut struct {
+	Consumes []admincore.MeshConsumeView `json:"consumes"`
+}
+
 func (s *Server) registerMeshTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "outpost_mesh_status",
@@ -147,5 +166,37 @@ func (s *Server) registerMeshTools() {
 			return apiErrResult[meshDialOut](err)
 		}
 		return nil, meshDialOut{Addr: addr, Host: host}, nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_mesh_consume_set",
+		Description: "Persistently CONSUME a remote mesh service by peer id (the dial side of the wrap harness): saved to config + established live, and re-established on every boot by peer id (no cloudbox resolve, so it's stable across restarts). Use this for a cross-host dependency that must survive a restart — e.g. this node's act_runner reaching a loom forge on another host. Pass a fixed local_addr so the consuming config stays stable.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in meshConsumeIn) (*mcp.CallToolResult, meshConsumeSetOut, error) {
+		addr, err := s.core.MeshConsumeUpsert(in.Service, in.PeerID, in.LocalAddr)
+		if err != nil {
+			return apiErrResult[meshConsumeSetOut](err)
+		}
+		return nil, meshConsumeSetOut{Addr: addr}, nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_mesh_consume_rm",
+		Description: "Remove a persistent mesh consume (closes the live listener + drops it from config). Keyed by (service, local_addr).",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in meshConsumeRmIn) (*mcp.CallToolResult, meshOKOut, error) {
+		if err := s.core.MeshConsumeDelete(in.Service, in.LocalAddr); err != nil {
+			return apiErrResult[meshOKOut](err)
+		}
+		return nil, meshOKOut{OK: true}, nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_mesh_consumes",
+		Description: "List the persistent mesh consumes (the dial-side wrap-harness config).",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, meshConsumesOut, error) {
+		cons, err := s.core.MeshConsumes()
+		if err != nil {
+			return apiErrResult[meshConsumesOut](err)
+		}
+		return nil, meshConsumesOut{Consumes: cons}, nil
 	})
 }

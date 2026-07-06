@@ -299,6 +299,13 @@ type FileConfig struct {
 	// restart. See docs/mesh-app-platform.md.
 	MeshServices []MeshService `json:"mesh_services,omitempty"`
 
+	// MeshConsumes are persistent mesh CONSUMES (the dial side): local listeners
+	// the daemon re-establishes on every boot, each bridging to a (peer, service)
+	// over the mesh by peer id. The declarative form of `mesh consume` — it makes
+	// a cross-host dependency (e.g. an act_runner reaching a loom on another host)
+	// survive a restart, which a one-shot `mesh dial` does not.
+	MeshConsumes []MeshConsume `json:"mesh_consumes,omitempty"`
+
 	// BashyServices are generic service lifecycles managed by outpost through
 	// the convention `bashy <name> start|status|stop`. When enabled, outpost
 	// starts the service, restarts it if status reports stopped, stops it on
@@ -1577,6 +1584,22 @@ type MeshService struct {
 	Name string `json:"name"`
 	// Addr is the local loopback address to bridge to (e.g. "127.0.0.1:3000").
 	Addr string `json:"addr"`
+}
+
+// MeshConsume is one persistent mesh CONSUME (the dial/listen side, symmetric to
+// MeshService's expose side): a local loopback listener the daemon re-establishes
+// on every boot, bridging to a (peer, service) over the mesh. It dials by peer id
+// directly (not the cloudbox service resolver), so it's stable across restarts and
+// immune to resolver propagation lag — the load-bearing property for a build-only
+// node whose act_runner must reach a loom forge on another host at boot.
+type MeshConsume struct {
+	// Service is the remote mesh service name to reach (e.g. "git").
+	Service string `json:"service"`
+	// PeerID is the libp2p peer id of the host exposing Service.
+	PeerID string `json:"peer_id"`
+	// LocalAddr is the fixed local listen address (e.g. "127.0.0.1:31880") so the
+	// consuming config (actrunner_instance, etc.) stays stable. Empty → ephemeral.
+	LocalAddr string `json:"local_addr,omitempty"`
 }
 
 // BashyService is one generic local service supervised by outpost through the

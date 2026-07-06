@@ -150,6 +150,90 @@ func (s *Server) MeshServiceDelete(name string) error {
 	return nil
 }
 
+// MeshConsumeView is one persistent mesh consume (the dial side).
+type MeshConsumeView struct {
+	Service   string `json:"service"`
+	PeerID    string `json:"peer_id"`
+	LocalAddr string `json:"local_addr"`
+}
+
+// MeshConsumeUpsert persists a mesh consume (service ← peer id → local addr) so
+// the daemon re-establishes the forward on every boot, and establishes it live
+// now if the forwarder is up. Keyed by (service, local_addr) so two consumes of
+// the same service on different local ports coexist.
+func (s *Server) MeshConsumeUpsert(service, peerID, localAddr string) (string, error) {
+	if service == "" || peerID == "" {
+		return "", badRequest("service and peer_id are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fc, err := s.loadConfig()
+	if err != nil {
+		return "", err
+	}
+	found := false
+	for i := range fc.MeshConsumes {
+		if fc.MeshConsumes[i].Service == service && fc.MeshConsumes[i].LocalAddr == localAddr {
+			fc.MeshConsumes[i].PeerID = peerID
+			found = true
+			break
+		}
+	}
+	if !found {
+		fc.MeshConsumes = append(fc.MeshConsumes, conf.MeshConsume{Service: service, PeerID: peerID, LocalAddr: localAddr})
+	}
+	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
+		return "", internalErr("%s", err.Error())
+	}
+	if s.deps.MeshForward != nil {
+		return s.deps.MeshForward.Listen(peerID, service, localAddr)
+	}
+	return localAddr, nil
+}
+
+// MeshConsumeDelete removes a persisted mesh consume and closes its live listener.
+func (s *Server) MeshConsumeDelete(service, localAddr string) error {
+	if service == "" {
+		return badRequest("service is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fc, err := s.loadConfig()
+	if err != nil {
+		return err
+	}
+	kept := fc.MeshConsumes[:0]
+	for _, c := range fc.MeshConsumes {
+		if c.Service == service && c.LocalAddr == localAddr {
+			if s.deps.MeshForward != nil && c.LocalAddr != "" {
+				_ = s.deps.MeshForward.CloseListen(c.LocalAddr)
+			}
+			continue
+		}
+		kept = append(kept, c)
+	}
+	fc.MeshConsumes = kept
+	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
+		return internalErr("%s", err.Error())
+	}
+	return nil
+}
+
+// MeshConsumes lists the persisted (auto-established) mesh consumes.
+func (s *Server) MeshConsumes() ([]MeshConsumeView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fc, err := s.loadConfig()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]MeshConsumeView, 0, len(fc.MeshConsumes))
+	for _, c := range fc.MeshConsumes {
+		out = append(out, MeshConsumeView{Service: c.Service, PeerID: c.PeerID, LocalAddr: c.LocalAddr})
+	}
+	return out, nil
+}
+
 // MeshResolvedPeer is one peer from the cloudbox service registry.
 type MeshResolvedPeer struct {
 	Host     string   `json:"host"`

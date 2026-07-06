@@ -684,6 +684,22 @@ func startCmd() *cobra.Command {
 						meshHost.Forwarder().Expose(s.Name, s.Addr)
 					}
 				}
+				// Symmetric consume side: re-establish the persistent mesh
+				// forwards (dial by peer id, no cloudbox resolve) so a cross-host
+				// dependency — e.g. this node's act_runner reaching a loom forge on
+				// another host — is up at boot, BEFORE the actrunner block below.
+				// The listener binds immediately; the per-connection stream to the
+				// peer connects lazily once the mesh links up (act_runner retries).
+				for _, c := range fc.MeshConsumes {
+					if c.Service == "" || c.PeerID == "" {
+						continue
+					}
+					if bound, cerr := meshHost.Forwarder().Listen(c.PeerID, c.Service, c.LocalAddr); cerr != nil {
+						slog.Warn("mesh consume: failed to establish forward", "service", c.Service, "peer", c.PeerID, "err", cerr)
+					} else {
+						slog.Info("mesh consume: forwarding", "service", c.Service, "peer", c.PeerID, "local", bound)
+					}
+				}
 			}
 			// Service registry resolver: query cloudbox for the peers exposing a
 			// named mesh service (the zero-config consume side).
@@ -1143,22 +1159,42 @@ func startCmd() *cobra.Command {
 						slog.Warn("act_runner: no instance — set actrunner_instance or enable loom; skipping")
 						return nil
 					}
-					if !actrunner.Registered(arData) {
-						if token == "" {
-							slog.Warn("act_runner: not registered and no actrunner_token set; skipping")
+					// Supervise register + daemon with backoff. A build-only node
+					// reaches loom over a mesh forward that may not be up at boot
+					// (see mesh_consumes), so the first register/poll can fail —
+					// retry instead of giving up forever (the pre-fix behavior
+					// stranded the runner until the next daemon restart).
+					backoff := 5 * time.Second
+					const maxBackoff = 2 * time.Minute
+					for gctx.Err() == nil {
+						if !actrunner.Registered(arData) {
+							if token == "" {
+								slog.Warn("act_runner: not registered and no actrunner_token set; skipping")
+								return nil
+							}
+							if rerr := actrunner.Register(gctx, actrunner.RegisterOptions{
+								DataDir: arData, Instance: instance, Token: token, Labels: labels,
+							}); rerr != nil {
+								slog.Warn("act_runner: registration failed; retrying", "err", rerr, "backoff", backoff)
+								if !sleepCtx(gctx, backoff) {
+									return nil
+								}
+								backoff = minDur(backoff*2, maxBackoff)
+								continue
+							}
+							slog.Info("act_runner: registered", "instance", instance, "labels", labels)
+							backoff = 5 * time.Second
+						}
+						slog.Info("act_runner: starting CI daemon", "instance", instance)
+						derr := actrunner.Daemon(gctx, "", arData)
+						if gctx.Err() != nil {
 							return nil
 						}
-						if rerr := actrunner.Register(gctx, actrunner.RegisterOptions{
-							DataDir: arData, Instance: instance, Token: token, Labels: labels,
-						}); rerr != nil {
-							slog.Warn("act_runner: registration failed", "err", rerr)
+						slog.Warn("act_runner: daemon exited; restarting", "err", derr, "backoff", backoff)
+						if !sleepCtx(gctx, backoff) {
 							return nil
 						}
-						slog.Info("act_runner: registered", "instance", instance, "labels", labels)
-					}
-					slog.Info("act_runner: starting CI daemon", "instance", instance)
-					if derr := actrunner.Daemon(gctx, "", arData); derr != nil && gctx.Err() == nil {
-						slog.Warn("act_runner: daemon exited", "err", derr)
+						backoff = minDur(backoff*2, maxBackoff)
 					}
 					return nil
 				})
@@ -3281,4 +3317,26 @@ func (a clusterSourceAdapter) ClusterModels() []ollama.ModelInfo {
 		})
 	}
 	return models
+}
+
+// sleepCtx sleeps for d or until ctx is cancelled. Returns false if ctx was
+// cancelled (so callers can exit their retry loop), true if the full duration
+// elapsed.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// minDur returns the smaller of two durations.
+func minDur(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
