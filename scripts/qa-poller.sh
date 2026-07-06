@@ -27,8 +27,14 @@ gh_ok(){ bashy gh auth token >/dev/null 2>&1 || [ -n "${GITHUB_TOKEN:-}" ] || ev
 
 pass(){                                        # one poll pass
   local dev ver ref sha
-  dev=$(bashy git ls-remote --tags "https://github.com/$REPO.git" 2>/dev/null \
-        | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+-dev$' | sort -V | tail -1)
+  # pick the highest vX.Y.Z-dev tag. awk only — bashy's pure-Go coreutils have no
+  # `grep -o` and no `sort -V`, so this must not depend on either (works whether the
+  # poller runs under system bash OR bashy = the real target userland).
+  dev=$(bashy git ls-remote --tags "https://github.com/$REPO.git" 2>/dev/null | awk -F/ '
+    /refs\/tags\/v[0-9]+\.[0-9]+\.[0-9]+-dev$/ {
+      t=$NF; v=t; sub(/-dev$/,"",v); sub(/^v/,"",v); split(v,a,".")
+      k=a[1]*1000000+a[2]*1000+a[3]; if (k>m){m=k; b=t}
+    } END{ if (b) print b }')
   [ -n "$dev" ] || { echo "[$os] no -dev tag yet"; return 0; }
   ver="${dev%-dev}"; ref="refs/qa/${ver}/${os}"
   if bashy gh api "/repos/$REPO/git/$ref" >/dev/null 2>&1; then

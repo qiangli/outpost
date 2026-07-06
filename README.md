@@ -142,7 +142,13 @@ to the dev conductor's telemetry backend (it dispatches the fleet to fix it).
 ## Tasks
 
 ### qa
-Download `$OUTPOST_TEST_VERSION` for this OS/arch, verify sha256, smoke it.
+Download `$OUTPOST_TEST_VERSION` for THIS host's OS/arch, verify sha256, and run a
+MINIMAL smoke — only enough to guarantee a fleet rollout of these exact bytes won't
+brick a registered host: the binary executes, self-reports the expected version (the
+same probe the upgrade worker runs before it swaps the live binary), and its
+in-process shell + real-git surfaces answer. No `/tmp`, no `grep -o`/`sort -V` (bashy
+= the target userland has neither) — pure-bashy, so it runs identically on macOS,
+Linux, and Windows.
 Effects: write
 ```bash
 set -e
@@ -156,21 +162,26 @@ arch=$(bashy uname -m); case "$arch" in arm64|aarch64) arch=arm64;; x86_64|amd64
 ext=""; [ "$os" = windows ] && ext=.exe
 base="https://github.com/${REPO}/releases/download/${VER}"
 asset="outpost-${BASEV}-${os}-${arch}${ext}"
+d=".qa"; bashy mkdir -p "$d"       # cwd-local temp — /tmp isn't guaranteed on Windows
 echo ">> QA ${VER} on ${os}/${arch} — ${asset}"
-bashy curl -fsSL -o "/tmp/${asset}" "${base}/${asset}"
-if bashy curl -fsSL -o "/tmp/out.sha256" "${base}/outpost-${BASEV}-${os}-${arch}.sha256" 2>/dev/null; then
-  # the .sha256 sidecar is "<sha>  <filename>"; extract with awk (bashy's pure-Go
-  # grep has no -o). Fail closed: a missing/empty sha is a hard failure.
-  want=$(awk '{print $1}' "/tmp/out.sha256" | head -1)
-  got=$(bashy sha256sum "/tmp/${asset}" | awk '{print $1}' | head -1)
+bashy curl -fsSL -o "$d/${asset}" "${base}/${asset}"
+if bashy curl -fsSL -o "$d/out.sha256" "${base}/outpost-${BASEV}-${os}-${arch}.sha256" 2>/dev/null; then
+  # the .sha256 sidecar is "<sha>  <filename>"; extract with awk (no grep -o).
+  # Fail closed: a missing/empty sha is a hard failure — never run unverified bytes.
+  want=$(awk '{print $1}' "$d/out.sha256" | head -1)
+  got=$(bashy sha256sum "$d/${asset}" | awk '{print $1}' | head -1)
   { [ -n "$want" ] && [ "$want" = "$got" ]; } || { echo "FAIL sha256 (want=$want got=$got)"; exit 1; }
   echo ">> sha256 verified"
 fi
-chmod +x "/tmp/${asset}" 2>/dev/null || true
-BIN="/tmp/${asset}"
-"$BIN" version | head -1
+chmod +x "$d/${asset}" 2>/dev/null || true
+BIN="$d/${asset}"
+# 1. it EXECUTES and self-reports the expected version (== the upgrade worker's Probe;
+#    a binary that fails this is exactly what bricks a host on swap+re-exec).
+vout=$("$BIN" version | head -1); echo "   $vout"
+case "$vout" in *"$BASEV"*) ;; *) echo "FAIL: version stamp is not $BASEV ($vout)"; exit 1;; esac
+# 2. the in-process shell engine runs (the /shell + /ssh surface a live host serves).
 [ "$("$BIN" shell -c 'echo runtime-ok')" = "runtime-ok" ] || { echo "FAIL: shell -c"; exit 1; }
-[ "$("$BIN" shell -c 'printf "a\nb\n" | grep b')" = "b" ] || { echo "FAIL: in-process pipe"; exit 1; }
+# 3. real-git surface resolves (Windows-without-system-git relies on it).
 "$BIN" git --version >/dev/null 2>&1 || { echo "FAIL: git surface"; exit 1; }
 echo ">> QA PASS ${VER} ${os}/${arch}"
 ```
