@@ -117,6 +117,7 @@ jobs:
       - name: create official release (byte-identical, no rebuild)
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
           VER: ${{ steps.v.outputs.ver }}
           DEV: ${{ steps.v.outputs.dev }}
           COMMIT: ${{ steps.src.outputs.commit }}
@@ -124,7 +125,10 @@ jobs:
           printf '%s\n' \
             "Promoted from ${DEV} after per-OS QA (${{ github.event.inputs.required_os || 'darwin linux windows' }})." \
             "Byte-identical to the tested pre-release — no rebuild." > /tmp/notes.md
-          gh release create "${VER}" \
+          # -R is required: this job has no checkout, so gh can't infer the repo from
+          # a local git remote (would fail "not a git repository"). --target is ignored
+          # when the tag already exists (the tag-push path), used when gh must create it.
+          gh release create "${VER}" -R "${REPO}" \
             --title "${VER}" \
             --notes-file /tmp/notes.md \
             --target "${COMMIT}" \
