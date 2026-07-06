@@ -159,9 +159,11 @@ asset="outpost-${BASEV}-${os}-${arch}${ext}"
 echo ">> QA ${VER} on ${os}/${arch} — ${asset}"
 bashy curl -fsSL -o "/tmp/${asset}" "${base}/${asset}"
 if bashy curl -fsSL -o "/tmp/out.sha256" "${base}/outpost-${BASEV}-${os}-${arch}.sha256" 2>/dev/null; then
-  want=$(grep -oiE '[0-9a-f]{64}' "/tmp/out.sha256" | head -1)
-  got=$(bashy sha256sum "/tmp/${asset}" | grep -oiE '[0-9a-f]{64}' | head -1)
-  [ "$want" = "$got" ] || { echo "FAIL sha256"; exit 1; }
+  # the .sha256 sidecar is "<sha>  <filename>"; extract with awk (bashy's pure-Go
+  # grep has no -o). Fail closed: a missing/empty sha is a hard failure.
+  want=$(awk '{print $1}' "/tmp/out.sha256" | head -1)
+  got=$(bashy sha256sum "/tmp/${asset}" | awk '{print $1}' | head -1)
+  { [ -n "$want" ] && [ "$want" = "$got" ]; } || { echo "FAIL sha256 (want=$want got=$got)"; exit 1; }
   echo ">> sha256 verified"
 fi
 chmod +x "/tmp/${asset}" 2>/dev/null || true
