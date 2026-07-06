@@ -29,7 +29,7 @@ const defaultBashyRepo = "qiangli/bashy"
 // rolls the matched bashy out to every host: outpost upgrades, restarts, and its
 // first supervisor tick installs the matching bashy. Bump it whenever outpost is
 // validated against a new bashy release.
-const DefaultBashyVersion = "v0.13.0"
+const DefaultBashyVersion = "v0.13.1"
 
 // bashyAutoInstallBackoff throttles the self-heal download so an offline or
 // rate-limited host doesn't re-hit GitHub on every supervisor tick.
