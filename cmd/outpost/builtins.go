@@ -117,6 +117,9 @@ func builtinsSetCmd() *cobra.Command {
 		actrunnerInstance                                                                                                                                                              string
 		actrunnerToken                                                                                                                                                                 string
 		actrunnerLabels                                                                                                                                                                string
+		actrunnerSandbox                                                                                                                                                               string
+		actrunnerSandboxImage                                                                                                                                                          string
+		actrunnerDockerHost                                                                                                                                                            string
 		sshForwardSockets                                                                                                                                                              []string
 		clearSSHForwardSockets                                                                                                                                                         bool
 		ycodeShareSurfaces                                                                                                                                                             map[string]string
@@ -313,6 +316,15 @@ func builtinsSetCmd() *cobra.Command {
 			if cmd.Flags().Changed("actrunner-labels") {
 				params.ActrunnerLabels = &actrunnerLabels
 			}
+			if params.ActrunnerSandbox, err = parseToggle("actrunner-sandbox", actrunnerSandbox); err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("actrunner-sandbox-image") {
+				params.ActrunnerSandboxImage = &actrunnerSandboxImage
+			}
+			if cmd.Flags().Changed("actrunner-docker-host") {
+				params.ActrunnerDockerHost = &actrunnerDockerHost
+			}
 			if clearSSHForwardSockets {
 				params.SSHForwardSockets = []string{}
 			} else if cmd.Flags().Changed("ssh-forward-socket") {
@@ -380,6 +392,9 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&actrunnerInstance, "actrunner-instance", "", "Gitea base URL the runner registers against (empty = local loom forge)")
 	cmd.Flags().StringVar(&actrunnerToken, "actrunner-token", "", "act_runner registration token (minted in Gitea)")
 	cmd.Flags().StringVar(&actrunnerLabels, "actrunner-labels", "", "executor labels (default 'host:host')")
+	cmd.Flags().StringVar(&actrunnerSandbox, "actrunner-sandbox", "", "on|off - also offer the tier-3 sandbox (container) executor: runs-on:sandbox → OCI container via bashy podman (additive to the host lane)")
+	cmd.Flags().StringVar(&actrunnerSandboxImage, "actrunner-sandbox-image", "", "OCI image for the sandbox executor (empty = a node image with git+node+bash)")
+	cmd.Flags().StringVar(&actrunnerDockerHost, "actrunner-docker-host", "", "DOCKER_HOST for the sandbox executor (empty = auto-resolve bashy podman's socket)")
 	return cmd
 }
 

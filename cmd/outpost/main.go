@@ -1180,6 +1180,7 @@ func startCmd() *cobra.Command {
 							}
 							if rerr := actrunner.Register(gctx, actrunner.RegisterOptions{
 								DataDir: arData, Instance: instance, Token: token, Labels: labels,
+								Sandbox: fc.ActrunnerSandboxOn(), SandboxImage: fc.ActrunnerSandboxImage,
 							}); rerr != nil {
 								slog.Warn("act_runner: registration failed; retrying", "err", rerr, "backoff", backoff)
 								if !sleepCtx(gctx, backoff) {
@@ -1191,8 +1192,23 @@ func startCmd() *cobra.Command {
 							slog.Info("act_runner: registered", "instance", instance, "labels", labels)
 							backoff = 5 * time.Second
 						}
+						daemonEnv := telemetry.ChildEnv("act_runner")
+						if fc.ActrunnerSandboxOn() {
+							// Ensure the sandbox config exists even if the runner was
+							// registered before sandbox mode was enabled (Register
+							// writes it, but that path is skipped once .runner exists).
+							if cerr := actrunner.EnsureSandboxConfig(arData); cerr != nil {
+								slog.Warn("act_runner sandbox: writing config failed", "err", cerr)
+							}
+							if dh := resolveActrunnerDockerHost(gctx, fc); dh != "" {
+								daemonEnv = append(daemonEnv, "DOCKER_HOST="+dh)
+								slog.Info("act_runner sandbox: DOCKER_HOST resolved", "docker_host", dh)
+							} else {
+								slog.Warn("act_runner sandbox: no DOCKER_HOST — runs-on:sandbox jobs will fail (set actrunner_docker_host or start bashy podman); host-lane jobs still run")
+							}
+						}
 						slog.Info("act_runner: starting CI daemon", "instance", instance)
-						derr := actrunner.Daemon(gctx, "", arData, telemetry.ChildEnv("act_runner")...)
+						derr := actrunner.Daemon(gctx, "", arData, daemonEnv...)
 						if gctx.Err() != nil {
 							return nil
 						}
@@ -3360,4 +3376,34 @@ func minDur(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+// resolveActrunnerDockerHost returns the DOCKER_HOST the tier-3 sandbox executor
+// dials to reach the container runtime. An explicit actrunner_docker_host wins;
+// otherwise it asks bashy podman for its host-side machine socket. Returns ""
+// when it can't resolve — host-lane (runs-on: host) jobs still run; only
+// runs-on: sandbox needs a container runtime.
+func resolveActrunnerDockerHost(ctx context.Context, fc *conf.FileConfig) string {
+	if fc.ActrunnerDockerHost != "" {
+		return fc.ActrunnerDockerHost
+	}
+	bin, err := bashyResolver.Path(ctx)
+	if err != nil {
+		slog.Warn("act_runner sandbox: cannot resolve bashy to find the podman socket; set actrunner_docker_host", "err", err)
+		return ""
+	}
+	out, err := exec.CommandContext(ctx, bin, "podman", "machine", "inspect",
+		"--format", "{{.ConnectionInfo.PodmanSocket.Path}}").Output()
+	if err != nil {
+		slog.Warn("act_runner sandbox: `bashy podman machine inspect` failed; set actrunner_docker_host or start the podman machine", "err", err)
+		return ""
+	}
+	p := strings.TrimSpace(string(out))
+	if p == "" {
+		return ""
+	}
+	if strings.Contains(p, "://") {
+		return p
+	}
+	return "unix://" + p
 }

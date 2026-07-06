@@ -124,6 +124,13 @@ type BuiltinsParams struct {
 	ActrunnerInstance *string `json:"actrunner_instance,omitempty"`
 	ActrunnerToken    *string `json:"actrunner_token,omitempty"`
 	ActrunnerLabels   *string `json:"actrunner_labels,omitempty"`
+	// ActrunnerSandbox opts the runner into the tier-3 sandbox (container)
+	// executor (runs-on: sandbox → OCI container via bashy podman), additive to
+	// the host build lane. ActrunnerSandboxImage / ActrunnerDockerHost override
+	// the image / DOCKER_HOST (empty docker-host = auto-resolve bashy podman).
+	ActrunnerSandbox      *bool   `json:"actrunner_sandbox,omitempty"`
+	ActrunnerSandboxImage *string `json:"actrunner_sandbox_image,omitempty"`
+	ActrunnerDockerHost   *string `json:"actrunner_docker_host,omitempty"`
 }
 
 // BuiltinsResult reports what happened. RestartPending is true when
@@ -284,6 +291,15 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	if p.ActrunnerLabels != nil {
 		fc.ActrunnerLabels = *p.ActrunnerLabels
 	}
+	if p.ActrunnerSandbox != nil {
+		fc.ActrunnerSandbox = p.ActrunnerSandbox
+	}
+	if p.ActrunnerSandboxImage != nil {
+		fc.ActrunnerSandboxImage = *p.ActrunnerSandboxImage
+	}
+	if p.ActrunnerDockerHost != nil {
+		fc.ActrunnerDockerHost = *p.ActrunnerDockerHost
+	}
 	if p.Otel != nil {
 		fc.OtelEnabled = *p.Otel
 	}
@@ -334,7 +350,7 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.Loom == nil && p.LoomPort == nil && p.BashyServices == nil && p.BashyVersion == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil
+	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.Loom == nil && p.LoomPort == nil && p.BashyServices == nil && p.BashyVersion == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil && p.ActrunnerSandbox == nil && p.ActrunnerSandboxImage == nil && p.ActrunnerDockerHost == nil
 	if p.UpdateMode != nil {
 		if !conf.ValidUpdateMode(*p.UpdateMode) {
 			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")

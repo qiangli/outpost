@@ -377,6 +377,24 @@ type FileConfig struct {
 	// the host shell, no container runtime needed for the runner itself).
 	ActrunnerLabels string `json:"actrunner_labels,omitempty"`
 
+	// ActrunnerSandbox opts the runner into the tier-3 SANDBOX executor: it
+	// additionally advertises a "sandbox" docker-executor label, so a
+	// `runs-on: sandbox` job runs inside an OCI container (via bashy podman)
+	// instead of on the host shell. Additive — the runner still offers the
+	// host build lane (`runs-on: host`, e.g. Go-toolchain outpost/bashy builds).
+	// Needs a reachable container runtime (ActrunnerDockerHost / bashy podman).
+	ActrunnerSandbox *bool `json:"actrunner_sandbox,omitempty"`
+
+	// ActrunnerSandboxImage overrides the OCI image the sandbox executor runs
+	// jobs in (default: actrunner.DefaultSandboxImage — a node image carrying
+	// git+node+bash). Only meaningful when ActrunnerSandbox is on.
+	ActrunnerSandboxImage string `json:"actrunner_sandbox_image,omitempty"`
+
+	// ActrunnerDockerHost is the DOCKER_HOST the sandbox executor dials to reach
+	// the container runtime. Empty → the daemon auto-resolves bashy podman's
+	// host-side socket. Only meaningful when ActrunnerSandbox is on.
+	ActrunnerDockerHost string `json:"actrunner_docker_host,omitempty"`
+
 	// Shard configures the Ollama sharding sub-feature: serve a model bigger
 	// than any single node by splitting it across mesh peers via llama.cpp
 	// RPC carried over the mesh forwarder. Under Ollama; default off.
@@ -1534,6 +1552,12 @@ func (fc *FileConfig) KopiaPortOrDefault() int {
 // ActrunnerOn reports whether the act_runner CI-executor builtin is enabled.
 func (fc *FileConfig) ActrunnerOn() bool {
 	return fc != nil && fc.ActrunnerEnabled != nil && *fc.ActrunnerEnabled
+}
+
+// ActrunnerSandboxOn reports whether the tier-3 sandbox (container) executor is
+// enabled on the act_runner builtin.
+func (fc *FileConfig) ActrunnerSandboxOn() bool {
+	return fc != nil && fc.ActrunnerSandbox != nil && *fc.ActrunnerSandbox
 }
 
 // ActrunnerLabelsOrDefault returns the configured runner labels, or "host:host".
