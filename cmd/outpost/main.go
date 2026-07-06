@@ -1207,6 +1207,13 @@ func startCmd() *cobra.Command {
 								slog.Warn("act_runner sandbox: no DOCKER_HOST — runs-on:sandbox jobs will fail (set actrunner_docker_host or start bashy podman); host-lane jobs still run")
 							}
 						}
+						// Load the operator's vault secrets so CI jobs inherit
+						// GITHUB_TOKEN etc. (deploy steps push to GitHub without a
+						// per-repo secret — the token stays in the cloudbox vault).
+						if vaultEnv := loadVaultSecretsEnv(gctx); len(vaultEnv) > 0 {
+							daemonEnv = append(daemonEnv, vaultEnv...)
+							slog.Info("act_runner: loaded vault secrets into job env", "count", len(vaultEnv))
+						}
 						slog.Info("act_runner: starting CI daemon", "instance", instance)
 						derr := actrunner.Daemon(gctx, "", arData, daemonEnv...)
 						if gctx.Err() != nil {
@@ -3376,6 +3383,43 @@ func minDur(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+// loadVaultSecretsEnv resolves the operator's cloudbox-vault secrets into
+// KEY=VALUE env entries by running `bashy secrets env` (which reads the vault via
+// the file-based secrets token, so it works from the daemon). These are injected
+// into the act_runner daemon env so CI jobs (e.g. a deploy step pushing to
+// GitHub) inherit GITHUB_TOKEN and friends WITHOUT a per-repo secret — the token
+// stays in the vault. Best-effort: any error yields no entries. `bashy secrets
+// env` emits shell `export KEY='value'` lines (single-quoted); we unquote them.
+func loadVaultSecretsEnv(ctx context.Context) []string {
+	bin, err := bashyResolver.Path(ctx)
+	if err != nil {
+		return nil
+	}
+	out, err := exec.CommandContext(ctx, bin, "secrets", "env").Output()
+	if err != nil {
+		slog.Warn("act_runner: could not load vault secrets (bashy secrets env) — CI deploy steps needing GITHUB_TOKEN may fail", "err", err)
+		return nil
+	}
+	var env []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		eq := strings.IndexByte(line, '=')
+		if eq <= 0 {
+			continue
+		}
+		key, val := line[:eq], line[eq+1:]
+		if len(val) >= 2 && val[0] == '\'' && val[len(val)-1] == '\'' {
+			val = strings.ReplaceAll(val[1:len(val)-1], `'\''`, `'`) // shell single-quote unescape
+		}
+		env = append(env, key+"="+val)
+	}
+	return env
 }
 
 // resolveActrunnerDockerHost returns the DOCKER_HOST the tier-3 sandbox executor
