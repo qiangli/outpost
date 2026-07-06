@@ -148,14 +148,17 @@ Effects: write
 set -e
 REPO="${OUTPOST_REPO:-qiangli/outpost}"
 VER="${OUTPOST_TEST_VERSION:?set OUTPOST_TEST_VERSION to the tag to test, e.g. v1.2.3-dev}"
+# Download FROM the release tag (VER, e.g. v1.2.3-dev) but the asset is NAMED with
+# the base version (bytes are stamped base — see release.yml byte-promotion).
+BASEV="${VER%%-*}"
 os=$(bashy uname -s | tr 'A-Z' 'a-z'); case "$os" in *darwin*) os=darwin;; *linux*) os=linux;; *) os=windows;; esac
 arch=$(bashy uname -m); case "$arch" in arm64|aarch64) arch=arm64;; x86_64|amd64) arch=amd64;; esac
 ext=""; [ "$os" = windows ] && ext=.exe
 base="https://github.com/${REPO}/releases/download/${VER}"
-asset="outpost-${VER}-${os}-${arch}${ext}"
+asset="outpost-${BASEV}-${os}-${arch}${ext}"
 echo ">> QA ${VER} on ${os}/${arch} — ${asset}"
 bashy curl -fsSL -o "/tmp/${asset}" "${base}/${asset}"
-if bashy curl -fsSL -o "/tmp/out.sha256" "${base}/outpost-${VER}-${os}-${arch}.sha256" 2>/dev/null; then
+if bashy curl -fsSL -o "/tmp/out.sha256" "${base}/outpost-${BASEV}-${os}-${arch}.sha256" 2>/dev/null; then
   want=$(grep -oiE '[0-9a-f]{64}' "/tmp/out.sha256" | head -1)
   got=$(bashy sha256sum "/tmp/${asset}" | grep -oiE '[0-9a-f]{64}' | head -1)
   [ "$want" = "$got" ] || { echo "FAIL sha256"; exit 1; }
