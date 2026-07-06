@@ -42,6 +42,8 @@ jobs:
   promote:
     name: byte-promote + notify fleet
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release + read/write refs (belt-and-suspenders over the workflow-level grant)
     steps:
       - name: normalize version
         id: v
@@ -125,13 +127,14 @@ jobs:
           printf '%s\n' \
             "Promoted from ${DEV} after per-OS QA (${{ github.event.inputs.required_os || 'darwin linux windows' }})." \
             "Byte-identical to the tested pre-release — no rebuild." > /tmp/notes.md
-          # -R is required: this job has no checkout, so gh can't infer the repo from
-          # a local git remote (would fail "not a git repository"). --target is ignored
-          # when the tag already exists (the tag-push path), used when gh must create it.
+          # -R is required: this job has no checkout, so gh can't infer the repo from a
+          # local git remote (would fail "not a git repository"). No --target: in the
+          # tag-push flow the vX.Y.Z tag already exists, so gh attaches to it; passing a
+          # target that differs from the existing tag makes gh PATCH the tag ref, which
+          # is what returned 403 on the release POST.
           gh release create "${VER}" -R "${REPO}" \
             --title "${VER}" \
             --notes-file /tmp/notes.md \
-            --target "${COMMIT}" \
             --latest \
             dist/outpost-*
           echo "released ${VER} as --latest from the tested ${DEV} bytes"
