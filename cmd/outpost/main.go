@@ -2556,6 +2556,13 @@ func startBashyServiceSupervisors(g *errgroup.Group, ctx context.Context, fc *co
 	if fc != nil {
 		bashyResolver.SetVersion(fc.BashyVersion)
 	}
+	// Fleet auto-roll: reconcile an existing outpost-managed bashy to the matched
+	// version at boot, even on hosts with no enabled bashy service (they may still
+	// run bashy for deploy jobs). Best-effort; never blocks startup.
+	g.Go(func() error {
+		bashyResolver.ReconcileExisting(ctx)
+		return nil
+	})
 	for _, svc := range effectiveBashyServices(fc) {
 		if !svc.Enabled {
 			continue

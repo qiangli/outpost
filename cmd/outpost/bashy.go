@@ -175,6 +175,28 @@ func (r *bashyBinaryResolver) reconcile(ctx context.Context, path string) string
 	return path
 }
 
+// ReconcileExisting rolls an ALREADY-INSTALLED outpost-managed bashy to the
+// matched version — but never installs one if absent. Called once at boot on
+// every host (independent of whether any supervised bashy service is enabled),
+// so the fleet auto-roll reaches hosts that run bashy only for deploy jobs, not
+// as a supervised service. Best-effort; safe in a goroutine.
+func (r *bashyBinaryResolver) ReconcileExisting(ctx context.Context) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.reconciled {
+		return
+	}
+	for _, cand := range bashyCandidatePaths() {
+		if isExecutableFile(cand) && r.isManaged(cand) {
+			r.reconciled = true
+			if np := r.reconcile(ctx, cand); np != "" {
+				r.cached = np
+			}
+			return
+		}
+	}
+}
+
 // isManaged reports whether a resolved bashy sits in an outpost-managed location
 // (outpost-adjacent dir or the outpost cache) — the only bashy the resolver will
 // auto-roll. A bashy the operator installed elsewhere on PATH is left untouched.
