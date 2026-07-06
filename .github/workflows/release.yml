@@ -24,7 +24,12 @@ name: release
 on:
   push:
     tags:
-      - 'v*'
+      # Build + publish a PRE-RELEASE only for -dev tags. A bare vX.Y.Z tag is a
+      # PROMOTION of already-tested bytes (see .github/workflows/promote.yml) and
+      # must NOT rebuild from source — prod ships exactly what QA tested, byte for
+      # byte. So the promotion tag is deliberately excluded from this trigger.
+      - 'v*-dev'
+  workflow_dispatch: {} # manual escape hatch: build the checked-out ref on demand
 
 permissions:
   contents: write # for actions/create-release
@@ -252,65 +257,8 @@ jobs:
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
           echo "base=${base}" >> "$GITHUB_OUTPUT"
 
-      - name: build webhook payload
-        # Skip the fleet-notify webhook for a PRE-RELEASE (v1.2.3-dev): the fleet
-        # must never auto-upgrade to an untested build. Only the final release
-        # (no `-` suffix) notifies cloudbox / triggers canary→fleet rollout.
-        if: ${{ !contains(github.ref_name, '-') }}
-        id: payload
-        env:
-          TAG: ${{ github.ref_name }}
-          COMMIT: ${{ github.sha }}
-          BASE: ${{ steps.gh_release.outputs.base }}
-        run: |
-          # Compose one entry per platform with the asset URL + the
-          # sha256 hex (extracted from the .sha256 sidecar file).
-          artifacts="{}"
-          for f in dist/outpost-${TAG}-*; do
-            name=$(basename "$f")
-            # skip the sha256 sidecar files themselves
-            case "$name" in
-              *.sha256) continue ;;
-            esac
-            # name format: outpost-<TAG>-<OS>-<ARCH>[.exe]
-            platform=${name#outpost-${TAG}-}
-            platform=${platform%.exe}
-            os=${platform%-*}
-            arch=${platform##*-}
-            sha=$(shasum -a 256 "$f" | awk '{print $1}')
-            key="${os}_${arch}"
-            artifacts=$(jq -n \
-              --argjson cur "$artifacts" \
-              --arg key "$key" \
-              --arg url "${BASE}/${name}" \
-              --arg sha "$sha" \
-              '$cur + {($key): {url: $url, sha256: $sha}}')
-          done
-          payload=$(jq -n \
-            --arg tag "$TAG" \
-            --arg commit "$COMMIT" \
-            --argjson artifacts "$artifacts" \
-            '{tag: $tag, commit: $commit, artifacts: $artifacts}')
-          echo "$payload" | jq .
-          echo "$payload" > payload.json
-          echo "path=payload.json" >> "$GITHUB_OUTPUT"
-
-      - name: post to cloudbox
-        if: ${{ !contains(github.ref_name, '-') }}   # pre-releases don't notify the fleet
-        env:
-          URL: ${{ secrets.CLOUDBOX_RELEASE_WEBHOOK_URL }}
-          SECRET: ${{ secrets.CLOUDBOX_RELEASE_WEBHOOK_SECRET }}
-          PAYLOAD: ${{ steps.payload.outputs.path }}
-        run: |
-          if [ -z "$URL" ] || [ -z "$SECRET" ]; then
-            echo "::warning::CLOUDBOX_RELEASE_WEBHOOK_URL / _SECRET not set; skipping webhook"
-            exit 0
-          fi
-          # HMAC-SHA256 the raw payload bytes; send as
-          # X-Outpost-Release-Sig: sha256=<hex>.
-          sig=$(openssl dgst -sha256 -hmac "$SECRET" "$PAYLOAD" | awk '{print $2}')
-          curl -fsS -X POST "$URL" \
-            -H "Content-Type: application/json" \
-            -H "X-Outpost-Release-Sig: sha256=${sig}" \
-            --data-binary "@${PAYLOAD}"
-          echo "webhook delivered"
+      # NOTE: this workflow now builds ONLY -dev pre-releases, so it never notifies
+      # the fleet. The fleet-notify webhook (and the official --latest release) live
+      # in .github/workflows/promote.yml, which byte-promotes these tested assets
+      # after the per-OS QA gates are green. Keeping the webhook out of here is what
+      # guarantees the fleet only ever sees bytes that passed QA.
