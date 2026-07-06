@@ -41,7 +41,8 @@ pass(){                                        # one poll pass
     echo "[$os] $ver already promoted"; return 0
   fi
   echo ">> [$os] new $dev — running qa"
-  if OUTPOST_TEST_VERSION="$dev" bashy dag README.md qa 2>&1 | tee "/tmp/qa-$os.log"; then
+  bashy mkdir -p .qa 2>/dev/null       # cwd-local log — /tmp isn't guaranteed on Windows
+  if OUTPOST_TEST_VERSION="$dev" bashy dag README.md qa 2>&1 | tee ".qa/qa-$os.log"; then
     sha=$(bashy git ls-remote "https://github.com/$REPO.git" "refs/tags/$dev" | awk '{print $1}' | head -1)
     if bashy gh api -X POST "/repos/$REPO/git/refs" -f "ref=$ref" -f "sha=$sha" >/dev/null 2>&1; then
       echo ">> [$os] PROMOTED $ref"
@@ -49,7 +50,7 @@ pass(){                                        # one poll pass
       echo ">> [$os] WARN: could not create $ref (token/perms?)"
     fi
   else
-    echo ">> [$os] QA FAILED $dev — see /tmp/qa-$os.log; report via OTel service=$OTEL_SERVICE_NAME"
+    echo ">> [$os] QA FAILED $dev — see .qa/qa-$os.log; report via OTel service=$OTEL_SERVICE_NAME"
     # TODO(otel): emit an OTLP log/span (version=$dev, os=$os, tail of the log) so the
     # dev conductor's query_logs/query_traces catches it and assigns the fleet to fix.
   fi
