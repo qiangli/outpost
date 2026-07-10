@@ -353,6 +353,37 @@ A third built-in, `sandbox` (`BuiltinSandbox`, gated on `SandboxEnabled`, defaul
 
 Boot wiring (next to the podman/ollama blocks in `cmd/outpost/main.go`) is symmetric with ollama: `RegisterFromConfig({Name:"sandbox", Scheme:"unix", Socket, RequireLogin:true})` then `SetCapabilities("sandbox", {Type:"sandbox"})` + `SetProxyWrap(svc.WrapProxy)` + `AddIntercept("/_pool/capacity", svc.CapacityHandler())`. Cloudbox discovers sandbox hosts via the `{type:"sandbox"}` capability on `/apps` and can probe the capacity endpoint for load-aware routing — the same pattern the LLM pool uses. The four-surface toggle (`sandbox_enabled`) is wired through `admincore.SetBuiltins`, the `outpost_set_builtins` MCP arg, and `builtins set --sandbox`; see `docs/settings.md` for the policy fields.
 
+### Fleet inventory push (`internal/agent/fleetreg/`)
+
+The tool/agent/skill counterpart of the Ollama model registry below, and
+deliberately the same shape: the host is the source of truth about itself, the
+cloud is a cache of that truth behind a freshness clock, and a timestamp-free
+content hash lets an unchanged snapshot cost one touch instead of a rewrite.
+
+`Watcher.Snapshot()` reads the local fleet registry straight out of
+`coreutils/pkg/fleet` — a library call, not a `bashy` shell-out, so a host with
+no bashy binary installed still reports a fleet (the compiled-in baseline is
+part of the library). It reports three kinds: `tool` (the `kind: cli` subset
+only — a function kit is not something this host can be asked to launch, so
+reporting one would advertise a capability that does not exist; a tool whose
+launch template has no `{model}` placeholder is flagged "cannot select a
+model"), `agent` (whose `Detail` is the `tool:model` binding — a peer deciding
+whether to send work here needs the model, not just a nickname), and `skill`.
+
+`Run` pushes on change or on a heartbeat to `POST /api/v1/fleet/registry` with
+`Authorization: Bearer <access_token>`; the token must carry `fleet:registry`.
+Error contract matches the LLM registry because the retry logic is the same:
+4xx is fatal (revoked token / missing scope / host not registered under this
+owner) and is not retried until config changes; 5xx and transport errors retry
+on the next tick. A failed push never takes the daemon down — the inventory is
+a convenience for peers, not a dependency of anything running here.
+
+Wired in `cmd/outpost/main.go`'s errgroup next to the upgrade puller, guarded by
+`fc.AccessToken != ""` (paired-only). It deliberately does **not** import
+`coreutils/pkg/skills` — that package pulls the dhnt skill-CNL runtime, and
+outpost is the lean mesh supervisor; skill *names* are read as directory names
+via `assetring.FolderDir`, which is all an inventory needs.
+
 ### Ollama LLM pool (`internal/agent/ollama/`)
 
 Beyond the per-host `/app/ollama/...` proxy described above, an outpost can join a **multi-host virtual LLM pool** that cloudbox fronts as a single OpenAI-compatible endpoint (`/v1/chat/completions`, `/v1/models`, etc.). The pool routes by model presence: a request for `llama3.2:1b` lands on whichever participating outpost actually has that model loaded. The outpost-side contribution is three small surfaces — registry push, capacity hint, and capabilities advertisement — all wired only when `fc.OllamaPoolOn()` (default-on whenever `OllamaEnabled` is on; explicit-off keeps the local Ollama private).

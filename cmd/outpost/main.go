@@ -42,6 +42,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/certs"
 	"github.com/qiangli/outpost/internal/agent/clusterllm"
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/agent/fleetreg"
 	"github.com/qiangli/outpost/internal/agent/heartbeat"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"github.com/qiangli/outpost/internal/agent/mcpapi"
@@ -1774,6 +1775,30 @@ func startCmd() *cobra.Command {
 						upgrade.ArmConfirm(gctx, upgradeConfirmPath, agent.ReadBuildInfo().ShortCommit(), upgradeLedger)
 						return nil
 					})
+				}
+			}
+
+			// Fleet inventory push — the tool/agent/skill counterpart of the
+			// ollama model registry above. The host is the source of truth
+			// about what it can run; cloudbox caches that behind a freshness
+			// clock so a peer can ask "which host has codex" without probing
+			// every machine. Paired-only: the push needs an access token
+			// carrying fleet:registry.
+			if fc.AccessToken != "" {
+				if cbBase := cloudboxHTTPBase(fc); cbBase != "" {
+					fw, ferr := fleetreg.New(fleetreg.Config{
+						CloudboxURL: cbBase,
+						AccessToken: fc.AccessToken,
+						AgentName:   fc.AgentName,
+					})
+					if ferr != nil {
+						slog.Warn("fleet registry: watcher init failed", "err", ferr)
+					} else {
+						g.Go(func() error {
+							fw.Run(gctx)
+							return nil
+						})
+					}
 				}
 			}
 

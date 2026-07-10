@@ -43,6 +43,7 @@ require (
 )
 
 require (
+	cyphar.com/go-pathrs v0.2.4 // indirect
 	filippo.io/bigmod v0.1.1-0.20260103110540-f8a47775ebe5 // indirect
 	filippo.io/keygen v0.0.0-20260114151900-8e2790ea4c5b // indirect
 	github.com/JohannesKaufmann/dom v0.3.1 // indirect
@@ -61,6 +62,7 @@ require (
 	github.com/chromedp/cdproto v0.0.0-20260321001828-e3e3800016bc // indirect
 	github.com/chromedp/chromedp v0.15.1 // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
+	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
 	github.com/disintegration/imaging v1.6.2 // indirect
@@ -105,6 +107,7 @@ require (
 	github.com/marten-seemann/tcp v0.0.0-20210406111302-dfbc87cc63fd // indirect
 	github.com/maruel/natural v1.3.0 // indirect
 	github.com/marusama/semaphore/v2 v2.5.0 // indirect
+	github.com/mattn/go-runewidth v0.0.23 // indirect
 	github.com/mholt/archives v0.1.5 // indirect
 	github.com/mikelolasagasti/xz v1.0.1 // indirect
 	github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b // indirect
@@ -123,6 +126,7 @@ require (
 	github.com/multiformats/go-varint v0.0.7 // indirect
 	github.com/nwaples/rardecode/v2 v2.2.3 // indirect
 	github.com/odvcencio/gotreesitter v0.16.0 // indirect
+	github.com/opencontainers/selinux v1.13.1 // indirect
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58 // indirect
 	github.com/pierrec/lz4/v4 v4.1.27 // indirect
 	github.com/pion/datachannel v1.5.10 // indirect
