@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 
 	"github.com/virtual-kubelet/virtual-kubelet/node"
 	"golang.org/x/sync/errgroup"
@@ -162,39 +163,45 @@ func Run(ctx context.Context, opts RunOptions) error {
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		podInformerFactory.Start(gctx.Done())
-		auxFactory.Start(gctx.Done())
-		<-gctx.Done()
-		return nil
-	})
-	g.Go(func() error {
-		slog.Info("vknode: starting node controller", "node", opts.NodeName)
-		err := nc.Run(gctx)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("vknode: node controller exited", "err", err)
-			return err
-		}
-		slog.Info("vknode: node controller exited")
-		return nil
-	})
-	g.Go(func() error {
-		slog.Info("vknode: starting pod controller", "node", opts.NodeName)
-		// The pod controller can't safely act until the node has
-		// registered with the apiserver — block on the node
-		// controller's Ready signal before starting the workers.
-		select {
-		case <-nc.Ready():
-		case <-gctx.Done():
+		return guard("informer factories", func() error {
+			podInformerFactory.Start(gctx.Done())
+			auxFactory.Start(gctx.Done())
+			<-gctx.Done()
 			return nil
-		}
-		slog.Info("vknode: node ready, starting pod controller workers")
-		err := pc.Run(gctx, 1)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("vknode: pod controller exited", "err", err)
-			return err
-		}
-		slog.Info("vknode: pod controller exited")
-		return nil
+		})
+	})
+	g.Go(func() error {
+		return guard("node controller", func() error {
+			slog.Info("vknode: starting node controller", "node", opts.NodeName)
+			err := nc.Run(gctx)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				slog.Error("vknode: node controller exited", "err", err)
+				return err
+			}
+			slog.Info("vknode: node controller exited")
+			return nil
+		})
+	})
+	g.Go(func() error {
+		return guard("pod controller", func() error {
+			slog.Info("vknode: starting pod controller", "node", opts.NodeName)
+			// The pod controller can't safely act until the node has
+			// registered with the apiserver — block on the node
+			// controller's Ready signal before starting the workers.
+			select {
+			case <-nc.Ready():
+			case <-gctx.Done():
+				return nil
+			}
+			slog.Info("vknode: node ready, starting pod controller workers")
+			err := pc.Run(gctx, 1)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				slog.Error("vknode: pod controller exited", "err", err)
+				return err
+			}
+			slog.Info("vknode: pod controller exited")
+			return nil
+		})
 	})
 
 	if opts.Backend != nil {
@@ -213,6 +220,30 @@ func Run(ctx context.Context, opts RunOptions) error {
 		return err
 	}
 	return nil
+}
+
+// guard runs fn and converts a panic into an error so a crash inside
+// the virtual-kubelet library — e.g. the updateNodeStatus shutdown
+// race at node/node.go:599, where the periodic status-update timer
+// fires while the apiserver connection is being torn down and derefs a
+// nil *corev1.Node — is contained by the errgroup and surfaced to the
+// caller as cluster-mode degradation instead of an unrecovered panic
+// that unwinds past errgroup and takes down the whole outpost process.
+//
+// vknode is an optional subsystem; its failure must never be fatal to
+// the shell / ssh / ollama / mesh / matrix-tunnel builtins. The caller
+// (startClusterRunner in cmd/outpost/main.go) already logs a returned
+// error and keeps the daemon running — this makes a panic take that
+// same non-fatal path.
+func guard(name string, fn func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("vknode: recovered from panic; cluster mode degraded",
+				"where", name, "panic", r, "stack", string(debug.Stack()))
+			err = fmt.Errorf("vknode: %s panicked: %v", name, r)
+		}
+	}()
+	return fn()
 }
 
 // ConfigFromCluster builds a kube REST config that reads the bearer

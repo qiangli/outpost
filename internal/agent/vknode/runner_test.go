@@ -11,6 +11,44 @@ import (
 // fakeBackend is defined in provider_test.go — reuse it here for
 // runner-level tests that need a Backend without a real substrate.
 
+// TestGuard_ContainsPanic locks in the load-bearing property behind the
+// v0.12.32 outage: a panic inside a virtual-kubelet controller goroutine
+// (the updateNodeStatus shutdown-race nil deref) must be converted into
+// an error, not allowed to unwind past the errgroup and crash the whole
+// outpost daemon. If this test starts crashing the process instead of
+// failing, the recover() was lost.
+func TestGuard_ContainsPanic(t *testing.T) {
+	err := guard("node controller", func() error {
+		// nilNode() hides the nil from the static analyzer; the deref
+		// still panics at runtime, same shape as node.go:599.
+		_ = nilNode().ResourceVersion
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected guard to convert the panic into an error")
+	}
+	if !strings.Contains(err.Error(), "node controller panicked") {
+		t.Errorf("expected panic to be labeled with the goroutine name, got: %v", err)
+	}
+}
+
+// nilNode returns a nil *corev1.Node without the static analyzer being
+// able to prove it — used only to reproduce the runtime nil deref.
+func nilNode() *corev1.Node {
+	m := map[string]*corev1.Node{}
+	return m["absent"]
+}
+
+func TestGuard_PassesThroughNormalReturn(t *testing.T) {
+	if err := guard("x", func() error { return nil }); err != nil {
+		t.Errorf("guard should pass a nil return through, got: %v", err)
+	}
+	sentinel := context.Canceled
+	if err := guard("x", func() error { return sentinel }); err != sentinel {
+		t.Errorf("guard should pass a real error through unchanged, got: %v", err)
+	}
+}
+
 func TestRun_PodmanSocketRequiredWhenNoBackend(t *testing.T) {
 	err := Run(context.Background(), RunOptions{NodeName: "x"})
 	if err == nil {
