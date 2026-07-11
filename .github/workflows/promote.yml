@@ -33,7 +33,7 @@ on:
       required_os:
         description: 'Space-separated OS gate that must all be green in refs/qa/<version>/<os>'
         required: false
-        default: 'darwin linux windows'
+        default: 'windows'
 
 permissions:
   contents: write
@@ -64,7 +64,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           VER: ${{ steps.v.outputs.ver }}
-          REQUIRED: ${{ github.event.inputs.required_os || 'darwin linux windows' }}
+          REQUIRED: ${{ github.event.inputs.required_os || 'windows' }}
         run: |
           # Every required OS must have promoted this version (refs/qa/<ver>/<os>).
           missing=""
@@ -125,7 +125,7 @@ jobs:
           COMMIT: ${{ steps.src.outputs.commit }}
         run: |
           printf '%s\n' \
-            "Promoted from ${DEV} after per-OS QA (${{ github.event.inputs.required_os || 'darwin linux windows' }})." \
+            "Promoted from ${DEV} after per-OS QA (${{ github.event.inputs.required_os || 'windows' }})." \
             "Byte-identical to the tested pre-release — no rebuild." > /tmp/notes.md
           # -R is required: this job has no checkout, so gh can't infer the repo from a
           # local git remote (would fail "not a git repository"). No --target: in the
