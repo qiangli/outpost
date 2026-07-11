@@ -127,7 +127,13 @@ jobs:
           tag="${{ steps.cfg.outputs.tag }}"
           platform="${{ steps.cfg.outputs.platform }}"
           host="${{ steps.cfg.outputs.host }}"
-          asset="outpost-${tag}-${platform}"
+          # release.yml stamps the artifacts with the BASE version even on a
+          # `vX.Y.Z-dev` pre-release (prod ships the byte-identical file the bare
+          # tag later promotes), so the asset NAME must strip the `-dev` suffix.
+          # The release download PATH still uses the full tag — the assets hang
+          # off the `vX.Y.Z-dev` release object.
+          base_ver="${tag%-dev}"
+          asset="outpost-${base_ver}-${platform}"
           # Windows artifact filename has .exe; the .sha256 sidecar uses
           # the same base name + .sha256 regardless.
           case "$platform" in
