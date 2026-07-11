@@ -5,7 +5,8 @@
 # orchestrator. This poller:
 #   1. polls GitHub for the newest vX.Y.Z-dev tag,
 #   2. if this host's OS hasn't promoted that version yet,
-#   3. runs `bashy dag README.md qa` (downloads the built artifact + smokes it),
+#   3. fetches the qa harness (dag.md) fresh, runs `bashy dag dag.md qa`
+#      (downloads the built artifact + smokes it),
 #   4. on PASS creates the promotion ref refs/qa/<ver>/<os> (a side namespace, so
 #      `git tag -l` stays = releases only),
 #   5. on FAIL reports via OTel so the dev conductor sees it and dispatches a fix.
@@ -42,7 +43,13 @@ pass(){                                        # one poll pass
   fi
   echo ">> [$os] new $dev — running qa"
   bashy mkdir -p .qa 2>/dev/null       # cwd-local log — /tmp isn't guaranteed on Windows
-  if OUTPOST_TEST_VERSION="$dev" bashy dag README.md qa 2>&1 | tee ".qa/qa-$os.log"; then
+  # Fetch the qa harness FRESH from the repo each run — the poller dir carries no
+  # tracked files, so pulling dag.md every pass means a missing/stale harness can
+  # never silently break QA (the failure this replaces). Fail closed.
+  if ! bashy gh api "/repos/$REPO/contents/dag.md" -H "Accept: application/vnd.github.raw" > dag.md 2>/dev/null || [ ! -s dag.md ]; then
+    echo ">> [$os] FAIL: could not fetch dag.md harness from $REPO"; return 0
+  fi
+  if OUTPOST_TEST_VERSION="$dev" bashy dag dag.md qa 2>&1 | tee ".qa/qa-$os.log"; then
     sha=$(bashy git ls-remote "https://github.com/$REPO.git" "refs/tags/$dev" | awk '{print $1}' | head -1)
     if bashy gh api -X POST "/repos/$REPO/git/refs" -f "ref=$ref" -f "sha=$sha" >/dev/null 2>&1; then
       echo ">> [$os] PROMOTED $ref"

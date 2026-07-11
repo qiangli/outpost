@@ -1,187 +1,108 @@
 # outpost
 
-The home-host agent for [ai.dhnt.io](https://ai.dhnt.io).
+The home-host agent for [ai.dhnt.io](https://ai.dhnt.io) — one binary per
+machine you want to surface through the portal. It registers with a one-time
+code, dials back over a secure tunnel, and serves your local apps (HTTP, shell,
+desktop, clipboard) so authenticated portal users reach them at
+`https://ai.dhnt.io/h/<host>/app/<name>/`. The HTTP server binds loopback only;
+the portal is the sole ingress.
 
-One outpost binary runs on each machine you want to surface through the
-portal. It registers with the portal using a one-time code, dials back
-over a secure tunnel, and serves the local apps (HTTP, shell, desktop,
-clipboard) so that authenticated portal users can reach them through
-`https://ai.dhnt.io/h/<host>/app/<name>/`.
+Fully open source under the [MIT license](LICENSE) — nothing is hidden, nothing
+phones home. The wire protocol is documented inline in
+[`internal/agent/portal/`](internal/agent/portal/) (`exchange.go` is the only
+handshake); a self-built outpost pairs with the public portal exactly like an
+official binary.
 
 ## Install
 
-**macOS / Linux** — one-line installer (downloads the matching release binary, verifies sha256, optionally registers launchd / systemd):
+**macOS / Linux** — one-line installer (downloads the matching release binary,
+verifies sha256, optionally registers launchd / systemd):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/qiangli/outpost/main/scripts/install.sh | sh
 ```
 
-**Windows** — PowerShell installer (`Invoke-WebRequest` avoids Mark-of-the-Web, so SmartScreen does not gate first run):
+**Windows** — PowerShell installer (`Invoke-WebRequest` avoids Mark-of-the-Web,
+so SmartScreen does not gate first run):
 
 ```powershell
 iwr -useb https://raw.githubusercontent.com/qiangli/outpost/main/scripts/install.ps1 | iex
 ```
 
-**From source** — if you have Go 1.25+ (note: `go install …@latest` does
-not work here — go.mod carries a sibling-path `replace` for the forked
-shell runner, which the build scripts materialize for you):
-
-```bash
-git clone https://github.com/qiangli/outpost.git && cd outpost
-./scripts/build.sh        # macOS / Linux → ./bin/outpost
-```
-
-```powershell
-git clone https://github.com/qiangli/outpost.git; cd outpost
-powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1   # Windows → .\bin\outpost.exe
-```
-
-Already have any outpost release installed? `outpost build` rebuilds
-from GitHub source in one command — no system git needed. See
-[`docs/building.md`](docs/building.md) (or `outpost docs building`) for
-all build paths, tag/commit pinning, and cross-compilation.
-
-See `outpost docs install` (or [`docs/install.md`](docs/install.md)) for the full guide: environment overrides (`INSTALL_DIR`, `OUTPOST_VERSION`, `NO_SERVICE`), Linux PAM auth via `CGO_ENABLED=1`, Windows Defender notes, and uninstall steps.
+Environment overrides (`INSTALL_DIR`, `OUTPOST_VERSION`, `NO_SERVICE`), Linux PAM
+auth, Windows Defender notes, and uninstall: [`docs/install.md`](docs/install.md)
+(`outpost docs install`).
 
 ## Pair with the portal
 
-1. Sign in at <https://ai.dhnt.io/admin/>, open **Hosts**, click
-   **Generate invite code**.
+1. Sign in at <https://ai.dhnt.io/admin/> → **Hosts** → **Generate invite code**.
 2. On the home machine:
 
    ```bash
-   outpost register \
-     --server https://ai.dhnt.io \
-     --code   <one-time-code> \
-     --name   laptop
-
+   outpost register --server https://ai.dhnt.io --code <one-time-code> --name laptop
    outpost start
    ```
 
-`register` exchanges the code for the agent's persistent config and
-saves it to the default user-config path. The portal tells the agent
-which transport to use; `outpost start` then dials in and starts the
-local HTTP server.
-
-By default ycode at `http://127.0.0.1:8765` is registered as an app;
-declare more with:
-
-```bash
-MATRIX_APPS="ycode=http://127.0.0.1:8765,jupyter=http://127.0.0.1:8888" \
-  outpost start
-```
+`register` exchanges the code for the agent's persistent config; `outpost start`
+dials in and serves the local apps. Declare apps with
+`MATRIX_APPS="ycode=http://127.0.0.1:8765,jupyter=http://127.0.0.1:8888"` (ycode
+at `:8765` is the default). Full flow: [`docs/pairing.md`](docs/pairing.md).
 
 ## What outpost serves
 
-- `/app/<name>/*` — reverse-proxies any HTTP app you declare in
-  `MATRIX_APPS`.
-- `/shell` — admin-tier PTY-wrapped shell (WebSocket).
-- `/desktop` — admin-tier VNC relay (WebSocket).
-- `/clipboard` — clipboard bridge.
-- `/auth` — credential check against the host OS by default, or against
-  a custom `--auth-url` endpoint for app-level user lists.
+- `/app/<name>/*` — reverse-proxy for any HTTP app declared in `MATRIX_APPS`
+- `/shell` — admin-tier PTY shell (WebSocket) · `/desktop` — VNC relay ·
+  `/clipboard` — clipboard bridge
+- `/auth` — credential check against the host OS (or a custom `--auth-url`)
 
-All of these are reached only through the portal — outpost binds its
-HTTP server to loopback (`127.0.0.1:<random>`).
+All reached only through the portal — the HTTP server binds `127.0.0.1:<random>`.
 
 ## Build from source
 
-outpost is **fully open source** under the [MIT license](LICENSE). You
-don't have to trust the binaries we publish — clone the repo, read every
-line of code that talks to the portal, build your own binary, and pair
-that with [ai.dhnt.io](https://ai.dhnt.io). Nothing is hidden, nothing
-phones home behind your back.
+Requires Go 1.25+. `go install …@latest` does **not** work — go.mod carries a
+sibling-path `replace` for the forked shell runner, which the build scripts
+materialize for you.
 
 ```bash
-git clone https://github.com/qiangli/outpost
-cd outpost
-./scripts/build.sh   # → ./bin/outpost
-./bin/outpost register --server https://ai.dhnt.io --code <code> --name <host>
-./bin/outpost start
+git clone https://github.com/qiangli/outpost && cd outpost
+./scripts/build.sh                 # macOS / Linux → ./bin/outpost
+# Windows: powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1
 ```
 
-Requires Go 1.25+. `./scripts/build.sh` (and its Windows twin
-`.\scripts\build.ps1`) first materializes the `../sh` sibling the
-go.mod `replace` directive needs, then runs `go build ./cmd/outpost`
-with the version + commit baked into the binary so `outpost version`
-reports a build you can trace back to a git SHA. Already have outpost
-installed? `outpost build` does the whole flow — clone from GitHub,
-sibling bootstrap, build — without system git, make, bash, or
-coreutils; only the Go toolchain. Pin a version with
-`outpost build --ref v0.3.0` (tag) or `--ref <sha>` (any commit), then
-swap it in with `outpost upgrade --local <built>`. The full guide is
-[`docs/building.md`](docs/building.md) (`outpost docs building`); see
-[`docs/install.md`](docs/install.md) for the CGO-enabled recipe needed
-for Linux PAM auth (`CGO_ENABLED=1` + `libpam-dev`) and Windows
-Defender notes.
+Already have any outpost release? `outpost build` does the whole flow — clone,
+sibling bootstrap, build — with only the Go toolchain (no system git / make /
+bash). Pin with `outpost build --ref v0.3.0` (tag or sha), then
+`outpost upgrade --local <built>`. All build paths, pinning, and cross-compile:
+[`docs/building.md`](docs/building.md) (`outpost docs building`).
 
-**Forking, modifying, contributing** — outpost has no proprietary
-hooks. The wire protocol with cloudbox is documented inline in
-[`internal/agent/portal/`](internal/agent/portal/) (the `exchange.go`
-round-trip is the only handshake), and every config key is in
-[`docs/settings.md`](docs/settings.md). A modified outpost that obeys
-the same protocol will pair with the public portal the same way an
-official binary does. PRs welcome.
+## Testing a release build (QA)
 
-Release notes: <https://github.com/qiangli/outpost/releases>.
-
-## Testing a release build (QA) — this section is a `bashy dag`
-
-A QA host verifies a *published* build (no source build, no Go — only bashy, which
-self-provisions git/coreutils) with:
+A QA host verifies a *published* build (no source, no Go — bashy only, which
+self-provisions git / coreutils) via the `qa` task in [`dag.md`](dag.md):
 
 ```bash
-OUTPOST_TEST_VERSION=v1.2.3-dev bashy dag README.md qa
+OUTPOST_TEST_VERSION=v1.2.3-dev bashy dag dag.md qa
 ```
 
-It downloads the release artifact for **this** host's OS/arch, verifies sha256, and
-runs a runtime smoke — the same steps a human would follow, kept executable so the
-docs can't drift from what CI runs. `OTEL_*` is honored, so a failure is reported
-to the dev conductor's telemetry backend (it dispatches the fleet to fix it).
+It downloads this host's OS/arch artifact, verifies sha256, and runs a runtime
+smoke — the same probe the upgrade worker runs before swapping a live binary.
+Standing-poller setup: [`docs/qa-poller-host-setup.md`](docs/qa-poller-host-setup.md).
 
-## Tasks
+## Docs
 
-### qa
-Download `$OUTPOST_TEST_VERSION` for THIS host's OS/arch, verify sha256, and run a
-MINIMAL smoke — only enough to guarantee a fleet rollout of these exact bytes won't
-brick a registered host: the binary executes, self-reports the expected version (the
-same probe the upgrade worker runs before it swaps the live binary), and its
-in-process shell + real-git surfaces answer. No `/tmp`, no `grep -o`/`sort -V` (bashy
-= the target userland has neither) — pure-bashy, so it runs identically on macOS,
-Linux, and Windows.
-Effects: write
-```bash
-set -e
-REPO="${OUTPOST_REPO:-qiangli/outpost}"
-VER="${OUTPOST_TEST_VERSION:?set OUTPOST_TEST_VERSION to the tag to test, e.g. v1.2.3-dev}"
-# Download FROM the release tag (VER, e.g. v1.2.3-dev) but the asset is NAMED with
-# the base version (bytes are stamped base — see release.yml byte-promotion).
-BASEV="${VER%%-*}"
-os=$(bashy uname -s | tr 'A-Z' 'a-z'); case "$os" in *darwin*) os=darwin;; *linux*) os=linux;; *) os=windows;; esac
-arch=$(bashy uname -m); case "$arch" in arm64|aarch64) arch=arm64;; x86_64|amd64) arch=amd64;; esac
-ext=""; [ "$os" = windows ] && ext=.exe
-base="https://github.com/${REPO}/releases/download/${VER}"
-asset="outpost-${BASEV}-${os}-${arch}${ext}"
-d=".qa"; bashy mkdir -p "$d"       # cwd-local temp — /tmp isn't guaranteed on Windows
-echo ">> QA ${VER} on ${os}/${arch} — ${asset}"
-bashy curl -fsSL -o "$d/${asset}" "${base}/${asset}"
-if bashy curl -fsSL -o "$d/out.sha256" "${base}/outpost-${BASEV}-${os}-${arch}.sha256" 2>/dev/null; then
-  # the .sha256 sidecar is "<sha>  <filename>"; extract with awk (no grep -o).
-  # Fail closed: a missing/empty sha is a hard failure — never run unverified bytes.
-  want=$(awk '{print $1}' "$d/out.sha256" | head -1)
-  got=$(bashy sha256sum "$d/${asset}" | awk '{print $1}' | head -1)
-  { [ -n "$want" ] && [ "$want" = "$got" ]; } || { echo "FAIL sha256 (want=$want got=$got)"; exit 1; }
-  echo ">> sha256 verified"
-fi
-chmod +x "$d/${asset}" 2>/dev/null || true
-BIN="$d/${asset}"
-# 1. it EXECUTES and self-reports the expected version (== the upgrade worker's Probe;
-#    a binary that fails this is exactly what bricks a host on swap+re-exec).
-vout=$("$BIN" version | head -1); echo "   $vout"
-case "$vout" in *"$BASEV"*) ;; *) echo "FAIL: version stamp is not $BASEV ($vout)"; exit 1;; esac
-# 2. the in-process shell engine runs (the /shell + /ssh surface a live host serves).
-[ "$("$BIN" shell -c 'echo runtime-ok')" = "runtime-ok" ] || { echo "FAIL: shell -c"; exit 1; }
-# 3. real-git surface resolves (Windows-without-system-git relies on it).
-"$BIN" git --version >/dev/null 2>&1 || { echo "FAIL: git surface"; exit 1; }
-echo ">> QA PASS ${VER} ${os}/${arch}"
-```
+- [`docs/install.md`](docs/install.md) · [`docs/building.md`](docs/building.md) ·
+  [`docs/pairing.md`](docs/pairing.md)
+- [`docs/settings.md`](docs/settings.md) — every config key ·
+  [`docs/mcp.md`](docs/mcp.md) — agent tool surface
+- [`docs/remote-podman.md`](docs/remote-podman.md) ·
+  [`docs/cluster-gpu.md`](docs/cluster-gpu.md) ·
+  [`docs/windows-service.md`](docs/windows-service.md)
+- Task graph: [`dag.md`](dag.md) (`bashy dag --list`) · Release notes:
+  <https://github.com/qiangli/outpost/releases>
+
+> **Agents working in this repo** (with a local `bashy kb`):
+> `bashy kb show outpost-orientation` for the operational map;
+> `never-pkill-on-an-outpost-host` and
+> `outpost-upgrade-local-no-ops-on-same-commit-rebuilds` for the sharp edges.
+
+PRs welcome.
