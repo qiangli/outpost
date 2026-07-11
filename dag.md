@@ -53,7 +53,8 @@ headless run.
 Effects: read, net
 
 ```bash
-go test -short ./...
+BASHY_EXE="${BASHY:-bashy}"
+"$BASHY_EXE" go test -short ./...
 ```
 
 ### test-headless
@@ -61,7 +62,8 @@ Short tests minus internal/agent/shell — safe in a TTY-less environment.
 Effects: read, net
 
 ```bash
-go test -short $(go list ./... | grep -v internal/agent/shell)
+BASHY_EXE="${BASHY:-bashy}"
+"$BASHY_EXE" go test -short $("$BASHY_EXE" go list ./... | grep -v internal/agent/shell)
 ```
 
 ### tidy
