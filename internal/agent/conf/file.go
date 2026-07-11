@@ -373,6 +373,18 @@ type FileConfig struct {
 	// to register on first boot; ignored once the runner's .runner file exists.
 	ActrunnerToken string `json:"actrunner_token,omitempty"`
 
+	// CloudDOEnabled opts this host into Digital Ocean provider support (the
+	// cloud venue): it advertises DO capability and exports the token below as
+	// DIGITALOCEAN_ACCESS_TOKEN so `bashy doctl` / DO provisioning works. Off by
+	// default (opt-in). The first cloud-provider knob; aws/gcloud follow the
+	// same shape.
+	CloudDOEnabled *bool `json:"cloud_do_enabled,omitempty"`
+
+	// CloudDOToken is the Digital Ocean API token, exported as
+	// DIGITALOCEAN_ACCESS_TOKEN to doctl-invoking tools. Redacted from SafeView
+	// like other secrets (presence reported as has_cloud_do_token).
+	CloudDOToken string `json:"cloud_do_token,omitempty"`
+
 	// ActrunnerLabels are the executor labels (default "host:host" — jobs run on
 	// the host shell, no container runtime needed for the runner itself).
 	ActrunnerLabels string `json:"actrunner_labels,omitempty"`
@@ -1503,6 +1515,11 @@ func (fc *FileConfig) PeerPlaneOn() bool {
 // is the rendezvous, so an unpaired host has no signaler to find peers through).
 func (fc *FileConfig) LoomOn() bool {
 	return fc != nil && fc.LoomEnabled != nil && *fc.LoomEnabled
+}
+
+// CloudDOOn reports whether Digital Ocean provider support is enabled.
+func (fc *FileConfig) CloudDOOn() bool {
+	return fc != nil && fc.CloudDOEnabled != nil && *fc.CloudDOEnabled
 }
 
 // LoomPortOrDefault returns the configured loom port, or 31880.

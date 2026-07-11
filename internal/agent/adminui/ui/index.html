@@ -1165,14 +1165,17 @@ function buildFilesSubBlock(parent, cfg, status) {
   parent.append(scopeHint, scopeInput, el('div', {style: 'margin-top:0.4rem'}, scopeBtn));
 }
 
-// buildPodmanSubBlock populates the children behind the Podman
-// twister: cluster status banner + cluster toggle + kubeconfig YAML
-// editor + node-name + Save/Save+Join/Leave buttons. The cluster
+// buildClusterSubBlock populates the top-level Cluster section:
+// cluster status banner + cluster toggle + kubeconfig YAML
+// editor + node-name + Save/Save+Join/Leave buttons. Promoted out of
+// the Podman twister to its own entry (the cluster venue); the podman
+// dependency (agent mode dials the local podman socket) stays visible
+// in the banner/hints. The cluster
 // toggle gates on having credentials pasted (has_token); the
 // kubeconfig editor stays editable but the save buttons gate on
 // cfg.podman_enabled — pasting a config with podman off doesn't
 // help (the runner needs the local socket).
-function buildPodmanSubBlock(parent, cfg, status) {
+function buildClusterSubBlock(parent, cfg, status) {
   const podmanOn = !!(cfg.podman && cfg.podman.enabled);
   const cv = cfg.cluster || {};
 
@@ -2240,6 +2243,56 @@ function renderBuiltinRows(parent, items, cfg, status) {
   }
 }
 
+// buildCloudSection — the Cloud venue: hosted-provider integrations. Digital
+// Ocean is the first provider knob (enable + API token; the token is exported
+// as DIGITALOCEAN_ACCESS_TOKEN for `bashy doctl` / DO provisioning). aws/gcloud
+// follow the same shape.
+function buildCloudSection(cfg) {
+  const fs = el('fieldset', {});
+  fs.append(el('legend', {}, 'Cloud'));
+
+  // Digital Ocean enable toggle (auto-saves; restarts like other built-ins).
+  const sw = switchEl({checked: !!cfg.cloud_do_enabled});
+  sw.input.addEventListener('change', async () => {
+    const newVal = sw.input.checked;
+    try {
+      await api('POST', '/api/config/builtins', {cloud_do_enabled: newVal});
+      msg('ok', `Digital Ocean ${newVal ? 'enabled' : 'disabled'}.`);
+    } catch (e) {
+      sw.input.checked = !newVal;
+      msg('err', e.message || 'Save failed');
+    }
+  });
+  const doRow = el('div', {class: 'item-row'});
+  doRow.append(sw.wrap, el('span', {class: 'label'}, 'Digital Ocean ',
+    el('code', {class: 'key-hint'}, 'cloud_do_enabled')));
+  fs.append(doRow);
+
+  // DO API token — redacted; blank keeps the existing one.
+  const tokIn = el('input', {type: 'password', name: 'cloud_do_token',
+    placeholder: cfg.has_cloud_do_token ? '•••••• (set — leave blank to keep)' : 'Digital Ocean API token'});
+  const tokBtn = el('button', {type: 'button'}, 'Save token');
+  tokBtn.addEventListener('click', async () => {
+    if (tokIn.value === '') { msg('err', 'Enter a token first.'); return; }
+    try {
+      await api('POST', '/api/config/builtins', {cloud_do_token: tokIn.value.trim()});
+      tokIn.value = '';
+      msg('ok', 'Digital Ocean token saved.');
+    } catch (e) {
+      msg('err', e.message || 'Save failed');
+    }
+  });
+  const tokRow = el('div', {class: 'item-row'});
+  tokRow.append(el('span', {class: 'label'}, 'API token ',
+    el('code', {class: 'key-hint'}, 'cloud_do_token')), tokIn, tokBtn);
+  fs.append(tokRow);
+
+  fs.append(el('p', {style: 'font-size:0.8rem;opacity:0.7;margin-top:0.6rem'},
+    'Exported as DIGITALOCEAN_ACCESS_TOKEN for `bashy doctl` and DO provisioning. ' +
+    'The token stays on this host (redacted from status reads).'));
+  return fs;
+}
+
 function renderMain(status, cfg) {
   const app = $('#app');
   app.innerHTML = '';
@@ -2342,8 +2395,7 @@ function renderMain(status, cfg) {
     // operator reads top-to-bottom as "engine, then what it provides".
     {key: 'ycode',     fileKey: 'ycode_enabled',     label: 'ycode',     ycode: cfg.ycode || {},
      subBlock: buildYcodeSubBlock},
-    {key: 'podman',    fileKey: 'podman_enabled',    label: 'Podman',    daemon: cfg.podman || {},
-     subBlock: buildPodmanSubBlock},
+    {key: 'podman',    fileKey: 'podman_enabled',    label: 'Podman',    daemon: cfg.podman || {}},
     {key: 'ollama',    fileKey: 'ollama_enabled',    label: 'Ollama',    daemon: cfg.ollama || {},
      subBlock: buildOllamaSubBlock},
     // OTel row hidden from the SPA again — the per-host views work
@@ -2378,9 +2430,17 @@ function renderMain(status, cfg) {
   // (LLM pool diagnostic was folded into the Ollama twister above —
   // all Ollama-related state in one place.)
 
-  // (The Cluster Status section was folded into the Podman twister
-  // above so all cluster-related controls live behind one twister
-  // alongside the dependency they require.)
+  // Cluster — its own top-level entry (the cluster venue), promoted out
+  // of the Podman twister. The podman dependency (agent mode dials the
+  // local podman socket) stays visible in the section's banner/hints.
+  const clusterFs = el('fieldset', {});
+  clusterFs.append(el('legend', {}, 'Cluster'));
+  buildClusterSubBlock(clusterFs, cfg, status);
+  panelInbound.append(clusterFs);
+
+  // Cloud — provider integrations (the cloud venue). Digital Ocean is the
+  // first knob; aws/gcloud follow the same shape.
+  panelInbound.append(buildCloudSection(cfg));
 
   // Custom apps section — one row per app, target as a clickable link
   // (new tab), status as an auto-saving toggle switch. The legend

@@ -57,6 +57,8 @@ type builtinsIn struct {
 	ActrunnerInstance      *string             `json:"actrunner_instance,omitempty" jsonschema:"Gitea base URL the runner registers against (empty = local loom forge)"`
 	ActrunnerToken         *string             `json:"actrunner_token,omitempty" jsonschema:"act_runner registration token (minted in Gitea)"`
 	ActrunnerLabels        *string             `json:"actrunner_labels,omitempty" jsonschema:"executor labels (default 'host:host')"`
+	CloudDOEnabled         *bool               `json:"cloud_do_enabled,omitempty" jsonschema:"Toggle Digital Ocean provider support (the cloud venue): advertises DO capability and exports the token as DIGITALOCEAN_ACCESS_TOKEN for bashy doctl / DO provisioning. Off by default."`
+	CloudDOToken           *string             `json:"cloud_do_token,omitempty" jsonschema:"Digital Ocean API token (exported as DIGITALOCEAN_ACCESS_TOKEN; redacted from status reads)"`
 	ActrunnerSandbox       *bool               `json:"actrunner_sandbox,omitempty" jsonschema:"Opt the runner into the tier-3 sandbox (container) executor: adds a 'sandbox' docker-executor label so runs-on:sandbox jobs run in an OCI container via bashy podman. Additive to the host build lane."`
 	ActrunnerSandboxImage  *string             `json:"actrunner_sandbox_image,omitempty" jsonschema:"OCI image the sandbox executor runs jobs in (empty = a node image with git+node+bash)"`
 	ActrunnerDockerHost    *string             `json:"actrunner_docker_host,omitempty" jsonschema:"DOCKER_HOST the sandbox executor dials (empty = auto-resolve bashy podman's socket)"`
@@ -120,6 +122,8 @@ func (s *Server) registerBuiltinsTools() {
 			ActrunnerInstance:      in.ActrunnerInstance,
 			ActrunnerToken:         in.ActrunnerToken,
 			ActrunnerLabels:        in.ActrunnerLabels,
+			CloudDOEnabled:         in.CloudDOEnabled,
+			CloudDOToken:           in.CloudDOToken,
 			ActrunnerSandbox:       in.ActrunnerSandbox,
 			ActrunnerSandboxImage:  in.ActrunnerSandboxImage,
 			ActrunnerDockerHost:    in.ActrunnerDockerHost,

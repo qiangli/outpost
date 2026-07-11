@@ -116,6 +116,8 @@ func builtinsSetCmd() *cobra.Command {
 		actrunner                                                                                                                                                                      string
 		actrunnerInstance                                                                                                                                                              string
 		actrunnerToken                                                                                                                                                                 string
+		cloudDO                                                                                                                                                                        string
+		cloudDOToken                                                                                                                                                                   string
 		actrunnerLabels                                                                                                                                                                string
 		actrunnerSandbox                                                                                                                                                               string
 		actrunnerSandboxImage                                                                                                                                                          string
@@ -313,6 +315,12 @@ func builtinsSetCmd() *cobra.Command {
 			if cmd.Flags().Changed("actrunner-token") {
 				params.ActrunnerToken = &actrunnerToken
 			}
+			if params.CloudDOEnabled, err = parseToggle("cloud-do", cloudDO); err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("cloud-do-token") {
+				params.CloudDOToken = &cloudDOToken
+			}
 			if cmd.Flags().Changed("actrunner-labels") {
 				params.ActrunnerLabels = &actrunnerLabels
 			}
@@ -391,6 +399,8 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&actrunner, "actrunner", "", "on|off - run Gitea act_runner (CI executor, managed external binary); registers against a Gitea instance and dials out")
 	cmd.Flags().StringVar(&actrunnerInstance, "actrunner-instance", "", "Gitea base URL the runner registers against (empty = local loom forge)")
 	cmd.Flags().StringVar(&actrunnerToken, "actrunner-token", "", "act_runner registration token (minted in Gitea)")
+	cmd.Flags().StringVar(&cloudDO, "cloud-do", "", "on|off - Digital Ocean provider support (exports the token as DIGITALOCEAN_ACCESS_TOKEN for bashy doctl)")
+	cmd.Flags().StringVar(&cloudDOToken, "cloud-do-token", "", "Digital Ocean API token (exported as DIGITALOCEAN_ACCESS_TOKEN)")
 	cmd.Flags().StringVar(&actrunnerLabels, "actrunner-labels", "", "executor labels (default 'host:host')")
 	cmd.Flags().StringVar(&actrunnerSandbox, "actrunner-sandbox", "", "on|off - also offer the tier-3 sandbox (container) executor: runs-on:sandbox → OCI container via bashy podman (additive to the host lane)")
 	cmd.Flags().StringVar(&actrunnerSandboxImage, "actrunner-sandbox-image", "", "OCI image for the sandbox executor (empty = a node image with git+node+bash)")

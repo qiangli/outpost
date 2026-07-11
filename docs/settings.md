@@ -116,6 +116,8 @@ tool, or wipe `agent.json` by hand.
 | Same-LAN direct inference | `lan_inference_enabled` | `builtins set --lan-inference` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Same-LAN direct inference port | `lan_inference_port` | `builtins set --lan-inference-port` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Cluster join | `cluster.enabled` | `builtins set --cluster` | Inbound > Cluster | `outpost_set_builtins` | Restart |
+| Digital Ocean support (cloud venue) | `cloud_do_enabled` | `builtins set --cloud-do` | Inbound > Cloud | `outpost_set_builtins` | Restart |
+| Digital Ocean API token | `cloud_do_token` | `builtins set --cloud-do-token` | Inbound > Cloud | `outpost_set_builtins` | Restart |
 | Cloudbox-pushed self-upgrade | `update_mode` | `builtins set --update=auto\|manual\|never` | Inbound > Built-ins | `outpost_set_builtins` | Live |
 | Auto-rollback watchdog (destructive revert) | `auto_rollback_enabled` | `builtins set --auto-rollback=on\|off` | Inbound > Built-ins | `outpost_set_builtins` | Live |
 
