@@ -53,6 +53,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
 	"github.com/qiangli/outpost/internal/agent/peerplane"
 	"github.com/qiangli/outpost/internal/agent/portal"
+	"github.com/qiangli/outpost/internal/agent/repair"
 	"github.com/qiangli/outpost/internal/agent/runtime"
 	"github.com/qiangli/outpost/internal/agent/sandbox"
 	"github.com/qiangli/outpost/internal/agent/selfcheck"
@@ -880,6 +881,19 @@ func startCmd() *cobra.Command {
 				}
 			}
 
+			// Cloudbox-pushed CI-repair trigger (POST /admin/repair). Only on
+			// a paired host — the route is tunnel-fronted and cloudbox is what
+			// pushes a repair. The repair program is configured via
+			// OUTPOST_REPAIR_CMD (argv, space-split); empty mounts the route
+			// but replies 503 until set, so the schedule-cron pull backstop
+			// stays the reliable path. See the umbrella auto-fix pipeline doc.
+			var repairExec *repair.Executor
+			if fc.AccessToken != "" {
+				repairExec = repair.New(repair.Config{
+					Command: strings.Fields(os.Getenv("OUTPOST_REPAIR_CMD")),
+				})
+			}
+
 			// Persisted boot counter, reported to cloudbox each /apps
 			// poll so the fleet health-gate can detect a crash-loop
 			// (boot_count jumping > 1 inside a rollout bake window).
@@ -1553,6 +1567,9 @@ func startCmd() *cobra.Command {
 				},
 				MountWarmRoute: func(rg *gin.RouterGroup) {
 					warm.MountRoute(rg, warmExec)
+				},
+				MountRepairRoute: func(rg *gin.RouterGroup) {
+					repair.MountRoute(rg, repairExec)
 				},
 				UpdateMode: func() string {
 					cur, _ := conf.LoadFile(cfgPath)

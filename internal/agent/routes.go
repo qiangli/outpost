@@ -140,6 +140,14 @@ type Deps struct {
 	// package.
 	MountWarmRoute func(rg *gin.RouterGroup)
 
+	// MountRepairRoute, if non-nil, is invoked during RegisterRoutes with
+	// the root group so the CI-repair package can attach POST /admin/repair
+	// (cloudbox-driven trigger to start a band-escalating self-fix on this
+	// host). Same trust model as MountWarmRoute — tunnel-as-auth-boundary,
+	// no bearer at the HTTP layer — and mounted only on paired hosts.
+	// Decoupled as a closure so agent doesn't import the repair package.
+	MountRepairRoute func(rg *gin.RouterGroup)
+
 	// UpdateMode is the closure /apps calls to surface the current
 	// host's update policy (auto/manual/never). Reported alongside
 	// version/os/arch so cloudbox's SPA can render the right badge
@@ -257,6 +265,9 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	// Cloudbox-driven warm-serving control (POST /admin/warm). Same
 	// tunnel-as-auth-boundary model + paired-only gate as the upgrade
 	// route above.
+	if deps.MountRepairRoute != nil && deps.AccessToken != "" {
+		deps.MountRepairRoute(rg)
+	}
 	if deps.MountWarmRoute != nil && deps.AccessToken != "" {
 		deps.MountWarmRoute(rg)
 	}
