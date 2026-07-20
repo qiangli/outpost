@@ -55,7 +55,8 @@ type BuiltinsParams struct {
 	Cluster                *bool           `json:"cluster,omitempty"`
 	// ClusterMode selects which runtime joins the cluster:
 	// "" / "vkpodman" / "vk-podman" → libpod virtual-kubelet (default).
-	// "vk-ollama" → native-process (ollama) virtual-kubelet backend.
+	// "vk-native" → generic native-process virtual-kubelet backend.
+	// "vk-ollama" → legacy native-process (ollama) virtual-kubelet backend.
 	// "agent" → real `k3s agent` subprocess (Linux only). Pointer-string
 	// so nil = "leave unchanged"; non-nil with an unknown value is
 	// rejected by SetBuiltins with a 400-class APIError. The persisted
@@ -347,13 +348,13 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 		// ("" / "vkpodman" → vk-podman) and persist the normalized
 		// canonical value so on-disk configs converge.
 		switch strings.ToLower(strings.TrimSpace(*p.ClusterMode)) {
-		case "", "vkpodman", "vk-podman", "agent", "vk-ollama":
+		case "", "vkpodman", "vk-podman", "agent", "vk-native", "vk-ollama":
 			if fc.Cluster == nil {
 				fc.Cluster = &conf.ClusterConfig{}
 			}
 			fc.Cluster.Mode = conf.NormalizeClusterMode(*p.ClusterMode)
 		default:
-			return BuiltinsResult{}, badRequest("cluster_mode must be one of agent / vk-podman / vk-ollama (alias: vkpodman)")
+			return BuiltinsResult{}, badRequest("cluster_mode must be one of agent / vk-podman / vk-native / vk-ollama (alias: vkpodman)")
 		}
 	}
 	// UpdateMode is live-read by the upgrade worker on each

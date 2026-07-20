@@ -60,6 +60,26 @@ func newOllamaTestBackend(t *testing.T) (*ollamaBackend, string) {
 	return be.(*ollamaBackend), dir
 }
 
+func TestNativeProcessBackend_DefaultImages(t *testing.T) {
+	nativeRaw, err := NewNativeProcessBackend(NativeProcessConfig{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewNativeProcessBackend: %v", err)
+	}
+	native := nativeRaw.(*nativeProcessBackend)
+	if native.image != DefaultNativeProcessImage {
+		t.Errorf("native default image = %q, want %q", native.image, DefaultNativeProcessImage)
+	}
+
+	ollamaRaw, err := NewOllamaBackend(OllamaConfig{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewOllamaBackend: %v", err)
+	}
+	ollama := ollamaRaw.(*ollamaBackend)
+	if ollama.image != DefaultOllamaImage {
+		t.Errorf("ollama default image = %q, want %q", ollama.image, DefaultOllamaImage)
+	}
+}
+
 // makeHelperPod builds a Pod whose container execs this test binary back
 // into TestHelperProcess in the given mode. For "serve" it declares a
 // containerPort, allocates a hostPort the same way the Provider would,

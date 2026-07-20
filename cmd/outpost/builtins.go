@@ -227,11 +227,11 @@ func builtinsSetCmd() *cobra.Command {
 				// while the legacy "vkpodman" spelling keeps resolving.
 				raw := strings.ToLower(strings.TrimSpace(clusterMode))
 				switch raw {
-				case "agent", "vk-podman", "vkpodman", "vk-ollama":
+				case "agent", "vk-podman", "vkpodman", "vk-native", "vk-ollama":
 					m := conf.NormalizeClusterMode(raw)
 					params.ClusterMode = &m
 				default:
-					return fmt.Errorf("--cluster-mode must be agent|vk-podman|vk-ollama (alias: vkpodman), got %q", clusterMode)
+					return fmt.Errorf("--cluster-mode must be agent|vk-podman|vk-native|vk-ollama (alias: vkpodman), got %q", clusterMode)
 				}
 			}
 			// --update=auto|manual|never is the canonical knob; the
@@ -376,7 +376,7 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&ycodeShareRequireLogin, "ycode-share-require-login", "", "on|off — require cloudbox OS-password elevation for the 'ycode' app (default off; on = OS password popup like /shell)")
 	cmd.Flags().StringToStringVar(&ycodeShareSurfaces, "ycode-share-surface", nil, "Toggle a ycode-share surface, repeatable: --ycode-share-surface ycode-canvas=on --ycode-share-surface ycode-git=on")
 	cmd.Flags().StringVar(&cluster, "cluster", "", "on|off — join cloudbox virtual-podman cluster")
-	cmd.Flags().StringVar(&clusterMode, "cluster-mode", "", "agent|vk-podman|vk-ollama — agent (real k3s-agent in the outpost-runtime container, conformance-track), vk-podman (v1 virtual-kubelet shim landing pods as local podman containers; alias: vkpodman), or vk-ollama (virtual-kubelet landing pods as native host processes for Metal/CUDA workloads)")
+	cmd.Flags().StringVar(&clusterMode, "cluster-mode", "", "agent|vk-podman|vk-native|vk-ollama — agent (real k3s-agent in the outpost-runtime container, conformance-track), vk-podman (v1 virtual-kubelet shim landing pods as local podman containers; alias: vkpodman), vk-native (virtual-kubelet landing pods as host processes), or vk-ollama (legacy native-process mode for Metal/CUDA workloads)")
 	cmd.Flags().StringVar(&updateMode, "update", "", "auto|manual|never — policy for cloudbox-pushed self-upgrades")
 	cmd.Flags().StringVar(&autoUpgradeLegacy, "auto-upgrade", "", "deprecated alias for --update (on→auto, off→never)")
 	_ = cmd.Flags().MarkDeprecated("auto-upgrade", "use --update=auto|manual|never")

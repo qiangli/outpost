@@ -19,14 +19,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// ollamaBackend realizes Pods as **native host processes** instead of
-// libpod containers — the other half of the Backend seam (see
-// backend.go). The motivating case is a llama.cpp / ollama server that
-// needs direct Metal/CUDA access the podman-in-a-VM substrate can't
-// give it on macOS, but the mechanism is generic: any Pod carrying the
-// marker image (default dhnt.io/ollama) becomes a detached `exec` of
-// whatever its container Command/Args/Env describe — `ollama serve`,
-// `llama-server`, `rpc-server`, or an arbitrary command in tests.
+// nativeProcessBackend realizes Pods as native host processes instead
+// of libpod containers — the other half of the Backend seam (see
+// backend.go). A Pod becomes a detached exec of whatever its container
+// Command/Args/Env describe: ollama serve, llama-server, rpc-server, or
+// an arbitrary command in tests.
 //
 // There is no daemon to ask "what am I running"; the backend persists
 // its own JSON registry (keyed by pod UID) under DataDir so a vknode
@@ -37,14 +34,15 @@ import (
 // All process-control primitives (launch detached, is-it-alive,
 // terminate-the-tree) are pulled out behind struct-field hooks so the
 // OS-specific pieces live in build-tagged siblings
-// (backend_ollama_unix.go / backend_ollama_windows.go) and tests can
+// (backend_ollama_unix.go / backend_ollama_windows.go; legacy names)
+// and tests can
 // swap in a throwaway helper process.
-type ollamaBackend struct {
+type nativeProcessBackend struct {
 	dataDir string // registry + per-process log dir
 	hostIP  string // readiness-dial / base-URL host (default 127.0.0.1)
 	image   string // marker image recorded when a Pod omits one
 
-	// Hooks — defaulted by NewOllamaBackend, overridable in tests.
+	// Hooks — defaulted by NewNativeProcessBackend, overridable in tests.
 	lookPath  func(name string) (string, error)
 	launch    func(ctx context.Context, spec launchSpec) (int, error)
 	alive     func(pid int) bool
@@ -54,28 +52,35 @@ type ollamaBackend struct {
 	mu sync.Mutex // serializes registry read-modify-write
 }
 
-// OllamaConfig configures a native-process Backend. Only DataDir is
+// NativeProcessConfig configures a native-process Backend. Only DataDir is
 // required; the rest fall back to sane defaults.
-type OllamaConfig struct {
+type NativeProcessConfig struct {
 	DataDir string // where the JSON registry + process logs live
 	HostIP  string // host the process is reachable on (default 127.0.0.1)
-	Image   string // marker image (default dhnt.io/ollama)
+	Image   string // image recorded when a Pod omits one
 }
 
-// DefaultOllamaImage is the marker image a Pod carries to opt into the
-// native-process backend instead of the podman one.
+// OllamaConfig is the legacy config alias for NewOllamaBackend.
+type OllamaConfig = NativeProcessConfig
+
+// DefaultNativeProcessImage is the placeholder image recorded when a
+// native-process Pod omits spec.containers[].image.
+const DefaultNativeProcessImage = "dhnt.io/native-process"
+
+// DefaultOllamaImage is retained for manifests/tests that use the
+// original ollama marker image.
 const DefaultOllamaImage = "dhnt.io/ollama"
 
-// NewOllamaBackend returns a Backend that realizes Pods as native host
+// NewNativeProcessBackend returns a Backend that realizes Pods as native host
 // processes, persisting its process registry under cfg.DataDir.
-func NewOllamaBackend(cfg OllamaConfig) (Backend, error) {
+func NewNativeProcessBackend(cfg NativeProcessConfig) (Backend, error) {
 	if cfg.DataDir == "" {
-		return nil, fmt.Errorf("vknode: ollama backend requires a DataDir")
+		return nil, fmt.Errorf("vknode: native-process backend requires a DataDir")
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
-		return nil, fmt.Errorf("vknode: create ollama data dir: %w", err)
+		return nil, fmt.Errorf("vknode: create native-process data dir: %w", err)
 	}
-	b := &ollamaBackend{
+	b := &nativeProcessBackend{
 		dataDir:   cfg.DataDir,
 		hostIP:    cfg.HostIP,
 		image:     cfg.Image,
@@ -88,11 +93,24 @@ func NewOllamaBackend(cfg OllamaConfig) (Backend, error) {
 		b.hostIP = "127.0.0.1"
 	}
 	if b.image == "" {
-		b.image = DefaultOllamaImage
+		b.image = DefaultNativeProcessImage
 	}
 	b.ready = b.tcpReady
 	return b, nil
 }
+
+// NewOllamaBackend returns a native-process Backend using the legacy
+// ollama marker image by default.
+func NewOllamaBackend(cfg OllamaConfig) (Backend, error) {
+	if cfg.Image == "" {
+		cfg.Image = DefaultOllamaImage
+	}
+	return NewNativeProcessBackend(cfg)
+}
+
+// ollamaBackend is a compatibility alias for older tests/callers that
+// reached into the unexported concrete type inside package vknode.
+type ollamaBackend = nativeProcessBackend
 
 // procEntry is one persisted registry row: everything needed to adopt,
 // probe, hydrate ports for, and terminate a process across a vknode
@@ -135,12 +153,12 @@ type launchSpec struct {
 // and return without launching a second copy. Otherwise we exec the
 // Pod's Command/Args/Env as a detached process and persist a fresh
 // registry row.
-func (b *ollamaBackend) Ensure(ctx context.Context, pod *corev1.Pod) error {
+func (b *nativeProcessBackend) Ensure(ctx context.Context, pod *corev1.Pod) error {
 	if pod == nil {
 		return fmt.Errorf("vknode: nil Pod")
 	}
 	if n := len(pod.Spec.Containers); n != 1 {
-		return fmt.Errorf("vknode: ollama backend supports exactly one container per Pod (got %d)", n)
+		return fmt.Errorf("vknode: native-process backend supports exactly one container per Pod (got %d)", n)
 	}
 	uid := string(pod.UID)
 	if uid == "" {
@@ -169,7 +187,7 @@ func (b *ollamaBackend) Ensure(ctx context.Context, pod *corev1.Pod) error {
 	c := pod.Spec.Containers[0]
 	argv := append(append([]string{}, c.Command...), c.Args...)
 	if len(argv) == 0 {
-		return fmt.Errorf("vknode: pod %s has empty command (ollama backend needs an exec target)",
+		return fmt.Errorf("vknode: pod %s has empty command (native-process backend needs an exec target)",
 			podKey(pod.Namespace, pod.Name))
 	}
 	bin, err := b.lookPath(argv[0])
@@ -224,7 +242,7 @@ func (b *ollamaBackend) Ensure(ctx context.Context, pod *corev1.Pod) error {
 // Delete terminates the pod's process (whole group, best-effort) and
 // drops its registry row. A missing/already-gone process is not an
 // error — the row is removed regardless so the slot frees up.
-func (b *ollamaBackend) Delete(ctx context.Context, pod *corev1.Pod) error {
+func (b *nativeProcessBackend) Delete(ctx context.Context, pod *corev1.Pod) error {
 	if pod == nil {
 		return nil
 	}
@@ -263,7 +281,7 @@ func (b *ollamaBackend) Delete(ctx context.Context, pod *corev1.Pod) error {
 // reconciler recreates it. A live-but-not-yet-ready process is Pending
 // with reason ContainerCreating; a live + readiness-passing process is
 // Running.
-func (b *ollamaBackend) Status(ctx context.Context, pod *corev1.Pod) (*corev1.PodStatus, error) {
+func (b *nativeProcessBackend) Status(ctx context.Context, pod *corev1.Pod) (*corev1.PodStatus, error) {
 	if pod == nil {
 		return nil, nil
 	}
@@ -296,7 +314,7 @@ func (b *ollamaBackend) Status(ctx context.Context, pod *corev1.Pod) (*corev1.Po
 // apiserver remains the source of truth for the full spec) but carries
 // the identity + resolved ports so the Provider's transient-app
 // republish has what it needs.
-func (b *ollamaBackend) List(ctx context.Context) ([]*corev1.Pod, error) {
+func (b *nativeProcessBackend) List(ctx context.Context) ([]*corev1.Pod, error) {
 	b.mu.Lock()
 	reg, err := b.loadRegistry()
 	b.mu.Unlock()
@@ -335,7 +353,7 @@ func (b *ollamaBackend) List(ctx context.Context) ([]*corev1.Pod, error) {
 // HydratePorts merges the registry's resolved host ports back onto
 // pod.Spec in place. Best-effort: a missing registry row is a no-op,
 // never an error.
-func (b *ollamaBackend) HydratePorts(ctx context.Context, pod *corev1.Pod) error {
+func (b *nativeProcessBackend) HydratePorts(ctx context.Context, pod *corev1.Pod) error {
 	if pod == nil {
 		return nil
 	}
@@ -353,14 +371,14 @@ func (b *ollamaBackend) HydratePorts(ctx context.Context, pod *corev1.Pod) error
 
 // --- registry persistence ---------------------------------------------
 
-func (b *ollamaBackend) registryPath() string {
+func (b *nativeProcessBackend) registryPath() string {
 	return filepath.Join(b.dataDir, "registry.json")
 }
 
 // loadRegistry reads the on-disk registry. A missing file is an empty
 // registry, not an error. Caller holds b.mu (or is read-only at
 // startup).
-func (b *ollamaBackend) loadRegistry() (map[string]procEntry, error) {
+func (b *nativeProcessBackend) loadRegistry() (map[string]procEntry, error) {
 	data, err := os.ReadFile(b.registryPath())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -380,7 +398,7 @@ func (b *ollamaBackend) loadRegistry() (map[string]procEntry, error) {
 
 // saveRegistry writes the registry atomically (temp file + rename) so a
 // crash mid-write can't corrupt the file. Caller holds b.mu.
-func (b *ollamaBackend) saveRegistry(reg map[string]procEntry) error {
+func (b *nativeProcessBackend) saveRegistry(reg map[string]procEntry) error {
 	data, err := json.MarshalIndent(reg, "", "  ")
 	if err != nil {
 		return err
@@ -399,7 +417,7 @@ func (b *ollamaBackend) saveRegistry(reg map[string]procEntry) error {
 // must accept a TCP connection (or answer an HTTP GET /). This mirrors
 // the "port listening or HTTP GET /" contract — a TCP connect succeeds
 // for both a raw listener and an HTTP server, so it's the cheaper check.
-func (b *ollamaBackend) tcpReady(ctx context.Context, e procEntry) bool {
+func (b *nativeProcessBackend) tcpReady(ctx context.Context, e procEntry) bool {
 	if len(e.Ports) == 0 {
 		return true
 	}
@@ -422,7 +440,7 @@ func (b *ollamaBackend) tcpReady(ctx context.Context, e procEntry) bool {
 
 // --- status builders ---------------------------------------------------
 
-func (b *ollamaBackend) runningStatus(cname string, e procEntry) *corev1.PodStatus {
+func (b *nativeProcessBackend) runningStatus(cname string, e procEntry) *corev1.PodStatus {
 	started := metav1.NewTime(e.StartedAt)
 	cs := corev1.ContainerStatus{
 		Name:        cname,

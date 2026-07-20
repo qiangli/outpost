@@ -244,7 +244,7 @@ func TestEnsureAppSSOSecrets(t *testing.T) {
 
 // TestNormalizeClusterMode locks in the back-compat aliases — the
 // persisted "vkpodman" wire value and an empty Mode both resolve to
-// vk-podman, while the three canonical modes round-trip unchanged.
+// vk-podman, while the canonical modes round-trip unchanged.
 func TestNormalizeClusterMode(t *testing.T) {
 	cases := map[string]string{
 		"":           ClusterModeVKPodman,
@@ -254,6 +254,8 @@ func TestNormalizeClusterMode(t *testing.T) {
 		"vk-podman":  ClusterModeVKPodman,
 		"agent":      ClusterModeAgentMode,
 		"AGENT":      ClusterModeAgentMode,
+		"vk-native":  ClusterModeVKNative,
+		"VK-Native":  ClusterModeVKNative,
 		"vk-ollama":  ClusterModeVKOllama,
 		"VK-Ollama":  ClusterModeVKOllama,
 	}
@@ -266,7 +268,7 @@ func TestNormalizeClusterMode(t *testing.T) {
 
 // TestClusterModeHelpers verifies the predicate helpers off the
 // normalized mode, including the load-bearing rule that "vkpodman" and
-// "" select neither agent nor vk-ollama (i.e. the libpod vk-podman
+// "" select neither agent nor native-process (i.e. the libpod vk-podman
 // backend).
 func TestClusterModeHelpers(t *testing.T) {
 	for _, mode := range []string{"", "vkpodman", "vk-podman"} {
@@ -274,22 +276,31 @@ func TestClusterModeHelpers(t *testing.T) {
 		if c.ClusterModeAgent() {
 			t.Errorf("Mode=%q: ClusterModeAgent() = true, want false", mode)
 		}
+		if c.ClusterModeVKNative() {
+			t.Errorf("Mode=%q: ClusterModeVKNative() = true, want false", mode)
+		}
 		if c.ClusterModeVKOllama() {
 			t.Errorf("Mode=%q: ClusterModeVKOllama() = true, want false", mode)
+		}
+		if c.ClusterModeNativeProcess() {
+			t.Errorf("Mode=%q: ClusterModeNativeProcess() = true, want false", mode)
 		}
 		if c.ClusterMode() != ClusterModeVKPodman {
 			t.Errorf("Mode=%q: ClusterMode() = %q, want vk-podman", mode, c.ClusterMode())
 		}
 	}
-	if c := (&ClusterConfig{Mode: "agent"}); !c.ClusterModeAgent() || c.ClusterModeVKOllama() {
-		t.Errorf("Mode=agent: helpers wrong (agent=%v ollama=%v)", c.ClusterModeAgent(), c.ClusterModeVKOllama())
+	if c := (&ClusterConfig{Mode: "agent"}); !c.ClusterModeAgent() || c.ClusterModeVKNative() || c.ClusterModeVKOllama() || c.ClusterModeNativeProcess() {
+		t.Errorf("Mode=agent: helpers wrong (agent=%v native=%v ollama=%v nativeProcess=%v)", c.ClusterModeAgent(), c.ClusterModeVKNative(), c.ClusterModeVKOllama(), c.ClusterModeNativeProcess())
 	}
-	if c := (&ClusterConfig{Mode: "vk-ollama"}); !c.ClusterModeVKOllama() || c.ClusterModeAgent() {
-		t.Errorf("Mode=vk-ollama: helpers wrong (agent=%v ollama=%v)", c.ClusterModeAgent(), c.ClusterModeVKOllama())
+	if c := (&ClusterConfig{Mode: "vk-native"}); !c.ClusterModeVKNative() || !c.ClusterModeNativeProcess() || c.ClusterModeAgent() || c.ClusterModeVKOllama() {
+		t.Errorf("Mode=vk-native: helpers wrong (native=%v nativeProcess=%v agent=%v ollama=%v)", c.ClusterModeVKNative(), c.ClusterModeNativeProcess(), c.ClusterModeAgent(), c.ClusterModeVKOllama())
+	}
+	if c := (&ClusterConfig{Mode: "vk-ollama"}); !c.ClusterModeVKOllama() || !c.ClusterModeNativeProcess() || c.ClusterModeAgent() || c.ClusterModeVKNative() {
+		t.Errorf("Mode=vk-ollama: helpers wrong (agent=%v native=%v ollama=%v nativeProcess=%v)", c.ClusterModeAgent(), c.ClusterModeVKNative(), c.ClusterModeVKOllama(), c.ClusterModeNativeProcess())
 	}
 	// nil receiver normalizes like an empty Mode.
 	var nilc *ClusterConfig
-	if nilc.ClusterMode() != ClusterModeVKPodman || nilc.ClusterModeAgent() || nilc.ClusterModeVKOllama() {
+	if nilc.ClusterMode() != ClusterModeVKPodman || nilc.ClusterModeAgent() || nilc.ClusterModeVKNative() || nilc.ClusterModeVKOllama() || nilc.ClusterModeNativeProcess() {
 		t.Errorf("nil receiver: helpers wrong")
 	}
 }

@@ -660,15 +660,17 @@ type ClusterConfig struct {
 	//   - "" or "vkpodman" or "vk-podman" — v1 virtual-kubelet that
 	//     translates k8s Pods to local podman containers (per-outpost
 	//     pod-shape limits: no PodIP, PVC, init/sidecar containers, etc.)
-	//   - "vk-ollama" — virtual-kubelet with the native ollama backend:
-	//     Pods become native host processes (Metal/CUDA-capable).
+	//   - "vk-native" — virtual-kubelet with the generic native-process
+	//     backend: Pods become host processes on this OS.
+	//   - "vk-ollama" — legacy/specialized native-process mode with the
+	//     ollama marker image and data dir (Metal/CUDA-capable).
 	//   - "agent" — real `k3s agent` subprocess that joins as a normal
 	//     kubelet via the matrix-tunnel STCP visitor (Phase 1 of the
 	//     "real shared k8s" plan; Linux-only).
 	// The "" and "vkpodman" spellings are back-compat aliases for
 	// vk-podman — see NormalizeClusterMode. Cloudbox does not push a Mode
 	// at pairing time — operator sets this via `outpost builtins set
-	// --cluster-mode=vk-ollama`.
+	// --cluster-mode=vk-native`.
 	Mode string `json:"mode,omitempty"`
 
 	// APIURL is the cluster's apiserver — typically the cloudbox-proxied
@@ -780,18 +782,20 @@ type ClusterConfig struct {
 }
 
 // Canonical --cluster-mode values, after normalization. These are the
-// three modes the operator selects between:
+// modes the operator selects between:
 //
 //   - ClusterModeAgentMode  — real `k3s agent` subprocess (libpod-hosted
 //     kubelet) joining via the matrix-tunnel STCP visitor.
 //   - ClusterModeVKPodman   — v1 virtual-kubelet, Pods → local libpod
 //     containers (vknode podmanBackend).
+//   - ClusterModeVKNative   — virtual-kubelet, Pods → native host
+//     processes (vknode nativeProcessBackend).
 //   - ClusterModeVKOllama   — virtual-kubelet, Pods → native host
-//     processes (vknode ollamaBackend), for Metal/CUDA workloads the
-//     podman-in-a-VM substrate can't serve.
+//     processes using the legacy ollama defaults.
 const (
 	ClusterModeAgentMode = "agent"
 	ClusterModeVKPodman  = "vk-podman"
+	ClusterModeVKNative  = "vk-native"
 	ClusterModeVKOllama  = "vk-ollama"
 )
 
@@ -811,6 +815,8 @@ func NormalizeClusterMode(mode string) string {
 		return ClusterModeVKPodman
 	case ClusterModeAgentMode:
 		return ClusterModeAgentMode
+	case ClusterModeVKNative:
+		return ClusterModeVKNative
 	case ClusterModeVKOllama:
 		return ClusterModeVKOllama
 	default:
@@ -835,11 +841,23 @@ func (c *ClusterConfig) ClusterModeAgent() bool {
 	return c.ClusterMode() == ClusterModeAgentMode
 }
 
-// ClusterModeVKOllama reports whether the outpost should run the
-// virtual-kubelet with the NATIVE ollama (host-process) backend rather
+// ClusterModeVKNative reports whether the outpost should run the
+// virtual-kubelet with the generic native host-process backend rather
 // than the libpod backend.
+func (c *ClusterConfig) ClusterModeVKNative() bool {
+	return c.ClusterMode() == ClusterModeVKNative
+}
+
+// ClusterModeVKOllama reports whether the outpost should run the
+// virtual-kubelet with the legacy ollama host-process backend.
 func (c *ClusterConfig) ClusterModeVKOllama() bool {
 	return c.ClusterMode() == ClusterModeVKOllama
+}
+
+// ClusterModeNativeProcess reports whether the selected mode uses
+// vknode's native host-process backend family.
+func (c *ClusterConfig) ClusterModeNativeProcess() bool {
+	return c.ClusterModeVKNative() || c.ClusterModeVKOllama()
 }
 
 // OutboundConfig is one local mount that proxies to a remote outpost.
