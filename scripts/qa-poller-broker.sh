@@ -14,6 +14,8 @@
 #
 # Use it for a shared host that must not hold a write credential (e.g. a shared
 # Windows box) — the standing token-holding qa-poller.sh is for OWNED hosts.
+# For the linux lane via a LOCAL podman container (no remote host needed), see
+# qa-poller-podman.sh.
 #
 # Config (env):
 #   REPO           owner/repo of the release repo (default qiangli/outpost)

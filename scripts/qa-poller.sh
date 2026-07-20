@@ -16,6 +16,9 @@
 # Host prereq: bashy only (self-provisions git/coreutils/go) + a GitHub token
 # (GITHUB_TOKEN, else `bashy gh auth token`, else `bashy secrets env`).
 # See dhnt docs project_sdlc_pipeline_4_crossplatform.
+# Variants: qa-poller-broker.sh (smoke on a REMOTE host over SSH, no token there)
+# and qa-poller-podman.sh (smoke in a LOCAL podman container — linux lane without
+# a Linux host). docs/qa-poller-host-setup.md indexes all three.
 set -uo pipefail
 export PATH="$HOME/bin:$PATH"
 REPO="${OUTPOST_REPO:-qiangli/outpost}"
