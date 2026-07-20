@@ -116,16 +116,19 @@ type ollamaBackend = nativeProcessBackend
 // probe, hydrate ports for, and terminate a process across a vknode
 // restart. Serialized to <dataDir>/registry.json keyed by pod UID.
 type procEntry struct {
-	Namespace string            `json:"namespace"`
-	Name      string            `json:"name"`
-	Container string            `json:"container"`
-	Image     string            `json:"image"`
-	Command   []string          `json:"command,omitempty"`
-	Args      []string          `json:"args,omitempty"`
-	Env       map[string]string `json:"env,omitempty"`
-	Ports     []procPort        `json:"ports,omitempty"`
-	PID       int               `json:"pid"`
-	StartedAt time.Time         `json:"started_at"`
+	Namespace  string            `json:"namespace"`
+	Name       string            `json:"name"`
+	Container  string            `json:"container"`
+	Image      string            `json:"image"`
+	Command    []string          `json:"command,omitempty"`
+	Args       []string          `json:"args,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+	Ports      []procPort        `json:"ports,omitempty"`
+	PID        int               `json:"pid"`
+	StartedAt  time.Time         `json:"started_at"`
+	Exited     bool              `json:"exited,omitempty"`
+	ExitCode   int32             `json:"exit_code,omitempty"`
+	FinishedAt time.Time         `json:"finished_at,omitempty"`
 }
 
 // procPort records one resolved containerPort→hostPort mapping. For a
@@ -145,6 +148,7 @@ type launchSpec struct {
 	Env     []string // full environment ("K=V" entries)
 	Dir     string   // working directory ("" = inherit)
 	LogPath string   // file to redirect stdout+stderr into
+	OnExit  func(pid int, exitCode int32, finishedAt time.Time)
 }
 
 // Ensure starts (or adopts) the native process backing pod. Idempotent
@@ -183,6 +187,10 @@ func (b *nativeProcessBackend) Ensure(ctx context.Context, pod *corev1.Pod) erro
 			"pod", podKey(pod.Namespace, pod.Name), "pid", e.PID)
 		return nil
 	}
+	if e, ok := reg[uid]; ok && e.Exited {
+		hydratePodPortsFromEntry(pod, e)
+		return nil
+	}
 
 	c := pod.Spec.Containers[0]
 	argv := append(append([]string{}, c.Command...), c.Args...)
@@ -218,6 +226,9 @@ func (b *nativeProcessBackend) Ensure(ctx context.Context, pod *corev1.Pod) erro
 		Env:     mergeEnv(os.Environ(), c.Env),
 		Dir:     c.WorkingDir,
 		LogPath: filepath.Join(b.dataDir, uid+".log"),
+		OnExit: func(pid int, exitCode int32, finishedAt time.Time) {
+			b.recordExit(uid, pid, exitCode, finishedAt)
+		},
 	}
 	pid, err := b.launch(ctx, spec)
 	if err != nil {
@@ -275,8 +286,9 @@ func (b *nativeProcessBackend) Delete(ctx context.Context, pod *corev1.Pod) erro
 	return nil
 }
 
-// Status reports the live PodStatus for pod's process. A vanished
-// process (no registry row, or the PID no longer alive) returns
+// Status reports the live PodStatus for pod's process. A terminal
+// process returns Succeeded/Failed with the recorded exit code. A vanished
+// process (no registry row, or the PID no longer alive before exit was captured) returns
 // (nil, nil) so the Provider surfaces Pending/ContainerMissing and the
 // reconciler recreates it. A live-but-not-yet-ready process is Pending
 // with reason ContainerCreating; a live + readiness-passing process is
@@ -293,13 +305,19 @@ func (b *nativeProcessBackend) Status(ctx context.Context, pod *corev1.Pod) (*co
 	}
 	e, ok := reg[string(pod.UID)]
 	b.mu.Unlock()
-	if !ok || !b.alive(e.PID) {
+	if !ok {
 		return nil, nil
 	}
 
 	cname := e.Container
 	if len(pod.Spec.Containers) > 0 && pod.Spec.Containers[0].Name != "" {
 		cname = pod.Spec.Containers[0].Name
+	}
+	if e.Exited {
+		return b.terminatedStatus(cname, e), nil
+	}
+	if !b.alive(e.PID) {
+		return nil, nil
 	}
 
 	if b.ready(ctx, e) {
@@ -410,6 +428,28 @@ func (b *nativeProcessBackend) saveRegistry(reg map[string]procEntry) error {
 	return os.Rename(tmp, b.registryPath())
 }
 
+func (b *nativeProcessBackend) recordExit(uid string, pid int, exitCode int32, finishedAt time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	reg, err := b.loadRegistry()
+	if err != nil {
+		slog.Warn("vknode: load process registry after exit", "uid", uid, "err", err)
+		return
+	}
+	e, ok := reg[uid]
+	if !ok || e.Exited || e.PID != pid {
+		return
+	}
+	e.Exited = true
+	e.ExitCode = exitCode
+	e.FinishedAt = finishedAt
+	reg[uid] = e
+	if err := b.saveRegistry(reg); err != nil {
+		slog.Warn("vknode: persist process exit", "uid", uid, "pid", e.PID, "exitCode", exitCode, "err", err)
+	}
+}
+
 // --- readiness ---------------------------------------------------------
 
 // tcpReady is the default readiness probe: a process with no published
@@ -464,6 +504,43 @@ func (b *nativeProcessBackend) runningStatus(cname string, e procEntry) *corev1.
 	}
 }
 
+func (b *nativeProcessBackend) terminatedStatus(cname string, e procEntry) *corev1.PodStatus {
+	started := metav1.NewTime(e.StartedAt)
+	finished := metav1.NewTime(e.FinishedAt)
+	reason := "Error"
+	phase := corev1.PodFailed
+	if e.ExitCode == 0 {
+		reason = "Completed"
+		phase = corev1.PodSucceeded
+	}
+	cs := corev1.ContainerStatus{
+		Name:        cname,
+		Image:       e.Image,
+		ContainerID: fmt.Sprintf("process://%d", e.PID),
+		Ready:       false,
+		State: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{
+				ExitCode:    e.ExitCode,
+				Reason:      reason,
+				ContainerID: fmt.Sprintf("process://%d", e.PID),
+				StartedAt:   started,
+				FinishedAt:  finished,
+			},
+		},
+	}
+	now := metav1.Now()
+	return &corev1.PodStatus{
+		Phase:             phase,
+		HostIP:            b.hostIP,
+		StartTime:         &started,
+		ContainerStatuses: []corev1.ContainerStatus{cs},
+		Conditions: []corev1.PodCondition{
+			{Type: corev1.PodReady, Status: corev1.ConditionFalse, Reason: "ContainersNotReady", LastTransitionTime: now},
+			{Type: corev1.ContainersReady, Status: corev1.ConditionFalse, Reason: "ContainersNotReady", LastTransitionTime: now},
+		},
+	}
+}
+
 func pendingStatus(cname string, e procEntry) *corev1.PodStatus {
 	cs := corev1.ContainerStatus{
 		Name:        cname,
@@ -495,6 +572,19 @@ func defaultLookPath(name string) (string, error) {
 		return name, nil
 	}
 	return exec.LookPath(name)
+}
+
+func exitCodeFromWait(err error, state *os.ProcessState) int32 {
+	if err == nil {
+		return 0
+	}
+	if ee, ok := err.(*exec.ExitError); ok {
+		return int32(ee.ExitCode())
+	}
+	if state != nil {
+		return int32(state.ExitCode())
+	}
+	return 1
 }
 
 // envMap flattens a container's env (Value-only — ValueFrom is rejected

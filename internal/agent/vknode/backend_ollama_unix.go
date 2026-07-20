@@ -39,7 +39,12 @@ func defaultLaunch(_ context.Context, spec launchSpec) (int, error) {
 		return 0, err
 	}
 	pid := cmd.Process.Pid
-	go func() { _ = cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		if spec.OnExit != nil {
+			spec.OnExit(pid, exitCodeFromWait(err, cmd.ProcessState), time.Now())
+		}
+	}()
 	return pid, nil
 }
 
