@@ -424,7 +424,8 @@ for agent calls).
 
 Save = restart (the cluster runtime is built once at boot). Default
 cluster mode is `agent` (real k3s-agent in a podman-supervised
-container); `vkpodman` is the legacy alternative and opt-in via the
+container); `vk-native` runs scheduled pods as host processes, and
+`vkpodman` is the legacy container-backed alternative opt-in via the
 `--cluster-mode=vkpodman` flag on `start`. Outposts only join their
 owning cloudbox's cluster — the older paste-a-kubeconfig path
 (`outpost_set_kubeconfig`) was removed; cloudbox provides the kubeconfig

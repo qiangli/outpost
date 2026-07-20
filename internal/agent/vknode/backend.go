@@ -16,10 +16,10 @@ import (
 //   - podmanBackend (today) — Pods become libpod containers. On macOS/
 //     Windows those run inside podman's Linux VM, so the host GPU is
 //     not visible to them.
-//   - a future native backend — Pods become native host processes
-//     (e.g. a llama.cpp/ollama server), keeping full Metal/CUDA access.
-//     That is the whole point of the seam: the Provider, NodeProvider,
-//     cloudbox bootstrap, access gate, and kubeconfig plumbing are all
+//   - nativeProcessBackend — Pods become native host processes (e.g.
+//     a CLI, llama.cpp, or an ollama server), keeping direct access to
+//     the host OS and hardware. The Provider, NodeProvider, cloudbox
+//     bootstrap, access gate, and kubeconfig plumbing are all
 //     backend-agnostic and get reused unchanged.
 //
 // All methods are called from the Provider's PodLifecycleHandler

@@ -2125,17 +2125,29 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 		return errors.New("ClusterNodeName empty (agent_name unset?)")
 	}
 
-	// vk-ollama realizes Pods as NATIVE host processes (vknode
-	// ollamaBackend), so it does NOT need a local podman socket — that
-	// is the whole point (Metal/CUDA workloads the podman-in-a-VM
-	// substrate can't serve). The libpod vk-podman path still requires
-	// podman. Build the backend up front; an empty backend means the
-	// runner falls back to the podman substrate keyed off bt.Socket.
+	// Native-process modes realize Pods as host processes, so they do
+	// NOT need a local podman socket. The libpod vk-podman path still
+	// requires podman. Build the backend up front; an empty backend
+	// means the runner falls back to the podman substrate keyed off
+	// bt.Socket.
 	var (
 		backend    vknode.Backend
 		podmanSock string
 	)
-	if fc.Cluster.ClusterModeVKOllama() {
+	switch {
+	case fc.Cluster.ClusterModeVKNative():
+		base, err := conf.DefaultCacheDir()
+		if err != nil {
+			return fmt.Errorf("cluster mode=vk-native: data dir: %w", err)
+		}
+		be, err := vknode.NewNativeProcessBackend(vknode.NativeProcessConfig{
+			DataDir: filepath.Join(base, "vk-native"),
+		})
+		if err != nil {
+			return fmt.Errorf("cluster mode=vk-native: backend: %w", err)
+		}
+		backend = be
+	case fc.Cluster.ClusterModeVKOllama():
 		base, err := conf.DefaultCacheDir()
 		if err != nil {
 			return fmt.Errorf("cluster mode=vk-ollama: data dir: %w", err)
@@ -2147,7 +2159,7 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 			return fmt.Errorf("cluster mode=vk-ollama: backend: %w", err)
 		}
 		backend = be
-	} else {
+	default:
 		bt := agent.DetectPodman()
 		if !bt.Available || bt.Socket == "" {
 			return fmt.Errorf("podman socket not detected (tried %s)", bt.Socket)

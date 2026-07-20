@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,14 +23,23 @@ import (
 //
 //	serve — bind 127.0.0.1:$HELPER_PORT and accept forever (becomes Ready)
 //	sleep — stay alive without binding anything (alive but never Ready)
-//	exit  — exit(0) immediately (the "process is gone" case)
+//	exit  — print HELPER_MARKER, then exit(0) immediately
+//	fail  — print HELPER_MARKER, then exit(42) immediately
 func TestHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
 		return
 	}
 	switch os.Getenv("HELPER_MODE") {
 	case "exit":
+		if marker := os.Getenv("HELPER_MARKER"); marker != "" {
+			_, _ = os.Stdout.WriteString(marker + "\n")
+		}
 		os.Exit(0)
+	case "fail":
+		if marker := os.Getenv("HELPER_MARKER"); marker != "" {
+			_, _ = os.Stdout.WriteString(marker + "\n")
+		}
+		os.Exit(42)
 	case "sleep":
 		time.Sleep(60 * time.Second)
 		os.Exit(0)
@@ -58,6 +68,60 @@ func newOllamaTestBackend(t *testing.T) (*ollamaBackend, string) {
 		t.Fatalf("NewOllamaBackend: %v", err)
 	}
 	return be.(*ollamaBackend), dir
+}
+
+func TestNativeProcessBackend_DefaultImages(t *testing.T) {
+	nativeRaw, err := NewNativeProcessBackend(NativeProcessConfig{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewNativeProcessBackend: %v", err)
+	}
+	native := nativeRaw.(*nativeProcessBackend)
+	if native.image != DefaultNativeProcessImage {
+		t.Errorf("native default image = %q, want %q", native.image, DefaultNativeProcessImage)
+	}
+
+	ollamaRaw, err := NewOllamaBackend(OllamaConfig{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewOllamaBackend: %v", err)
+	}
+	ollama := ollamaRaw.(*ollamaBackend)
+	if ollama.image != DefaultOllamaImage {
+		t.Errorf("ollama default image = %q, want %q", ollama.image, DefaultOllamaImage)
+	}
+}
+
+func TestNativeProcessBackend_TerminalStatusAndLogs(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	raw, err := NewNativeProcessBackend(NativeProcessConfig{DataDir: dir})
+	if err != nil {
+		t.Fatalf("NewNativeProcessBackend: %v", err)
+	}
+	be := raw.(*nativeProcessBackend)
+
+	successPod, _ := makeHelperPod(t, "success-pod", "uid-success", "exit")
+	successMarker := "native-success-marker"
+	successPod.Spec.Containers[0].Env = append(successPod.Spec.Containers[0].Env,
+		corev1.EnvVar{Name: "HELPER_MARKER", Value: successMarker})
+	if err := be.Ensure(ctx, successPod); err != nil {
+		t.Fatalf("Ensure success pod: %v", err)
+	}
+	successStatus := waitForTerminalStatus(t, be, ctx, successPod)
+	if successStatus.Phase != corev1.PodSucceeded {
+		t.Fatalf("success phase = %q, want Succeeded; status = %+v", successStatus.Phase, successStatus)
+	}
+	assertTerminatedExitCode(t, successStatus, 0)
+	assertLogContains(t, filepath.Join(dir, "uid-success.log"), successMarker)
+
+	failPod, _ := makeHelperPod(t, "fail-pod", "uid-fail", "fail")
+	if err := be.Ensure(ctx, failPod); err != nil {
+		t.Fatalf("Ensure fail pod: %v", err)
+	}
+	failStatus := waitForTerminalStatus(t, be, ctx, failPod)
+	if failStatus.Phase != corev1.PodFailed {
+		t.Fatalf("fail phase = %q, want Failed; status = %+v", failStatus.Phase, failStatus)
+	}
+	assertTerminatedExitCode(t, failStatus, 42)
 }
 
 // makeHelperPod builds a Pod whose container execs this test binary back
@@ -115,6 +179,52 @@ func waitFor(timeout time.Duration, fn func() bool) bool {
 		time.Sleep(20 * time.Millisecond)
 	}
 	return fn()
+}
+
+func waitForTerminalStatus(t *testing.T, be *nativeProcessBackend, ctx context.Context, pod *corev1.Pod) *corev1.PodStatus {
+	t.Helper()
+	var status *corev1.PodStatus
+	ok := waitFor(5*time.Second, func() bool {
+		st, err := be.Status(ctx, pod)
+		if err != nil {
+			t.Fatalf("Status: %v", err)
+		}
+		if st == nil {
+			return false
+		}
+		status = st
+		return st.Phase == corev1.PodSucceeded || st.Phase == corev1.PodFailed
+	})
+	if !ok {
+		t.Fatalf("pod never reached terminal phase; last status = %+v", status)
+	}
+	return status
+}
+
+func assertTerminatedExitCode(t *testing.T, status *corev1.PodStatus, want int32) {
+	t.Helper()
+	if len(status.ContainerStatuses) != 1 {
+		t.Fatalf("containerStatuses len = %d, want 1: %+v", len(status.ContainerStatuses), status.ContainerStatuses)
+	}
+	term := status.ContainerStatuses[0].State.Terminated
+	if term == nil {
+		t.Fatalf("container state not Terminated: %+v", status.ContainerStatuses[0].State)
+	}
+	if term.ExitCode != want {
+		t.Fatalf("exit code = %d, want %d", term.ExitCode, want)
+	}
+}
+
+func assertLogContains(t *testing.T, path, want string) {
+	t.Helper()
+	ok := waitFor(3*time.Second, func() bool {
+		data, err := os.ReadFile(path)
+		return err == nil && strings.Contains(string(data), want)
+	})
+	if !ok {
+		data, _ := os.ReadFile(path)
+		t.Fatalf("log %s does not contain %q; contents: %q", path, want, string(data))
+	}
 }
 
 func readRegistryFile(t *testing.T, dir string) map[string]procEntry {
@@ -332,7 +442,7 @@ func TestOllamaBackend_HydratePorts(t *testing.T) {
 	}
 }
 
-func TestOllamaBackend_GoneProcessNilStatus(t *testing.T) {
+func TestOllamaBackend_ExitedProcessTerminalStatus(t *testing.T) {
 	be, _ := newOllamaTestBackend(t)
 	ctx := context.Background()
 	pod, _ := makeHelperPod(t, "exit-pod", "uid-exit", "exit")
@@ -341,15 +451,19 @@ func TestOllamaBackend_GoneProcessNilStatus(t *testing.T) {
 	if err := be.Ensure(ctx, pod); err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	// The helper exits immediately; Status must converge to (nil, nil)
-	// even though the registry row still exists.
-	gone := waitFor(5*time.Second, func() bool {
+	var status *corev1.PodStatus
+	terminal := waitFor(5*time.Second, func() bool {
 		st, err := be.Status(ctx, pod)
-		return err == nil && st == nil
+		if err != nil || st == nil {
+			return false
+		}
+		status = st
+		return st.Phase == corev1.PodSucceeded
 	})
-	if !gone {
-		t.Fatalf("Status never reported the exited process as gone")
+	if !terminal {
+		t.Fatalf("Status never reported the exited process as terminal; last status = %+v", status)
 	}
+	assertTerminatedExitCode(t, status, 0)
 }
 
 func TestOllamaBackend_PendingBeforeReady(t *testing.T) {

@@ -6,9 +6,12 @@
 //
 //   - podman (default) — drives a local podman daemon (--podman-socket,
 //     auto-detected when empty). Pods become libpod containers.
-//   - ollama — realizes Pods as native host processes (--ollama-data,
-//     default ~/.cache/outpost/ollama). Pods run as detached host
-//     processes with direct Metal/CUDA access.
+//   - native — realizes Pods as host processes (--native-data, default
+//     ~/.cache/outpost/native-process). Pods run as detached host
+//     processes, directly on the host OS.
+//   - ollama — legacy alias for the native-process backend, defaulting
+//     its data dir to ~/.cache/outpost/ollama and its marker image to
+//     dhnt.io/ollama.
 //
 // This binary is intentionally separate from `outpost`: it lets us
 // validate the virtual-kubelet plumbing end-to-end against a real k3s
@@ -41,24 +44,26 @@ func main() {
 		nodeName    string
 		podmanSock  string
 		backendName string
+		nativeData  string
 		ollamaData  string
 		allowAnyNS  bool
 	)
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to a kubeconfig file (required)")
 	flag.StringVar(&nodeName, "node", "", "Node name to register (required)")
 	flag.StringVar(&podmanSock, "podman-socket", "", "Override path to the local podman socket (auto-detected when empty; podman backend only)")
-	flag.StringVar(&backendName, "backend", "podman", "Workload substrate: podman (default) or ollama")
-	flag.StringVar(&ollamaData, "ollama-data", "", "Data directory for the ollama backend (default ~/.cache/outpost/ollama)")
+	flag.StringVar(&backendName, "backend", "podman", "Workload substrate: podman (default), native, or ollama")
+	flag.StringVar(&nativeData, "native-data", "", "Data directory for the native-process backend (default ~/.cache/outpost/native-process)")
+	flag.StringVar(&ollamaData, "ollama-data", "", "Data directory for the legacy ollama backend (default ~/.cache/outpost/ollama)")
 	flag.BoolVar(&allowAnyNS, "allow-any-namespace", false, "Dev/PoC only: allow native backend pods from any namespace")
 	flag.Parse()
 
-	if err := run(kubeconfig, nodeName, podmanSock, backendName, ollamaData, allowAnyNS); err != nil {
+	if err := run(kubeconfig, nodeName, podmanSock, backendName, nativeData, ollamaData, allowAnyNS); err != nil {
 		slog.Error("outpost-vk exited", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(kubeconfig, nodeName, podmanSock, backendName, ollamaData string, allowAnyNS bool) error {
+func run(kubeconfig, nodeName, podmanSock, backendName, nativeData, ollamaData string, allowAnyNS bool) error {
 	if kubeconfig == "" {
 		return errors.New("--kubeconfig is required")
 	}
@@ -81,6 +86,24 @@ func run(kubeconfig, nodeName, podmanSock, backendName, ollamaData string, allow
 			slog.Info("detected podman socket", "socket", podmanSock)
 		}
 		opts.PodmanSocket = podmanSock
+	case "native", "process", "native-process":
+		if !allowAnyNS {
+			return errors.New("--backend=native requires --allow-any-namespace for this standalone PoC runner")
+		}
+		if nativeData == "" {
+			cacheDir, err := conf.DefaultCacheDir()
+			if err != nil {
+				return fmt.Errorf("native backend: determine default data dir: %w", err)
+			}
+			nativeData = filepath.Join(cacheDir, "native-process")
+		}
+		slog.Info("native-process backend", "data_dir", nativeData)
+		be, err := vknode.NewNativeProcessBackend(vknode.NativeProcessConfig{DataDir: nativeData})
+		if err != nil {
+			return fmt.Errorf("native backend: %w", err)
+		}
+		opts.Backend = be
+		opts.AllowAnyNamespace = true
 	case "ollama":
 		if !allowAnyNS {
 			return errors.New("--backend=ollama requires --allow-any-namespace for this standalone PoC runner")
@@ -100,7 +123,7 @@ func run(kubeconfig, nodeName, podmanSock, backendName, ollamaData string, allow
 		opts.Backend = be
 		opts.AllowAnyNamespace = true
 	default:
-		return fmt.Errorf("unknown --backend %q; must be podman or ollama", backendName)
+		return fmt.Errorf("unknown --backend %q; must be podman, native, or ollama", backendName)
 	}
 
 	kubeCfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
