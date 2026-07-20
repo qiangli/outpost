@@ -16,6 +16,20 @@ covers the other platforms by being that platform (e.g. a macOS dev host is
 continuously dev-tested, so the explicit QA gate can be Windows-only — see
 `promote.yml`'s `required_os`).
 
+### Variants — one per trust/hosting shape
+
+- **[`qa-poller.sh`](../scripts/qa-poller.sh)** (this doc) — *owned* host: the
+  token and the smoke both run on this host.
+- **[`qa-poller-broker.sh`](../scripts/qa-poller-broker.sh)** — *attested /
+  brokered*: the token stays on a trusted broker, the smoke runs on a **remote**
+  host over SSH (for a shared/untrusted node that must not hold a write
+  credential — e.g. a shared Windows box; see `docs/secretless-ci-shared-nodes.md`).
+- **[`qa-poller-podman.sh`](../scripts/qa-poller-podman.sh)** — *attested /
+  brokered*: the token stays on the broker, the smoke runs in a **local podman**
+  container. Covers the `linux` lane when you have podman but no dedicated Linux
+  host (e.g. a macOS dev host validating the Linux build) — see
+  [Linux lane via podman](#linux-lane-via-podman-no-dedicated-linux-host).
+
 ## Prerequisites
 
 - **bashy** on the host (it self-provisions git / coreutils / gh / curl).
@@ -113,6 +127,66 @@ Windows QA hosts hit a few path quirks — all worked around above:
   which is the main reason to prefer the `gh` keyring path on Windows.
 - **Prefer forward-slash native paths** (`C:/Users/<you>/…`) for `bashy`
   coreutils file operations; the msys `/c/...` form is not always converted.
+
+## Linux lane via podman (no dedicated Linux host)
+
+If you don't have a standing Linux QA machine but your dev host runs **podman**
+(macOS or Windows), [`scripts/qa-poller-podman.sh`](../scripts/qa-poller-podman.sh)
+covers the `linux` lane: it runs the per-OS smoke inside a throwaway **alpine**
+container on the local podman machine and authors `refs/qa/<version>/linux` on
+pass. Same attested/brokered shape as the SSH broker — the GitHub credential
+stays on the broker (this host); the container downloads only the *public*
+release asset.
+
+```
+ broker (this host, has token) ──podman run──► alpine container (no token)
+      │                                             │ downloads public asset + smokes
+      └──── authors refs/qa/<ver>/linux ◄───────────┘ reports REMOTE-QA-PASS
+```
+
+The container image is `alpine:3` (busybox `wget` does HTTPS; the outpost binary
+is built `CGO_ENABLED=0`, so the fully-static binary runs on musl unchanged — no
+`apk install` needed). Override the base with `QA_PODMAN_IMAGE` if you need a
+hardened/SBOM'd image (any image with a working HTTPS downloader + `sha256sum` +
+`awk` will do).
+
+### Prerequisites
+
+- **bashy** + **podman** on the host, and the podman machine running
+  (`podman machine start` on macOS/Windows; on Linux podman runs rootless, no
+  machine).
+- A **GitHub credential that can create refs** on the release repo (same as the
+  standing poller — `bashy gh auth login`).
+
+### Verify the lane (no ref authoring)
+
+`QA_SMOKE_ONLY=1` runs `newest_dev` + the container smoke **once** and exits,
+*without* authoring any ref — use it to confirm a fresh podman install / image /
+arch can do the lane before scheduling:
+
+```bash
+QA_SMOKE_ONLY=1 bash scripts/qa-poller-podman.sh
+# → ">> [linux] SMOKE_ONLY vX.Y.Z-dev (linux/<arch>)" … "REMOTE-QA-PASS"
+```
+
+### Run it
+
+```bash
+QA_POLL_ONCE=1 bash scripts/qa-poller-podman.sh   # one pass (authors the ref on PASS)
+# or schedule it like the standing poller (QA_POLL_ONCE=1 under bashy schedule)
+```
+
+### Caveats
+
+- **The lane is always `linux`.** The container is a Linux kernel, so the binary
+  must be the `linux/<arch>` build whose arch **matches the podman machine** —
+  it is auto-detected (`podman info`). Validating a *different* linux arch needs
+  a matching podman machine (cross-arch would need qemu/binfmt and is out of
+  scope); pin with `QA_ARCH` only to the machine's own arch.
+- **`QA_WORK` must be under `$HOME` on macOS** — the podman machine shares only
+  the user's home dir, so the smoke script (bind-mounted into the container)
+  can't live under `/tmp`. The default `$HOME/.outpost-qa` is correct; only
+  override with another `$HOME`-relative path.
 
 ## How promotion consumes the refs
 
