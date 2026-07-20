@@ -66,8 +66,12 @@ func TestSnapshotReportsBindings(t *testing.T) {
 	for _, a := range byKind["agent"] {
 		if a.Name == "007" {
 			found = true
-			if a.Detail != "claude:fable" {
-				t.Fatalf("agent detail = %q, want the binding", a.Detail)
+			// The binding is canonicalized to the version-explicit model name:
+			// the family alias "fable" resolves to the highest version "fable5",
+			// so a peer receives the address it can route to, not a floating
+			// pointer. (See coreutils/pkg/fleet family-alias derivation.)
+			if a.Detail != "claude:fable5" {
+				t.Fatalf("agent detail = %q, want the canonicalized binding claude:fable5", a.Detail)
 			}
 		}
 	}
