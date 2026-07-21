@@ -1925,8 +1925,17 @@ func startCmd() *cobra.Command {
 					if err := startK3sAgentRunner(gctx, g, fc); err != nil {
 						slog.Warn("cluster mode=agent: disabled", "err", err)
 					}
-				} else if err := startClusterRunner(gctx, g, fc, cfgPath, apps, peerPlaneSvc); err != nil {
-					slog.Warn("cluster mode: disabled", "err", err)
+				} else {
+					// Retried rather than one-shot: at boot the OS service
+					// starts outpost before any login-time container runtime,
+					// so the first attempt routinely finds no podman. A single
+					// failed probe used to leave cluster mode off until someone
+					// restarted the daemon. Runs in the background so bringing
+					// a cold runtime up never holds the tunnel or admin UI.
+					g.Go(func() error {
+						joinClusterWithRetry(gctx, g, fc, cfgPath, apps, peerPlaneSvc)
+						return nil
+					})
 				}
 				// Materialize the kubectl-ready kubeconfig on disk so
 				// the operator gets `kubectl get nodes` and `helm list`
@@ -2119,6 +2128,44 @@ func sandboxPrewarmImages(fc *conf.FileConfig) []string {
 // half-configured Cluster section shouldn't stop the matrix tunnel or
 // admin UI from coming up. The caller logs the returned error and
 // moves on.
+// joinClusterWithRetry keeps attempting the cluster join until it succeeds or
+// the daemon shuts down, with a capped exponential backoff.
+//
+// The join can fail for reasons that resolve on their own — the container
+// runtime not being up yet at boot, a cold podman machine still starting, a
+// transient cloudbox blip while fetching credentials. Treating the first
+// failure as terminal (the previous behavior) meant cluster mode stayed off
+// until a manual restart, which is what made correct startup ordering a
+// prerequisite. Retrying removes the ordering requirement entirely.
+//
+// Returns once the join succeeds; startClusterRunner owns the long-lived
+// goroutines from that point on.
+func joinClusterWithRetry(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service) {
+	const (
+		firstDelay = 5 * time.Second
+		maxDelay   = 2 * time.Minute
+	)
+	for attempt, delay := 1, firstDelay; ; attempt++ {
+		err := startClusterRunner(ctx, g, fc, cfgPath, apps, peerSvc)
+		if err == nil {
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		slog.Warn("cluster mode: not ready, will retry",
+			"err", err, "attempt", attempt, "retry_in", delay)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		if delay = delay * 2; delay > maxDelay {
+			delay = maxDelay
+		}
+	}
+}
+
 func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service) error {
 	nodeName := fc.ClusterNodeName()
 	if nodeName == "" {
@@ -2160,11 +2207,15 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 		}
 		backend = be
 	default:
-		bt := agent.DetectPodman()
-		if !bt.Available || bt.Socket == "" {
-			return fmt.Errorf("podman socket not detected (tried %s)", bt.Socket)
+		// Brings the podman machine up when it isn't running yet, rather
+		// than treating "not up" as a permanent failure — see
+		// ensurePodmanRuntime. Callers retry, so a runtime that appears
+		// later is picked up without restarting outpost.
+		sock, err := ensurePodmanRuntime(ctx)
+		if err != nil {
+			return err
 		}
-		podmanSock = bt.Socket
+		podmanSock = sock
 	}
 
 	// Bootstrap: if we have an outpost access_token and either no

@@ -68,6 +68,30 @@ func DetectPodman() BuiltinTarget {
 		}
 		return bt
 	}
+	// Ecosystem contract: podman's own $CONTAINER_HOST — and $DOCKER_HOST,
+	// which podman honors for docker-compat — name the daemon endpoint.
+	// Mirrors what DetectOllama does with $OLLAMA_HOST: a user who moved
+	// the socket expects every tool to follow. Only unix-socket forms are
+	// usable here; ssh:// / tcp:// point at a remote daemon this
+	// direct-dial path can't serve. A set-but-unreachable value falls
+	// through to autodetection rather than masking a working podman —
+	// $DOCKER_HOST in particular is often left pointing at a stale or
+	// docker-owned socket.
+	var envSock string
+	for _, key := range []string{"CONTAINER_HOST", "DOCKER_HOST"} {
+		sock := unixSocketPath(os.Getenv(key))
+		if sock == "" {
+			continue
+		}
+		if envSock == "" {
+			envSock = sock
+		}
+		if probeSocket(sock, 200*time.Millisecond) {
+			bt.Socket = sock
+			bt.Available = true
+			return bt
+		}
+	}
 	cands := podmanCandidates()
 	for _, p := range cands {
 		// Each candidate may be a literal path OR a shell-style glob.
@@ -88,10 +112,36 @@ func DetectPodman() BuiltinTarget {
 			return bt
 		}
 	}
-	if len(cands) > 0 {
+	// Nothing reachable — populate Socket with the best "tried" hint so the
+	// admin UI can say what was attempted. An explicitly configured
+	// endpoint is a more useful answer than the first autodetect candidate.
+	if envSock != "" {
+		bt.Socket = envSock
+	} else if len(cands) > 0 {
 		bt.Socket = cands[0]
 	}
 	return bt
+}
+
+// unixSocketPath extracts a filesystem socket path from a daemon-endpoint
+// URL of the form used by $CONTAINER_HOST / $DOCKER_HOST. Accepts
+// "unix:///run/podman.sock" and bare absolute paths; returns "" for remote
+// schemes (ssh://, tcp://), which a direct unix dial can't reach.
+func unixSocketPath(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if rest, ok := strings.CutPrefix(s, "unix://"); ok {
+		return rest
+	}
+	if strings.Contains(s, "://") {
+		return ""
+	}
+	if strings.HasPrefix(s, "/") {
+		return s
+	}
+	return ""
 }
 
 // newestGlobMatch expands a shell-style glob and returns the path
@@ -134,6 +184,17 @@ func podmanCandidates() []string {
 		paths = append(paths, "/run/user/"+strconv.Itoa(uid)+"/podman/podman.sock")
 		paths = append(paths, "/run/podman/podman.sock")
 	case "darwin":
+		// podman machine advertises its API socket under the per-user
+		// TMPDIR as <machine>-api.sock — the path `podman machine start`
+		// prints and the one it tells you to point $DOCKER_HOST at. The
+		// machine name is operator-chosen (not always
+		// "podman-machine-default"), so this is a glob; newest-by-mtime
+		// wins when several machines have run. Listed first because it's
+		// where a current podman actually puts the socket — the data-dir
+		// paths below are older layouts kept as fallbacks.
+		if tmp := os.TempDir(); tmp != "" {
+			paths = append(paths, filepath.Join(tmp, "podman", "*-api.sock"))
+		}
 		// podman machine writes the socket somewhere under the user's data
 		// dir; the exact subdir varies by machine name. Try the canonical
 		// path first, then a couple common alternatives.
