@@ -36,6 +36,14 @@ type StateSnapshot struct {
 	// same-commit and min_from guards. Short or full sha both work;
 	// Apply normalizes both sides to 7 chars before comparing.
 	CurrentCommit string
+	// CurrentDirty reports whether the running binary was built from a
+	// working tree with uncommitted changes — i.e. a local developer
+	// build carrying code that exists nowhere else. Wire it from
+	// agent.ReadBuildInfo().Dirty. Apply refuses cloudbox-pushed
+	// upgrades on such a binary: the swap would destroy unreleased work
+	// with no way to recover it, since there's no artifact to roll back
+	// to. Same reasoning as the installed-via marker below.
+	CurrentDirty bool
 	// BinaryPath is the live binary's on-disk location (os.Executable
 	// of the daemon). The worker stages "<BinaryPath>.upgrading" next
 	// to it and hardlinks the current to "<BinaryPath>.previous"
@@ -201,6 +209,23 @@ func (w *Worker) Apply(ctx context.Context, env Envelope) Result {
 	if st.UpdateMode == "never" {
 		w.mu.Unlock()
 		return Result{Status: StatusDisabled, Detail: "update_mode is 'never'; operator must change it to accept cloudbox-pushed upgrades", ReleaseID: env.ReleaseID}
+	}
+	// Dirty build: the running binary was compiled from a working tree
+	// with uncommitted changes, so it carries code that exists in no
+	// release and no git object. Swapping it destroys that work
+	// irrecoverably — .previous would hold the same dirty build only
+	// until the next upgrade, and nothing can rebuild it. Refuse, and
+	// say how to proceed. Force=true does NOT bypass this, same
+	// precedent as never-mode and the installed-via marker: the
+	// operator's escape hatch is to install a real build (commit and
+	// release it, or `outpost upgrade --local`), not a flag.
+	if st.CurrentDirty {
+		w.mu.Unlock()
+		return Result{
+			Status:    StatusDisabled,
+			Detail:    "running a dirty local build (uncommitted changes); refusing to overwrite unreleased work — commit and release, or install a clean build first",
+			ReleaseID: env.ReleaseID,
+		}
 	}
 	// installed-via marker: when a package manager owns this binary
 	// (brew, scoop, apt, …) the cloudbox-pushed upgrade would race

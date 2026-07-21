@@ -168,6 +168,58 @@ func TestWorker_ManualPersistsAndReturnsPending(t *testing.T) {
 	}
 }
 
+func TestWorker_RefusesDirtyBuild(t *testing.T) {
+	h := newHarness(t)
+	// The running binary carries uncommitted changes — code that exists
+	// in no release and no git object. Overwriting it destroys work that
+	// cannot be rebuilt, so Apply must refuse.
+	h.setState(func(s *StateSnapshot) { s.CurrentDirty = true })
+	r := h.worker.Apply(context.Background(), Envelope{
+		ReleaseID: "r-dirty",
+		URL:       "https://example.com/x",
+		SHA256:    "deadbeef",
+		Commit:    "def5678",
+	})
+	if r.Status != StatusDisabled {
+		t.Fatalf("expected disabled, got %v: %s", r.Status, r.Detail)
+	}
+	if !strings.Contains(r.Detail, "dirty") {
+		t.Fatalf("detail should explain the dirty build: %q", r.Detail)
+	}
+}
+
+func TestWorker_RefusesDirtyBuildEvenWithForce(t *testing.T) {
+	h := newHarness(t)
+	// Force is operator-blessed but must not override this: the
+	// supported path is to install a real build, not to flag past the
+	// guard. Same precedent as never-mode and the installed-via marker.
+	h.setState(func(s *StateSnapshot) { s.CurrentDirty = true })
+	r := h.worker.Apply(context.Background(), Envelope{
+		ReleaseID: "r-dirty-force",
+		URL:       "https://example.com/x",
+		SHA256:    "deadbeef",
+		Commit:    "def5678",
+		Force:     true,
+	})
+	if r.Status != StatusDisabled {
+		t.Fatalf("expected disabled even with force, got %v: %s", r.Status, r.Detail)
+	}
+}
+
+// A clean build is the normal fleet case and must stay unaffected.
+func TestWorker_AllowsCleanBuild(t *testing.T) {
+	h := newHarness(t)
+	r := h.worker.Apply(context.Background(), Envelope{
+		ReleaseID: "r-clean",
+		URL:       "https://example.com/x",
+		SHA256:    "deadbeef",
+		Commit:    "def5678",
+	})
+	if r.Status == StatusDisabled && strings.Contains(r.Detail, "dirty") {
+		t.Fatalf("clean build must not hit the dirty guard: %s", r.Detail)
+	}
+}
+
 func TestWorker_RefusesWhenInstalledViaPackageManager(t *testing.T) {
 	h := newHarness(t)
 	// Marker says brew owns the binary — Apply must refuse with
