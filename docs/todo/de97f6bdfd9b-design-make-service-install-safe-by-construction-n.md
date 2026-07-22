@@ -111,14 +111,29 @@ transport.
 
     macOS    fixed in 90e5063 (plist EnvironmentVariables)
     Linux    fixed in 90e5063 (Environment=PATH= in both units)
-    Windows  NOT addressed. The task action is
+    Windows  NOT AFFECTED — verified on puppy 2026-07-22, correcting an earlier
+             guess recorded here. The task action carries no environment:
                New-ScheduledTaskAction -Execute <self> -Argument 'supervisord'
-             with no environment. An S4U scheduled task gets the machine PATH,
-             which does not include user-local installs — on puppy, bashy and
-             its podman live under %LOCALAPPDATA%\outpost. So cluster
-             mode=agent is likely to hit the same "no podman or docker binary
-             on PATH" failure there. Verify on a Windows host before assuming
-             either way.
+             but it does not need one. podman is installed as a real 45 MB
+             binary at C:\Windows\System32\podman.exe (podman version 6.0.0,
+             works standalone, resolves its machine), and System32 is on every
+             default Windows PATH — including the one an S4U scheduled task
+             receives. Checked from inside the daemon's own shell, so this is
+             the PATH the daemon actually has:
+               where podman -> C:\Windows\System32\podman.exe
+               where docker -> not found (fine; pickPodmanBin tries podman first)
+
+             The earlier hypothesis in this file — that podman existed only as
+             a bashy subcommand and so could never be found by name — was
+             wrong. Recorded because it drove the wrong fix direction for a
+             while: it suggested wiring Options.PodmanBin to config, when in
+             fact nothing is needed on Windows.
+
+             Remaining Windows gap for cluster mode=agent is unrelated to PATH:
+             puppy's podman machine (WSL-backed, named "bashy") is not running,
+             and shared-cluster-operator.md documents only macOS and Linux for
+             the privileged runtime container. Whether a WSL machine can host
+             it is untested — do not assume either way.
 
 Any design must therefore be cross-platform: the safety property cannot come
 from launchd/systemd/Task-Scheduler specifics, because the destructive step
