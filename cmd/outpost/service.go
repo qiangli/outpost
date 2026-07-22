@@ -192,9 +192,13 @@ func renderLaunchAgentPlist(self, home string) string {
     <key>KeepAlive</key><true/>
     <key>ThrottleInterval</key><integer>10</integer>
     <key>WorkingDirectory</key><string>%s</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key><string>%s</string>
+    </dict>
 </dict>
 </plist>
-`, launchdLabel, self, home)
+`, launchdLabel, self, home, servicePATH)
 }
 
 // renderSystemdUserUnit is the Linux systemd --user unit (per-user, no admin)
@@ -207,13 +211,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=PATH=%s
 ExecStart=%s supervisord
 Restart=on-failure
 RestartSec=10
 
 [Install]
 WantedBy=default.target
-`, self)
+`, servicePATH, self)
 }
 
 // renderWindowsLogonTask is the per-user Task Scheduler registration (no admin):
@@ -259,11 +264,26 @@ func renderLaunchDaemonPlist(self, user, home string) string {
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key><string>%s</string>
+        <key>PATH</key><string>%s</string>
     </dict>
 </dict>
 </plist>
-`, launchdLabel, self, user, home, home)
+`, launchdLabel, self, user, home, home, servicePATH)
 }
+
+// servicePATH is the PATH given to the supervised daemon. launchd hands a
+// daemon only /usr/bin:/bin:/usr/sbin:/sbin, which excludes every common
+// package-manager prefix — so a Homebrew or bashy-installed `podman` is
+// invisible and `--cluster-mode=agent` fails with "no podman or docker binary
+// on PATH" even though `which podman` resolves fine in a shell. The
+// hand-rolled plists this template replaced all carried a PATH for exactly
+// this reason; regenerating one without it is a silent regression.
+//
+// Homebrew prefixes cover both Apple Silicon (/opt/homebrew) and Intel
+// (/usr/local); ~/bin is where `outpost bashy --install` and similar drop
+// tools. Kept literal rather than inheriting the installing shell's PATH so
+// the generated definition is reproducible.
+const servicePATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
 
 // renderSystemdSystemUnit is the Linux systemd system unit (admin): starts
 // `<self> supervisord` at boot under `User=`, with no login required.
@@ -277,13 +297,14 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=%s
+Environment=PATH=%s
 ExecStart=%s supervisord
 Restart=on-failure
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
-`, user, self)
+`, user, servicePATH, self)
 }
 
 // renderWindowsStartupTask is the system Task Scheduler registration (admin):

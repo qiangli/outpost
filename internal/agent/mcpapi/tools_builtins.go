@@ -37,6 +37,7 @@ type builtinsIn struct {
 	YcodeShareRequireLogin *bool               `json:"ycode_share_require_login,omitempty" jsonschema:"Require cloudbox-side OS-password elevation for the ycode-* built-in apps (default off; on = OS password popup like /shell or /desktop)"`
 	YcodeShareSurfaces     map[string]bool     `json:"ycode_share_surfaces,omitempty" jsonschema:"Per-surface opt-in overlay for the ycode-share catalog. Keys: ycode, ycode-canvas, ycode-ollama, ycode-git, ycode-memos, ycode-graph. Absent keys fall back to catalog defaults (only 'ycode' is default-on). Partial maps are merged into the persisted overlay; not a full replace."`
 	Cluster                *bool               `json:"cluster,omitempty" jsonschema:"Join the cloudbox virtual-podman cluster as a node"`
+	ClusterMode            *string             `json:"cluster_mode,omitempty" jsonschema:"How this host runs cluster workloads — one of 'agent' (real k3s-agent in the outpost-runtime container; the default and the conformance track), 'vk-podman' (v1 virtual-kubelet shim landing Pods as local podman containers; alias 'vkpodman'), 'vk-native' (virtual-kubelet landing Pods as host processes), or 'vk-ollama' (legacy native-process mode for Metal/CUDA workloads)"`
 	UpdateMode             *string             `json:"update_mode,omitempty" jsonschema:"Per-host policy for cloudbox-pushed self-upgrades — one of 'auto' (default; stage+swap+restart on push), 'manual' (persist envelope, operator applies), 'never' (refuse)"`
 	AutoRollback           *bool               `json:"auto_rollback,omitempty" jsonschema:"Arm the auto-rollback watchdog's destructive revert: when a self-upgrade's new binary fails to confirm healthy, the supervisor reverts to the previous binary. Default off (observe-only — logs 'would auto-rollback')."`
 	Mesh                   *bool               `json:"mesh,omitempty" jsonschema:"Toggle the libp2p mesh data plane (the peer node carrying authenticated, NAT-traversing peer↔peer streams — transport under shard-RPC, peer-backup, the resource fabric). Requires a paired access token."`
@@ -102,6 +103,7 @@ func (s *Server) registerBuiltinsTools() {
 			YcodeShareRequireLogin: in.YcodeShareRequireLogin,
 			YcodeShareSurfaces:     in.YcodeShareSurfaces,
 			Cluster:                in.Cluster,
+			ClusterMode:            in.ClusterMode,
 			UpdateMode:             in.UpdateMode,
 			AutoRollback:           in.AutoRollback,
 			Mesh:                   in.Mesh,
