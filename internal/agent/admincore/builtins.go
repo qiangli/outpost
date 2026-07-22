@@ -194,13 +194,13 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 		fc.FilesScope = *p.FilesScope
 	}
 	if p.Podman != nil {
-		fc.PodmanEnabled = *p.Podman
+		fc.PodmanEnabled = p.Podman
 	}
 	if p.Sandbox != nil {
 		fc.SandboxEnabled = *p.Sandbox
 	}
 	if p.Ollama != nil {
-		fc.OllamaEnabled = *p.Ollama
+		fc.OllamaEnabled = p.Ollama
 	}
 	if p.OllamaPool != nil {
 		fc.OllamaPoolEnabled = p.OllamaPool
@@ -312,7 +312,7 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 		fc.ActrunnerDockerHost = *p.ActrunnerDockerHost
 	}
 	if p.Otel != nil {
-		fc.OtelEnabled = *p.Otel
+		fc.OtelEnabled = p.Otel
 	}
 	if p.OtelPool != nil {
 		fc.OtelPoolEnabled = p.OtelPool

@@ -279,10 +279,24 @@ func startCmd() *cobra.Command {
 			if err := registerBashyServiceApps(fc, apps); err != nil {
 				return err
 			}
-			// Built-in local-daemon proxies (podman, ollama). The admin UI
-			// toggle is the source of truth; we silently skip when the
-			// daemon isn't actually reachable so a stale "enabled" flag
-			// doesn't break boot.
+			// Built-in local-daemon proxies (podman, ollama, otel below).
+			// These are default-ON (see conf.PodmanOn) and DETECTION-GATED:
+			// we skip registration when the daemon isn't actually reachable,
+			// so a host that has never installed podman/Ollama boots exactly
+			// as before — one log line, no error. o3 is an offer, never a
+			// dependency.
+			//
+			// The skip is logged at Info when the default put us here and at
+			// Warn only when the operator explicitly asked for the proxy: a
+			// laptop with no podman is normal, a config that says
+			// podman_enabled=true with no daemon is a real misconfiguration.
+			missingBackend := func(explicit bool, msg string, args ...any) {
+				if explicit {
+					slog.Warn(msg, args...)
+					return
+				}
+				slog.Info(msg, args...)
+			}
 			if fc.PodmanOn() {
 				if bt := agent.DetectPodman(); bt.Available && bt.Socket != "" {
 					if err := apps.RegisterFromConfig(conf.AppConfig{
@@ -294,7 +308,7 @@ func startCmd() *cobra.Command {
 						slog.Info("podman builtin: registered", "socket", bt.Socket)
 					}
 				} else {
-					slog.Warn("podman builtin enabled but daemon not detected — skipping")
+					missingBackend(fc.PodmanEnabled != nil, "podman builtin: no podman socket detected — skipping (outpost continues without it)")
 				}
 			}
 			// Filtered container "sandbox" proxy. Shares the podman socket
@@ -402,7 +416,7 @@ func startCmd() *cobra.Command {
 						}
 					}
 				} else {
-					slog.Warn("ollama builtin enabled but daemon not detected — skipping")
+					missingBackend(fc.OllamaEnabled != nil, "ollama builtin: no Ollama daemon detected — skipping (outpost continues without it)")
 				}
 			}
 
@@ -437,7 +451,7 @@ func startCmd() *cobra.Command {
 						apps.SetProxyWrap(surface, wrap)
 					}
 				} else {
-					slog.Warn("otel builtin enabled but ycode proxy not detected — skipping", "manifest", t.ManifestPath)
+					missingBackend(fc.OtelEnabled != nil, "otel builtin: no local observability proxy detected — skipping (outpost continues without it)", "manifest", t.ManifestPath)
 				}
 			}
 

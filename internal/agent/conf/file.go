@@ -170,21 +170,30 @@ type FileConfig struct {
 	// ignored — the master switch wins.
 	SSHForwardSockets []string `json:"ssh_forward_sockets,omitempty"`
 
-	// Built-in proxies for local daemons. Default off (plain bool) — these
-	// expose external infrastructure rather than outpost-owned routes, so
-	// they require explicit opt-in via the admin UI. The UI greys these
+	// Built-in proxies for local daemons. Default ON (nil ⇒ on) — a paired
+	// host should be useful with zero configuration, and both proxies are
+	// detection-gated at boot: when the daemon isn't running the built-in
+	// simply isn't registered (logged, never fatal). The UI greys these
 	// toggles out when the daemon isn't actually running on this host.
-	PodmanEnabled bool `json:"podman_enabled,omitempty"`
-	OllamaEnabled bool `json:"ollama_enabled,omitempty"`
+	//
+	// Pointer-bool, NOT plain bool, and that is load-bearing: with
+	// `omitempty` a plain-bool false marshals to ABSENT, i.e. byte-identical
+	// to never-set. Under a default-ON rule that would silently resurrect
+	// the service the operator just turned off on the very next save/load.
+	// A *bool distinguishes unset (nil ⇒ default on) from explicit false
+	// (written as `false`, honored forever). See TestExplicitFalse*RoundTrip.
+	PodmanEnabled *bool `json:"podman_enabled,omitempty"`
+	OllamaEnabled *bool `json:"ollama_enabled,omitempty"`
 
 	// SandboxEnabled gates the safe-by-default container "sandbox" proxy
 	// — a FILTERED libpod/docker endpoint (strips privileged / host
 	// namespaces / host binds / added caps / devices, injects resource
 	// caps) distinct from the raw, admin-only /app/podman/ passthrough.
 	// This is the mount a thin client or an untrusted tenant talks to.
-	// Off by default like the other daemon proxies: it requires the same
-	// podman socket PodmanEnabled does, plus an explicit opt-in because
-	// it widens who can run containers on the host.
+	// Off by default — unlike the raw podman/ollama/otel proxies (which
+	// are default-on and only reachable by the paired owner), the sandbox
+	// widens WHO may run containers on this host, so it stays an explicit
+	// opt-in (plain bool: unset and false mean the same thing here).
 	SandboxEnabled bool `json:"sandbox_enabled,omitempty"`
 
 	// Sandbox resource policy. Zero values mean "no explicit limit" — the
@@ -435,11 +444,16 @@ type FileConfig struct {
 
 	// OtelEnabled gates the observability built-in apps that proxy
 	// ycode's embedded Prometheus / Alertmanager / VictoriaLogs /
-	// Jaeger / Perses stack through the matrix tunnel. Off by default
-	// — this is a substantial surface increase (each ycode sub-path
-	// becomes reachable through /h/<host>/app/otel-*) and it only
-	// makes sense when ycode-serve is running.
-	OtelEnabled bool `json:"otel_enabled,omitempty"`
+	// Jaeger / Perses stack through the matrix tunnel. Default ON
+	// (nil ⇒ on): the surfaces only materialize when the local
+	// observability proxy is actually detected, so on a host without
+	// the stack this costs nothing and logs one line. Every surface
+	// still requires the per-app matrix_elev cookie.
+	//
+	// Pointer-bool for the same reason as PodmanEnabled/OllamaEnabled:
+	// under a default-ON rule a plain bool + omitempty would erase an
+	// explicit opt-out on the next save. See OtelOn.
+	OtelEnabled *bool `json:"otel_enabled,omitempty"`
 
 	// OtelPoolEnabled controls whether cloudbox is allowed to federate
 	// queries across this outpost. Distinct from OtelEnabled the same
@@ -1332,12 +1346,19 @@ func (fc *FileConfig) SSHAllowAgentForwardOn() bool {
 }
 
 // PodmanOn reports whether the built-in podman proxy is enabled in this
-// config. Unlike the loopback-only builtins above, podman is off by
-// default — the admin UI flips it on after the daemon is detected.
-func (fc *FileConfig) PodmanOn() bool { return fc != nil && fc.PodmanEnabled }
+// config. Default ON when the key is absent (never chosen) — the boot
+// path only registers the mount when the daemon is actually detected,
+// so "on" costs nothing on a host without podman. An explicit false in
+// the config file is honored (that is what the *bool buys us).
+func (fc *FileConfig) PodmanOn() bool {
+	return fc != nil && (fc.PodmanEnabled == nil || *fc.PodmanEnabled)
+}
 
 // OllamaOn reports whether the built-in Ollama proxy is enabled.
-func (fc *FileConfig) OllamaOn() bool { return fc != nil && fc.OllamaEnabled }
+// Default ON when unset, explicit false honored — see PodmanOn.
+func (fc *FileConfig) OllamaOn() bool {
+	return fc != nil && (fc.OllamaEnabled == nil || *fc.OllamaEnabled)
+}
 
 // SandboxOn reports whether the filtered container sandbox proxy is
 // enabled. Off by default — it both needs the podman socket and widens
@@ -1387,6 +1408,17 @@ func (fc *FileConfig) YcodeShareRequireLoginOn() bool {
 
 // ClusterOn reports whether this outpost should join the cloudbox
 // virtual-podman cluster on boot. Missing field or Enabled=false ⇒ false.
+//
+// Deliberately still OPT-IN while podman/ollama/otel went default-on.
+// Those three open a local, owner-only proxy over a daemon that is
+// already running on this machine; joining a cluster is the opposite
+// direction — it hands a remote control plane the right to schedule
+// workloads here, launches a k3s-agent subprocess (or the vkpodman
+// loop), writes a kubeconfig, and makes the host a named member of
+// someone else's scheduler. That is an outward-facing commitment, not
+// a local convenience, and "local-first" argues it must be chosen, not
+// inherited from a default. It is also not free to undo: leaving means
+// draining a node cloudbox may already be scheduling onto.
 func (fc *FileConfig) ClusterOn() bool {
 	return fc != nil && fc.Cluster != nil && fc.Cluster.Enabled
 }
@@ -1841,7 +1873,11 @@ func (fc *FileConfig) PeerPlaneNeeded() bool {
 }
 
 // OtelOn reports whether the built-in observability proxies are enabled.
-func (fc *FileConfig) OtelOn() bool { return fc != nil && fc.OtelEnabled }
+// Default ON when unset, explicit false honored — see PodmanOn. The boot
+// path skips registration when no local observability proxy is detected.
+func (fc *FileConfig) OtelOn() bool {
+	return fc != nil && (fc.OtelEnabled == nil || *fc.OtelEnabled)
+}
 
 // OtelPoolOn reports whether this outpost participates in cloudbox's
 // federated dashboard / alert fan-out. Mirrors OllamaPoolOn: false when
