@@ -74,3 +74,52 @@ report rather than to silently resolve.
 
 Related: 7c46f58d (PATH), d7bb762e (MCP cluster_mode), 28b348e1 (self-severing
 reload).
+
+## Linux and Windows have the same defects — this is not macOS-specific
+
+Verified 2026-07-22 by reading the three platform files.
+
+**Clobber — all three write unconditionally, no Stat / backup / diff / prompt:**
+
+    macOS    service_darwin.go:49,79   os.WriteFile(path, plist, 0o644)
+    Linux    service_linux.go:56       os.WriteFile(path, unit, 0o644)
+    Windows  service.go:329            Register-ScheduledTask ... -Force
+
+So operator customizations are silently discarded on every platform. On Linux
+that means anything hand-added to the unit (Environment=, After=, resource
+limits, ExecStartPre); on Windows, any hand-tuned trigger/principal/settings.
+
+**Self-severing — worse than first described, and NOT only the reload.**
+
+preflightTakeover (service.go:157) calls removeManagedRegistrations, which runs
+"outpost stop". Since `ssh <host>` lands in outpost's OWN in-process shell, that
+single step kills the process hosting the command — on ALL THREE platforms,
+before any init-system call happens. The macOS bootout/bootstrap pair is just
+the most visible instance.
+
+    macOS    launchctl bootout -> kills the shell; bootstrap never runs
+    Linux    systemctl --user enable --now / daemon-reload, after "outpost stop"
+    Windows  Register -Force does NOT stop a running daemon (see the note at
+             service_windows.go:101) — but preflightTakeover's "outpost stop"
+             already did
+
+So `outpost service install` run over an outpost-provided shell is
+self-severing everywhere. A remote host can be left with no manager and no
+transport.
+
+**PATH parity:**
+
+    macOS    fixed in 90e5063 (plist EnvironmentVariables)
+    Linux    fixed in 90e5063 (Environment=PATH= in both units)
+    Windows  NOT addressed. The task action is
+               New-ScheduledTaskAction -Execute <self> -Argument 'supervisord'
+             with no environment. An S4U scheduled task gets the machine PATH,
+             which does not include user-local installs — on puppy, bashy and
+             its podman live under %LOCALAPPDATA%\outpost. So cluster
+             mode=agent is likely to hit the same "no podman or docker binary
+             on PATH" failure there. Verify on a Windows host before assuming
+             either way.
+
+Any design must therefore be cross-platform: the safety property cannot come
+from launchd/systemd/Task-Scheduler specifics, because the destructive step
+("outpost stop" inside preflightTakeover) is platform-independent.
