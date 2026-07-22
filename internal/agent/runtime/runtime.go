@@ -27,6 +27,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/qiangli/coreutils/pkg/binmgr"
 )
 
 // ErrPodmanNotFound is returned by Up when neither `podman` nor `docker`
@@ -270,6 +272,19 @@ func pickPodmanBin(override string) (string, error) {
 			return override, nil
 		}
 		return "", fmt.Errorf("runtime: PodmanBin %q not found on PATH", override)
+	}
+	// Our own managed cache first. bashy provisions podman there, so the binary
+	// we ship is found regardless of what $PATH the process inherited — a
+	// daemon started by launchd/systemd gets a minimal PATH that excludes every
+	// package-manager prefix, which previously made this return
+	// ErrPodmanNotFound on a host where `which podman` resolved fine.
+	//
+	// PATH remains a fallback for an operator-installed engine (and for docker,
+	// which we do not manage).
+	for _, c := range []string{"podman", "docker"} {
+		if p := binmgr.CachedBinary(c); p != "" {
+			return p, nil
+		}
 	}
 	for _, c := range []string{"podman", "docker"} {
 		if p, err := exec.LookPath(c); err == nil {
