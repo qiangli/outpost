@@ -53,11 +53,11 @@ const probeTimeout = 500 * time.Millisecond
 func Detect() Target {
 	t := Target{ManifestPath: defaultManifestPath()}
 	if t.ManifestPath == "" {
-		return t
+		return detectBashyStack(t)
 	}
 	b, err := os.ReadFile(t.ManifestPath)
 	if err != nil {
-		return t
+		return detectBashyStack(t)
 	}
 	var m struct {
 		Auth struct {
@@ -80,8 +80,46 @@ func Detect() Target {
 		}
 	}
 	t.Available = httpAlive(t.ProxyURL)
+	if !t.Available {
+		return detectBashyStack(t)
+	}
 	return t
 }
+
+// detectBashyStack finds the observability stack where it lives TODAY.
+//
+// The stack moved from `ycode serve` to bashy, but this package still looked
+// only for ycode's manifest. So on every host the manifest was absent, otel
+// reported unavailable, and the built-in stayed off — including on a host that
+// had been running the stack continuously for eight days. Discovery that keys
+// on a file the producer no longer writes reports "not installed" for something
+// that is installed and running.
+//
+// bashy's stack advertises no manifest: it is a fixed proxy port, and the
+// canonical way to locate it is the same one `bashy otel --url` uses —
+// $BASHY_OTEL_QUERY_URL, else the default proxy port. So probe that directly.
+// No token: the stack binds loopback and does not authenticate.
+//
+// Kept as a fallback rather than a replacement so a host still running the
+// older ycode-served stack keeps working.
+func detectBashyStack(t Target) Target {
+	url := strings.TrimRight(strings.TrimSpace(os.Getenv("BASHY_OTEL_QUERY_URL")), "/")
+	if url == "" {
+		url = defaultBashyProxyURL
+	}
+	if !httpAlive(url) {
+		return t
+	}
+	t.ProxyURL = url
+	t.Token = ""
+	t.Available = true
+	return t
+}
+
+// defaultBashyProxyURL is the stack's default proxy/UI port. It carries OTLP
+// ingest and the query surfaces on one port, which is why there is nothing to
+// discover beyond reaching it.
+const defaultBashyProxyURL = "http://127.0.0.1:31415"
 
 func defaultManifestPath() string {
 	home, err := os.UserHomeDir()
