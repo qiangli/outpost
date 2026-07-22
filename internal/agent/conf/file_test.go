@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -92,6 +94,59 @@ func TestNilFileConfigAccessors(t *testing.T) {
 	var fc *FileConfig
 	if !fc.ShellOn() || !fc.DesktopOn() || !fc.ClipboardOn() || !fc.SSHOn() {
 		t.Error("nil FileConfig should default-on")
+	}
+}
+
+func TestSupervisedPrograms(t *testing.T) {
+	off := false
+	on := true
+	fc := &FileConfig{Supervised: []SupervisedProgram{
+		{Name: "qa-poller", Path: "/usr/local/bin/bashy", Args: []string{"qa-poller.sh"}, Dir: "/qa"},
+		{Path: "/opt/bin/helper"},                       // name defaults to base
+		{Name: "disabled", Path: "/x/y", Enabled: &off}, // explicitly off
+		{Name: "explicit-on", Path: "/z", Enabled: &on},
+		{Name: "broken"},                  // no path — skipped
+		{Name: "blank-path", Path: "   "}, // whitespace — skipped
+	}}
+
+	got, skipped := fc.SupervisedPrograms()
+	var names []string
+	for _, sp := range got {
+		names = append(names, sp.Name)
+	}
+	want := []string{"qa-poller", "helper", "explicit-on"}
+	if !slices.Equal(names, want) {
+		t.Errorf("enabled programs = %v, want %v", names, want)
+	}
+	if len(skipped) != 2 {
+		t.Errorf("expected 2 skipped entries, got %v", skipped)
+	}
+	// A malformed entry must be reported, not silently dropped — otherwise
+	// a typo in agent.json looks identical to a job with nothing to do.
+	for _, s := range skipped {
+		if !strings.Contains(s, "empty path") {
+			t.Errorf("skip reason should explain itself: %q", s)
+		}
+	}
+}
+
+// A missing "enabled" field means enabled: an entry someone added to the
+// config is meant to run.
+func TestSupervisedProgramOnDefaultsTrue(t *testing.T) {
+	if !(SupervisedProgram{Path: "/x"}).On() {
+		t.Error("missing enabled field should default to on")
+	}
+	off := false
+	if (SupervisedProgram{Path: "/x", Enabled: &off}).On() {
+		t.Error("enabled=false should be off")
+	}
+}
+
+func TestSupervisedProgramsNilConfig(t *testing.T) {
+	var fc *FileConfig
+	got, skipped := fc.SupervisedPrograms()
+	if got != nil || skipped != nil {
+		t.Errorf("nil config should yield nothing, got %v / %v", got, skipped)
 	}
 }
 

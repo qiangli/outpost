@@ -553,6 +553,20 @@ type FileConfig struct {
 	// internal/agent/outbound.go.
 	Outbound []OutboundConfig `json:"outbound,omitempty"`
 
+	// Supervised are extra long-running programs that `outpost supervisord`
+	// keeps alive next to the daemon, with the same restart-on-exit and
+	// capped backoff.
+	//
+	// This exists for reboot durability on every platform outpost runs on.
+	// `outpost run` covers only macOS (it shells out to launchctl), and a
+	// scheduler the operator has to restart by hand stops silently after a
+	// reboot — a stalled job then looks exactly like one with nothing to
+	// do. The OS service already starts supervisord at boot, so anything
+	// it owns returns with it, with no second launcher to keep in sync.
+	// The standing QA poller on an owned host is the motivating case; see
+	// docs/qa-poller-host-setup.md.
+	Supervised []SupervisedProgram `json:"supervised,omitempty"`
+
 	// Cluster, when present and Enabled, opts this outpost into the
 	// cloudbox virtual-podman cluster: vkpodman joins a cloud-side k3s
 	// API server as a virtual node and runs scheduled Pods as local
@@ -1018,6 +1032,63 @@ type MirrorJob struct {
 // MirrorOn reports whether the live directory mirror is enabled with ≥1 job.
 func (fc *FileConfig) MirrorOn() bool {
 	return fc != nil && fc.Mirror != nil && fc.Mirror.Enabled && len(fc.Mirror.Jobs) > 0
+}
+
+// SupervisedProgram is one extra child process `outpost supervisord` keeps
+// alive. Maps onto internal/agent/supervisor.Program; the restart policy is
+// that package's (healthy-start gate + capped backoff) and is not tunable
+// per entry yet — add fields here if a real case needs it.
+type SupervisedProgram struct {
+	// Name identifies the program in supervisor logs. Defaults to the
+	// executable's base name when empty.
+	Name string `json:"name,omitempty"`
+	// Path is the executable, absolute. Args follow it.
+	Path string   `json:"path"`
+	Args []string `json:"args,omitempty"`
+	// Dir is the working directory. Empty inherits the supervisor's, which
+	// is rarely what a job wants — the QA poller writes a cwd-local .qa/
+	// log dir, so it must run from a writable directory of its own.
+	Dir string `json:"dir,omitempty"`
+	// Env entries are "KEY=VALUE", ADDED to the supervisor's environment
+	// rather than replacing it: these programs are operator-declared
+	// helpers that expect a normal environment (PATH, HOME) to inherit.
+	Env []string `json:"env,omitempty"`
+	// LogPath receives combined stdout+stderr, appended. Empty inherits
+	// the supervisor's streams, which on a service means the OS log.
+	LogPath string `json:"log_path,omitempty"`
+	// Enabled is pointer-bool so a missing field means enabled — an entry
+	// present in the config is meant to run unless explicitly turned off.
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// On reports whether this entry should be started (missing field = on).
+func (sp SupervisedProgram) On() bool {
+	return sp.Enabled == nil || *sp.Enabled
+}
+
+// SupervisedPrograms returns the enabled, well-formed supervised entries.
+// Entries missing a Path are skipped with the reason, so one bad line in
+// agent.json can't stop the supervisor from starting the daemon.
+func (fc *FileConfig) SupervisedPrograms() ([]SupervisedProgram, []string) {
+	if fc == nil {
+		return nil, nil
+	}
+	var out []SupervisedProgram
+	var skipped []string
+	for i, sp := range fc.Supervised {
+		switch {
+		case !sp.On():
+			continue
+		case strings.TrimSpace(sp.Path) == "":
+			skipped = append(skipped, fmt.Sprintf("supervised[%d]: empty path", i))
+		default:
+			if sp.Name == "" {
+				sp.Name = filepath.Base(sp.Path)
+			}
+			out = append(out, sp)
+		}
+	}
+	return out, skipped
 }
 
 type AppConfig struct {

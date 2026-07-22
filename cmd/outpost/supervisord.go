@@ -50,6 +50,41 @@ entry created by 'outpost service install' keeps it up.`,
 	return cmd
 }
 
+// supervisedFromConfig reads the "supervised" entries out of agent.json and
+// maps them onto supervisor.Programs. Every failure path here is non-fatal
+// and logged — a bad helper entry must not stop the daemon from starting.
+func supervisedFromConfig() []*supervisor.Program {
+	cfgPath, err := conf.DefaultConfigPath()
+	if err != nil || cfgPath == "" {
+		return nil
+	}
+	fc, err := conf.LoadFile(cfgPath)
+	if err != nil || fc == nil {
+		return nil
+	}
+	entries, skipped := fc.SupervisedPrograms()
+	for _, reason := range skipped {
+		slog.Warn("supervisord: skipping supervised entry", "reason", reason)
+	}
+	programs := make([]*supervisor.Program, 0, len(entries))
+	for _, sp := range entries {
+		env := os.Environ()
+		if len(sp.Env) > 0 {
+			env = append(env, sp.Env...)
+		}
+		programs = append(programs, &supervisor.Program{
+			Name:    sp.Name,
+			Path:    sp.Path,
+			Args:    sp.Args,
+			Dir:     sp.Dir,
+			Env:     env,
+			LogPath: sp.LogPath,
+		})
+		slog.Info("supervisord: supervising", "name", sp.Name, "path", sp.Path, "dir", sp.Dir)
+	}
+	return programs
+}
+
 func runSupervisord(ctx context.Context) error {
 	if err := claimSupervisordPidFile(); err != nil {
 		return err
@@ -87,8 +122,20 @@ func runSupervisord(ctx context.Context) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	slog.Info("supervisord: starting", "binary", self, "daemon_log", logPath)
-	mgr := supervisor.New(daemon)
+	// Operator-declared extra programs (agent.json "supervised"). They get
+	// the same restart-on-exit + backoff as the daemon, and — because the
+	// OS service starts supervisord at boot — the same reboot durability,
+	// on every platform. A misconfigured entry is skipped with a warning
+	// rather than failing startup: a helper job must never keep the daemon
+	// itself from coming up.
+	programs := []*supervisor.Program{daemon}
+	for _, sp := range supervisedFromConfig() {
+		programs = append(programs, sp)
+	}
+
+	slog.Info("supervisord: starting", "binary", self, "daemon_log", logPath,
+		"supervised", len(programs)-1)
+	mgr := supervisor.New(programs...)
 	err = mgr.Run(ctx)
 	slog.Info("supervisord: stopped")
 	return err
