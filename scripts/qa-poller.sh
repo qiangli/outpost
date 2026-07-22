@@ -49,7 +49,18 @@ pass(){                                        # one poll pass
   # Fetch the qa harness FRESH from the repo each run — the poller dir carries no
   # tracked files, so pulling dag.md every pass means a missing/stale harness can
   # never silently break QA (the failure this replaces). Fail closed.
-  if ! bashy gh api "/repos/$REPO/contents/dag.md" -H "Accept: application/vnd.github.raw" > dag.md 2>/dev/null || [ ! -s dag.md ]; then
+  # Case matters here even though it does not on disk: dag's own Discover treats
+  # dag.md / DAG.md / Dag.md as one name (the dhnt alphabet has no upper case),
+  # and a case-insensitive macOS checkout hides which one a repo committed — but
+  # the GitHub contents API is case-SENSITIVE and 404s on the wrong spelling.
+  # Try the variants in Discover's precedence order. Fail closed.
+  got=""
+  for cand in dag.md DAG.md Dag.md; do
+    if bashy gh api "/repos/$REPO/contents/$cand" -H "Accept: application/vnd.github.raw" > dag.md 2>/dev/null && [ -s dag.md ]; then
+      got="$cand"; break
+    fi
+  done
+  if [ -z "$got" ]; then
     echo ">> [$os] FAIL: could not fetch dag.md harness from $REPO"; return 0
   fi
   if OUTPOST_TEST_VERSION="$dev" bashy dag dag.md qa 2>&1 | tee ".qa/qa-$os.log"; then
