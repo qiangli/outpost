@@ -128,6 +128,47 @@ func FetchAndWrite(ctx context.Context, cloudboxBase, accessToken, nodeName, out
 	return outPath, nil
 }
 
+// FetchUserAndWrite materializes the OPERATOR's per-user kubeconfig
+// (full user-scoped RBAC — e.g. cluster-admin for the owner in
+// single-tenant) to outPath (default Path()). This is what the daemon
+// writes for hands-off `kubectl`/`helm`: the operator gets THEIR
+// permissions. Distinct from FetchAndWrite, which renders a node-scoped
+// AGENT kubeconfig — that one, written to the same convenience path,
+// silently capped operators at a node ServiceAccount's view (they saw
+// `kubectl get nodes` but not their own workloads / admin). Same
+// user-scoped bytes cloudbox mints for `outpost cluster userkubeconfig`.
+func FetchUserAndWrite(ctx context.Context, cloudboxBase, accessToken, outPath string) (string, error) {
+	if outPath == "" {
+		outPath = Path()
+	}
+	if outPath == "" {
+		err := errors.New("no kubeconfig path — set OUTPOST_KUBECONFIG_PATH or ensure HOME resolves")
+		recordStatus(outPath, "user", "", err)
+		return "", err
+	}
+	if strings.TrimSpace(cloudboxBase) == "" {
+		err := errors.New("no cloudbox URL — host is not paired yet")
+		recordStatus(outPath, "user", "", err)
+		return outPath, err
+	}
+	if strings.TrimSpace(accessToken) == "" {
+		err := errors.New("no access_token — run `outpost register` first")
+		recordStatus(outPath, "user", "", err)
+		return outPath, err
+	}
+	yaml, err := FetchUserKubeconfigYAML(ctx, cloudboxBase, accessToken)
+	if err != nil {
+		recordStatus(outPath, "user", "", fmt.Errorf("fetch: %w", err))
+		return outPath, fmt.Errorf("fetch user kubeconfig: %w", err)
+	}
+	if err := WriteStandalone(yaml, outPath); err != nil {
+		recordStatus(outPath, "user", "", err)
+		return outPath, fmt.Errorf("write %s: %w", outPath, err)
+	}
+	recordStatus(outPath, "user", "", nil)
+	return outPath, nil
+}
+
 // Render returns the minimal kubeconfig YAML kubectl needs: one
 // cluster, one user, one context, current-context set. CA inlined
 // as certificate-authority-data when present; empty CA means trust
