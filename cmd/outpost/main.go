@@ -279,22 +279,42 @@ func startCmd() *cobra.Command {
 			if err := registerBashyServiceApps(fc, apps); err != nil {
 				return err
 			}
-			// Built-in local-daemon proxies (podman, ollama). The admin UI
-			// toggle is the source of truth; we silently skip when the
-			// daemon isn't actually reachable so a stale "enabled" flag
-			// doesn't break boot.
+			// Built-in local-daemon proxies (podman, ollama, otel below).
+			// These are default-ON (see conf.PodmanOn) and DETECTION-GATED:
+			// we skip registration when the daemon isn't actually reachable,
+			// so a host that has never installed podman/Ollama boots exactly
+			// as before — one log line, no error. o3 is an offer, never a
+			// dependency.
+			//
+			// The skip is logged at Info when the default put us here and at
+			// Warn only when the operator explicitly asked for the proxy: a
+			// laptop with no podman is normal, a config that says
+			// podman_enabled=true with no daemon is a real misconfiguration.
+			missingBackend := func(explicit bool, msg string, args ...any) {
+				if explicit {
+					slog.Warn(msg, args...)
+					return
+				}
+				slog.Info(msg, args...)
+			}
 			if fc.PodmanOn() {
 				if bt := agent.DetectPodman(); bt.Available && bt.Socket != "" {
 					if err := apps.RegisterFromConfig(conf.AppConfig{
 						Name: agent.BuiltinPodman, Scheme: "unix", Socket: bt.Socket,
-						Role: "admin", Enabled: true,
+						// RequireLogin MUST be set explicitly: the raw podman
+						// socket is root-equivalent. Role:"admin" alone does
+						// NOT gate it — Role→RequireLogin only happens in
+						// NewFromJSON's migrateLegacyRole, which this in-code
+						// AppConfig bypasses, so it was reaching cloudbox's
+						// anonymous (require_login=false) proxy path.
+						Role: "admin", RequireLogin: true, Enabled: true,
 					}); err != nil {
 						slog.Warn("podman builtin: register", "err", err)
 					} else {
 						slog.Info("podman builtin: registered", "socket", bt.Socket)
 					}
 				} else {
-					slog.Warn("podman builtin enabled but daemon not detected — skipping")
+					missingBackend(fc.PodmanEnabled != nil, "podman builtin: no podman socket detected — skipping (outpost continues without it)")
 				}
 			}
 			// Filtered container "sandbox" proxy. Shares the podman socket
@@ -402,7 +422,7 @@ func startCmd() *cobra.Command {
 						}
 					}
 				} else {
-					slog.Warn("ollama builtin enabled but daemon not detected — skipping")
+					missingBackend(fc.OllamaEnabled != nil, "ollama builtin: no Ollama daemon detected — skipping (outpost continues without it)")
 				}
 			}
 
@@ -437,7 +457,7 @@ func startCmd() *cobra.Command {
 						apps.SetProxyWrap(surface, wrap)
 					}
 				} else {
-					slog.Warn("otel builtin enabled but ycode proxy not detected — skipping", "manifest", t.ManifestPath)
+					missingBackend(fc.OtelEnabled != nil, "otel builtin: no local observability proxy detected — skipping (outpost continues without it)", "manifest", t.ManifestPath)
 				}
 			}
 
@@ -2388,7 +2408,13 @@ func shouldFetchKubeconfig(fc *conf.FileConfig) bool {
 // in-memory rotation (the next refresh tick will try again).
 func persistClusterCredential(fc *conf.FileConfig, cfgPath string, p *vknode.ParsedKubeconfig) {
 	if fc.Cluster == nil {
-		fc.Cluster = &conf.ClusterConfig{Enabled: true}
+		// Defensive: we only reach here for a host already joining
+		// (shouldFetchKubeconfig is gated on ClusterOn), so Cluster is
+		// normally non-nil with Enabled explicitly true. Mark Enabled so
+		// the credential we're persisting isn't left dangling under an
+		// opt-in (nil→off) config.
+		on := true
+		fc.Cluster = &conf.ClusterConfig{Enabled: &on}
 	}
 	fc.Cluster.APIURL = p.APIURL
 	fc.Cluster.Token = p.Token

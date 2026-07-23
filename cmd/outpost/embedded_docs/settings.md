@@ -122,9 +122,26 @@ tool, or wipe `agent.json` by hand.
 | Auto-rollback watchdog (destructive revert) | `auto_rollback_enabled` | `builtins set --auto-rollback=on\|off` | Inbound > Built-ins | `outpost_set_builtins` | Live |
 
 All built-in toggles default to ON when the JSON key is absent (old
-configs) so an upgrade doesn't silently disable features. The
-exceptions are `podman_enabled` / `sandbox_enabled` / `ollama_enabled` /
-`lan_inference_enabled` which are plain opt-ins (default off).
+configs) so an upgrade doesn't silently disable features. That now
+includes the o3 proxies — `podman_enabled`, `ollama_enabled` and
+`otel_enabled` — so a freshly paired host is useful with zero
+configuration. They are *detection-gated*: outpost registers each mount
+only when the backing daemon is actually reachable, and a host without
+podman / Ollama / an observability proxy logs one line and carries on.
+o3 is never a dependency; nothing fails to start because it is missing.
+
+The remaining opt-ins (default OFF, explicit choice required) are
+`sandbox_enabled` (widens *who* may run containers on the host),
+`lan_inference_enabled` (a LAN-trust listener with no per-request auth)
+and `cluster.enabled` (hands a remote control plane the right to
+schedule workloads here).
+
+Because the o3 keys are default-ON, "off" is only representable as an
+explicit `false` on disk — those three are pointer-bools so an opt-out
+is written literally and survives every later config write. Do not
+"simplify" them to plain `bool`: with `omitempty` a false marshals to
+absent, and the next load would read absent as the default and turn the
+service back on.
 
 ### Same-LAN direct inference (LAN-trust)
 

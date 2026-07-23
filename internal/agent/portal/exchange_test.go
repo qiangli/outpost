@@ -55,6 +55,33 @@ func TestExchangeRoundTrip(t *testing.T) {
 	}
 }
 
+// TestExchangeSecureDefaultsForNewHost — a NEWLY paired host starts with
+// the host-access built-ins OFF (opt-in). These defaults are written only
+// on this fresh-config path; existing hosts (reattach) are untouched.
+func TestExchangeSecureDefaultsForNewHost(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"agent_name":"n","server_addr":"a","server_port":443,"protocol":"wss","token":"t","remote_port":7100}`)
+	}))
+	defer server.Close()
+
+	fc, err := Exchange(context.Background(), ExchangeRequest{ServerURL: server.URL, Code: "c", Name: "n"})
+	if err != nil {
+		t.Fatalf("Exchange: %v", err)
+	}
+	if fc.ShellOn() || fc.DesktopOn() || fc.ClipboardOn() || fc.SSHOn() || fc.FilesOn() || fc.PodmanOn() {
+		t.Errorf("new host should be opt-in (all off): shell=%v desktop=%v clip=%v ssh=%v files=%v podman=%v",
+			fc.ShellOn(), fc.DesktopOn(), fc.ClipboardOn(), fc.SSHOn(), fc.FilesOn(), fc.PodmanOn())
+	}
+	// Cluster is opt-in too; ollama/otel are deliberately left default-on.
+	if fc.ClusterOn() {
+		t.Error("new host: cluster should be off (opt-in)")
+	}
+	if !fc.OllamaOn() || !fc.OtelOn() {
+		t.Error("ollama/otel should remain default-on (not part of the host-access opt-in set)")
+	}
+}
+
 // TestExchangeNon200 surfaces the portal's error body to the caller so
 // the admin UI can render something useful ("expired code" etc.).
 func TestExchangeNon200(t *testing.T) {

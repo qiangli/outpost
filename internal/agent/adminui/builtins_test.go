@@ -87,7 +87,7 @@ func TestBuiltinsToggleOllamaPool(t *testing.T) {
 	on := true
 	if err := conf.SaveFile(configPath, &conf.FileConfig{
 		AgentName:     "h",
-		OllamaEnabled: true,
+		OllamaEnabled: &on,
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}

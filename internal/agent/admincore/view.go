@@ -138,7 +138,10 @@ func toClusterView(fc *conf.FileConfig) ClusterView {
 		return ClusterView{}
 	}
 	return ClusterView{
-		Enabled:          fc.Cluster.Enabled,
+		// Report the EFFECTIVE state (nil defaults on), not the raw
+		// pointer — the status row / SPA badge should show what the
+		// boot path will actually do.
+		Enabled:          fc.ClusterOn(),
 		Mode:             fc.Cluster.Mode,
 		APIURL:           fc.Cluster.APIURL,
 		NodeName:         fc.ClusterNodeName(),

@@ -94,6 +94,40 @@ func TestRegisterWithMeta_Defaults(t *testing.T) {
 	}
 }
 
+// TestRegisterFromConfig_RoleForcesLogin pins the podman-socket exposure
+// fix: an in-code AppConfig with a non-guest Role but no RequireLogin
+// (exactly how the podman builtin was registered) MUST end up gated.
+// migrateLegacyRole only runs on NewFromJSON, so RegisterFromConfig has
+// to fold Role→RequireLogin itself, or a root-equivalent socket reaches
+// cloudbox's anonymous (require_login=false) proxy path.
+func TestRegisterFromConfig_RoleForcesLogin(t *testing.T) {
+	reg := NewAppRegistry()
+	// Role:"admin", RequireLogin deliberately unset (zero value false).
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "podman", Scheme: "unix", Socket: "/tmp/x.sock",
+		Role: "admin", Enabled: true,
+	}); err != nil {
+		t.Fatalf("RegisterFromConfig: %v", err)
+	}
+	// role "guest" must stay public (opt-out of the gate).
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "kiosk", Scheme: "http", Port: 9002,
+		Role: "guest", Enabled: true,
+	}); err != nil {
+		t.Fatalf("RegisterFromConfig guest: %v", err)
+	}
+	got := map[string]bool{}
+	for _, e := range reg.Entries() {
+		got[e.Name] = e.RequireLogin
+	}
+	if !got["podman"] {
+		t.Error("Role:\"admin\" must force require_login=true; got false (socket would be anon-reachable)")
+	}
+	if got["kiosk"] {
+		t.Error("Role:\"guest\" must stay require_login=false")
+	}
+}
+
 // TestSetCapabilities_PropagatesToEntries: SetCapabilities decorates a
 // registered app, and the descriptor flows through to Entries() so the
 // /apps publish includes it for cloudbox's pool router.

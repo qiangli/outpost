@@ -78,8 +78,11 @@ func TestFileConfigLegacyDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A legacy config that never set these keys keeps the runtime default
+	// of ON — the opt-in posture applies only to NEW pairings (written at
+	// Exchange), so existing hosts are never disabled by an upgrade.
 	if !out.ShellOn() || !out.DesktopOn() || !out.ClipboardOn() || !out.SSHOn() {
-		t.Errorf("legacy config should default-on: shell=%v desktop=%v clipboard=%v ssh=%v",
+		t.Errorf("legacy config should stay default-on: shell=%v desktop=%v clipboard=%v ssh=%v",
 			out.ShellOn(), out.DesktopOn(), out.ClipboardOn(), out.SSHOn())
 	}
 	if out.Apps != nil {
@@ -142,6 +145,31 @@ func TestSupervisedProgramOnDefaultsTrue(t *testing.T) {
 	}
 }
 
+// ClusterOn is OPT-IN (default off): joining hands a remote control plane
+// the right to schedule privileged work here, so it must be explicit. An
+// empty ClusterConfig{} (what reattach/Exchange create to stash creds)
+// must NOT flip it on — the *bool nil stays off. Only an explicit true
+// joins.
+func TestClusterOffByDefault(t *testing.T) {
+	on, off := true, false
+	cases := []struct {
+		name string
+		fc   *FileConfig
+		want bool
+	}{
+		{"nil config", nil, false},
+		{"nil cluster block", &FileConfig{}, false},
+		{"empty cluster block (creds stashed, not enabled) → off", &FileConfig{Cluster: &ClusterConfig{}}, false},
+		{"explicit opt-in → on", &FileConfig{Cluster: &ClusterConfig{Enabled: &on}}, true},
+		{"explicit off", &FileConfig{Cluster: &ClusterConfig{Enabled: &off}}, false},
+	}
+	for _, tc := range cases {
+		if got := tc.fc.ClusterOn(); got != tc.want {
+			t.Errorf("%s: ClusterOn()=%v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestSupervisedProgramsNilConfig(t *testing.T) {
 	var fc *FileConfig
 	got, skipped := fc.SupervisedPrograms()
@@ -184,11 +212,11 @@ func TestOllamaPoolOn(t *testing.T) {
 		want bool
 	}{
 		{"nil-fc", nil, false},
-		{"ollama-off", &FileConfig{OllamaEnabled: false}, false},
-		{"ollama-on-pool-unset", &FileConfig{OllamaEnabled: true}, true},
-		{"ollama-on-pool-explicit-on", &FileConfig{OllamaEnabled: true, OllamaPoolEnabled: &on}, true},
-		{"ollama-on-pool-explicit-off", &FileConfig{OllamaEnabled: true, OllamaPoolEnabled: &off}, false},
-		{"ollama-off-pool-on-ignored", &FileConfig{OllamaEnabled: false, OllamaPoolEnabled: &on}, false},
+		{"ollama-off", &FileConfig{OllamaEnabled: bp(false)}, false},
+		{"ollama-on-pool-unset", &FileConfig{OllamaEnabled: bp(true)}, true},
+		{"ollama-on-pool-explicit-on", &FileConfig{OllamaEnabled: bp(true), OllamaPoolEnabled: &on}, true},
+		{"ollama-on-pool-explicit-off", &FileConfig{OllamaEnabled: bp(true), OllamaPoolEnabled: &off}, false},
+		{"ollama-off-pool-on-ignored", &FileConfig{OllamaEnabled: bp(false), OllamaPoolEnabled: &on}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.fc.OllamaPoolOn(); got != tt.want {
@@ -210,11 +238,11 @@ func TestLANInferenceOn(t *testing.T) {
 		want bool
 	}{
 		{"nil-fc", nil, false},
-		{"ollama-off", &FileConfig{OllamaEnabled: false}, false},
-		{"ollama-on-lan-unset-default-off", &FileConfig{OllamaEnabled: true}, false},
-		{"ollama-on-lan-explicit-on", &FileConfig{OllamaEnabled: true, LANInferenceEnabled: &on}, true},
-		{"ollama-on-lan-explicit-off", &FileConfig{OllamaEnabled: true, LANInferenceEnabled: &off}, false},
-		{"ollama-off-lan-on-ignored", &FileConfig{OllamaEnabled: false, LANInferenceEnabled: &on}, false},
+		{"ollama-off", &FileConfig{OllamaEnabled: bp(false)}, false},
+		{"ollama-on-lan-unset-default-off", &FileConfig{OllamaEnabled: bp(true)}, false},
+		{"ollama-on-lan-explicit-on", &FileConfig{OllamaEnabled: bp(true), LANInferenceEnabled: &on}, true},
+		{"ollama-on-lan-explicit-off", &FileConfig{OllamaEnabled: bp(true), LANInferenceEnabled: &off}, false},
+		{"ollama-off-lan-on-ignored", &FileConfig{OllamaEnabled: bp(false), LANInferenceEnabled: &on}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.fc.LANInferenceOn(); got != tt.want {
@@ -357,5 +385,124 @@ func TestClusterModeHelpers(t *testing.T) {
 	var nilc *ClusterConfig
 	if nilc.ClusterMode() != ClusterModeVKPodman || nilc.ClusterModeAgent() || nilc.ClusterModeVKNative() || nilc.ClusterModeVKOllama() || nilc.ClusterModeNativeProcess() {
 		t.Errorf("nil receiver: helpers wrong")
+	}
+}
+
+// TestO3BuiltinsDefaultOn — with none of the keys set, the o3 built-ins
+// (podman / ollama / otel) report ON at runtime: the opt-in posture is
+// applied to NEW pairings at Exchange, not via the runtime default, so
+// existing/legacy configs are unchanged. Cluster stays OFF: joining hands
+// a remote control plane the right to schedule work here — a choice, not a
+// default. See the PodmanOn / ClusterOn doc comments.
+func TestO3BuiltinsDefaultOn(t *testing.T) {
+	fc := &FileConfig{}
+	if !fc.PodmanOn() || !fc.OllamaOn() || !fc.OtelOn() {
+		t.Errorf("unset o3 keys: podman=%v ollama=%v otel=%v, want all true",
+			fc.PodmanOn(), fc.OllamaOn(), fc.OtelOn())
+	}
+	if fc.ClusterOn() {
+		t.Errorf("ClusterOn() = true for an unset config; cluster must stay opt-in")
+	}
+	// Sandbox is NOT part of the flip — it widens who may run containers.
+	if fc.SandboxOn() {
+		t.Errorf("SandboxOn() = true for an unset config; sandbox must stay opt-in")
+	}
+	// A nil config still reports off everywhere (no panics, no defaults
+	// conjured out of a missing config).
+	var nilfc *FileConfig
+	if nilfc.PodmanOn() || nilfc.OllamaOn() || nilfc.OtelOn() || nilfc.ClusterOn() {
+		t.Errorf("nil config reported an o3 built-in as on")
+	}
+}
+
+// TestO3ExplicitFalseSurvivesRoundTrip — THE regression test for the
+// opt-out-that-erases-itself trap.
+//
+// The o3 enable keys carry `omitempty`. Were they plain `bool`, an
+// operator's explicit false would marshal to ABSENT — byte-identical to
+// never-set — so the very next load would apply the default-ON rule and
+// silently restart the service they just turned off. Pointer-bool is what
+// keeps unset / true / false distinguishable, and this test pins that:
+// the JSON must literally contain `false`, and the reloaded config must
+// still report off. Repeat the save/load cycle to catch a decay that only
+// shows up on the second write.
+func TestO3ExplicitFalseSurvivesRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.json")
+	off := false
+	if err := SaveFile(path, &FileConfig{
+		AgentName:     "opted-out",
+		PodmanEnabled: &off,
+		OllamaEnabled: &off,
+		OtelEnabled:   &off,
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	for cycle := 0; cycle < 3; cycle++ {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("cycle %d: read: %v", cycle, err)
+		}
+		var keys map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &keys); err != nil {
+			t.Fatalf("cycle %d: unmarshal: %v", cycle, err)
+		}
+		for _, k := range []string{"podman_enabled", "ollama_enabled", "otel_enabled"} {
+			v, ok := keys[k]
+			if !ok {
+				t.Fatalf("cycle %d: %q absent from the saved JSON — an explicit "+
+					"opt-out was erased by omitempty; the default-ON rule will "+
+					"resurrect the service on next load. Raw: %s", cycle, k, raw)
+			}
+			if string(v) != "false" {
+				t.Fatalf("cycle %d: %q = %s, want false", cycle, k, v)
+			}
+		}
+
+		got, err := LoadFile(path)
+		if err != nil {
+			t.Fatalf("cycle %d: load: %v", cycle, err)
+		}
+		if got.PodmanOn() || got.OllamaOn() || got.OtelOn() {
+			t.Fatalf("cycle %d: opt-out lost: podman=%v ollama=%v otel=%v",
+				cycle, got.PodmanOn(), got.OllamaOn(), got.OtelOn())
+		}
+		// Save the loaded config straight back — this is what every
+		// admin-UI/CLI write does (load, mutate one field, save). It is
+		// the step where a plain bool would drop the false.
+		if err := SaveFile(path, got); err != nil {
+			t.Fatalf("cycle %d: resave: %v", cycle, err)
+		}
+	}
+}
+
+// TestO3ExplicitTrueSurvivesRoundTrip — the mirror case. An explicit
+// true is redundant with the default today, but it must persist as a
+// real `true` so a future default change can't silently flip it either.
+func TestO3ExplicitTrueSurvivesRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.json")
+	on := true
+	if err := SaveFile(path, &FileConfig{
+		AgentName:     "opted-in",
+		PodmanEnabled: &on,
+		OllamaEnabled: &on,
+		OtelEnabled:   &on,
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for name, p := range map[string]*bool{
+		"podman_enabled": got.PodmanEnabled,
+		"ollama_enabled": got.OllamaEnabled,
+		"otel_enabled":   got.OtelEnabled,
+	} {
+		if p == nil {
+			t.Errorf("%s: nil after round trip, want an explicit true", name)
+		} else if !*p {
+			t.Errorf("%s: false after round trip, want true", name)
+		}
 	}
 }

@@ -194,13 +194,13 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 		fc.FilesScope = *p.FilesScope
 	}
 	if p.Podman != nil {
-		fc.PodmanEnabled = *p.Podman
+		fc.PodmanEnabled = p.Podman
 	}
 	if p.Sandbox != nil {
 		fc.SandboxEnabled = *p.Sandbox
 	}
 	if p.Ollama != nil {
-		fc.OllamaEnabled = *p.Ollama
+		fc.OllamaEnabled = p.Ollama
 	}
 	if p.OllamaPool != nil {
 		fc.OllamaPoolEnabled = p.OllamaPool
@@ -312,7 +312,7 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 		fc.ActrunnerDockerHost = *p.ActrunnerDockerHost
 	}
 	if p.Otel != nil {
-		fc.OtelEnabled = *p.Otel
+		fc.OtelEnabled = p.Otel
 	}
 	if p.OtelPool != nil {
 		fc.OtelPoolEnabled = p.OtelPool
@@ -341,7 +341,10 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 		if fc.Cluster == nil {
 			fc.Cluster = &conf.ClusterConfig{}
 		}
-		fc.Cluster.Enabled = *p.Cluster
+		// Persist the pointer as-is: an explicit true/false from the
+		// operator's toggle is exactly the opt-in/opt-out signal
+		// ClusterOn wants to distinguish from the default-on nil.
+		fc.Cluster.Enabled = p.Cluster
 	}
 	if p.ClusterMode != nil {
 		// Accept the three canonical modes plus the back-compat aliases

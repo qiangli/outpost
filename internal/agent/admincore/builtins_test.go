@@ -56,3 +56,64 @@ func TestSetBuiltinsPersistsBashyVersionPin(t *testing.T) {
 		t.Fatalf("bashy_version not in SafeView: %q", sv.BashyVersion)
 	}
 }
+
+// TestSetBuiltinsOptOutSurvivesLaterWrites — the end-to-end form of the
+// opt-out trap, exercised through the real write path (SetBuiltins →
+// SaveFile → LoadFile) rather than the struct alone.
+//
+// podman/ollama/otel default ON when their key is absent. So "off" is
+// only representable as an explicit false on disk. This test turns each
+// off, then performs an UNRELATED SetBuiltins write (the common case:
+// the operator toggles something else, or the SPA saves the form) and
+// asserts the opt-out is still there afterwards. With a plain bool +
+// omitempty the second write drops the key and the services silently
+// come back on.
+func TestSetBuiltinsOptOutSurvivesLaterWrites(t *testing.T) {
+	core, cfgPath := newTestCore(t)
+	off := false
+	if _, err := core.SetBuiltins(BuiltinsParams{
+		Podman: &off, Ollama: &off, Otel: &off,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// An unrelated toggle — must not disturb the o3 opt-outs.
+	on := true
+	if _, err := core.SetBuiltins(BuiltinsParams{Shell: &on}); err != nil {
+		t.Fatal(err)
+	}
+	fc, err := conf.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fc.PodmanOn() || fc.OllamaOn() || fc.OtelOn() {
+		t.Fatalf("opt-out erased by a later write: podman=%v ollama=%v otel=%v",
+			fc.PodmanOn(), fc.OllamaOn(), fc.OtelOn())
+	}
+	// The SafeView the SPA and `outpost status` render must agree.
+	sv := core.toSafeView(fc)
+	if sv.Podman.Enabled || sv.Ollama.Enabled || sv.OtelEnabled {
+		t.Fatalf("SafeView disagrees with the config: podman=%v ollama=%v otel=%v",
+			sv.Podman.Enabled, sv.Ollama.Enabled, sv.OtelEnabled)
+	}
+}
+
+// TestSetBuiltinsFreshConfigDefaultsO3On — a bare config (no keys set)
+// reports podman/ollama/otel on at runtime, and cluster off. NOTE: the
+// secure opt-in defaults for podman/shell/etc. are applied at PAIRING
+// (portal.NewFromExchange writes explicit false), not at this runtime
+// layer — so a bare LoadFile still reflects the legacy default-on.
+func TestSetBuiltinsFreshConfigDefaultsO3On(t *testing.T) {
+	core, cfgPath := newTestCore(t)
+	fc, err := conf.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fc.PodmanOn() || !fc.OllamaOn() || !fc.OtelOn() {
+		t.Fatalf("fresh config: podman=%v ollama=%v otel=%v, want all on",
+			fc.PodmanOn(), fc.OllamaOn(), fc.OtelOn())
+	}
+	if fc.ClusterOn() {
+		t.Fatalf("fresh config: cluster on, want opt-in")
+	}
+	_ = core
+}
