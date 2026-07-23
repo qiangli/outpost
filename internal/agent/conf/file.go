@@ -680,9 +680,15 @@ type FileConfig struct {
 // kubeconfig once, persist what matters, and be done. Token rotation
 // becomes a one-line file save instead of a file-format dance.
 type ClusterConfig struct {
-	// Enabled is the master switch. When false, the rest is ignored and
-	// neither the vkpodman loop nor the k3s-agent supervisor starts.
-	Enabled bool `json:"enabled,omitempty"`
+	// Enabled is the master switch, default-ON like the o3 built-ins
+	// (see ClusterOn): a *bool so "absent" (nil) means join-by-default
+	// while an explicit false is a deliberate opt-out that survives the
+	// next save. Cannot be a plain bool: reattach/Exchange create an
+	// empty ClusterConfig{} to stash NodeToken/STCPSecret, and a plain
+	// false zero-value there would silently opt every paired host out.
+	// When effectively off, the rest is ignored and neither the vkpodman
+	// loop nor the k3s-agent supervisor starts.
+	Enabled *bool `json:"enabled,omitempty"`
 
 	// Mode selects which runtime joins the cluster on this outpost:
 	//   - "" or "vkpodman" or "vk-podman" — v1 virtual-kubelet that
@@ -1295,24 +1301,33 @@ func (fc *FileConfig) AutoRollbackOn() bool {
 	return fc != nil && fc.AutoRollbackEnabled != nil && *fc.AutoRollbackEnabled
 }
 
+// ShellOn and the other host-access built-ins keep a runtime default of
+// ON (nil => on) so EXISTING hosts are never silently disabled by an
+// upgrade. The safer opt-in posture is applied only to NEWLY paired hosts,
+// which get an explicit Enabled=false written into their fresh config at
+// registration time (see portal.NewFromExchange). So: legacy/nil config =>
+// on; fresh pairing => explicit false => off until the owner opts in.
 func (fc *FileConfig) ShellOn() bool { return fc == nil || fc.ShellEnabled == nil || *fc.ShellEnabled }
 
-// DesktopOn reports whether the built-in /desktop route should be mounted.
+// DesktopOn reports whether the built-in /desktop (VNC) route should be
+// mounted. Runtime default ON; new pairings get explicit false — see ShellOn.
 func (fc *FileConfig) DesktopOn() bool {
 	return fc == nil || fc.DesktopEnabled == nil || *fc.DesktopEnabled
 }
 
 // ClipboardOn reports whether the built-in /clipboard route should be mounted.
+// ClipboardOn — runtime default ON; new pairings get explicit false, see ShellOn.
 func (fc *FileConfig) ClipboardOn() bool {
 	return fc == nil || fc.ClipboardEnabled == nil || *fc.ClipboardEnabled
 }
 
 // SSHOn reports whether the built-in /ssh route (real SSH server reached
 // over WebSocket through the matrix tunnel) should be mounted.
+// SSHOn — runtime default ON; new pairings get explicit false, see ShellOn.
 func (fc *FileConfig) SSHOn() bool { return fc == nil || fc.SSHEnabled == nil || *fc.SSHEnabled }
 
 // FilesOn reports whether the embedded File Browser builtin should mount.
-// Default-on like the other outpost-owned route builtins.
+// Runtime default ON; new pairings get explicit false, see ShellOn.
 func (fc *FileConfig) FilesOn() bool { return fc == nil || fc.FilesEnabled == nil || *fc.FilesEnabled }
 
 // SSHAllowLocalForwardOn reports whether the SSH server should honor
@@ -1350,6 +1365,10 @@ func (fc *FileConfig) SSHAllowAgentForwardOn() bool {
 // path only registers the mount when the daemon is actually detected,
 // so "on" costs nothing on a host without podman. An explicit false in
 // the config file is honored (that is what the *bool buys us).
+// PodmanOn — runtime default ON; new pairings get explicit false (see
+// ShellOn). The socket is root-equivalent, so beyond the opt-in-for-new
+// posture it is ALWAYS gated by RequireLogin at the proxy regardless of
+// this toggle (see the podman builtin registration).
 func (fc *FileConfig) PodmanOn() bool {
 	return fc != nil && (fc.PodmanEnabled == nil || *fc.PodmanEnabled)
 }
@@ -1419,8 +1438,23 @@ func (fc *FileConfig) YcodeShareRequireLoginOn() bool {
 // a local convenience, and "local-first" argues it must be chosen, not
 // inherited from a default. It is also not free to undo: leaving means
 // draining a node cloudbox may already be scheduling onto.
+// ClusterOn reports whether this outpost should join the cloudbox
+// cluster (DKS). OPT-IN (default off): joining hands a remote control
+// plane the right to schedule privileged workloads on this host and
+// distributes cluster-wide join secrets, so it must be a deliberate act,
+// not a default. Cloudbox still provisions a ClusterConfig (with
+// NodeToken/STCPSecret) at Exchange/reattach for a paired host, but the
+// creds sit idle until Enabled is explicitly set — an unset (nil) or
+// false Enabled both report off. Enable via
+// `outpost builtins set --cluster on`.
+//
+// Enabled is a *bool (not a plain bool) so it can't be silently flipped
+// on by the empty ClusterConfig{} that reattach/Exchange create to stash
+// creds — nil stays off. The join is additionally gated on
+// AccessToken+AgentName at the boot path.
 func (fc *FileConfig) ClusterOn() bool {
-	return fc != nil && fc.Cluster != nil && fc.Cluster.Enabled
+	return fc != nil && fc.Cluster != nil &&
+		fc.Cluster.Enabled != nil && *fc.Cluster.Enabled
 }
 
 // DiscoveryOn reports whether LAN discovery (mDNS + HTTP /discover)

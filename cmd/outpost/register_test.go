@@ -104,9 +104,10 @@ func TestMergePairingClusterCreds(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.json")
 
+	clusterEnabled := true
 	existing := &conf.FileConfig{
 		Cluster: &conf.ClusterConfig{
-			Enabled:   true,
+			Enabled:   &clusterEnabled,
 			Mode:      "agent",
 			APIURL:    "https://127.0.0.1:6443",
 			NodeName:  "host-d-node",
@@ -134,7 +135,7 @@ func TestMergePairingClusterCreds(t *testing.T) {
 		t.Errorf("cluster creds not refreshed: %+v", merged.Cluster)
 	}
 	// Operator fields preserved.
-	if !merged.Cluster.Enabled || merged.Cluster.Mode != "agent" ||
+	if merged.Cluster.Enabled == nil || !*merged.Cluster.Enabled || merged.Cluster.Mode != "agent" ||
 		merged.Cluster.APIURL != "https://127.0.0.1:6443" || merged.Cluster.NodeName != "host-d-node" {
 		t.Errorf("operator cluster fields not preserved: %+v", merged.Cluster)
 	}

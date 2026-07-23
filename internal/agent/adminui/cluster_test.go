@@ -91,7 +91,7 @@ func TestCluster_ConfigViewRedactsSecrets(t *testing.T) {
 	seed := &conf.FileConfig{
 		AgentName: "h",
 		Cluster: &conf.ClusterConfig{
-			Enabled: true,
+			Enabled: ptrTrue(),
 			APIURL:  "https://k.example",
 			Token:   "should-never-leave-the-agent",
 			CA:      []byte("ca-bytes"),
@@ -134,7 +134,7 @@ func TestCluster_ClearKubeconfig(t *testing.T) {
 	seed := &conf.FileConfig{
 		AgentName: "h",
 		Cluster: &conf.ClusterConfig{
-			Enabled: true,
+			Enabled: ptrTrue(),
 			APIURL:  "https://k",
 			Token:   "t",
 		},
@@ -150,3 +150,7 @@ func TestCluster_ClearKubeconfig(t *testing.T) {
 		t.Errorf("Cluster not cleared: %+v", fc.Cluster)
 	}
 }
+
+// ptrTrue returns a *bool set to true — ClusterConfig.Enabled is a *bool
+// (default-on nil-semantics); tests that want an explicit opt-in use this.
+func ptrTrue() *bool { b := true; return &b }

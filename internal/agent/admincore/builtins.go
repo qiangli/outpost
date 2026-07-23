@@ -341,7 +341,10 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 		if fc.Cluster == nil {
 			fc.Cluster = &conf.ClusterConfig{}
 		}
-		fc.Cluster.Enabled = *p.Cluster
+		// Persist the pointer as-is: an explicit true/false from the
+		// operator's toggle is exactly the opt-in/opt-out signal
+		// ClusterOn wants to distinguish from the default-on nil.
+		fc.Cluster.Enabled = p.Cluster
 	}
 	if p.ClusterMode != nil {
 		// Accept the three canonical modes plus the back-compat aliases

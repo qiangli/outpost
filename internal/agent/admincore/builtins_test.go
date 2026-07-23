@@ -97,8 +97,11 @@ func TestSetBuiltinsOptOutSurvivesLaterWrites(t *testing.T) {
 	}
 }
 
-// TestSetBuiltinsFreshConfigDefaultsO3On — a config the operator has
-// never touched reports podman/ollama/otel on, and cluster off.
+// TestSetBuiltinsFreshConfigDefaultsO3On — a bare config (no keys set)
+// reports podman/ollama/otel on at runtime, and cluster off. NOTE: the
+// secure opt-in defaults for podman/shell/etc. are applied at PAIRING
+// (portal.NewFromExchange writes explicit false), not at this runtime
+// layer — so a bare LoadFile still reflects the legacy default-on.
 func TestSetBuiltinsFreshConfigDefaultsO3On(t *testing.T) {
 	core, cfgPath := newTestCore(t)
 	fc, err := conf.LoadFile(cfgPath)

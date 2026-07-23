@@ -301,7 +301,13 @@ func startCmd() *cobra.Command {
 				if bt := agent.DetectPodman(); bt.Available && bt.Socket != "" {
 					if err := apps.RegisterFromConfig(conf.AppConfig{
 						Name: agent.BuiltinPodman, Scheme: "unix", Socket: bt.Socket,
-						Role: "admin", Enabled: true,
+						// RequireLogin MUST be set explicitly: the raw podman
+						// socket is root-equivalent. Role:"admin" alone does
+						// NOT gate it — Role→RequireLogin only happens in
+						// NewFromJSON's migrateLegacyRole, which this in-code
+						// AppConfig bypasses, so it was reaching cloudbox's
+						// anonymous (require_login=false) proxy path.
+						Role: "admin", RequireLogin: true, Enabled: true,
 					}); err != nil {
 						slog.Warn("podman builtin: register", "err", err)
 					} else {
@@ -2402,7 +2408,13 @@ func shouldFetchKubeconfig(fc *conf.FileConfig) bool {
 // in-memory rotation (the next refresh tick will try again).
 func persistClusterCredential(fc *conf.FileConfig, cfgPath string, p *vknode.ParsedKubeconfig) {
 	if fc.Cluster == nil {
-		fc.Cluster = &conf.ClusterConfig{Enabled: true}
+		// Defensive: we only reach here for a host already joining
+		// (shouldFetchKubeconfig is gated on ClusterOn), so Cluster is
+		// normally non-nil with Enabled explicitly true. Mark Enabled so
+		// the credential we're persisting isn't left dangling under an
+		// opt-in (nil→off) config.
+		on := true
+		fc.Cluster = &conf.ClusterConfig{Enabled: &on}
 	}
 	fc.Cluster.APIURL = p.APIURL
 	fc.Cluster.Token = p.Token

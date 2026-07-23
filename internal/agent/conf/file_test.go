@@ -78,8 +78,11 @@ func TestFileConfigLegacyDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A legacy config that never set these keys keeps the runtime default
+	// of ON — the opt-in posture applies only to NEW pairings (written at
+	// Exchange), so existing hosts are never disabled by an upgrade.
 	if !out.ShellOn() || !out.DesktopOn() || !out.ClipboardOn() || !out.SSHOn() {
-		t.Errorf("legacy config should default-on: shell=%v desktop=%v clipboard=%v ssh=%v",
+		t.Errorf("legacy config should stay default-on: shell=%v desktop=%v clipboard=%v ssh=%v",
 			out.ShellOn(), out.DesktopOn(), out.ClipboardOn(), out.SSHOn())
 	}
 	if out.Apps != nil {
@@ -139,6 +142,31 @@ func TestSupervisedProgramOnDefaultsTrue(t *testing.T) {
 	off := false
 	if (SupervisedProgram{Path: "/x", Enabled: &off}).On() {
 		t.Error("enabled=false should be off")
+	}
+}
+
+// ClusterOn is OPT-IN (default off): joining hands a remote control plane
+// the right to schedule privileged work here, so it must be explicit. An
+// empty ClusterConfig{} (what reattach/Exchange create to stash creds)
+// must NOT flip it on — the *bool nil stays off. Only an explicit true
+// joins.
+func TestClusterOffByDefault(t *testing.T) {
+	on, off := true, false
+	cases := []struct {
+		name string
+		fc   *FileConfig
+		want bool
+	}{
+		{"nil config", nil, false},
+		{"nil cluster block", &FileConfig{}, false},
+		{"empty cluster block (creds stashed, not enabled) → off", &FileConfig{Cluster: &ClusterConfig{}}, false},
+		{"explicit opt-in → on", &FileConfig{Cluster: &ClusterConfig{Enabled: &on}}, true},
+		{"explicit off", &FileConfig{Cluster: &ClusterConfig{Enabled: &off}}, false},
+	}
+	for _, tc := range cases {
+		if got := tc.fc.ClusterOn(); got != tc.want {
+			t.Errorf("%s: ClusterOn()=%v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -360,11 +388,12 @@ func TestClusterModeHelpers(t *testing.T) {
 	}
 }
 
-// TestO3BuiltinsDefaultOn — a config with none of the o3 keys set (a
-// fresh install, or any config written before the flip) must report
-// podman / ollama / otel as ON. Cluster deliberately stays OFF: joining
-// hands a remote control plane the right to schedule work here, which is
-// a choice, not a default. See the ClusterOn doc comment.
+// TestO3BuiltinsDefaultOn — with none of the keys set, the o3 built-ins
+// (podman / ollama / otel) report ON at runtime: the opt-in posture is
+// applied to NEW pairings at Exchange, not via the runtime default, so
+// existing/legacy configs are unchanged. Cluster stays OFF: joining hands
+// a remote control plane the right to schedule work here — a choice, not a
+// default. See the PodmanOn / ClusterOn doc comments.
 func TestO3BuiltinsDefaultOn(t *testing.T) {
 	fc := &FileConfig{}
 	if !fc.PodmanOn() || !fc.OllamaOn() || !fc.OtelOn() {

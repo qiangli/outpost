@@ -609,8 +609,19 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 	if !ac.Enabled {
 		return nil
 	}
+	// Fail-safe: honor the deprecated Role on the in-code path the same
+	// way NewFromJSON's migrateLegacyRole does for on-disk configs. A
+	// non-empty, non-"guest" Role means "authenticated only", so force
+	// the login gate even if the caller forgot RequireLogin. Without
+	// this an in-code AppConfig{Role:"admin"} (e.g. the podman builtin)
+	// silently registered require_login=false and rode cloudbox's
+	// anonymous proxy path — a root-equivalent socket exposed unauthed.
+	requireLogin := ac.RequireLogin
+	if role := strings.ToLower(strings.TrimSpace(ac.Role)); role != "" && role != "guest" {
+		requireLogin = true
+	}
 	meta := AppMeta{
-		RequireLogin:       ac.RequireLogin,
+		RequireLogin:       requireLogin,
 		ElevationRequired:  ac.ElevationRequired,
 		LANOnlyPaths:       ac.LANOnlyPaths,
 		IndexPath:          ac.IndexPath,

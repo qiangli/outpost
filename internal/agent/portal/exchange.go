@@ -261,6 +261,15 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 			ex.RecoveryCode, recoveryCodePath())
 	}
 
+	// Secure-by-default for NEWLY paired hosts: the host-access built-ins
+	// start OFF, so a fresh pairing exposes nothing remotely reachable
+	// until the owner opts in (admin UI / `outpost builtins set`). This is
+	// written ONLY here, on the fresh-config path — EXISTING hosts never
+	// hit Exchange again (reattach merges, it doesn't recreate), so their
+	// current settings are untouched. Distinct *bool per field so a later
+	// deref-assign can't flip them together. (Cluster is already opt-in by
+	// default via ClusterOn, so it needs no explicit write.)
+	off := func() *bool { b := false; return &b }
 	fc := &conf.FileConfig{
 		AgentName:            ex.AgentName,
 		ServerAddr:           ex.ServerAddr,
@@ -272,6 +281,12 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		AccessToken:          ex.AccessToken,
 		ClientOnly:           ex.ClientOnly,
 		CloudboxTicketPubkey: ex.CloudboxTicketPubkey,
+		ShellEnabled:         off(),
+		DesktopEnabled:       off(),
+		ClipboardEnabled:     off(),
+		SSHEnabled:           off(),
+		FilesEnabled:         off(),
+		PodmanEnabled:        off(),
 	}
 	// Carry the cluster-join bits onto the persisted ClusterConfig
 	// when cloudbox returned them. Mode stays empty here — the
