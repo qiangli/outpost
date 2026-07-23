@@ -1964,7 +1964,7 @@ func startCmd() *cobra.Command {
 				// userkube.LastStatus (visible in the admin UI's
 				// Cluster section); we don't gate vkpodman startup on
 				// success — agent-side credentials work independently.
-				if path, err := userkube.FetchAndWrite(gctx, cloudboxHTTPBase(fc), fc.AccessToken, fc.ClusterNodeName(), ""); err != nil {
+				if path, err := userkube.FetchUserAndWrite(gctx, cloudboxHTTPBase(fc), fc.AccessToken, ""); err != nil {
 					slog.Warn("cluster mode: user kubeconfig write failed (admin UI will show the error)", "err", err, "path", path)
 				} else {
 					slog.Info("cluster mode: user kubeconfig ready", "path", path)
