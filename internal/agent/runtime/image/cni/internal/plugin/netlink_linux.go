@@ -32,11 +32,14 @@ func EnsureBridge(name, podCIDR string) error {
 	if out, err := exec.Command("ip", "link", "set", name, "up").CombinedOutput(); err != nil {
 		return fmt.Errorf("ip link set up: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
-	// addr add is also non-idempotent; ignore "exists".
-	if out, err := exec.Command("ip", "addr", "add", gwCIDR, "dev", name).CombinedOutput(); err != nil {
-		if !strings.Contains(string(out), "exists") {
-			return fmt.Errorf("ip addr add %s: %w (%s)", gwCIDR, err, strings.TrimSpace(string(out)))
-		}
+	// Bridge gateway IP. Use `addr replace`, not `addr add`: the second
+	// (and every subsequent) pod ADD re-runs EnsureBridge, and `add`
+	// fails on an address the bridge already carries — with "Address
+	// already assigned", NOT "exists", so the old string-match swallow
+	// missed it and every pod after the first got FailedCreatePodSandBox.
+	// `replace` adds-or-updates and is genuinely idempotent.
+	if out, err := exec.Command("ip", "addr", "replace", gwCIDR, "dev", name).CombinedOutput(); err != nil {
+		return fmt.Errorf("ip addr replace %s: %w (%s)", gwCIDR, err, strings.TrimSpace(string(out)))
 	}
 	// IP forwarding — sysctl is idempotent; this just keeps it set
 	// in case some other component flipped it off.
