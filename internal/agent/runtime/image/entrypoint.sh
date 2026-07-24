@@ -33,9 +33,26 @@ modprobe br_netfilter 2>/dev/null || true
 #   1) Multi-outpost overlay (OUTPOST_POD_CIDR set + tailscaled below)
 #      → outpost-cni plugin advertises this node's /24 via Tailscale.
 #   2) Single-node / no overlay → standard bridge + host-local IPAM so
-#      kubelet leaves NotReady and pods get IPs out of CNI_LOCAL_POD_CIDR
-#      (default 10.43.42.0/24, well outside the host-side k3s cluster-cidr
-#      so loopback routing doesn't collide).
+#      kubelet leaves NotReady and pods get IPs out of CNI_LOCAL_POD_CIDR.
+#
+# The fallback range MUST NOT intersect the k3s SERVICE CIDR (10.43.0.0/16
+# by default) — that was the bug in the original 10.43.42.0/24 default.
+# It read "well outside the cluster-cidr", which was true of the POD
+# supernet (10.42.0.0/16) and false of the service range it actually
+# landed in. Inside a pod netns the fallback /24 is an on-link bridge
+# route, so a ClusterIP allocated into it resolves to a local pod and
+# kube-proxy never sees the packet — a silent, node-local misroute.
+#
+# 10.42.255.0/24 is the TOP of the pod supernet: outside the service
+# CIDR, and disjoint from the overlay's carved /24s, which cloudbox
+# allocates lexicographically-lowest-first from 10.42.0.0/16
+# (FirstFreePodCIDR) and would have to hand out 255 hosts' worth before
+# reaching it.
+#
+# NOTE this fallback is only correct for a SINGLE-node cluster: every
+# node that takes this branch uses the same range, so pod IPs collide
+# across nodes and Services silently misroute. Multi-node REQUIRES the
+# overlay branch above (cloudbox CLUSTER_OVERLAY_ENABLED=true).
 if [ -n "${OUTPOST_POD_CIDR}" ]; then
     log "writing /etc/cni/net.d/10-outpost.conflist pod_cidr=${OUTPOST_POD_CIDR}"
     cat > /etc/cni/net.d/10-outpost.conflist <<EOF
@@ -50,7 +67,7 @@ if [ -n "${OUTPOST_POD_CIDR}" ]; then
 }
 EOF
 else
-    CNI_LOCAL_POD_CIDR="${CNI_LOCAL_POD_CIDR:-10.43.42.0/24}"
+    CNI_LOCAL_POD_CIDR="${CNI_LOCAL_POD_CIDR:-10.42.255.0/24}"
     log "writing /etc/cni/net.d/10-bridge.conflist (single-node, pod_cidr=${CNI_LOCAL_POD_CIDR})"
     cat > /etc/cni/net.d/10-bridge.conflist <<EOF
 {
@@ -61,7 +78,7 @@ else
       "type": "bridge",
       "bridge": "cbr0",
       "isDefaultGateway": true,
-      "forceAddress": false,
+      "forceAddress": true,
       "ipMasq": true,
       "hairpinMode": true,
       "ipam": {
