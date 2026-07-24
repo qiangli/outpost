@@ -2144,6 +2144,11 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 				AgentName:   nodeName,
 			},
 			PodCIDR: cc.OverlayPodCIDR,
+			// Heal runs `tailscale up` inside the runtime container, where
+			// the frp overlay-control visitor is bound on this loopback
+			// port — the Cloudflare-free path to Headscale. Must match the
+			// entrypoint's OVERLAY_CONTROL_PORT default (8091).
+			ControlURL: "http://127.0.0.1:8091/overlay/headscale",
 			Exec: func(ectx context.Context, args ...string) ([]byte, error) {
 				return runtime.ExecInContainer(ectx, rtOpts, args...)
 			},

@@ -40,6 +40,15 @@ type Refresher struct {
 	PodCIDR  string
 	Interval time.Duration
 	Log      *slog.Logger
+
+	// ControlURL, when set, overrides the login server returned by
+	// cloudbox. It exists because the public overlay URL is fronted by
+	// Cloudflare, which strips the Upgrade header on the ts2021 control
+	// POST — so the client must instead reach Headscale over the
+	// frp-tunnelled loopback endpoint (http://127.0.0.1:<port>/overlay/
+	// headscale). Heal execs inside the runtime container, where that
+	// visitor is bound, so the loopback URL resolves.
+	ControlURL string
 }
 
 func (r *Refresher) logger() *slog.Logger {
@@ -91,9 +100,16 @@ func (r *Refresher) Heal(ctx context.Context) error {
 		podCIDR = strings.TrimSpace(r.PodCIDR)
 	}
 
+	loginServer := strings.TrimSpace(creds.LoginServer)
+	if r.ControlURL != "" {
+		// Reach Headscale over the Cloudflare-free tunnelled loopback,
+		// not the public URL cloudbox reported. See ControlURL.
+		loginServer = r.ControlURL
+	}
+
 	args := []string{
 		"tailscale", "up",
-		"--login-server=" + creds.LoginServer,
+		"--login-server=" + loginServer,
 		"--authkey=" + creds.AuthKey,
 		"--reset",
 		"--accept-routes",

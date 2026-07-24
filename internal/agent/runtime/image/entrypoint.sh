@@ -95,19 +95,10 @@ else
 EOF
 fi
 
-# Optional overlay (Phase 3 Tailscale via Headscale on cloudbox).
-if [ -n "${OUTPOST_OVERLAY_LOGIN}" ] && [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ]; then
-    log "starting tailscaled — login_server=${OUTPOST_OVERLAY_LOGIN}"
-    mkdir -p /var/lib/tailscale /var/run/tailscale
-    tailscaled --state=/var/lib/tailscale/tailscaled.state \
-        --socket=/var/run/tailscale/tailscaled.sock \
-        --statedir=/var/lib/tailscale --tun=tailscale0 \
-        >/tmp/tailscaled.log 2>&1 &
-    sleep 2
-    UP_ARGS="--login-server=${OUTPOST_OVERLAY_LOGIN} --authkey=${OUTPOST_OVERLAY_AUTHKEY} --reset --accept-routes"
-    [ -n "${OUTPOST_POD_CIDR}" ] && UP_ARGS="${UP_ARGS} --advertise-routes=${OUTPOST_POD_CIDR}"
-    tailscale up ${UP_ARGS} || log "WARN tailscale up failed; continuing"
-fi
+# NOTE: the overlay (tailscale up) block used to be here, but it must run
+# AFTER frpc starts and the overlay-control STCP visitor binds — the client
+# reaches Headscale over that loopback visitor, not the Cloudflare-fronted
+# public URL. It now lives below, past the frpc-start + visitor-bind waits.
 
 # Matrix-tunnel client (frpc) — connects to cloudbox via WSS and
 # opens an STCP visitor that binds 127.0.0.1:${OUTPOST_API_PORT}
@@ -152,6 +143,28 @@ secretKey = "${OUTPOST_STCP_SECRET}"
 bindAddr = "127.0.0.1"
 bindPort = ${OUTPOST_API_PORT}
 EOF
+
+# Overlay control visitor. Reaches cloudbox's HTTP port (which serves
+# /overlay/headscale/*) over this loopback hop, so `tailscale up` can
+# speak the ts2021 control protocol WITHOUT the request touching
+# Cloudflare — CF strips the Upgrade header on the ts2021 POST, so the
+# direct HTTPS path 403s. Only added when the overlay is enabled (an
+# authkey was handed to us). Same STCP secret as the apiserver.
+OVERLAY_CONTROL_PORT="${OVERLAY_CONTROL_PORT:-8091}"
+if [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ]; then
+    log "adding overlay-control STCP visitor -> 127.0.0.1:${OVERLAY_CONTROL_PORT}"
+    cat >> /tmp/frpc.toml <<EOF
+
+[[visitors]]
+name = "overlay-control-visitor"
+type = "stcp"
+serverUser = "cloudbox"
+serverName = "overlay-control"
+secretKey = "${OUTPOST_STCP_SECRET}"
+bindAddr = "127.0.0.1"
+bindPort = ${OVERLAY_CONTROL_PORT}
+EOF
+fi
 
 # Publish the in-container kubelet back to cloudbox so the embedded
 # apiserver can dial 127.0.0.1:${OUTPOST_KUBELET_PORT} (the per-outpost
@@ -203,6 +216,40 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
     fi
     sleep 1
 done
+
+# Optional overlay (Phase 3 Tailscale via Headscale on cloudbox). Runs HERE,
+# after frpc is up and its visitors bind, because the client reaches the
+# Headscale control protocol through the overlay-control STCP visitor on
+# loopback — the Cloudflare-free path (CF strips the ts2021 POST Upgrade
+# header on the direct HTTPS URL).
+if [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ]; then
+    # Prefer the frp-tunnelled control endpoint; fall back to the public
+    # login server only if the visitor never bound (e.g. a non-Cloudflare
+    # cloudbox deploy where the direct path works).
+    LOGIN_SERVER="http://127.0.0.1:${OVERLAY_CONTROL_PORT}/overlay/headscale"
+    for i in $(seq 1 15); do
+        if (echo >/dev/tcp/127.0.0.1/${OVERLAY_CONTROL_PORT}) 2>/dev/null; then
+            log "overlay-control visitor reachable on 127.0.0.1:${OVERLAY_CONTROL_PORT} (attempt $i)"
+            break
+        fi
+        if [ "$i" = "15" ]; then
+            log "WARN overlay-control visitor never bound; falling back to ${OUTPOST_OVERLAY_LOGIN}"
+            LOGIN_SERVER="${OUTPOST_OVERLAY_LOGIN}"
+        fi
+        sleep 1
+    done
+
+    log "starting tailscaled — login_server=${LOGIN_SERVER}"
+    mkdir -p /var/lib/tailscale /var/run/tailscale
+    tailscaled --state=/var/lib/tailscale/tailscaled.state \
+        --socket=/var/run/tailscale/tailscaled.sock \
+        --statedir=/var/lib/tailscale --tun=tailscale0 \
+        >/tmp/tailscaled.log 2>&1 &
+    sleep 2
+    UP_ARGS="--login-server=${LOGIN_SERVER} --authkey=${OUTPOST_OVERLAY_AUTHKEY} --reset --accept-routes"
+    [ -n "${OUTPOST_POD_CIDR}" ] && UP_ARGS="${UP_ARGS} --advertise-routes=${OUTPOST_POD_CIDR}"
+    tailscale up ${UP_ARGS} || log "WARN tailscale up failed; continuing"
+fi
 
 # Workload pods reach kube-apiserver via the kubernetes Service ClusterIP
 # (10.43.0.1:443). kube-proxy DNATs that to the apiserver's address from
