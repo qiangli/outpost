@@ -50,6 +50,7 @@ import (
 	agentmirror "github.com/qiangli/outpost/internal/agent/mirror"
 	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/otel"
+	"github.com/qiangli/outpost/internal/agent/overlaykey"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
 	"github.com/qiangli/outpost/internal/agent/peerplane"
 	"github.com/qiangli/outpost/internal/agent/portal"
@@ -2122,6 +2123,33 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 		_ = runtime.TailLogs(ctx, rtOpts)
 		return nil
 	})
+
+	// Keep this node registered on the overlay without human help.
+	//
+	// Overlay credentials used to arrive only at pairing and reattach,
+	// and reattach runs at daemon BOOT. So anything that invalidated the
+	// tailnet registration afterwards — a cloudbox deploy resetting
+	// Headscale, most commonly — left the node off the pod network until
+	// someone restarted the daemon. The refresher notices and asks for a
+	// fresh single-use key over the cloudbox access token, which is
+	// unaffected by whatever broke the overlay.
+	//
+	// Gated on having overlay credentials AND a cloudbox token: a host
+	// that never joined an overlay has nothing to refresh.
+	if strings.TrimSpace(cc.OverlayLoginServer) != "" && strings.TrimSpace(fc.AccessToken) != "" {
+		refresher := &overlaykey.Refresher{
+			Client: &overlaykey.Client{
+				BaseURL:     cloudboxHTTPBase(fc),
+				AccessToken: fc.AccessToken,
+				AgentName:   nodeName,
+			},
+			PodCIDR: cc.OverlayPodCIDR,
+			Exec: func(ectx context.Context, args ...string) ([]byte, error) {
+				return runtime.ExecInContainer(ectx, rtOpts, args...)
+			},
+		}
+		g.Go(func() error { return refresher.Run(ctx) })
+	}
 	return nil
 }
 

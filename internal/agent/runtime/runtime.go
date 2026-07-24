@@ -345,3 +345,28 @@ func PodmanAvailable() bool {
 // _ keeps the time import for future tunables (graceful stop timeout
 // is hard-coded above; if we let callers override, time.Duration shows up).
 var _ = time.Second
+
+// ExecInContainer runs a command inside the outpost's runtime container
+// and returns its combined output.
+//
+// Used by the overlay refresher to talk to the tailscaled that lives in
+// there — checking `tailscale status` and re-running `tailscale up` with a
+// fresh key. Going through podman exec (rather than reaching into the
+// container's socket) keeps the daemon free of any assumption about the
+// container's internals beyond "the tailscale CLI is on its PATH".
+//
+// A non-nil error covers both "podman could not run it" and "the command
+// exited non-zero"; the output is returned either way so callers can log
+// what actually happened.
+func ExecInContainer(ctx context.Context, opts Options, args ...string) ([]byte, error) {
+	bin, err := pickPodmanBin(opts.PodmanBin)
+	if err != nil {
+		return nil, err
+	}
+	full := append([]string{"exec", opts.AgentName + "-runtime"}, args...)
+	out, err := exec.CommandContext(ctx, bin, full...).CombinedOutput()
+	if err != nil {
+		return out, fmt.Errorf("runtime: exec %v: %w", args, err)
+	}
+	return out, nil
+}

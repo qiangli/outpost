@@ -119,6 +119,19 @@ cat > /tmp/frpc.toml <<EOF
 serverAddr = "${OUTPOST_CLOUDBOX_HOST}"
 serverPort = ${OUTPOST_CLOUDBOX_PORT}
 user = "${OUTPOST_AGENT_NAME}"
+# Keep retrying instead of exiting on the first failed login.
+#
+# Observed 2026-07-24: this container started ~45s after a cloudbox deploy
+# went ACTIVE, frpc got one "bad status", and exited for good. frpc is what
+# binds 127.0.0.1:${OUTPOST_API_PORT} in here, so the k3s agent then looped
+# forever on "connection refused" while the container stayed Up and the node
+# sat NotReady — until a human restarted it.
+#
+# The window is small but it is exactly the one that matters: a cloudbox
+# restart is precisely when every outpost reconnects. The outpost daemon's
+# own tunnel client already sets LoginFailExit=false for this reason; the
+# container it supervises was the inconsistent one.
+loginFailExit = false
 
 [auth]
 method = "token"
@@ -168,6 +181,17 @@ fi
 log "starting frpc (matrix tunnel + STCP visitor)"
 frpc -c /tmp/frpc.toml >/tmp/frpc.log 2>&1 &
 FRPC_PID=$!
+
+# A dead frpc means the k3s agent can never reach the apiserver, so staying
+# up is worse than exiting: the container looks healthy, the node reports
+# NotReady, and nothing says why. Fail loudly and let the supervisor (podman
+# restart policy / the outpost daemon) recreate us.
+(
+    wait "${FRPC_PID}" 2>/dev/null
+    log "FATAL frpc exited — the apiserver tunnel is gone; stopping the container"
+    tail -5 /tmp/frpc.log 2>/dev/null || true
+    kill -TERM 1 2>/dev/null || true
+) &
 
 # Wait for the STCP visitor to bind locally. The visitor LISTENS even
 # before the publisher accepts a stream, so a successful connect to
