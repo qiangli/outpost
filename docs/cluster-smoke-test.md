@@ -224,3 +224,34 @@ for the cloudbox-side checklist (k3s systemd unit, two reverse-proxy
 routes, the token-issuing endpoint, the RBAC controller, the UserFleet
 CRD, the ValidatingAdmissionPolicy). None of that exists in
 `/Users/you/projects/poc/cloudbox` yet — that's the next phase.
+
+## Verify cross-node cluster networking
+
+A node being `Ready` only proves that its kubelet can report status; it does not
+prove that pods on different nodes share one cluster network. Run the
+cross-node checker against a live DKS cluster:
+
+```bash
+./scripts/cluster-crossnode-check.sh --kubeconfig ~/cluster.yaml
+```
+
+The script pins a short-lived probe to every Ready node. Each probe checks
+cluster DNS, the `kubernetes.default` API Service, a pod IP on another node,
+and a dedicated ClusterIP Service backed by that remote pod. It also checks
+cluster-wide pod IPs and every Endpoints object for duplicate addresses, which
+catches overlapping per-node pod ranges and silent local misroutes. NotReady
+nodes are reported and skipped; on a one-node cluster the two cross-node checks
+are explicitly skipped without failing.
+
+By default, all probe resources are placed in a temporary namespace that is
+deleted on exit. To use an existing namespace instead:
+
+```bash
+./scripts/cluster-crossnode-check.sh \
+  --kubeconfig ~/cluster.yaml \
+  --namespace cluster-diagnostics
+```
+
+The existing namespace is retained, and the script deletes only Pods and
+Services carrying its unique run label. Exit status is zero only when every
+applicable check reports `PASS`.
