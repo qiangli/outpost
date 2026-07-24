@@ -150,9 +150,15 @@ EOF
 # Cloudflare — CF strips the Upgrade header on the ts2021 POST, so the
 # direct HTTPS path 403s. Only added when the overlay is enabled (an
 # authkey was handed to us). Same STCP secret as the apiserver.
+# OVERLAY_CONTROL_PORT is the TLS endpoint tailscale connects to;
+# OVERLAY_CONTROL_BACKEND_PORT is where the frp visitor binds (plain HTTP
+# → cloudbox gin). socat bridges TLS(8091) → plain(8092). Two ports
+# because tailscale's ts2021 requires TLS but the tunnelled endpoint is
+# plain HTTP.
 OVERLAY_CONTROL_PORT="${OVERLAY_CONTROL_PORT:-8091}"
+OVERLAY_CONTROL_BACKEND_PORT="${OVERLAY_CONTROL_BACKEND_PORT:-8092}"
 if [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ]; then
-    log "adding overlay-control STCP visitor -> 127.0.0.1:${OVERLAY_CONTROL_PORT}"
+    log "adding overlay-control STCP visitor -> 127.0.0.1:${OVERLAY_CONTROL_BACKEND_PORT}"
     cat >> /tmp/frpc.toml <<EOF
 
 [[visitors]]
@@ -162,7 +168,7 @@ serverUser = "cloudbox"
 serverName = "overlay-control"
 secretKey = "${OUTPOST_STCP_SECRET}"
 bindAddr = "127.0.0.1"
-bindPort = ${OVERLAY_CONTROL_PORT}
+bindPort = ${OVERLAY_CONTROL_BACKEND_PORT}
 EOF
 fi
 
@@ -223,21 +229,42 @@ done
 # loopback — the Cloudflare-free path (CF strips the ts2021 POST Upgrade
 # header on the direct HTTPS URL).
 if [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ]; then
-    # Prefer the frp-tunnelled control endpoint; fall back to the public
-    # login server only if the visitor never bound (e.g. a non-Cloudflare
-    # cloudbox deploy where the direct path works).
-    LOGIN_SERVER="http://127.0.0.1:${OVERLAY_CONTROL_PORT}/overlay/headscale"
-    for i in $(seq 1 15); do
-        if (echo >/dev/tcp/127.0.0.1/${OVERLAY_CONTROL_PORT}) 2>/dev/null; then
-            log "overlay-control visitor reachable on 127.0.0.1:${OVERLAY_CONTROL_PORT} (attempt $i)"
+    # Wait for the frp overlay-control visitor (plain HTTP → cloudbox) to bind.
+    CONTROL_OK=0
+    for i in $(seq 1 20); do
+        if (echo >/dev/tcp/127.0.0.1/${OVERLAY_CONTROL_BACKEND_PORT}) 2>/dev/null; then
+            log "overlay-control visitor reachable on 127.0.0.1:${OVERLAY_CONTROL_BACKEND_PORT} (attempt $i)"
+            CONTROL_OK=1
             break
-        fi
-        if [ "$i" = "15" ]; then
-            log "WARN overlay-control visitor never bound; falling back to ${OUTPOST_OVERLAY_LOGIN}"
-            LOGIN_SERVER="${OUTPOST_OVERLAY_LOGIN}"
         fi
         sleep 1
     done
+
+    if [ "${CONTROL_OK}" = "1" ]; then
+        # tailscale's ts2021 needs TLS even for a loopback control server, so
+        # terminate TLS here with a self-signed cert trusted via the CA store,
+        # forwarding decrypted bytes to the plain-HTTP frp visitor. This is the
+        # Cloudflare-free path (CF strips the ts2021 POST Upgrade header on the
+        # direct HTTPS URL).
+        CERT=/tmp/overlay-control.crt
+        KEY=/tmp/overlay-control.key
+        if [ ! -f "${CERT}" ]; then
+            log "generating loopback TLS cert for overlay control"
+            openssl req -x509 -newkey rsa:2048 -nodes -keyout "${KEY}" -out "${CERT}" \
+                -days 3650 -subj "/CN=overlay-control.local" \
+                -addext "subjectAltName=IP:127.0.0.1,DNS:localhost" >/dev/null 2>&1
+            cp "${CERT}" /usr/local/share/ca-certificates/overlay-control.crt 2>/dev/null || true
+            update-ca-certificates >/dev/null 2>&1 || true
+        fi
+        log "starting socat TLS terminator :${OVERLAY_CONTROL_PORT} -> :${OVERLAY_CONTROL_BACKEND_PORT}"
+        socat "OPENSSL-LISTEN:${OVERLAY_CONTROL_PORT},bind=127.0.0.1,cert=${CERT},key=${KEY},reuseaddr,fork,verify=0" \
+            "TCP:127.0.0.1:${OVERLAY_CONTROL_BACKEND_PORT}" >/tmp/socat.log 2>&1 &
+        sleep 1
+        LOGIN_SERVER="https://127.0.0.1:${OVERLAY_CONTROL_PORT}/overlay/headscale"
+    else
+        log "WARN overlay-control visitor never bound; falling back to ${OUTPOST_OVERLAY_LOGIN}"
+        LOGIN_SERVER="${OUTPOST_OVERLAY_LOGIN}"
+    fi
 
     log "starting tailscaled — login_server=${LOGIN_SERVER}"
     mkdir -p /var/lib/tailscale /var/run/tailscale

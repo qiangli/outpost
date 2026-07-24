@@ -51,7 +51,13 @@ FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
         iproute2 iptables nftables conntrack ethtool ca-certificates \
         curl util-linux kmod procps jq bash fuse-overlayfs \
+        openssl socat \
     && rm -rf /var/lib/apt/lists/*
+# openssl + socat terminate TLS in front of the frp overlay-control visitor:
+# tailscale's ts2021 control protocol requires a TLS transport even when the
+# login-server is http://, and cloudbox's tunnelled endpoint is plain HTTP.
+# socat presents a loopback self-signed cert (trusted via the CA store at
+# runtime) and forwards decrypted bytes to the frp visitor. See entrypoint.sh.
 
 # Tailscale install — official script puts tailscale + tailscaled on PATH.
 RUN curl -fsSL https://tailscale.com/install.sh | sh
