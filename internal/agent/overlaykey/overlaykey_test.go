@@ -138,6 +138,11 @@ func TestHealAdvertisesRoutes(t *testing.T) {
 	r := &Refresher{
 		Client: testClient(srv.URL),
 		Exec: func(ctx context.Context, args ...string) ([]byte, error) {
+			// Heal verifies registration after `up`, so the status probe
+			// has to answer too — see TestHealRejectsExitZeroWithoutRegistration.
+			if len(args) > 1 && args[1] == "status" {
+				return []byte(`{"BackendState":"Running"}`), nil
+			}
 			got = args
 			return nil, nil
 		},
@@ -172,6 +177,9 @@ func TestHealFallsBackToConfiguredPodCIDR(t *testing.T) {
 		Client:  testClient(srv.URL),
 		PodCIDR: "10.42.3.0/24",
 		Exec: func(ctx context.Context, args ...string) ([]byte, error) {
+			if len(args) > 1 && args[1] == "status" {
+				return []byte(`{"BackendState":"Running"}`), nil
+			}
 			got = args
 			return nil, nil
 		},
@@ -181,5 +189,40 @@ func TestHealFallsBackToConfiguredPodCIDR(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(got, " "), "--advertise-routes=10.42.3.0/24") {
 		t.Errorf("configured pod CIDR was not advertised: %v", got)
+	}
+}
+
+// TestHealRejectsExitZeroWithoutRegistration is the invariant that cost a
+// live debugging session: `tailscale up` exits 0 while leaving the node
+// logged out. Trusting that exit code makes the refresher report a
+// successful re-registration on every tick while healing nothing —
+// success asserted by the absence of a failure signal.
+func TestHealRejectsExitZeroWithoutRegistration(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(Credentials{
+			LoginServer: "https://cb/overlay/headscale",
+			AuthKey:     "tskey-abc",
+			PodCIDR:     "10.42.1.0/24",
+		})
+	}))
+	defer srv.Close()
+
+	r := &Refresher{
+		Client: testClient(srv.URL),
+		Exec: func(ctx context.Context, args ...string) ([]byte, error) {
+			if len(args) > 1 && args[1] == "status" {
+				// What a control plane that cannot complete registration
+				// actually leaves behind.
+				return []byte(`{"BackendState":"NeedsLogin"}`), nil
+			}
+			return nil, nil // `up` exits 0
+		},
+	}
+	err := r.Heal(context.Background())
+	if err == nil {
+		t.Fatal("Heal reported success after `up` exited 0 without registering")
+	}
+	if !strings.Contains(err.Error(), "still not registered") {
+		t.Errorf("error should name the real problem, got: %v", err)
 	}
 }

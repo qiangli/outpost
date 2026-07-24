@@ -17,6 +17,11 @@ import (
 // container when healthy.
 const DefaultInterval = 60 * time.Second
 
+// unreadableLogEvery throttles the "cannot probe" warning: log the first
+// occurrence, then every Nth, so a permanently unreachable container
+// leaves a trail without flooding.
+const unreadableLogEvery = 30
+
 // ExecFunc runs a command inside the runtime container.
 type ExecFunc func(ctx context.Context, args ...string) ([]byte, error)
 
@@ -103,6 +108,20 @@ func (r *Refresher) Heal(ctx context.Context) error {
 	if out, err := r.Exec(ctx, args...); err != nil {
 		return errors.New("tailscale up failed: " + strings.TrimSpace(string(out)))
 	}
+
+	// `tailscale up` exits 0 while leaving the node logged out — observed
+	// against a control plane that could not complete registration. So the
+	// exit code is not evidence that we rejoined; ask what actually
+	// happened. Without this, a refresher that heals nothing reports a
+	// successful re-registration on every tick.
+	healthy, herr := r.Healthy(ctx)
+	if herr != nil {
+		return errors.New("tailscale up returned 0 but state could not be read: " + herr.Error())
+	}
+	if !healthy {
+		return errors.New("tailscale up returned 0 but the node is still not registered")
+	}
+
 	r.logger().Info("overlay: re-registered with a fresh key", "pod_cidr", podCIDR)
 	return nil
 }
@@ -114,6 +133,9 @@ func (r *Refresher) Run(ctx context.Context) error {
 	}
 	tick := time.NewTicker(r.interval())
 	defer tick.Stop()
+	// unreadable counts consecutive ticks where the state could not be
+	// probed at all, so the warning can be throttled rather than dropped.
+	var unreadable int
 	for {
 		select {
 		case <-ctx.Done():
@@ -121,9 +143,19 @@ func (r *Refresher) Run(ctx context.Context) error {
 		case <-tick.C:
 			healthy, err := r.Healthy(ctx)
 			if err != nil {
-				// Cannot tell — say nothing and try later. See Healthy.
+				// Cannot tell — do not act on it (see Healthy), but do
+				// not be silent about it either: a refresher failing to
+				// probe on every tick otherwise looks exactly like one
+				// with nothing to do. Throttled so a permanently
+				// unreachable container cannot flood the log.
+				unreadable++
+				if unreadable == 1 || unreadable%unreadableLogEvery == 0 {
+					r.logger().Warn("overlay: cannot read tailscale state; not acting",
+						"consecutive", unreadable, "err", err)
+				}
 				continue
 			}
+			unreadable = 0
 			if healthy {
 				continue
 			}
