@@ -100,12 +100,12 @@ func TestDetect_NotInstalledWhenNoManifestAndNoBinary(t *testing.T) {
 	}
 }
 
-func TestDetect_InstalledWhenBinaryUnderHomeBin(t *testing.T) {
+func TestDetect_InstalledWhenBinaryUnderSharedUserBin(t *testing.T) {
 	home, td := withHomeOverride(t)
 	defer td()
-	t.Setenv("PATH", "") // ensure we hit the $HOME/bin fallback path
+	t.Setenv("PATH", "") // ensure we hit the $HOME/.local/bin fallback path
 
-	binDir := filepath.Join(home, "bin")
+	binDir := filepath.Join(home, ".local", "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
 	}
@@ -128,6 +128,33 @@ func TestDetect_InstalledWhenBinaryUnderHomeBin(t *testing.T) {
 	}
 	if info.BinaryPath != binPath {
 		t.Errorf("BinaryPath = %q, want %q", info.BinaryPath, binPath)
+	}
+}
+
+func TestLocateBinaryPrefersSharedUserBinOverLegacyHomeBin(t *testing.T) {
+	home, td := withHomeOverride(t)
+	defer td()
+	t.Setenv("PATH", "")
+
+	binName := "ycode"
+	if runtime.GOOS == "windows" {
+		binName = "ycode.exe"
+	}
+	for _, dir := range []string{
+		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, "bin"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, binName), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	want := filepath.Join(home, ".local", "bin", binName)
+	if got := locateBinary(); got != want {
+		t.Fatalf("locateBinary() = %q, want canonical path %q", got, want)
 	}
 }
 

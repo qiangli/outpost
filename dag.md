@@ -75,7 +75,7 @@ Effects: write, net
 ```
 
 ### install
-Build then install the binary into $HOME/bin.
+Build then install the binary into `$DHNT_BIN_DIR` (default `~/.local/bin`).
 Requires: build
 Effects: write
 

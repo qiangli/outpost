@@ -18,7 +18,7 @@ The sibling-path replaces resolve in two contexts: inside the dhnt umbrella they
 # Build scripts (no Makefile — bash scripts under scripts/ are the canonical entry points)
 ./scripts/build.sh           # → ./bin/outpost
 ./scripts/build-all.sh       # cross-compile darwin/linux/windows × amd64/arm64
-./scripts/install-bin.sh     # build + install to $HOME/bin (override via INSTALL_DIR)
+./scripts/install-bin.sh     # build + install to $DHNT_BIN_DIR (default ~/.local/bin)
 ./scripts/tidy.sh            # go mod tidy + go fmt ./... + go vet ./...
 ./scripts/clean.sh           # rm -rf ./bin
 ./scripts/bootstrap-siblings.sh   # materialize ../sh from .sibling-pins (idempotent)

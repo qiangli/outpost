@@ -14,7 +14,7 @@
 BIN="${BIN:-outpost}"
 PKG="${PKG:-./cmd/outpost}"
 OUT_DIR="${OUT_DIR:-bin}"
-INSTALL_DIR="${INSTALL_DIR:-$HOME/bin}"
+INSTALL_DIR="${INSTALL_DIR:-${DHNT_BIN_DIR:-$HOME/.local/bin}}"
 
 # Cross-build matrix. Mirrors .github/workflows/release.yml so build-all.sh
 # produces the same set of artifacts the release flow uploads to GH.

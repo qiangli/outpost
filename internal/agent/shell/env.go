@@ -22,8 +22,7 @@ import (
 //     (without this, `$(which outpost)` returns empty inside the shell —
 //     hits any agentic flow that does `ls -la $(which outpost)` style
 //     introspection)
-//   - $HOME/bin and $HOME/.local/bin (the standard places a user puts
-//     locally-installed binaries)
+//   - $HOME/.local/bin (the canonical dhnt user bin) and legacy $HOME/bin
 //   - /opt/homebrew/{bin,sbin} (macOS Homebrew on Apple Silicon — usually
 //     in launchd's default PATH but only on newer macOS versions)
 //   - /usr/local/bin and /usr/local/sbin (Intel Homebrew, MacPorts;
@@ -73,8 +72,8 @@ func BuildEnvWith(overrides map[string]string) expand.Environ {
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		extras = append(extras,
-			filepath.Join(home, "bin"),
 			filepath.Join(home, ".local", "bin"),
+			filepath.Join(home, "bin"),
 		)
 	}
 	extras = append(extras,

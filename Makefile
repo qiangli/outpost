@@ -30,7 +30,7 @@ test-headless:  ## Short tests minus internal/agent/shell (safe without a contro
 tidy:  ## go mod tidy + go fmt + go vet
 	@./scripts/tidy.sh
 
-install:  ## Build + install the binary into $$HOME/bin
+install:  ## Build + install into $$DHNT_BIN_DIR (default $$HOME/.local/bin)
 	@./scripts/install-bin.sh
 
 clean:  ## Remove build artifacts

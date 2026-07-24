@@ -84,7 +84,7 @@ outpost rollback                          # undo, if needed
 ```
 
 On a machine with no outpost yet, just put the binary on PATH (e.g.
-`~/bin` via `./scripts/install-bin.sh`, or
+`~/.local/bin` via `./scripts/install-bin.sh`, or
 `%LOCALAPPDATA%\outpost\outpost.exe` where the Windows installer puts
 it).
 

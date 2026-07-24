@@ -66,7 +66,7 @@ type Info struct {
 
 	// BinaryPath is the absolute path to the ycode binary we found,
 	// or "" when StateNotInstalled. Resolved via LookPath +
-	// $HOME/bin fallback in that order.
+	// $HOME/.local/bin fallback in that order.
 	BinaryPath string `json:"binary_path,omitempty"`
 
 	// ManifestPath is where we look for ycode's discovery manifest.
@@ -217,8 +217,8 @@ func httpAlive(url string) bool {
 	return resp.StatusCode > 0
 }
 
-// locateBinary tries PATH first, then $HOME/bin/ycode as a fallback
-// — the convention outpost itself uses for its own install. Returns
+// locateBinary tries PATH first, then the shared dhnt user bin, with the old
+// $HOME/bin location retained as a migration fallback. Returns
 // "" when neither finds it. Windows callers need the .exe extension
 // stripped from PATH lookups, which exec.LookPath handles natively.
 func locateBinary() string {
@@ -230,8 +230,8 @@ func locateBinary() string {
 		return ""
 	}
 	candidates := []string{
-		filepath.Join(home, "bin", "ycode"),
 		filepath.Join(home, ".local", "bin", "ycode"),
+		filepath.Join(home, "bin", "ycode"),
 	}
 	if runtime.GOOS == "windows" {
 		for i, p := range candidates {

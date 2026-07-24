@@ -11,7 +11,8 @@ There is no Makefile — the canonical entry points are bash scripts under `scri
 - `./scripts/bootstrap-siblings.sh` materializes sibling-path replace targets (`../sh`) from `.sibling-pins`; run once on a fresh standalone clone before `./scripts/build.sh`. No-op inside the dhnt umbrella. Prefers `outpost git` when on PATH; falls back to system `git`.
 - `./scripts/build.sh` builds `./cmd/outpost` into `./bin/outpost`; set `RELEASE_TAG=vX.Y.Z` to stamp release metadata. Honors `$GOOS`/`$GOARCH`/`$CGO_ENABLED` from env.
 - `./scripts/build-all.sh` cross-compiles all release platforms (darwin/linux/windows × amd64/arm64).
-- `./scripts/install-bin.sh` installs the built binary to `$INSTALL_DIR`, defaulting to `~/bin`.
+- `./scripts/install-bin.sh` installs to `$INSTALL_DIR` or `$DHNT_BIN_DIR`,
+  defaulting to `~/.local/bin`.
 - `./scripts/tidy.sh` runs `go mod tidy`, `go fmt ./...`, and `go vet ./...`.
 - `./scripts/clean.sh` removes `./bin` and stray test/coverage artifacts.
 - `go test ./...` runs the full test suite. Use package filters while iterating, for example `go test ./internal/agent/adminui -run TestE2E`.

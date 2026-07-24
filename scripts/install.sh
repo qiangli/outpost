@@ -21,7 +21,7 @@
 set -eu
 
 REPO="${REPO:-qiangli/outpost}"
-INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+INSTALL_DIR="${INSTALL_DIR:-${DHNT_BIN_DIR:-$HOME/.local/bin}}"
 OUTPOST_VERSION="${OUTPOST_VERSION:-}"
 NO_SERVICE="${NO_SERVICE:-}"
 
