@@ -46,6 +46,12 @@ func EnsureBridge(name, podCIDR string) error {
 	if out, err := exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").CombinedOutput(); err != nil {
 		return fmt.Errorf("enable ip_forward: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
+	// bridge-nf-call-iptables=1 so kube-proxy's DNAT rules apply to
+	// traffic that stays on the bridge (pod → ClusterIP → same-node pod).
+	// Best-effort: needs br_netfilter loaded, which the entrypoint
+	// modprobes; if the knob isn't present the same-node hairpin path is
+	// the only thing affected.
+	_ = exec.Command("sysctl", "-w", "net.bridge.bridge-nf-call-iptables=1").Run()
 	return nil
 }
 
@@ -74,6 +80,15 @@ func PlugPod(args *Args, ip net.IP, cfg *Config) error {
 	if out, err := exec.Command("ip", "link", "set", hostVeth, "up").CombinedOutput(); err != nil {
 		return fmt.Errorf("ip link set host up: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
+	// Hairpin mode on the bridge port. Without it, a pod that hits a
+	// ClusterIP whose endpoint is ANOTHER pod on the SAME node (the
+	// common case for CoreDNS — kube-proxy DNATs 10.43.0.10 to a local
+	// CoreDNS pod) sends a packet that, after DNAT, must be reflected
+	// back out toward the bridge; a non-hairpin port drops it and the
+	// connection times out (in-cluster DNS silently fails). The stock
+	// CNI bridge plugin sets this too. Best-effort — an older kernel/
+	// iproute2 without the flag shouldn't fail pod setup.
+	_ = exec.Command("ip", "link", "set", hostVeth, "type", "bridge_slave", "hairpin", "on").Run()
 
 	// Inside the pod netns: rename pod-end to IfName (eth0), assign IP,
 	// add default route via bridge gateway. nsenter handles the netns
