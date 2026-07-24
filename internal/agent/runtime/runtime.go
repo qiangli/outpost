@@ -161,6 +161,14 @@ func Up(ctx context.Context, opts Options) error {
 	// podman named volume (which broke nested FUSE mounts + the
 	// kubelet's eviction-manager stats provider).
 	nodeIDVol := "outpost-" + opts.AgentName + "-node-id"
+	// Persist the tailscale state too (/var/lib/tailscale holds the
+	// machine key). Without it, every container restart mints a NEW machine
+	// key, so Headscale registers a brand-new node each time and leaves the
+	// old one behind — the overlay accretes stale duplicate nodes that all
+	// advertise the same pod CIDR, which confuses route propagation to
+	// peers (a peer stops learning the route). Persisting the key makes a
+	// restart re-attach as the SAME node — idempotent, no duplicates.
+	tsStateVol := "outpost-" + opts.AgentName + "-ts-state"
 	args := []string{
 		"run", "-d",
 		"--name", containerName,
@@ -174,6 +182,7 @@ func Up(ctx context.Context, opts Options) error {
 		// (the latter since the --cgroupns flag was added).
 		"--cgroupns=host",
 		"-v", nodeIDVol + ":/etc/rancher/node",
+		"-v", tsStateVol + ":/var/lib/tailscale",
 		"-e", "OUTPOST_AGENT_NAME=" + opts.AgentName,
 		"-e", "OUTPOST_NODE_TOKEN=" + opts.NodeToken,
 	}
