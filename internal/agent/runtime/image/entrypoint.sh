@@ -260,7 +260,7 @@ if [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ]; then
         socat "OPENSSL-LISTEN:${OVERLAY_CONTROL_PORT},bind=127.0.0.1,cert=${CERT},key=${KEY},reuseaddr,fork,verify=0" \
             "TCP:127.0.0.1:${OVERLAY_CONTROL_BACKEND_PORT}" >/tmp/socat.log 2>&1 &
         sleep 1
-        LOGIN_SERVER="https://127.0.0.1:${OVERLAY_CONTROL_PORT}/overlay/headscale"
+        LOGIN_SERVER="https://127.0.0.1:${OVERLAY_CONTROL_PORT}"
     else
         log "WARN overlay-control visitor never bound; falling back to ${OUTPOST_OVERLAY_LOGIN}"
         LOGIN_SERVER="${OUTPOST_OVERLAY_LOGIN}"
