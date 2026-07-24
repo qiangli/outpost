@@ -229,42 +229,48 @@ done
 # loopback — the Cloudflare-free path (CF strips the ts2021 POST Upgrade
 # header on the direct HTTPS URL).
 if [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ]; then
-    # Wait for the frp overlay-control visitor (plain HTTP → cloudbox) to bind.
-    CONTROL_OK=0
+    # tailscale's ts2021 needs TLS even for a loopback control server, so
+    # terminate TLS here with a self-signed cert trusted via the CA store,
+    # forwarding decrypted bytes to the plain-HTTP frp overlay-control
+    # visitor. This is the Cloudflare-free path (CF strips the ts2021 POST
+    # Upgrade header on the direct HTTPS URL).
+    #
+    # socat is started UNCONDITIONALLY (not gated on the visitor being up
+    # yet): OPENSSL-LISTEN binds :8091 immediately and only dials :8092 when
+    # a connection arrives, so it tolerates the frp visitor binding late
+    # (e.g. frpc still reconnecting after a cloudbox deploy). This is what
+    # lets the daemon-side refresher self-heal a boot that raced the deploy
+    # — without a running socat, Heal() would have nothing to dial.
+    CERT=/tmp/overlay-control.crt
+    KEY=/tmp/overlay-control.key
+    if [ ! -f "${CERT}" ]; then
+        log "generating loopback TLS cert for overlay control"
+        openssl req -x509 -newkey rsa:2048 -nodes -keyout "${KEY}" -out "${CERT}" \
+            -days 3650 -subj "/CN=overlay-control.local" \
+            -addext "subjectAltName=IP:127.0.0.1,DNS:localhost" >/dev/null 2>&1
+        cp "${CERT}" /usr/local/share/ca-certificates/overlay-control.crt 2>/dev/null || true
+        # tailscaled reads the CA pool at startup, so trust the cert BEFORE
+        # it launches below.
+        update-ca-certificates >/dev/null 2>&1 || true
+    fi
+    log "starting socat TLS terminator :${OVERLAY_CONTROL_PORT} -> :${OVERLAY_CONTROL_BACKEND_PORT}"
+    socat "OPENSSL-LISTEN:${OVERLAY_CONTROL_PORT},bind=127.0.0.1,cert=${CERT},key=${KEY},reuseaddr,fork,verify=0" \
+        "TCP:127.0.0.1:${OVERLAY_CONTROL_BACKEND_PORT}" >/tmp/socat.log 2>&1 &
+
+    # Best-effort wait for the visitor so the boot-time join succeeds when the
+    # tunnel is already healthy; if it never binds in-window, proceed anyway —
+    # the refresher heals once the visitor comes up. NEVER fall back to the
+    # public URL: it is fronted by Cloudflare and structurally cannot carry
+    # ts2021, so an attempt there only wastes a registration.
     for i in $(seq 1 20); do
         if (echo >/dev/tcp/127.0.0.1/${OVERLAY_CONTROL_BACKEND_PORT}) 2>/dev/null; then
             log "overlay-control visitor reachable on 127.0.0.1:${OVERLAY_CONTROL_BACKEND_PORT} (attempt $i)"
-            CONTROL_OK=1
             break
         fi
+        [ "$i" = "20" ] && log "overlay-control visitor not up yet; the refresher will heal once it binds"
         sleep 1
     done
-
-    if [ "${CONTROL_OK}" = "1" ]; then
-        # tailscale's ts2021 needs TLS even for a loopback control server, so
-        # terminate TLS here with a self-signed cert trusted via the CA store,
-        # forwarding decrypted bytes to the plain-HTTP frp visitor. This is the
-        # Cloudflare-free path (CF strips the ts2021 POST Upgrade header on the
-        # direct HTTPS URL).
-        CERT=/tmp/overlay-control.crt
-        KEY=/tmp/overlay-control.key
-        if [ ! -f "${CERT}" ]; then
-            log "generating loopback TLS cert for overlay control"
-            openssl req -x509 -newkey rsa:2048 -nodes -keyout "${KEY}" -out "${CERT}" \
-                -days 3650 -subj "/CN=overlay-control.local" \
-                -addext "subjectAltName=IP:127.0.0.1,DNS:localhost" >/dev/null 2>&1
-            cp "${CERT}" /usr/local/share/ca-certificates/overlay-control.crt 2>/dev/null || true
-            update-ca-certificates >/dev/null 2>&1 || true
-        fi
-        log "starting socat TLS terminator :${OVERLAY_CONTROL_PORT} -> :${OVERLAY_CONTROL_BACKEND_PORT}"
-        socat "OPENSSL-LISTEN:${OVERLAY_CONTROL_PORT},bind=127.0.0.1,cert=${CERT},key=${KEY},reuseaddr,fork,verify=0" \
-            "TCP:127.0.0.1:${OVERLAY_CONTROL_BACKEND_PORT}" >/tmp/socat.log 2>&1 &
-        sleep 1
-        LOGIN_SERVER="https://127.0.0.1:${OVERLAY_CONTROL_PORT}"
-    else
-        log "WARN overlay-control visitor never bound; falling back to ${OUTPOST_OVERLAY_LOGIN}"
-        LOGIN_SERVER="${OUTPOST_OVERLAY_LOGIN}"
-    fi
+    LOGIN_SERVER="https://127.0.0.1:${OVERLAY_CONTROL_PORT}"
 
     log "starting tailscaled — login_server=${LOGIN_SERVER}"
     mkdir -p /var/lib/tailscale /var/run/tailscale
