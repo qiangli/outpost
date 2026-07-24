@@ -2099,6 +2099,13 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 		OverlayLoginServer: cc.OverlayLoginServer,
 		OverlayAuthKey:     cc.OverlayAuthKey,
 	}
+	// Announce whether this node gets a real (per-node, routable) pod
+	// network or the shared-range single-node fallback. Both come up
+	// Ready and look identical from the cluster's side, so the WARN on
+	// the fallback path is the only signal an operator gets before pod
+	// IPs start colliding across nodes.
+	rtOpts.PodNetwork().Log(nodeName)
+
 	if err := runtime.Up(ctx, rtOpts); err != nil {
 		if errors.Is(err, runtime.ErrPodmanNotFound) {
 			slog.Warn("cluster mode=agent: " + err.Error())

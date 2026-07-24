@@ -11,6 +11,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"github.com/qiangli/outpost/internal/agent/otel"
+	"github.com/qiangli/outpost/internal/agent/runtime"
 	"github.com/qiangli/outpost/internal/agent/ycode"
 )
 
@@ -50,6 +51,14 @@ type ClusterView struct {
 	HasNodeToken  bool   `json:"has_node_token,omitempty"`
 	HasSTCPSecret bool   `json:"has_stcp_secret,omitempty"`
 	K8sAPIPort    int    `json:"k8s_api_port,omitempty"`
+	// PodNetworkMode is "overlay" (cloudbox allocated a per-node pod
+	// CIDR — the only multi-node-correct mode) or "single-node-fallback"
+	// (no CIDR: a fixed range identical on every node, so pod IPs
+	// collide the moment a second node joins). Read-only derived state,
+	// not a config key — see runtime.ClassifyPodNetwork. PodCIDR is the
+	// range that mode actually allocates from.
+	PodNetworkMode string `json:"pod_network_mode,omitempty"`
+	PodCIDR        string `json:"pod_cidr,omitempty"`
 	// Observability fleet-aggregation URLs cloudbox provisioned for
 	// this outpost. Empty when the AppStore observability bundle
 	// isn't installed; non-empty means ycode is expected to
@@ -137,11 +146,14 @@ func toClusterView(fc *conf.FileConfig) ClusterView {
 	if fc == nil || fc.Cluster == nil {
 		return ClusterView{}
 	}
+	podNet := runtime.ClassifyPodNetwork(fc.Cluster.OverlayPodCIDR)
 	return ClusterView{
 		// Report the EFFECTIVE state (nil defaults on), not the raw
 		// pointer — the status row / SPA badge should show what the
 		// boot path will actually do.
 		Enabled:          fc.ClusterOn(),
+		PodNetworkMode:   string(podNet.Mode),
+		PodCIDR:          podNet.PodCIDR,
 		Mode:             fc.Cluster.Mode,
 		APIURL:           fc.Cluster.APIURL,
 		NodeName:         fc.ClusterNodeName(),
