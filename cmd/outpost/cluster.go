@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"strings"
 
@@ -14,6 +18,133 @@ import (
 	"github.com/qiangli/outpost/internal/agent/vknode"
 )
 
+// clusterLeaveCmd is the clean "leave DKS" lifecycle command. It tells cloudbox
+// to reclaim this host's cluster state — its k8s Node(s), overlay registration,
+// and pod-CIDR reservation — then disables cluster mode and stops the local
+// runtime. A subsequent `outpost cluster join` rejoins from a clean slate
+// (fresh pod CIDR, new node, new overlay identity) rather than reusing stale
+// state. This is the missing half of node lifecycle: today a node can only
+// DRAIN (depart), never actually leave and reclaim.
+func clusterLeaveCmd() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "leave",
+		Short: "Leave the DKS cluster: reclaim this host's node + overlay + pod CIDR on cloudbox, then stop the local runtime",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if !yes {
+				fmt.Println("This removes this host's k8s node, overlay registration, and pod CIDR on cloudbox,")
+				fmt.Println("and disables cluster mode locally. Rejoin with `outpost cluster join`.")
+				fmt.Println("Re-run with --yes to confirm.")
+				return nil
+			}
+			cfgPath, err := conf.DefaultConfigPath()
+			if err != nil {
+				return err
+			}
+			fc, err := conf.LoadFile(cfgPath)
+			if err != nil {
+				return fmt.Errorf("load %s: %w", cfgPath, err)
+			}
+			if fc == nil || fc.AccessToken == "" || fc.AgentName == "" {
+				return errors.New("not paired — no access_token/agent_name saved")
+			}
+			cloudboxBase := cloudboxHTTPBase(fc)
+			if cloudboxBase == "" {
+				return errors.New("no cloudbox URL in saved config")
+			}
+			// 1. cloudbox teardown. Best-effort: report failure but still do the
+			//    local teardown so `leave` never strands a half-left node.
+			if summary, lerr := notifyLeave(cmd.Context(), cloudboxBase, fc.AccessToken, fc.AgentName); lerr != nil {
+				fmt.Printf("cloudbox teardown failed: %v (continuing local teardown)\n", lerr)
+			} else {
+				fmt.Printf("cloudbox: %s\n", summary)
+			}
+			// 2. local: wipe cluster config + stop the runtime on next boot.
+			session, err := dialMCP(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer session.close()
+			var out struct {
+				RestartPending bool `json:"restart_pending"`
+			}
+			if err := session.callTool(cmd.Context(), "outpost_clear_kubeconfig", map[string]any{}, &out); err != nil {
+				return err
+			}
+			fmt.Println("local: cluster mode cleared; the runtime stops on the next boot. Rejoin with `outpost cluster join`.")
+			return nil
+		},
+	}
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip the confirmation prompt")
+	return cmd
+}
+
+// clusterJoinCmd rejoins the DKS cluster by re-enabling cluster mode. The
+// daemon re-fetches its kubeconfig on the next boot and re-registers, so
+// cloudbox allocates a FRESH pod CIDR (and persists it), a new k8s Node, and a
+// new overlay node. The symmetric partner to `outpost cluster leave`.
+func clusterJoinCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "join",
+		Short: "Rejoin the DKS cluster (fresh pod CIDR + k8s node + overlay registration)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			session, err := dialMCP(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer session.close()
+			var out struct {
+				RestartPending bool `json:"restart_pending"`
+			}
+			if err := session.callTool(cmd.Context(), "outpost_set_builtins", map[string]any{"cluster": true}, &out); err != nil {
+				return err
+			}
+			fmt.Println("cluster mode enabled; outpost restarting to rejoin. Poll `outpost status`, then `kubectl get nodes`.")
+			return nil
+		},
+	}
+	return cmd
+}
+
+// notifyLeave POSTs /api/v1/cluster/leave and returns cloudbox's teardown
+// summary. Mirrors notifyDeparting's auth: Bearer access_token + the
+// X-Outpost-Agent header naming which host is leaving.
+func notifyLeave(ctx context.Context, cloudboxBase, accessToken, agentName string) (string, error) {
+	base := strings.TrimRight(strings.TrimSpace(cloudboxBase), "/")
+	if base == "" {
+		return "", errors.New("notifyLeave: empty cloudboxBase")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/cluster/leave", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("X-Outpost-Agent", agentName)
+	req.Header.Set("Accept", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("cloudbox responded %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var r struct {
+		Message      string   `json:"message"`
+		NodesDeleted []string `json:"nodes_deleted"`
+		OverlayNodes int      `json:"overlay_nodes_deleted"`
+		PodCIDR      bool     `json:"pod_cidr_released"`
+	}
+	_ = json.Unmarshal(body, &r)
+	msg := r.Message
+	if msg == "" {
+		msg = "left"
+	}
+	return fmt.Sprintf("%s (k8s nodes=%d, overlay nodes=%d, pod_cidr_released=%v)",
+		msg, len(r.NodesDeleted), r.OverlayNodes, r.PodCIDR), nil
+}
+
 // clusterCmd is the `outpost cluster <subcommand>` group. Currently
 // holds one subcommand (kubeconfig) but structured as a group so
 // future additions (e.g. `outpost cluster nodes`, `outpost cluster
@@ -24,7 +155,8 @@ func clusterCmd() *cobra.Command {
 		Short: "Interact with this outpost's cloudbox k8s cluster (default mode: real k3s-agent in a podman container; legacy vkpodman is opt-in)",
 	}
 	cmd.AddCommand(clusterKubeconfigCmd(), clusterUserKubeconfigCmd(),
-		clusterInitCmd(), clusterShardInitCmd(), clusterClearCmd(), clusterBuildRuntimeCmd())
+		clusterInitCmd(), clusterShardInitCmd(), clusterClearCmd(), clusterBuildRuntimeCmd(),
+		clusterLeaveCmd(), clusterJoinCmd())
 	return cmd
 }
 
