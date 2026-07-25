@@ -59,7 +59,12 @@ func clusterLeaveCmd() *cobra.Command {
 			} else {
 				fmt.Printf("cloudbox: %s\n", summary)
 			}
-			// 2. local: wipe cluster config + stop the runtime on next boot.
+			// 2. local: disable cluster mode PRESERVING the node's mode + identity
+			//    (so a rejoin comes back as the same kind of node), then trigger a
+			//    real restart so the cluster-off boot tears the runtime container
+			//    down. Without the explicit restart the stale k3s kubelet retry-
+			//    loops forever on the Node cloudbox just deleted — the leave tool
+			//    only sets RestartPending, it deliberately doesn't self-restart.
 			session, err := dialMCP(cmd.Context())
 			if err != nil {
 				return err
@@ -68,10 +73,15 @@ func clusterLeaveCmd() *cobra.Command {
 			var out struct {
 				RestartPending bool `json:"restart_pending"`
 			}
-			if err := session.callTool(cmd.Context(), "outpost_clear_kubeconfig", map[string]any{}, &out); err != nil {
+			if err := session.callTool(cmd.Context(), "outpost_cluster_leave", map[string]any{}, &out); err != nil {
 				return err
 			}
-			fmt.Println("local: cluster mode cleared; the runtime stops on the next boot. Rejoin with `outpost cluster join`.")
+			if out.RestartPending {
+				if err := restartViaMCP(cmd.Context()); err != nil {
+					return fmt.Errorf("cloudbox teardown + local disable done, but the restart that stops the runtime failed (run `outpost restart`): %w", err)
+				}
+			}
+			fmt.Println("local: cluster mode disabled (mode preserved); runtime stopping via restart. Rejoin with `outpost cluster join`.")
 			return nil
 		},
 	}
@@ -96,10 +106,15 @@ func clusterJoinCmd() *cobra.Command {
 			var out struct {
 				RestartPending bool `json:"restart_pending"`
 			}
-			if err := session.callTool(cmd.Context(), "outpost_set_builtins", map[string]any{"cluster": true}, &out); err != nil {
+			if err := session.callTool(cmd.Context(), "outpost_cluster_join", map[string]any{}, &out); err != nil {
 				return err
 			}
-			fmt.Println("cluster mode enabled; outpost restarting to rejoin. Poll `outpost status`, then `kubectl get nodes`.")
+			if out.RestartPending {
+				if err := restartViaMCP(cmd.Context()); err != nil {
+					return fmt.Errorf("cluster mode enabled, but the restart that brings the runtime up failed (run `outpost restart`): %w", err)
+				}
+			}
+			fmt.Println("cluster mode enabled (mode preserved); outpost restarting to rejoin fresh. Poll `outpost status`, then `kubectl get nodes`.")
 			return nil
 		},
 	}

@@ -848,6 +848,28 @@ func startCmd() *cobra.Command {
 				ShardTrigger:        shardTrigger,
 				ShardStatus:         shardStatus,
 				ShardLog:            shardLog,
+				ClusterRuntimeDown: func(ctx context.Context, purge bool) error {
+					// Resolve the node name from the CURRENT config (LeaveCluster
+					// just rewrote it, preserving Mode + NodeName). Stop the runtime
+					// container and, on purge, drop its identity volumes so a rejoin
+					// registers fresh — see runtime.PurgeVolumes.
+					fc2, lerr := conf.LoadFile(cfgPath)
+					if lerr != nil || fc2 == nil {
+						return lerr
+					}
+					nn := fc2.ClusterNodeName()
+					if nn == "" {
+						return nil
+					}
+					opts := runtime.Options{AgentName: nn}
+					if derr := runtime.Down(ctx, opts); derr != nil {
+						return derr
+					}
+					if purge {
+						return runtime.PurgeVolumes(ctx, opts)
+					}
+					return nil
+				},
 			})
 			if err != nil {
 				return fmt.Errorf("admincore: %w", err)
@@ -1969,6 +1991,20 @@ func startCmd() *cobra.Command {
 					slog.Warn("cluster mode: user kubeconfig write failed (admin UI will show the error)", "err", err, "path", path)
 				} else {
 					slog.Info("cluster mode: user kubeconfig ready", "path", path)
+				}
+			} else {
+				// Cluster disabled (e.g. after `outpost cluster leave`): ensure no
+				// stale agent-runtime container lingers with a k3s kubelet
+				// retry-looping on a Node cloudbox already deleted. A running
+				// kubelet only re-registers at startup, so a deleted Node it can't
+				// see means an endless "node not found" loop until the container
+				// stops — which nothing does unless we do it here. runtime.Down is
+				// a no-op when the container is absent or podman isn't installed,
+				// so it's safe on every cluster-off boot.
+				if nn := fc.ClusterNodeName(); nn != "" {
+					if err := runtime.Down(gctx, runtime.Options{AgentName: nn}); err != nil {
+						slog.Warn("cluster disabled: agent runtime teardown", "err", err)
+					}
 				}
 			}
 			g.Go(func() error {

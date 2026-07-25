@@ -258,6 +258,43 @@ func Down(ctx context.Context, opts Options) error {
 	return nil
 }
 
+// identityVolumes are the podman named volumes `leave` purges so a rejoin gets a
+// clean OVERLAY identity: the tailscale machine key (ts-state) and the CNI IPAM
+// ledger. cloudbox deletes this node's Headscale registration and releases its
+// pod CIDR on leave, so re-attaching the old machine key would try to be a node
+// the coordinator no longer knows, and the stale IPAM ledger would hand out
+// addresses from the previous pod CIDR — both wrong for a fresh rejoin.
+//
+// The k3s node-id volume is DELIBERATELY EXCLUDED: it carries the k8s node NAME
+// + node-password, which are orthogonal to the overlay. Purging it would churn
+// the node name on every leave/join (<node>-<hashA> → <node>-<hashB> …),
+// orphaning labels/affinity and accreting node objects. Keeping it lets the
+// node RETURN under a stable name (the kubelet re-registers it at startup), so
+// leave/join is idempotent in the cluster's eyes.
+func identityVolumes(agentName string) []string {
+	return []string{
+		"outpost-" + agentName + "-ts-state",
+		"outpost-" + agentName + "-cni",
+	}
+}
+
+// PurgeVolumes removes a node's persistent-identity volumes so the next join
+// mints a FRESH identity (new machine key → clean Headscale registration → the
+// overlay can converge). Call ONLY after Down (the container must be gone —
+// podman refuses to remove an in-use volume) AND after cloudbox's node teardown
+// succeeded. A missing volume is normal (swallowed); `-f` also detaches a
+// stopped container's reference.
+func PurgeVolumes(ctx context.Context, opts Options) error {
+	bin, err := pickPodmanBin(opts.PodmanBin)
+	if err != nil {
+		return err
+	}
+	for _, v := range identityVolumes(opts.AgentName) {
+		_ = exec.CommandContext(ctx, bin, "volume", "rm", "-f", v).Run()
+	}
+	return nil
+}
+
 // TailLogs blocks and streams the container's logs to slog at info
 // level. Returns when the container exits (or ctx is canceled). The
 // caller typically runs this in a goroutine inside the errgroup.

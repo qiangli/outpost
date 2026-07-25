@@ -118,6 +118,15 @@ type Deps struct {
 	// sharding / mesh isn't wired.
 	ShardLog func(ctx context.Context, host string) (string, error)
 
+	// ClusterRuntimeDown, when set, SYNCHRONOUSLY stops this node's cluster
+	// runtime container and — when purge is true — removes its persistent-
+	// identity volumes (k3s node-id / tailscale machine key / CNI). LeaveCluster
+	// calls it with purge=true so a rejoin gets a fresh overlay identity: a stale
+	// machine key for a Headscale node cloudbox already deleted leaves the
+	// overlay unable to converge. Closure so admincore doesn't import the runtime
+	// package. Nil in tests / when the cluster runtime isn't wired.
+	ClusterRuntimeDown func(ctx context.Context, purge bool) error
+
 	// AppHealth, when set, returns the latest per-app reachability
 	// measurements (TCP/HTTP probes, no ICMP). Nil when the service
 	// isn't wired.
