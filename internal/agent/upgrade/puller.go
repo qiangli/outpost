@@ -10,6 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/mod/semver"
+
+	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/jitter"
 )
 
@@ -115,6 +118,19 @@ func (p PullerConfig) checkOnce(ctx context.Context) {
 	if !ok {
 		return // 204 — no release on file, or none for this platform
 	}
+	// Safety net: the PULL path must NEVER move a host to a version that isn't
+	// strictly NEWER than what it runs. cloudbox's fleet "target" is just its
+	// latest-release record, which can lag or point at an older tag; a puller
+	// that blindly applied it would DOWNGRADE the host — exactly how a
+	// freshly-fixed Windows host got repeatedly yanked back to an old build,
+	// undoing the fix minutes after each manual upgrade. (The operator-driven
+	// PUSH path can still force a deliberate rollback; only this automatic pull
+	// is guarded.)
+	if declinePulledTarget(env.ReleaseID) {
+		slog.Info("upgrade puller: declining fleet target — not strictly newer (no auto-downgrade)",
+			"current", agent.ReadBuildInfo().Version, "target", env.ReleaseID)
+		return
+	}
 	res := p.Worker.Apply(ctx, env)
 	switch res.Status {
 	case StatusAccepted, StatusPendingManual:
@@ -126,6 +142,28 @@ func (p PullerConfig) checkOnce(ctx context.Context) {
 		slog.Debug("upgrade puller: target poll no-op",
 			"status", res.Status, "release_id", env.ReleaseID, "commit", env.Commit)
 	}
+}
+
+// declinePulledTarget reports whether the automatic pull must DECLINE the
+// offered target because it is not strictly NEWER than the running binary.
+// target is the fleet target's release_id (a vX.Y.Z semver tag):
+//   - target not valid semver          → decline (apply only clean release tags)
+//   - running binary is untagged (dev) → decline (never let the fleet silently
+//     replace a dev/-dirty build — e.g. a hand-built host — with a release)
+//   - target <= current                → decline (a downgrade or lateral move)
+//
+// Only a strictly-newer, validly-tagged target is applied. This is the robust
+// guard: even a stale or wrong cloudbox target can no longer walk a host
+// backward via the silent pull.
+func declinePulledTarget(target string) bool {
+	if !semver.IsValid(target) {
+		return true
+	}
+	cur := agent.ReadBuildInfo().Version
+	if !semver.IsValid(cur) {
+		return true
+	}
+	return semver.Compare(target, cur) <= 0
 }
 
 // fetchTarget GETs the fleet target for this host's platform. Returns
