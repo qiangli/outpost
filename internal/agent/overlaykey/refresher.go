@@ -67,10 +67,30 @@ func (r *Refresher) interval() time.Duration {
 
 // tailscaleStatus is the sliver of `tailscale status --json` we read.
 type tailscaleStatus struct {
-	BackendState string `json:"BackendState"`
+	BackendState string      `json:"BackendState"`
+	Self         *peerStatus `json:"Self"`
 }
 
-// Healthy reports whether tailscaled considers itself logged in and running.
+// peerStatus is the sliver of a node's own status we read. InNetworkMap is the
+// load-bearing field: it is false whenever this node is not currently in a
+// netmap it successfully polled — exactly the stranded state a Running-only
+// check cannot see.
+type peerStatus struct {
+	InNetworkMap bool `json:"InNetworkMap"`
+}
+
+// Healthy reports whether tailscaled is logged in AND actually in the network
+// map.
+//
+// BackendState=="Running" alone is NOT sufficient: after a cloudbox deploy
+// resets Headscale's node DB, tailscaled keeps reporting "Running" from cached
+// state while every /machine/map poll gets a 404 "node not found" — the node
+// is stranded (logged out at the control plane) yet self-reports Running. A
+// Running-only check then leaves it stranded forever: the refresher never
+// heals what looks healthy, so a deploy takes the whole fleet's overlay down
+// until each node is restarted by hand. Self.InNetworkMap is the honest
+// signal — false in exactly that stranded state — so requiring BOTH is what
+// makes the refresher actually re-register after a deploy.
 //
 // A failure to ASK is deliberately not "unhealthy": the container may be
 // gone, tailscale may not be installed, or the overlay may simply be off on
@@ -86,7 +106,10 @@ func (r *Refresher) Healthy(ctx context.Context) (bool, error) {
 	if jerr := json.Unmarshal(out, &st); jerr != nil {
 		return false, jerr
 	}
-	return strings.EqualFold(st.BackendState, "Running"), nil
+	if !strings.EqualFold(st.BackendState, "Running") {
+		return false, nil
+	}
+	return st.Self != nil && st.Self.InNetworkMap, nil
 }
 
 // Heal fetches a fresh single-use key and re-registers this node.

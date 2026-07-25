@@ -82,24 +82,34 @@ func TestFetchDistinguishesDisabledAndThrottled(t *testing.T) {
 
 func TestHealthyReadsBackendState(t *testing.T) {
 	for _, c := range []struct {
-		state string
-		want  bool
+		name   string
+		status string
+		want   bool
 	}{
-		{"Running", true},
-		{"NeedsLogin", false},
-		{"Stopped", false},
-		{"NoState", false},
+		{"running and in network map", `{"BackendState":"Running","Self":{"InNetworkMap":true}}`, true},
+		// The stranded state a cloudbox deploy leaves behind: tailscaled still
+		// reports Running from cached state, but the node is in no netmap it
+		// polled (every /machine/map is a 404 "node not found"). A Running-only
+		// check called this healthy and left the node off the pod network until
+		// a human restarted it — the whole reason this field is now read.
+		{"running but stranded (not in network map)", `{"BackendState":"Running","Self":{"InNetworkMap":false}}`, false},
+		{"running but no self", `{"BackendState":"Running"}`, false},
+		{"needs login", `{"BackendState":"NeedsLogin","Self":{"InNetworkMap":false}}`, false},
+		{"stopped", `{"BackendState":"Stopped"}`, false},
+		{"no state", `{"BackendState":"NoState"}`, false},
 	} {
-		r := &Refresher{Exec: func(ctx context.Context, args ...string) ([]byte, error) {
-			return []byte(`{"BackendState":"` + c.state + `"}`), nil
-		}}
-		got, err := r.Healthy(context.Background())
-		if err != nil {
-			t.Fatalf("state %s: %v", c.state, err)
-		}
-		if got != c.want {
-			t.Errorf("BackendState %q -> healthy=%v, want %v", c.state, got, c.want)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			r := &Refresher{Exec: func(ctx context.Context, args ...string) ([]byte, error) {
+				return []byte(c.status), nil
+			}}
+			got, err := r.Healthy(context.Background())
+			if err != nil {
+				t.Fatalf("%s: %v", c.name, err)
+			}
+			if got != c.want {
+				t.Errorf("%s -> healthy=%v, want %v", c.name, got, c.want)
+			}
+		})
 	}
 }
 
@@ -141,7 +151,7 @@ func TestHealAdvertisesRoutes(t *testing.T) {
 			// Heal verifies registration after `up`, so the status probe
 			// has to answer too — see TestHealRejectsExitZeroWithoutRegistration.
 			if len(args) > 1 && args[1] == "status" {
-				return []byte(`{"BackendState":"Running"}`), nil
+				return []byte(`{"BackendState":"Running","Self":{"InNetworkMap":true}}`), nil
 			}
 			got = args
 			return nil, nil
@@ -178,7 +188,7 @@ func TestHealFallsBackToConfiguredPodCIDR(t *testing.T) {
 		PodCIDR: "10.42.3.0/24",
 		Exec: func(ctx context.Context, args ...string) ([]byte, error) {
 			if len(args) > 1 && args[1] == "status" {
-				return []byte(`{"BackendState":"Running"}`), nil
+				return []byte(`{"BackendState":"Running","Self":{"InNetworkMap":true}}`), nil
 			}
 			got = args
 			return nil, nil
