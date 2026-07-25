@@ -2107,6 +2107,22 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 	// IPs start colliding across nodes.
 	rtOpts.PodNetwork().Log(nodeName)
 
+	// Self-rebuild the runtime image when this binary differs from the one
+	// that produced the current image (most importantly right after an
+	// `outpost upgrade`), so CNI / entrypoint changes reach the node with
+	// no manual `outpost cluster build-runtime`. Cheap in the steady state
+	// (one image inspect); non-fatal — if the rebuild fails, Up proceeds
+	// with whatever image is present and reports clearly if there is none.
+	if cacheDir, derr := os.UserCacheDir(); derr == nil {
+		stateDir := filepath.Join(cacheDir, "outpost")
+		if rebuilt, eerr := runtime.EnsureImage(ctx, runtime.BuildOptions{},
+			agent.ReadBuildInfo().ShortCommit(), stateDir); eerr != nil {
+			slog.Warn("cluster mode=agent: runtime image ensure failed; using existing image if present", "err", eerr)
+		} else if rebuilt {
+			slog.Info("cluster mode=agent: runtime image rebuilt to match this outpost version")
+		}
+	}
+
 	if err := runtime.Up(ctx, rtOpts); err != nil {
 		if errors.Is(err, runtime.ErrPodmanNotFound) {
 			slog.Warn("cluster mode=agent: " + err.Error())

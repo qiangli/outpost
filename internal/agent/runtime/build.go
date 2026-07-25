@@ -145,6 +145,44 @@ func BuildImage(ctx context.Context, opts BuildOptions) (string, error) {
 	return tag, nil
 }
 
+// EnsureImage builds the runtime image iff it is absent OR was built by a
+// different outpost version — so an `outpost upgrade` (or any binary swap)
+// makes the container image self-rebuild on the next cluster-mode start,
+// with no manual `outpost cluster build-runtime` step. It returns whether
+// a rebuild happened.
+//
+// Why a host marker file instead of an image label: the pinned podman
+// engine's `build` accepts only --build-arg/-f/-t (no --label), so the
+// image can't carry the version itself. `<stateDir>/runtime-image-version`
+// records the version that produced the current image; a mismatch (or a
+// missing image) triggers a rebuild. Cheap: one `image inspect` in the
+// steady state, no rebuild.
+func EnsureImage(ctx context.Context, opts BuildOptions, wantVersion, stateDir string) (bool, error) {
+	tag := opts.Tag
+	if tag == "" {
+		tag = DefaultImage
+	}
+	bin, err := pickPodmanBin(opts.PodmanBin)
+	if err != nil {
+		return false, err
+	}
+	marker := filepath.Join(stateDir, "runtime-image-version")
+	have, _ := os.ReadFile(marker)
+	imagePresent := exec.CommandContext(ctx, bin, "image", "inspect", tag).Run() == nil
+	if imagePresent && strings.TrimSpace(string(have)) == strings.TrimSpace(wantVersion) && wantVersion != "" {
+		return false, nil // up to date
+	}
+	slog.Info("build-runtime: (re)building runtime image",
+		"tag", tag, "want_version", wantVersion, "image_present", imagePresent)
+	if _, err := BuildImage(ctx, opts); err != nil {
+		return false, err
+	}
+	if err := os.MkdirAll(stateDir, 0o700); err == nil {
+		_ = os.WriteFile(marker, []byte(strings.TrimSpace(wantVersion)+"\n"), 0o644)
+	}
+	return true, nil
+}
+
 // materializeImageFS writes the embedded build context to a fresh
 // tempdir and returns its path. The directory layout matches what's
 // embedded — Dockerfile + entrypoint.sh at the root, cni/ subtree
