@@ -183,6 +183,13 @@ func Up(ctx context.Context, opts Options) error {
 		"--cgroupns=host",
 		"-v", nodeIDVol + ":/etc/rancher/node",
 		"-v", tsStateVol + ":/var/lib/tailscale",
+		// Persist the CNI IPAM state (/var/lib/cloudbox/cni holds one
+		// <container-id>.ip file per pod). Ephemeral, it was wiped on
+		// every container recreate, so the plugin's "used addresses"
+		// scan came up empty and handed a fresh pod an IP a
+		// still-running pod already held — duplicate pod IPs. Persisting
+		// it keeps the allocation ledger across restarts.
+		"-v", "outpost-" + opts.AgentName + "-cni:/var/lib/cloudbox/cni",
 		// Host kernel modules (read-only) so the entrypoint can
 		// `modprobe br_netfilter` — required for kube-proxy's ClusterIP
 		// DNAT to apply to on-bridge (same-node) service traffic, which

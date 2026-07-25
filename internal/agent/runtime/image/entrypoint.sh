@@ -384,6 +384,17 @@ if [ "${OUTPOST_KUBELET_PORT}" != "0" ]; then
     KUBELET_ROUTING_ARGS="--kubelet-arg=port=${OUTPOST_KUBELET_PORT}"
 fi
 
+# Clean resolv.conf for kubelet. The host's /etc/resolv.conf carries the
+# ISP's DNS search domains (e.g. hsd1.ca.comcast.net); kubelet copies the
+# upstream file's search list into every pod, so a plain in-cluster name
+# like "my-svc" first tries "my-svc.<isp-suffix>" and SERVFAILs before the
+# cluster.local search domains are attempted — in-cluster DNS by short
+# name silently breaks. A search-less upstream leaves pods with ONLY the
+# cluster search domains kubelet injects (svc.cluster.local, cluster.local)
+# and public resolvers for external names.
+K3S_RESOLV=/run/k3s-resolv.conf
+printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > "${K3S_RESOLV}"
+
 log "exec k3s agent --server=https://127.0.0.1:${OUTPOST_API_PORT} --node-name=${OUTPOST_AGENT_NAME} --with-node-id --disable-apiserver-lb ${SNAPSHOTTER_ARGS} ${KUBELET_ROUTING_ARGS}"
 # --disable-apiserver-lb pins the agent to --server (the STCP visitor
 # at 127.0.0.1:${OUTPOST_API_PORT}). Without it k3s's client-side
@@ -403,6 +414,7 @@ exec /usr/local/bin/k3s agent \
     --node-name="${OUTPOST_AGENT_NAME}" \
     --with-node-id \
     --disable-apiserver-lb \
+    --resolv-conf="${K3S_RESOLV}" \
     ${SNAPSHOTTER_ARGS} \
     ${KUBELET_ROUTING_ARGS} \
     --kubelet-arg=address=127.0.0.1 \
