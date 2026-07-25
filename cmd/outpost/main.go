@@ -3413,7 +3413,21 @@ func execSelfStart() error {
 	fmt.Printf("Started outpost in background (pid %d).\n", pid)
 	fmt.Printf("Logs: %s\n", logPath)
 	fmt.Println("Stop with: outpost stop")
-	return nil
+
+	// The parent MUST terminate NOW, deterministically. Returning nil and
+	// letting the call stack unwind to process exit was observed on Windows to
+	// leave the parent process ALIVE — an orphan daemon that keeps holding its
+	// matrix-tunnel session on cloudbox. The freshly-spawned daemon then can't
+	// bind its proxy RemotePort ("[<host>-http] start error: port unavailable",
+	// looping forever), so the host goes dark despite a valid token. A single
+	// restart/upgrade could accrete a 3-day-old orphan this way. os.Exit is the
+	// only cross-platform-deterministic termination; the deferred logF.Close()
+	// is redundant here (the child dup'd its own handle at Start(), and the OS
+	// reclaims ours on exit). The pidfile is already the new daemon's — the old
+	// (removePidFile'd) parent leaving is exactly the point.
+	logF.Close()
+	os.Exit(0)
+	return nil // unreachable; keeps the signature honest
 }
 
 // outpostLogPath returns ~/.cache/outpost/outpost.log on Linux+macOS
