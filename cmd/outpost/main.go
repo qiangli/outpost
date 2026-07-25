@@ -3385,15 +3385,32 @@ func execSelfStart() error {
 	}
 	defer logF.Close()
 
-	c := exec.Command(self, "start")
-	// Background daemon: no controlling terminal, no stdin, log->file.
-	c.Stdin = nil
-	c.Stdout = logF
-	c.Stderr = logF
-	detach(c) // platform-specific: Setsid on unix, new process group on Windows.
+	buildChild := func() *exec.Cmd {
+		c := exec.Command(self, "start")
+		// Background daemon: no controlling terminal, no stdin, log->file.
+		c.Stdin = nil
+		c.Stdout = logF
+		c.Stderr = logF
+		return c
+	}
 
+	c := buildChild()
+	detach(c) // platform-specific: Setsid on unix; detached + break-away-from-job on Windows.
 	if err := c.Start(); err != nil {
-		return fmt.Errorf("start outpost: %w", err)
+		// Windows only: the parent's Task Scheduler job object may forbid
+		// CREATE_BREAKAWAY_FROM_JOB (no JOB_OBJECT_LIMIT_BREAKAWAY_OK), so
+		// CreateProcess fails. Re-spawn WITHOUT breakaway from a FRESH Cmd (an
+		// already-Started one can't be reused). detachWithoutBreakaway returns
+		// false on unix, so this retry only runs where it can actually help.
+		retry := buildChild()
+		if detachWithoutBreakaway(retry) {
+			if rerr := retry.Start(); rerr != nil {
+				return fmt.Errorf("start outpost (no-breakaway retry): %w", rerr)
+			}
+			c = retry
+		} else {
+			return fmt.Errorf("start outpost: %w", err)
+		}
 	}
 	pid := c.Process.Pid
 	// Release so the child isn't reaped when register exits.
