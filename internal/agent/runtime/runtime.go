@@ -183,6 +183,12 @@ func Up(ctx context.Context, opts Options) error {
 		"--cgroupns=host",
 		"-v", nodeIDVol + ":/etc/rancher/node",
 		"-v", tsStateVol + ":/var/lib/tailscale",
+		// Host kernel modules (read-only) so the entrypoint can
+		// `modprobe br_netfilter` — required for kube-proxy's ClusterIP
+		// DNAT to apply to on-bridge (same-node) service traffic, which
+		// is what makes in-cluster DNS work. Without the module the
+		// bridge-nf-call sysctls don't even exist.
+		"-v", "/lib/modules:/lib/modules:ro",
 		"-e", "OUTPOST_AGENT_NAME=" + opts.AgentName,
 		"-e", "OUTPOST_NODE_TOKEN=" + opts.NodeToken,
 	}

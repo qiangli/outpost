@@ -21,10 +21,20 @@ set -eu
 
 log() { printf '[runtime] %s\n' "$*" >&2; }
 
-# Best-effort: load br_netfilter so /proc/sys/net/bridge/bridge-nf-call-*
-# exist (kube-proxy needs them for ClusterIP NAT). Modprobe inside a
-# container needs /lib/modules from the host — often a no-op but harmless.
+# Load br_netfilter so /proc/sys/net/bridge/bridge-nf-call-* exist, then
+# turn bridge-nf-call-iptables ON. This is LOAD-BEARING, not best-effort:
+# without it, kube-proxy's DNAT/MASQUERADE rules never apply to traffic
+# that stays on the pod bridge — so a pod hitting a ClusterIP whose
+# endpoint is a pod on the SAME node (CoreDNS is the canonical case) times
+# out, and in-cluster DNS silently fails. Cross-node service traffic still
+# works because it's routed off the bridge, which masks the bug.
+#
+# modprobe needs the host's /lib/modules, which runtime.Up now bind-mounts
+# read-only; the container is privileged so the insert into the shared VM
+# kernel succeeds.
 modprobe br_netfilter 2>/dev/null || true
+sysctl -w net.bridge.bridge-nf-call-iptables=1 2>/dev/null || true
+sysctl -w net.bridge.bridge-nf-call-ip6tables=1 2>/dev/null || true
 
 # Pre-create /etc/machine-id so kubelet doesn't log noisy errors.
 [ -f /etc/machine-id ] || cat /proc/sys/kernel/random/uuid | tr -d - > /etc/machine-id 2>/dev/null || true
