@@ -128,6 +128,20 @@ func BuildImage(ctx context.Context, opts BuildOptions) (string, error) {
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("build-runtime: %s build: %w", filepath.Base(bin), err)
 	}
+
+	// Reclaim the previous image's now-untagged layers. Each rebuild
+	// retags outpost-runtime:dev onto fresh layers and orphans the old
+	// ones; on the small (20 GB) podman VM those accumulate until the
+	// kubelet trips DiskPressure and evicts pods. Prune only DANGLING
+	// (untagged, unreferenced) images — never -a — so the running
+	// container's image and any tagged images are untouched. Best-effort:
+	// a prune failure must not fail the build.
+	prune := exec.CommandContext(ctx, bin, "image", "prune", "-f")
+	prune.Stdout = stderr // narrate on the same stream as the build
+	prune.Stderr = stderr
+	if perr := prune.Run(); perr != nil {
+		slog.Warn("build-runtime: dangling-image prune failed (non-fatal)", "err", perr)
+	}
 	return tag, nil
 }
 
