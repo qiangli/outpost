@@ -1,8 +1,10 @@
 /bin/
 /outpost
 /outpost-vk
+/outpost.exe
 *.test
 *.out
+.qa/
 .agents/
 .mcp.json
 .claude/
