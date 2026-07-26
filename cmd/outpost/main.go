@@ -54,6 +54,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
 	"github.com/qiangli/outpost/internal/agent/peerplane"
 	"github.com/qiangli/outpost/internal/agent/portal"
+	"github.com/qiangli/outpost/internal/agent/recipebuilder"
 	"github.com/qiangli/outpost/internal/agent/repair"
 	"github.com/qiangli/outpost/internal/agent/runtime"
 	"github.com/qiangli/outpost/internal/agent/sandbox"
@@ -1490,6 +1491,28 @@ func startCmd() *cobra.Command {
 			}
 			if warmExec != nil {
 				g.Go(func() error { return warmExec.RunSupervisor(gctx) })
+			}
+
+			// DKS image-recipe build agent (P3 of docs/dks-image-recipe-
+			// distribution-design.md): polls cloudbox's recipe index and builds
+			// each recipe natively with `bashy podman`, loading it into this
+			// node's k3s containerd — "recipes, not blobs". Cluster-agent only
+			// (needs the <name>-runtime container's containerd) + paired.
+			if fc.ClusterOn() && fc.Cluster.ClusterModeAgent() && fc.AccessToken != "" && fc.AgentName != "" {
+				g.Go(func() error {
+					bashyBin, berr := bashyResolver.Path(gctx)
+					if berr != nil {
+						slog.Warn("recipebuilder: bashy unavailable; image-recipe builder disabled", "err", berr)
+						<-gctx.Done()
+						return nil
+					}
+					return recipebuilder.New(recipebuilder.Config{
+						CloudboxBase:     cloudboxHTTPBase(fc),
+						AccessToken:      fc.AccessToken,
+						RuntimeContainer: fc.AgentName + "-runtime",
+						BashyBin:         bashyBin,
+					}).Run(gctx)
+				})
 			}
 
 			if cfg.AgentName == "" {
