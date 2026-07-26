@@ -38,7 +38,7 @@ func TestOllamaBaseURL_WhitespaceTolerant(t *testing.T) {
 	}
 }
 
-func TestUnixSocketPath(t *testing.T) {
+func TestLocalSocketPath(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
@@ -55,11 +55,15 @@ func TestUnixSocketPath(t *testing.T) {
 		{"tcp remote", "tcp://127.0.0.1:2375", ""},
 		// A relative path is not a socket we can meaningfully dial.
 		{"relative path", "podman.sock", ""},
+		// Windows named pipe — the endpoint podman publishes there, and
+		// the spelling it prints. Parsed on every platform so a unix CI
+		// leg still guards the shape (dialing is Windows-only).
+		{"npipe scheme", "npipe:////./pipe/docker_engine", `\\.\pipe\docker_engine`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := unixSocketPath(tc.in); got != tc.want {
-				t.Errorf("unixSocketPath(%q)=%q, want %q", tc.in, got, tc.want)
+			if got := localSocketPath(tc.in); got != tc.want {
+				t.Errorf("localSocketPath(%q)=%q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}

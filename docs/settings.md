@@ -443,7 +443,34 @@ Save = restart (the cluster runtime is built once at boot). Default
 cluster mode is `agent` (real k3s-agent in a podman-supervised
 container); `vk-native` runs scheduled pods as host processes, and
 `vkpodman` is the legacy container-backed alternative opt-in via the
-`--cluster-mode=vkpodman` flag on `start`. Outposts only join their
+`--cluster-mode=vkpodman` flag on `start`.
+
+Platform support per mode:
+
+| mode | linux | macOS | Windows |
+|---|---|---|---|
+| `agent` (k3s-agent in a container) | yes | yes (podman VM) | yes (WSL VM) |
+| `vk-native` / `vk-ollama` (pods → host processes) | yes | yes | yes |
+| `vk-podman` (pods → libpod containers) | yes | yes | yes |
+
+Two things to know before choosing a mode on macOS or Windows:
+
+- **Pods in containers there run inside podman's Linux VM**, so the host
+  GPU is not visible to them (Apple Metal can't be passed through, and
+  the GPU device plugin only counts `nvidia.com/gpu`). A workload that
+  needs the host's accelerator wants `vk-native`, which realizes pods as
+  native host processes; a virtual node declares its own capacity, so it
+  can advertise Metal as schedulable.
+- **On Windows, podman serves its API through `win-sshproxy.exe`**, which
+  it locates via containers.conf's `helper_binaries_dir` or
+  `$CONTAINERS_HELPER_BINARY_DIR`. With neither, `podman machine start`
+  reports success but publishes no endpoint — no pipe, no api.sock — and
+  every client sees that as "podman is not installed". `bashy podman`
+  provisions the helper and exports the dir, which is why outpost prefers
+  `bashy podman` over a PATH podman when it brings the runtime up on
+  Windows. A bashy older than that fix leaves the machine unreachable;
+  upgrade bashy on the host, or set `$CONTAINERS_HELPER_BINARY_DIR` to a
+  directory containing `win-sshproxy.exe` yourself. Outposts only join their
 owning cloudbox's cluster — the older paste-a-kubeconfig path
 (`outpost_set_kubeconfig`) was removed; cloudbox provides the kubeconfig
 automatically once `cluster.enabled` is set.

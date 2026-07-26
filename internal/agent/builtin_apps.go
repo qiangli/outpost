@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,19 +10,35 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/qiangli/outpost/internal/agent/localsock"
 )
 
 // BuiltinTarget describes one of the optional local-daemon proxies
 // (podman, ollama). Available reports whether the daemon is reachable on
 // the suggested socket/URL right now; the admin UI uses this to grey out
-// toggles for daemons that aren't installed. Scheme is "unix" for socket
-// targets and "http" for HTTP base-URL targets.
+// toggles for daemons that aren't installed. Scheme is "unix" or "npipe"
+// for socket targets and "http" for HTTP base-URL targets.
+//
+// Scheme is AUTHORITATIVE for socket targets and must be threaded into
+// the AppConfig the caller registers — a Windows podman is reached over
+// a named pipe, so a caller that hardcodes "unix" cannot talk to it.
 type BuiltinTarget struct {
 	Name      string
 	Scheme    string
-	Socket    string // when Scheme == "unix"
+	Socket    string // when Scheme == "unix" or "npipe"
 	URL       string // when Scheme == "http" — full base URL, e.g. http://127.0.0.1:11434
 	Available bool
+}
+
+// setSocket records a detected socket path together with the transport
+// it implies. Keeping the two assignments in one place is what stops a
+// new detection branch from leaving Scheme at its default.
+func (bt *BuiltinTarget) setSocket(path string) {
+	bt.Socket = path
+	if path != "" {
+		bt.Scheme = localsock.Scheme(path)
+	}
 }
 
 // Builtin names — also the proxy slot names the admin UI surfaces and
@@ -50,7 +65,7 @@ const (
 // are reachable, Socket is still populated with the first candidate so
 // the UI can surface "tried <path>".
 func DetectPodman() BuiltinTarget {
-	bt := BuiltinTarget{Name: BuiltinPodman, Scheme: "unix"}
+	bt := BuiltinTarget{Name: BuiltinPodman, Scheme: localsock.SchemeUnix}
 	// Operator override: $OUTPOST_PODMAN_SOCKET wins over autodetection.
 	// Accepts either a literal path or a shell-style glob (any of *?[);
 	// when the glob expands to multiple matches the newest by mtime
@@ -62,7 +77,7 @@ func DetectPodman() BuiltinTarget {
 		if strings.ContainsAny(env, "*?[") {
 			sock = newestGlobMatch(env)
 		}
-		bt.Socket = sock
+		bt.setSocket(sock)
 		if sock != "" && probeSocket(sock, 200*time.Millisecond) {
 			bt.Available = true
 		}
@@ -79,7 +94,7 @@ func DetectPodman() BuiltinTarget {
 	// docker-owned socket.
 	var envSock string
 	for _, key := range []string{"CONTAINER_HOST", "DOCKER_HOST"} {
-		sock := unixSocketPath(os.Getenv(key))
+		sock := localSocketPath(os.Getenv(key))
 		if sock == "" {
 			continue
 		}
@@ -87,7 +102,7 @@ func DetectPodman() BuiltinTarget {
 			envSock = sock
 		}
 		if probeSocket(sock, 200*time.Millisecond) {
-			bt.Socket = sock
+			bt.setSocket(sock)
 			bt.Available = true
 			return bt
 		}
@@ -107,7 +122,7 @@ func DetectPodman() BuiltinTarget {
 			}
 		}
 		if probeSocket(sock, 200*time.Millisecond) {
-			bt.Socket = sock
+			bt.setSocket(sock)
 			bt.Available = true
 			return bt
 		}
@@ -116,32 +131,21 @@ func DetectPodman() BuiltinTarget {
 	// admin UI can say what was attempted. An explicitly configured
 	// endpoint is a more useful answer than the first autodetect candidate.
 	if envSock != "" {
-		bt.Socket = envSock
+		bt.setSocket(envSock)
 	} else if len(cands) > 0 {
-		bt.Socket = cands[0]
+		bt.setSocket(cands[0])
 	}
 	return bt
 }
 
-// unixSocketPath extracts a filesystem socket path from a daemon-endpoint
-// URL of the form used by $CONTAINER_HOST / $DOCKER_HOST. Accepts
-// "unix:///run/podman.sock" and bare absolute paths; returns "" for remote
-// schemes (ssh://, tcp://), which a direct unix dial can't reach.
-func unixSocketPath(raw string) string {
-	s := strings.TrimSpace(raw)
-	if s == "" {
-		return ""
-	}
-	if rest, ok := strings.CutPrefix(s, "unix://"); ok {
-		return rest
-	}
-	if strings.Contains(s, "://") {
-		return ""
-	}
-	if strings.HasPrefix(s, "/") {
-		return s
-	}
-	return ""
+// localSocketPath extracts a dialable local-socket path from a
+// daemon-endpoint URL of the form used by $CONTAINER_HOST / $DOCKER_HOST.
+// Accepts "unix:///run/podman.sock", "npipe:////./pipe/docker_engine"
+// (the form podman prints on Windows), and bare absolute paths; returns
+// "" for remote schemes (ssh://, tcp://), which a direct local dial
+// can't reach.
+func localSocketPath(raw string) string {
+	return localsock.Normalize(raw)
 }
 
 // newestGlobMatch expands a shell-style glob and returns the path
@@ -205,6 +209,33 @@ func podmanCandidates() []string {
 			)
 		}
 		paths = append(paths, "/var/run/podman/podman.sock")
+	case "windows":
+		// `podman machine start` launches win-sshproxy.exe, which
+		// publishes the SAME libpod API on three endpoints (see
+		// launchWinProxy in podman's pkg/machine/machine_windows.go):
+		// the per-machine pipe `\\.\pipe\podman-<machine>`, the
+		// docker-compat pipe `\\.\pipe\docker_engine` when that global
+		// name is free, and an AF_UNIX socket at
+		// %TEMP%\podman\<machine>-api.sock.
+		//
+		// The machine name is operator-chosen (bashy names its isolated
+		// VM "bashy"; upstream's default is "podman-machine-default"),
+		// so we ENUMERATE the pipe namespace for the `podman-` prefix
+		// rather than guessing names — filepath.Glob cannot walk
+		// `\\.\pipe\`, but a directory read can.
+		paths = append(paths, localsock.ListPipes("podman-")...)
+		// Same layout as the darwin case above: a machine-name glob
+		// resolved newest-mtime-first by DetectPodman. AF_UNIX works on
+		// Windows 10 1803+, so this is a real candidate, not a fallback.
+		if tmp := os.TempDir(); tmp != "" {
+			paths = append(paths, filepath.Join(tmp, "podman", "*-api.sock"))
+		}
+		// Last: the global docker-compat pipe. Deliberately after the
+		// podman-specific endpoints because this name may instead be
+		// held by Docker Desktop, whose dockerd does NOT serve the
+		// /v5.0.0/libpod/* tree vknode speaks — it would pass the
+		// connect probe and then 404 every request.
+		paths = append(paths, localsock.PipePath("docker_engine"))
 	}
 	return paths
 }
@@ -243,18 +274,11 @@ func ollamaBaseURL() string {
 	return "http://" + h
 }
 
+// probeSocket reports whether a daemon is listening on the local socket
+// at path. Handles both AF_UNIX sockets and Windows named pipes — see
+// localsock, which owns the "which transport is this path" decision.
 func probeSocket(path string, timeout time.Duration) bool {
-	info, err := os.Stat(path)
-	if err != nil || info.Mode()&os.ModeSocket == 0 {
-		return false
-	}
-	d := net.Dialer{Timeout: timeout}
-	conn, err := d.Dial("unix", path)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
+	return localsock.Probe(path, timeout)
 }
 
 func probeHTTP(url string, timeout time.Duration) bool {

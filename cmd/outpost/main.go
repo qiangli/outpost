@@ -302,7 +302,10 @@ func startCmd() *cobra.Command {
 			if fc.PodmanOn() {
 				if bt := agent.DetectPodman(); bt.Available && bt.Socket != "" {
 					if err := apps.RegisterFromConfig(conf.AppConfig{
-						Name: agent.BuiltinPodman, Scheme: "unix", Socket: bt.Socket,
+						// Scheme comes from the detector, never a literal: on
+						// Windows podman's endpoint is a named pipe, so a
+						// hardcoded "unix" would register an unreachable app.
+						Name: agent.BuiltinPodman, Scheme: bt.Scheme, Socket: bt.Socket,
 						// RequireLogin MUST be set explicitly: the raw podman
 						// socket is root-equivalent. Role:"admin" alone does
 						// NOT gate it — Role→RequireLogin only happens in
@@ -334,7 +337,7 @@ func startCmd() *cobra.Command {
 			if fc.SandboxOn() {
 				if bt := agent.DetectPodman(); bt.Available && bt.Socket != "" {
 					if err := apps.RegisterFromConfig(conf.AppConfig{
-						Name: agent.BuiltinSandbox, Scheme: "unix", Socket: bt.Socket,
+						Name: agent.BuiltinSandbox, Scheme: bt.Scheme, Socket: bt.Socket,
 						RequireLogin: true, Enabled: true,
 					}); err != nil {
 						slog.Warn("sandbox builtin: register", "err", err)

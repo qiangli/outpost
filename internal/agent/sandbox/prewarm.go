@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"sync/atomic"
 	"time"
+
+	"github.com/qiangli/outpost/internal/agent/localsock"
 )
 
 // libpodPrefix is the versioned libpod REST base. podman 5.x serves both
@@ -38,21 +39,19 @@ type Prewarmer struct {
 }
 
 // NewPrewarmer builds a Prewarmer that talks to the libpod socket at
-// `socket` and keeps `images` warm. The HTTP client dials the unix socket
+// `socket` and keeps `images` warm. The HTTP client dials that socket
 // regardless of request host (the synthetic "podman" host is ignored by
-// the daemon).
+// the daemon). localsock picks the transport from the path shape, so a
+// Windows named pipe works as well as a unix socket.
 func NewPrewarmer(socket string, images []string) *Prewarmer {
 	tr := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", socket)
-		},
+		DialContext:     localsock.DialFunc(socket),
 		IdleConnTimeout: 90 * time.Second,
 	}
 	return newPrewarmer(&http.Client{Transport: tr}, "http://podman", images)
 }
 
-// newPrewarmer is the shared constructor; NewPrewarmer wires the unix
+// newPrewarmer is the shared constructor; NewPrewarmer wires the socket
 // transport, tests inject an httptest client + base URL.
 func newPrewarmer(client *http.Client, base string, images []string) *Prewarmer {
 	return &Prewarmer{

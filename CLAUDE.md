@@ -221,7 +221,7 @@ All mounted at root:
 `AppRegistry` (in `internal/agent/apps.go`) holds `name → *url.URL` plus per-app `httputil.ReverseProxy` instances and per-app `AppMeta{RequireLogin, LANOnlyPaths, IndexPath}`. Concurrency-safe via `sync.RWMutex` — admin handlers `Register`/`Unregister` at runtime without touching the tunnel. `RegisterFromConfig(AppConfig)` is the helper that registers based on `AppConfig.Scheme`:
 
 - `http`/`https` — TCP target built from `Host:Port` (Host defaults to `127.0.0.1`).
-- `unix`/`npipe` — socket-backed. The registry stores a synthetic `http://socket` URL and a per-app `http.Transport` whose `DialContext` dials the local socket (`internal/agent/dialer{,_other,_windows}.go`). Lets an outpost front `docker.sock` / `podman.sock` / `\\.\pipe\docker_engine` without a TCP bind. HTTP/1.1 Upgrade and websockets still work because `httputil.ReverseProxy` hijacks the conn through this transport the same way it does for the default one.
+- `unix`/`npipe` — socket-backed. The registry stores a synthetic `http://socket` URL and a per-app `http.Transport` whose `DialContext` dials the local socket (`internal/agent/dialer.go` → `internal/agent/localsock`). Here the scheme stays an EXPLICIT operator-set value rather than being inferred from the path, so an app misconfigured `npipe` on a Linux host fails loudly instead of being silently reinterpreted. Lets an outpost front `docker.sock` / `podman.sock` / `\\.\pipe\docker_engine` without a TCP bind. HTTP/1.1 Upgrade and websockets still work because `httputil.ReverseProxy` hijacks the conn through this transport the same way it does for the default one.
 - `tcp` — raw TCP target at `Host:Port` (e.g. `127.0.0.1:22` or `127.0.0.1:5432`). The `/app/:name/*p` handler doesn't run the reverse proxy for these; it accepts a WebSocket upgrade and byte-splices to the TCP target via `serveTCPBridge`. Paired with a `tcp`-scheme `OutboundConfig` on a peer outpost (see "Outbound mounts"). HTTP-mode and TCP-mode names are mutually exclusive — re-registering a name under a different scheme automatically clears the old mode.
 
 Disabled entries are skipped so the admin UI can keep them around without proxying. Seeded by `buildAppRegistry` in `main.go` from `fc.Apps` when structured config is present, else from `MATRIX_APPS="name1=url1,name2=url2"`, falling back to `ycode → http://127.0.0.1:8765` when both are absent. Path rewrite uses `singleJoin` to strip `/app/<name>` cleanly. `Entries()` returns `[]AppEntry{Name, Scheme, RequireLogin, IndexPath}` for `GET /apps`.
@@ -341,6 +341,27 @@ Constraints / behavior:
 ### Built-in proxy apps (`internal/agent/builtin_apps.go`)
 
 Optional local-daemon proxies: `podman` and `ollama`. `DetectPodman()` probes the usual rootless/root socket paths; `DetectOllama()` probes `http://127.0.0.1:11434`. The returned `BuiltinTarget{Available bool, Socket/URL string}` lets the admin UI grey out toggles for daemons that aren't installed (still showing "tried <path>"). When enabled they register into the same `AppRegistry` as user-defined apps at boot, so flipping `PodmanEnabled` / `OllamaEnabled` from the admin UI triggers a self-restart.
+
+**`BuiltinTarget.Scheme` is authoritative — never hardcode `"unix"` at a
+registration site.** Podman's endpoint is platform-dependent, and
+`internal/agent/localsock` owns the "which transport does this path
+imply" decision (`Scheme`/`Normalize`/`Dial`/`Probe`, with the named-pipe
+half in `pipe_{windows,other}.go`). On Windows, `podman machine start`
+publishes the SAME libpod API on three endpoints via `win-sshproxy.exe`:
+`\\.\pipe\podman-<machine>`, `\\.\pipe\docker_engine` (when that global
+name is free), and an AF_UNIX socket at
+`%TEMP%\podman\<machine>-api.sock`. So `podmanCandidates()` enumerates
+the `\\.\pipe\` namespace for the `podman-` prefix (there is no glob for
+that namespace, and the machine name is operator-chosen — bashy names its
+isolated VM `bashy`, upstream defaults to `podman-machine-default`), then
+the api.sock glob, then `docker_engine` LAST because that name may
+instead be held by Docker Desktop, whose dockerd answers a connect but
+404s the `/libpod/` tree. Two Windows-specific traps worth knowing:
+AF_UNIX **does** work on Windows (10 1803+), but Windows reports a
+socket as a REGULAR FILE with no `os.ModeSocket` bit, so a mode-based
+probe rejects a perfectly good endpoint; and a bare `podman machine
+start` there can succeed while publishing NO endpoint at all when it
+can't find `win-sshproxy.exe` (see the cluster section below).
 
 ### Container sandbox provider (`internal/agent/sandbox/`)
 
@@ -593,7 +614,7 @@ CLI surfaces: `outpost upgrade` (local-driven, --local PATH | --from URL), `outp
 The cluster story is the newest and most cross-cutting subsystem; it has three independent halves that share a `FileConfig.Cluster.{enabled, api_url, token, ca, node_name}` config block.
 
 - **Half A — k3s-agent in a podman container (`internal/agent/runtime/`).** `runtime.Up(ctx, opts)` supervises a podman/docker container that hosts this outpost's kubelet + containerd. From the cluster's POV there's one `Node` per outpost; the container itself is invisible. The container's identity *is* this outpost's identity (`NodeToken`, `AgentName`). Idempotent — repeated `Up` with the same name reattaches. `ErrPodmanNotFound` surfaces a clear "install Docker Desktop / Rancher Desktop / podman to enable --cluster-mode=agent" message on macOS where this is the expected gating. `--cluster-mode=agent` is the default (see commit 20d3d14). Image is built once via `outpost cluster init` / `build-runtime` or pulled from a registry. See `docs/cluster-gpu.md` for the NVIDIA driver + container-toolkit prereqs needed on Linux GPU hosts.
-- **Half B — virtual-kubelet provider (`internal/agent/vknode/`).** Alternative path: instead of running a real kubelet in a container, register as a *virtual node* whose pods land as plain podman containers on the host. Three layers — Layer 1: hand-rolled HTTP-over-unix client for the local libpod REST API (deliberately avoids `containers/podman/v5/pkg/bindings` because it pulls in `containers/storage` (cgo) and would break cross-compile); Layer 2: `translate.go` converts `corev1.Pod` → libpod `SpecGenerator`, stamping `outpost.io/managed=true` + namespace/name/uid labels for reconciliation and `podman ps` legibility; Layer 3: `provider.go` / `node.go` implement virtual-kubelet's `PodLifecycleHandler` and `NodeProvider`. `cmd/outpost-vk/` is a standalone PoC runner — kept separate from `cmd/outpost` so we can iterate against a real k3s server without touching the daemon's start path. `userkube` consumes vknode's kubeconfig fetcher for the operator-facing rendering.
+- **Half B — virtual-kubelet provider (`internal/agent/vknode/`).** Alternative path: instead of running a real kubelet in a container, register as a *virtual node* whose pods land as plain podman containers on the host. Three layers — Layer 1: hand-rolled HTTP-over-local-socket client for the libpod REST API (deliberately avoids `containers/podman/v5/pkg/bindings` because it pulls in `containers/storage` (cgo) and would break cross-compile). Its `DialContext` comes from `localsock.DialFunc`, so it reaches a unix socket OR a Windows named pipe — it previously hardcoded a unix dial, which is what made `--cluster-mode=vk-podman` structurally unreachable on Windows, where podman's default endpoint is `\\.\pipe\podman-<machine>`. Layer 2: `translate.go` converts `corev1.Pod` → libpod `SpecGenerator`, stamping `outpost.io/managed=true` + namespace/name/uid labels for reconciliation and `podman ps` legibility; Layer 3: `provider.go` / `node.go` implement virtual-kubelet's `PodLifecycleHandler` and `NodeProvider`. `cmd/outpost-vk/` is a standalone PoC runner — kept separate from `cmd/outpost` so we can iterate against a real k3s server without touching the daemon's start path. `userkube` consumes vknode's kubeconfig fetcher for the operator-facing rendering.
 - **Half C — CNI plugin (`internal/agent/runtime/image/cni/`).** Phase-3 minimal CNI 0.4.0 plugin (~300 LOC) that kubelet execs per pod ADD/DEL. Builds a veth pair into a per-node Linux bridge (`cbox0`); cross-node pod reachability comes from `tailscaled --advertise-routes` installing peer pod CIDRs as kernel routes via `tailscale0`. IPAM state at `/var/lib/cloudbox/cni/ipam/<container-id>.ip`. Deliberately not a full Calico/Cilium replacement — NetworkPolicy is out of scope for Phase 3 MVP. The plugin lives under the runtime image's embed tree so `outpost cluster build-runtime` compiles it inside the multi-stage `golang:1.25-alpine` builder; no standalone host-side cross-compile is involved (the committed `script/linux-outpost/outpost-cni` binary was retired in the same commit that introduced build-runtime).
 
 Supporting packages:

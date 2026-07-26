@@ -7,11 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/qiangli/outpost/internal/agent/localsock"
 )
 
 // apiPrefix is the versioned path libpod expects. Earlier we used the
@@ -26,26 +27,30 @@ const apiPrefix = "/v5.0.0"
 
 // Client is a thin HTTP client for the local libpod REST API. It speaks
 // the versioned `/v5.0.0/libpod/*` path tree — compatible with any
-// podman 5.x daemon (the major version is stable across minors).
+// podman 5.x/6.x daemon (the path major is stable across releases).
 type Client struct {
 	// http is the underlying transport. Its DialContext is wired to the
-	// configured unix socket; Host in the URL is a synthetic placeholder
+	// configured socket; Host in the URL is a synthetic placeholder
 	// ("podman") that the daemon ignores.
 	http *http.Client
 }
 
 // NewClient returns a Client that dials the libpod REST API at the given
-// unix socket. The socket must already exist and be reachable; callers
+// local socket. The socket must already exist and be reachable; callers
 // typically obtain its path from agent.DetectPodman().
+//
+// The transport is chosen from the path shape by localsock, so this
+// works against a unix socket (Linux, macOS — and Windows, where podman
+// also publishes %TEMP%\podman\<machine>-api.sock) and against a Windows
+// NAMED PIPE (`\\.\pipe\podman-<machine>`). Hardcoding a unix dial here
+// is what previously made `--cluster-mode=vk-podman` unreachable on
+// Windows: podman's default endpoint there is the pipe.
 func NewClient(socket string) (*Client, error) {
 	if strings.TrimSpace(socket) == "" {
 		return nil, errors.New("vknode: empty podman socket path")
 	}
 	tr := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", socket)
-		},
+		DialContext: localsock.DialFunc(socket),
 		// libpod logs/wait/attach streams are long-lived. Disable the
 		// per-request timeout entirely — individual calls set their own
 		// context deadlines.

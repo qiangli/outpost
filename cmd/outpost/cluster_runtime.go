@@ -69,11 +69,32 @@ func ensurePodmanRuntime(ctx context.Context) (string, error) {
 // podman on PATH is operator-owned and wins; otherwise fall back to the bashy
 // binary outpost already manages, which ships podman as a subcommand.
 func podmanCommand(ctx context.Context) ([]string, error) {
+	bashyFirst := runtime.GOOS == "windows"
+	if bashyFirst {
+		// On Windows, `bashy podman` is preferred over an operator's
+		// podman even when one is on PATH — NOT as a preference, but
+		// because a bare `podman machine start` there routinely brings up
+		// a VM with NO reachable API. Podman on Windows serves its API
+		// through win-sshproxy.exe, which it locates via
+		// helper_binaries_dir / $CONTAINERS_HELPER_BINARY_DIR; a stock
+		// install often has neither, and the start then prints "API
+		// forwarding ... not available" and publishes neither the
+		// `\\.\pipe\podman-<machine>` pipe nor the api.sock. The machine
+		// runs, but nothing can talk to it — indistinguishable from "no
+		// podman" to DetectPodman. bashy provisions that helper and
+		// exports the dir, so it is the path that yields a usable
+		// endpoint.
+		if p, err := bashyResolver.Path(ctx); err == nil && p != "" {
+			return []string{p, "podman"}, nil
+		}
+	}
 	if p, err := exec.LookPath("podman"); err == nil {
 		return []string{p}, nil
 	}
-	if p, err := bashyResolver.Path(ctx); err == nil && p != "" {
-		return []string{p, "podman"}, nil
+	if !bashyFirst {
+		if p, err := bashyResolver.Path(ctx); err == nil && p != "" {
+			return []string{p, "podman"}, nil
+		}
 	}
 	return nil, errors.New("no podman available (not on PATH, and no bashy to provide it)")
 }
