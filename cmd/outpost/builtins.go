@@ -68,6 +68,7 @@ func builtinsShowCmd() *cobra.Command {
 			row("lan_inference", view.LANInferenceEnabled)
 			row("mesh", view.MeshEnabled)
 			row("loom", view.LoomEnabled)
+			row("meet", view.MeetEnabled)
 			row("zot", view.ZotEnabled)
 			row("seaweedfs", view.SeaweedfsEnabled)
 			row("kopia", view.KopiaEnabled)
@@ -106,6 +107,8 @@ func builtinsSetCmd() *cobra.Command {
 		lanInferencePort                                                                                                                                                               int
 		loom                                                                                                                                                                           string
 		loomPort                                                                                                                                                                       int
+		meet                                                                                                                                                                           string
+		meetPort                                                                                                                                                                       int
 		bashyVersion                                                                                                                                                                   string
 		zot                                                                                                                                                                            string
 		zotPort                                                                                                                                                                        int
@@ -285,6 +288,12 @@ func builtinsSetCmd() *cobra.Command {
 			if cmd.Flags().Changed("loom-port") {
 				params.LoomPort = &loomPort
 			}
+			if params.Meet, err = parseToggle("meet", meet); err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("meet-port") {
+				params.MeetPort = &meetPort
+			}
 			if cmd.Flags().Changed("bashy-version") {
 				params.BashyVersion = &bashyVersion
 			}
@@ -389,6 +398,8 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().IntVar(&lanInferencePort, "lan-inference-port", 0, "TCP port the LAN inference listener binds on 0.0.0.0 (0 = default 11435; must differ from the inference server's 11434)")
 	cmd.Flags().StringVar(&loom, "loom", "", "on|off - run the loom git forge (Gitea, managed external binary) on loopback, auto-exposed over the mesh as 'git'")
 	cmd.Flags().IntVar(&loomPort, "loom-port", 0, "loom's loopback HTTP port (0 = default 31880)")
+	cmd.Flags().StringVar(&meet, "meet", "", "on|off - run the meet web chat room (Slack-style browser UI over 'bashy meet') on loopback as a cloudbox app 'meet' (supervised via 'bashy meet service')")
+	cmd.Flags().IntVar(&meetPort, "meet-port", 0, "meet's loopback HTTP port (0 = default 8637)")
 	cmd.Flags().StringVar(&bashyVersion, "bashy-version", "", "pin the bashy release the daemon auto-installs when bashy is missing (empty/'latest' = newest; e.g. v0.3.0). Pin in production.")
 	cmd.Flags().StringVar(&zot, "zot", "", "on|off - run the Zot OCI registry (managed external binary) on loopback, auto-exposed over the mesh as 'registry'")
 	cmd.Flags().IntVar(&zotPort, "zot-port", 0, "zot's loopback HTTP port (0 = default 5000)")

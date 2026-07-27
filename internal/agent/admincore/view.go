@@ -220,6 +220,8 @@ type SafeView struct {
 	ShardEnabled            bool                `json:"shard_enabled"`
 	LoomEnabled             bool                `json:"loom_enabled"`
 	LoomPort                int                 `json:"loom_port,omitempty"`
+	MeetEnabled             bool                `json:"meet_enabled"`
+	MeetPort                int                 `json:"meet_port,omitempty"`
 	ZotEnabled              bool                `json:"zot_enabled"`
 	ZotPort                 int                 `json:"zot_port,omitempty"`
 	SeaweedfsEnabled        bool                `json:"seaweedfs_enabled"`
@@ -337,6 +339,8 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		ShardEnabled:           fc.ShardOn(),
 		LoomEnabled:            fc.LoomOn(),
 		LoomPort:               fc.LoomPort,
+		MeetEnabled:            fc.MeetOn(),
+		MeetPort:               fc.MeetPort,
 		ZotEnabled:             fc.ZotOn(),
 		ZotPort:                fc.ZotPort,
 		SeaweedfsEnabled:       fc.SeaweedfsOn(),

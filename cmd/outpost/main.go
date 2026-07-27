@@ -2791,6 +2791,15 @@ func effectiveBashyServices(fc *conf.FileConfig) []conf.BashyService {
 			svc.MeshService = "git"
 			byName["loom"] = svc
 		}
+		if fc.MeetOn() {
+			svc := byName["meet"]
+			svc.Name = "meet"
+			svc.Enabled = true
+			svc.AppName = "meet"
+			svc.AppPort = fc.MeetPortOrDefault()
+			svc.RequireLogin = true
+			byName["meet"] = svc
+		}
 	}
 	out := make([]conf.BashyService, 0, len(byName))
 	for _, svc := range byName {

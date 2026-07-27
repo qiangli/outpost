@@ -338,6 +338,18 @@ type FileConfig struct {
 	// LoomPort is loom's loopback HTTP port (default 31880).
 	LoomPort int `json:"loom_port,omitempty"`
 
+	// MeetEnabled opts this outpost into running the meet web chat room (a
+	// Slack-style browser UI over `bashy meet`, served by bashy on a loopback
+	// port) as a supervised bashy service, published as a cloudbox app named
+	// `meet`. The service lifecycle lives under a subcommand, so the
+	// supervisor drives `bashy meet service {start,status,stop}` — NOT
+	// `bashy meet start` (which starts a deliberation session). Pinned via
+	// the Command base in DefaultBashyServices. Default OFF.
+	MeetEnabled *bool `json:"meet_enabled,omitempty"`
+
+	// MeetPort is meet's loopback HTTP port (default 8637).
+	MeetPort int `json:"meet_port,omitempty"`
+
 	// ZotEnabled opts this outpost into running the Zot OCI registry as a managed
 	// external binary (coreutils/external/zot via pkg/binmgr — not compiled in)
 	// on a loopback port, auto-exposed over the mesh as the `registry` service.
@@ -1685,6 +1697,20 @@ func (fc *FileConfig) LoomPortOrDefault() int {
 	return 31880
 }
 
+// MeetOn reports whether this outpost runs the meet web chat room as a
+// supervised bashy service (default OFF).
+func (fc *FileConfig) MeetOn() bool {
+	return fc != nil && fc.MeetEnabled != nil && *fc.MeetEnabled
+}
+
+// MeetPortOrDefault returns the configured meet port, or 8637.
+func (fc *FileConfig) MeetPortOrDefault() int {
+	if fc != nil && fc.MeetPort > 0 {
+		return fc.MeetPort
+	}
+	return 8637
+}
+
 func (fc *FileConfig) ZotOn() bool {
 	return fc != nil && fc.ZotEnabled != nil && *fc.ZotEnabled
 }
@@ -1834,6 +1860,17 @@ func (s BashyService) SecretsEnvOn() bool { return s.SecretsEnv == nil || *s.Sec
 func DefaultBashyServices() []BashyService {
 	return []BashyService{
 		{Name: "loom", AppName: "loom", AppPort: 31880, RequireLogin: true, MeshService: "git"},
+		// The meet web chat room (a Slack-style browser UI over `bashy meet`,
+		// served by bashy on a loopback port) as a supervised service, published
+		// as a cloudbox app named `meet`. TRAP: the service lifecycle lives under
+		// a subcommand — `bashy meet service {start,status,stop}` — NOT
+		// `bashy meet start` (which already exists and starts a deliberation
+		// session). The Command base below pins the subcommand so an operator
+		// who enables meet through the bashy_services array without re-declaring
+		// the argv still gets the daemon, not an accidental meeting. No
+		// MeshService: a personal chat room has no peer consumer. Opt-in
+		// (Enabled:false until fc.MeetOn() flips it in effectiveBashyServices).
+		{Name: "meet", Command: []string{"meet", "service"}, AppName: "meet", AppPort: 8637, RequireLogin: true},
 		// The always-on SDLC loop (the durable trigger daemon). Opt-in
 		// (Enabled:false): a host running unattended agent work sets Enabled +
 		// Args (repo/config paths) in agent.json. No AppPort/mesh — it is a
