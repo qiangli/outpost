@@ -155,6 +155,15 @@ login required). This is the same generic supervision framework loom
 uses: the daemon starts it on boot, health-checks every 30s, restarts on
 `stopped`, and stops it on shutdown.
 
+The built-in service entry also sets `trust_cloud_identity:true`. Before
+registration, outpost generates a per-service 32-byte `sso_secret` when
+needed, persists it in the `bashy_services` entry, and supplies both fields
+to the existing signed-header proxy path. Cloud requests therefore reach
+meet with `Remote-User` / `Remote-Email` plus
+`X-Outpost-Identity-Sig`, which its `coopauth.Guard` can verify. An enabled
+trusted service with no secret is rejected during registration instead of
+silently running with spoofable unsigned identity headers.
+
 **Lifecycle trap.** The service lives under a subcommand, so the
 supervisor drives **`bashy meet service {start,status,stop}`** — NOT
 `bashy meet start`, which already exists and starts a *deliberation

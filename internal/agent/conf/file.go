@@ -1828,14 +1828,19 @@ type MeshConsume struct {
 // convention `bashy <name> start|status|stop`. It can optionally be published
 // as a cloudbox app and as an outpost mesh service.
 type BashyService struct {
-	Name         string   `json:"name"`
-	Enabled      bool     `json:"enabled,omitempty"`
-	AppName      string   `json:"app_name,omitempty"`
-	AppPort      int      `json:"app_port,omitempty"`
-	RequireLogin bool     `json:"require_login,omitempty"`
-	MeshService  string   `json:"mesh_service,omitempty"`
-	RootURL      string   `json:"root_url,omitempty"`
-	Args         []string `json:"args,omitempty"`
+	Name               string `json:"name"`
+	Enabled            bool   `json:"enabled,omitempty"`
+	AppName            string `json:"app_name,omitempty"`
+	AppPort            int    `json:"app_port,omitempty"`
+	RequireLogin       bool   `json:"require_login,omitempty"`
+	TrustCloudIdentity bool   `json:"trust_cloud_identity,omitempty"`
+	// SSOSecret is the per-service HMAC key used by the existing trusted-header
+	// SSO contract. It must be non-empty whenever TrustCloudIdentity is true;
+	// boot provisioning persists a generated value before app registration.
+	SSOSecret   string   `json:"sso_secret,omitempty"`
+	MeshService string   `json:"mesh_service,omitempty"`
+	RootURL     string   `json:"root_url,omitempty"`
+	Args        []string `json:"args,omitempty"`
 	// Command overrides the base argv the supervisor invokes as
 	// `bashy <Command...> {start|status|stop}`. Empty defaults to [Name] (so
 	// loom → `bashy loom start`). Set it for services whose lifecycle lives under
@@ -1870,7 +1875,7 @@ func DefaultBashyServices() []BashyService {
 		// the argv still gets the daemon, not an accidental meeting. No
 		// MeshService: a personal chat room has no peer consumer. Opt-in
 		// (Enabled:false until fc.MeetOn() flips it in effectiveBashyServices).
-		{Name: "meet", Command: []string{"meet", "service"}, AppName: "meet", AppPort: 8637, RequireLogin: true},
+		{Name: "meet", Command: []string{"meet", "service"}, AppName: "meet", AppPort: 8637, RequireLogin: true, TrustCloudIdentity: true},
 		// The always-on SDLC loop (the durable trigger daemon). Opt-in
 		// (Enabled:false): a host running unattended agent work sets Enabled +
 		// Args (repo/config paths) in agent.json. No AppPort/mesh — it is a
@@ -2177,11 +2182,11 @@ func EnsureAppSSOSecrets(path string, fc *FileConfig) ([]string, error) {
 		if strings.TrimSpace(app.SSOSecret) != "" {
 			continue
 		}
-		var b [32]byte
-		if _, err := rand.Read(b[:]); err != nil {
-			return minted, fmt.Errorf("generate sso secret for %q: %w", app.Name, err)
+		secret, err := newSSOSecret(app.Name)
+		if err != nil {
+			return minted, err
 		}
-		app.SSOSecret = hex.EncodeToString(b[:])
+		app.SSOSecret = secret
 		minted = append(minted, app.Name)
 	}
 	if len(minted) > 0 && path != "" {
@@ -2190,6 +2195,61 @@ func EnsureAppSSOSecrets(path string, fc *FileConfig) ([]string, error) {
 		}
 	}
 	return minted, nil
+}
+
+// EnsureBashyServiceSSOSecrets provisions the same per-app HMAC secret for
+// enabled supervised services that publish an app with TrustCloudIdentity.
+// services is the effective service set after built-in defaults and toggles
+// have been applied. Generated values are copied into fc.BashyServices and
+// persisted so the proxy and supervised app keep the same identity key across
+// restarts. A built-in enabled only through a top-level toggle (such as meet)
+// gets a minimal override row containing its name and SSO settings.
+func EnsureBashyServiceSSOSecrets(path string, fc *FileConfig, services []BashyService) ([]string, error) {
+	if fc == nil {
+		return nil, fmt.Errorf("nil FileConfig")
+	}
+	byName := make(map[string]int, len(fc.BashyServices))
+	for i := range fc.BashyServices {
+		byName[fc.BashyServices[i].Name] = i
+	}
+	var minted []string
+	for i := range services {
+		svc := &services[i]
+		if !svc.Enabled || !svc.TrustCloudIdentity || strings.TrimSpace(svc.SSOSecret) != "" {
+			continue
+		}
+		secret, err := newSSOSecret(svc.Name)
+		if err != nil {
+			return minted, err
+		}
+		svc.SSOSecret = secret
+		if j, ok := byName[svc.Name]; ok {
+			fc.BashyServices[j].TrustCloudIdentity = true
+			fc.BashyServices[j].SSOSecret = secret
+		} else {
+			fc.BashyServices = append(fc.BashyServices, BashyService{
+				Name:               svc.Name,
+				TrustCloudIdentity: true,
+				SSOSecret:          secret,
+			})
+			byName[svc.Name] = len(fc.BashyServices) - 1
+		}
+		minted = append(minted, svc.Name)
+	}
+	if len(minted) > 0 && path != "" {
+		if err := SaveFile(path, fc); err != nil {
+			return minted, fmt.Errorf("save bashy service sso secrets: %w", err)
+		}
+	}
+	return minted, nil
+}
+
+func newSSOSecret(name string) (string, error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generate sso secret for %q: %w", name, err)
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 // RotateMCPBearerToken forces a fresh token regardless of the current
