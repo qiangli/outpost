@@ -115,6 +115,8 @@ tool, or wipe `agent.json` by hand.
 | Warm desired set (persisted) | `warm_desired` | — (managed by `/admin/warm`) | — | — | Live |
 | Same-LAN direct inference | `lan_inference_enabled` | `builtins set --lan-inference` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Same-LAN direct inference port | `lan_inference_port` | `builtins set --lan-inference-port` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
+| Meet web chat room | `meet_enabled` | `builtins set --meet` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
+| Meet web chat room port | `meet_port` | `builtins set --meet-port` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Cluster join | `cluster.enabled` | `builtins set --cluster` | Inbound > Cluster | `outpost_set_builtins` | Restart |
 | Digital Ocean support (cloud venue) | `cloud_do_enabled` | `builtins set --cloud-do` | Inbound > Cloud | `outpost_set_builtins` | Restart |
 | Digital Ocean API token | `cloud_do_token` | `builtins set --cloud-do-token` | Inbound > Cloud | `outpost_set_builtins` | Restart |
@@ -132,9 +134,9 @@ o3 is never a dependency; nothing fails to start because it is missing.
 
 The remaining opt-ins (default OFF, explicit choice required) are
 `sandbox_enabled` (widens *who* may run containers on the host),
-`lan_inference_enabled` (a LAN-trust listener with no per-request auth)
-and `cluster.enabled` (hands a remote control plane the right to
-schedule workloads here).
+`lan_inference_enabled` (a LAN-trust listener with no per-request auth),
+`meet_enabled` (a supervised chat-room service) and `cluster.enabled`
+(hands a remote control plane the right to schedule workloads here).
 
 Because the o3 keys are default-ON, "off" is only representable as an
 explicit `false` on disk — those three are pointer-bools so an opt-out
@@ -142,6 +144,35 @@ is written literally and survives every later config write. Do not
 "simplify" them to plain `bool`: with `omitempty` a false marshals to
 absent, and the next load would read absent as the default and turn the
 service back on.
+
+### Meet web chat room (supervised bashy service)
+
+`meet_enabled` (default **OFF**) runs the **meet** web chat room — a
+Slack-style browser UI over `bashy meet` — as a supervised bashy service
+on the loopback port `meet_port` (default `8637`), published as a
+cloudbox app named `meet` (reachable at `/matrix/h/<host>/app/meet/`,
+login required). This is the same generic supervision framework loom
+uses: the daemon starts it on boot, health-checks every 30s, restarts on
+`stopped`, and stops it on shutdown.
+
+**Lifecycle trap.** The service lives under a subcommand, so the
+supervisor drives **`bashy meet service {start,status,stop}`** — NOT
+`bashy meet start`, which already exists and starts a *deliberation
+session*, not the web server. The `["meet","service"]` Command base is
+pinned in `conf.DefaultBashyServices()` so an operator who enables meet
+through the `bashy_services` array without re-declaring the argv still
+gets the daemon. There is **no mesh service**: a personal chat room has
+no peer consumer, so unlike loom it is not auto-exposed over the mesh.
+The backing `bashy meet service` is provided by the bashy/coreutils side;
+the supervisor tolerates it being absent (the 30s loop retries, and
+`bashyResolver` self-heals a missing bashy), so enabling meet before the
+subcommand exists is safe — it comes up on the next poll once installed.
+
+Four surfaces: `meet_enabled` / `meet_port` file keys, `builtins set
+--meet=on --meet-port N` CLI, the Built-ins > Meet chat UI toggle, and
+the `meet` / `meet_port` args on the `outpost_set_builtins` MCP tool.
+Like loom, a meet change triggers a **restart** (the service is wired at
+boot).
 
 ### Same-LAN direct inference (LAN-trust)
 

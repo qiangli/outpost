@@ -94,6 +94,13 @@ type BuiltinsParams struct {
 	// Back-compat convenience for the generic bashy service "loom".
 	Loom     *bool `json:"loom,omitempty"`
 	LoomPort *int  `json:"loom_port,omitempty"`
+	// Back-compat convenience for the generic bashy service "meet" (the
+	// web chat room). Like Loom/LoomPort, but with NO mesh service — a
+	// personal chat room has no peer consumer. The Command base
+	// (["meet","service"]) is pinned in DefaultBashyServices so the
+	// supervisor drives `bashy meet service {start,status,stop}`.
+	Meet     *bool `json:"meet,omitempty"`
+	MeetPort *int  `json:"meet_port,omitempty"`
 	// BashyServices replaces the whole generic service set when non-nil.
 	BashyServices []conf.BashyService `json:"bashy_services,omitempty"`
 	// BashyVersion pins the bashy release the self-heal auto-install fetches
@@ -260,6 +267,21 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 			MeshService:  "git",
 		}, p.Loom, p.LoomPort)
 	}
+	if p.Meet != nil {
+		fc.MeetEnabled = p.Meet
+	}
+	if p.MeetPort != nil {
+		fc.MeetPort = *p.MeetPort
+	}
+	if p.Meet != nil || p.MeetPort != nil {
+		upsertBashyService(&fc.BashyServices, conf.BashyService{
+			Name:         "meet",
+			Enabled:      p.Meet == nil || *p.Meet,
+			AppName:      "meet",
+			AppPort:      fc.MeetPortOrDefault(),
+			RequireLogin: true,
+		}, p.Meet, p.MeetPort)
+	}
 	if p.BashyServices != nil {
 		fc.BashyServices = normalizeBashyServices(p.BashyServices)
 	}
@@ -364,7 +386,7 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.Loom == nil && p.LoomPort == nil && p.BashyServices == nil && p.BashyVersion == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil && p.ActrunnerSandbox == nil && p.ActrunnerSandboxImage == nil && p.ActrunnerDockerHost == nil && p.CloudDOEnabled == nil && p.CloudDOToken == nil
+	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.Loom == nil && p.LoomPort == nil && p.Meet == nil && p.MeetPort == nil && p.BashyServices == nil && p.BashyVersion == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil && p.ActrunnerSandbox == nil && p.ActrunnerSandboxImage == nil && p.ActrunnerDockerHost == nil && p.CloudDOEnabled == nil && p.CloudDOToken == nil
 	if p.UpdateMode != nil {
 		if !conf.ValidUpdateMode(*p.UpdateMode) {
 			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")

@@ -2385,6 +2385,13 @@ function renderMain(status, cfg) {
      subBlock: buildSSHSubBlock},
     {key: 'files',     fileKey: 'files_enabled',     label: 'File Browser', enabled: cfg.files_enabled,
      subBlock: buildFilesSubBlock},
+    // meet is a supervised bashy service (a wrap-harness tool), not a core
+    // route or daemon proxy — but it publishes a user-facing cloudbox app
+    // tile, so it lives here under Built-in apps for discoverability. The
+    // POST {meet: bool} reaches the same BuiltinsParams surface as
+    // --meet / the MCP meet arg. The Command base (["meet","service"]) is
+    // pinned in DefaultBashyServices, so the toggle alone is enough.
+    {key: 'meet',      fileKey: 'meet_enabled',      label: 'Meet chat',   enabled: cfg.meet_enabled},
   ];
   const agenticRows = [
     // ycode is supervised differently from podman/ollama: the row is

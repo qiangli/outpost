@@ -46,6 +46,8 @@ type builtinsIn struct {
 	LANInferencePort       *int                `json:"lan_inference_port,omitempty" jsonschema:"TCP port the LAN inference listener binds on all interfaces (0 = default 11435; must differ from the inference server's 11434)"`
 	Loom                   *bool               `json:"loom,omitempty" jsonschema:"Toggle running the loom git forge (Gitea) as a managed external binary on a loopback port, auto-exposed over the mesh as the 'git' service. Downloaded/verified/cached by binmgr — not compiled in."`
 	LoomPort               *int                `json:"loom_port,omitempty" jsonschema:"loom's loopback HTTP port (0 = default 31880)"`
+	Meet                   *bool               `json:"meet,omitempty" jsonschema:"Toggle the meet web chat room (a Slack-style browser UI over 'bashy meet') as a supervised bashy service on a loopback port, published as a cloudbox app named 'meet'. Supervised via 'bashy meet service {start,status,stop}' (NOT 'bashy meet start', which starts a deliberation session). No mesh service. Default off."`
+	MeetPort               *int                `json:"meet_port,omitempty" jsonschema:"meet's loopback HTTP port (0 = default 8637)"`
 	BashyServices          []conf.BashyService `json:"bashy_services,omitempty" jsonschema:"Generic bashy-managed services. Each enabled row is supervised by outpost through 'bashy <name> start|status|stop' and may publish a cloudbox app and mesh service."`
 	BashyVersion           *string             `json:"bashy_version,omitempty" jsonschema:"Pin the bashy release the daemon auto-installs when bashy is missing (empty/'latest' = newest; e.g. v0.3.0). Pin in production so a restart can't silently pull a new bashy."`
 	Zot                    *bool               `json:"zot,omitempty" jsonschema:"Toggle running the Zot OCI registry as a managed external binary on a loopback port, auto-exposed over the mesh as the 'registry' service (serves container images + Ollama models). Downloaded/verified/cached by binmgr — not compiled in."`
@@ -112,6 +114,8 @@ func (s *Server) registerBuiltinsTools() {
 			LANInferencePort:       in.LANInferencePort,
 			Loom:                   in.Loom,
 			LoomPort:               in.LoomPort,
+			Meet:                   in.Meet,
+			MeetPort:               in.MeetPort,
 			BashyServices:          in.BashyServices,
 			BashyVersion:           in.BashyVersion,
 			Zot:                    in.Zot,
