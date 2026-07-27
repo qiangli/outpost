@@ -274,6 +274,22 @@ func startCmd() *cobra.Command {
 				cfg.AdminAddr = adminAddrFlag
 			}
 
+			// Provision trusted-header HMAC keys before building the live app
+			// registry. Registering first would leave this process with an empty
+			// signing key even if the generated secret were persisted later.
+			if minted, err := conf.EnsureAppSSOSecrets(cfgPath, fc); err != nil {
+				return fmt.Errorf("app sso secrets: %w", err)
+			} else if len(minted) > 0 {
+				slog.Warn("auto-generated sso_secret for trust_cloud_identity apps — paste the new value into each upstream app's config via `outpost apps secret <name>`",
+					"apps", strings.Join(minted, ","))
+			}
+			if minted, err := conf.EnsureBashyServiceSSOSecrets(cfgPath, fc, effectiveBashyServices(fc)); err != nil {
+				return fmt.Errorf("bashy service sso secrets: %w", err)
+			} else if len(minted) > 0 {
+				slog.Info("auto-generated sso_secret for trusted bashy services",
+					"services", strings.Join(minted, ","))
+			}
+
 			apps, err := buildAppRegistry(fc, cfg.Apps)
 			if err != nil {
 				return err
@@ -536,21 +552,6 @@ func startCmd() *cobra.Command {
 			sessionKey, err := conf.EnsureAdminSessionKey(cfgPath, fc)
 			if err != nil {
 				return fmt.Errorf("admin session key: %w", err)
-			}
-			// Auto-generate sso_secret for any app that has
-			// TrustCloudIdentity:true but no secret. Skipping the HMAC
-			// because the secret is empty is a LAN-spoof exposure:
-			// Remote-User flows to the upstream without an integrity
-			// stamp, and any LAN process that can reach the upstream
-			// port can forge it. The admin UI auto-generates the
-			// secret when the operator flips the toggle on; this is
-			// the boot-time safety net for hand-edited configs and
-			// older outpost versions.
-			if minted, err := conf.EnsureAppSSOSecrets(cfgPath, fc); err != nil {
-				return fmt.Errorf("app sso secrets: %w", err)
-			} else if len(minted) > 0 {
-				slog.Warn("auto-generated sso_secret for trust_cloud_identity apps — paste the new value into each upstream app's config via `outpost apps secret <name>`",
-					"apps", strings.Join(minted, ","))
 			}
 			// Outbound manager: derives the cloudbox HTTP base URL from
 			// the pairing. ServerAddr/ServerPort/Protocol describe how
@@ -2730,6 +2731,9 @@ func buildAppRegistry(fc *conf.FileConfig, envSpecs string) (*agent.AppRegistry,
 	reg := agent.NewAppRegistry()
 	if fc != nil && fc.Apps != nil {
 		for _, ac := range fc.Apps {
+			if ac.Enabled && ac.TrustCloudIdentity && strings.TrimSpace(ac.SSOSecret) == "" {
+				return nil, fmt.Errorf("app %q: trust_cloud_identity requires a non-empty sso_secret", ac.Name)
+			}
 			if err := reg.RegisterFromConfig(ac); err != nil {
 				return nil, err
 			}
@@ -2779,6 +2783,13 @@ func effectiveBashyServices(fc *conf.FileConfig) []conf.BashyService {
 					svc.Command = def.Command
 				}
 			}
+			// Security properties required by a built-in are not optional
+			// defaults. In particular, meet's coopauth guard requires the
+			// signed identity contract even when the operator enables it through
+			// a terse bashy_services override.
+			if def, ok := byName[svc.Name]; ok && def.TrustCloudIdentity {
+				svc.TrustCloudIdentity = true
+			}
 			byName[svc.Name] = svc
 		}
 		if fc.LoomOn() {
@@ -2798,6 +2809,7 @@ func effectiveBashyServices(fc *conf.FileConfig) []conf.BashyService {
 			svc.AppName = "meet"
 			svc.AppPort = fc.MeetPortOrDefault()
 			svc.RequireLogin = true
+			svc.TrustCloudIdentity = true
 			byName["meet"] = svc
 		}
 	}
@@ -2820,8 +2832,13 @@ func registerBashyServiceApps(fc *conf.FileConfig, reg *agent.AppRegistry) error
 		if name == "" {
 			name = svc.Name
 		}
+		if svc.TrustCloudIdentity && strings.TrimSpace(svc.SSOSecret) == "" {
+			return fmt.Errorf("bashy service app %q: trust_cloud_identity requires a non-empty sso_secret", name)
+		}
 		if err := reg.RegisterWithMeta(name, fmt.Sprintf("http://127.0.0.1:%d", svc.AppPort), agent.AppMeta{
-			RequireLogin: svc.RequireLogin,
+			RequireLogin:       svc.RequireLogin,
+			TrustCloudIdentity: svc.TrustCloudIdentity,
+			SSOSecret:          svc.SSOSecret,
 		}); err != nil {
 			return err
 		}

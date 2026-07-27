@@ -32,6 +32,13 @@ func TestFileConfigRoundTrip(t *testing.T) {
 			{Name: "jupyter", Scheme: "http", Host: "127.0.0.1", Port: 8888, Enabled: false, Icon: "/x.png"},
 			{Name: "podman", Scheme: "unix", Socket: "/run/user/1000/podman/podman.sock", Enabled: true, Role: "admin"},
 		},
+		BashyServices: []BashyService{{
+			Name:               "trusted-service",
+			Enabled:            true,
+			AppPort:            9999,
+			TrustCloudIdentity: true,
+			SSOSecret:          "service-secret",
+		}},
 	}
 	if err := SaveFile(tmp, in); err != nil {
 		t.Fatalf("SaveFile: %v", err)
@@ -61,6 +68,9 @@ func TestFileConfigRoundTrip(t *testing.T) {
 	}
 	if !sockApp.IsSocket() {
 		t.Error("IsSocket() should return true for scheme=unix")
+	}
+	if len(out.BashyServices) != 1 || !out.BashyServices[0].TrustCloudIdentity || out.BashyServices[0].SSOSecret != "service-secret" {
+		t.Errorf("bashy service SSO fields did not round-trip: %+v", out.BashyServices)
 	}
 }
 
@@ -322,6 +332,64 @@ func TestEnsureAppSSOSecrets(t *testing.T) {
 	}
 	if len(minted2) != 0 {
 		t.Errorf("second call minted = %v, want []", minted2)
+	}
+}
+
+func TestEnsureBashyServiceSSOSecrets(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "agent.json")
+	fc := &FileConfig{
+		BashyServices: []BashyService{{
+			Name:               "custom",
+			Enabled:            true,
+			AppPort:            9000,
+			TrustCloudIdentity: true,
+		}},
+	}
+	services := []BashyService{
+		fc.BashyServices[0],
+		{Name: "meet", Enabled: true, AppPort: 8637, TrustCloudIdentity: true},
+		{Name: "disabled", TrustCloudIdentity: true},
+	}
+	if err := SaveFile(tmp, fc); err != nil {
+		t.Fatal(err)
+	}
+
+	minted, err := EnsureBashyServiceSSOSecrets(tmp, fc, services)
+	if err != nil {
+		t.Fatalf("EnsureBashyServiceSSOSecrets: %v", err)
+	}
+	if !slices.Equal(minted, []string{"custom", "meet"}) {
+		t.Fatalf("minted = %v, want [custom meet]", minted)
+	}
+	if len(fc.BashyServices) != 2 {
+		t.Fatalf("BashyServices length = %d, want 2", len(fc.BashyServices))
+	}
+	for _, svc := range fc.BashyServices {
+		if len(svc.SSOSecret) != 64 {
+			t.Errorf("%s SSOSecret length = %d, want 64", svc.Name, len(svc.SSOSecret))
+		}
+		if !svc.TrustCloudIdentity {
+			t.Errorf("%s lost TrustCloudIdentity", svc.Name)
+		}
+	}
+
+	loaded, err := LoadFile(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.BashyServices) != 2 || loaded.BashyServices[1].SSOSecret != fc.BashyServices[1].SSOSecret {
+		t.Fatalf("bashy service SSO secrets not persisted: %+v", loaded.BashyServices)
+	}
+
+	minted, err = EnsureBashyServiceSSOSecrets(tmp, fc, []BashyService{
+		fc.BashyServices[0],
+		fc.BashyServices[1],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(minted) != 0 {
+		t.Fatalf("second call minted = %v, want []", minted)
 	}
 }
 
