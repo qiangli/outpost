@@ -199,7 +199,7 @@ func (b *nativeProcessBackend) Ensure(ctx context.Context, pod *corev1.Pod) erro
 		return fmt.Errorf("vknode: pod %s has empty command (native-process backend needs an exec target)",
 			podKey(pod.Namespace, pod.Name))
 	}
-	bin, err := b.lookPath(argv[0])
+	bin, err := b.resolveCommand(ctx, pod, argv[0])
 	if err != nil {
 		return fmt.Errorf("vknode: resolve binary %q for pod %s: %w",
 			argv[0], podKey(pod.Namespace, pod.Name), err)
