@@ -243,6 +243,26 @@ func (c *Client) InspectContainer(ctx context.Context, id string) (*InspectConta
 	return &out, nil
 }
 
+// ContainerLogs returns a non-following combined stdout/stderr stream. Status
+// calls this only for a terminal, explicitly opted-in workload.
+func (c *Client) ContainerLogs(ctx context.Context, id string) (io.ReadCloser, error) {
+	q := url.Values{
+		"stdout":     []string{"true"},
+		"stderr":     []string{"true"},
+		"follow":     []string{"false"},
+		"timestamps": []string{"false"},
+	}
+	resp, err := c.do(ctx, http.MethodGet, apiPrefix+"/libpod/containers/"+url.PathEscape(id)+"/logs", q, nil)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		return nil, statusErr("container logs", resp)
+	}
+	return resp.Body, nil
+}
+
 // ListContainers issues GET /libpod/containers/json. When all is true,
 // stopped containers are included as well as running ones. labelFilter,
 // when non-nil, restricts the result to containers carrying every given

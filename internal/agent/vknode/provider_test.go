@@ -30,6 +30,7 @@ type fakeContainer struct {
 	Labels   map[string]string
 	State    string // "created" | "running" | "exited"
 	ExitCode int32
+	Logs     string
 }
 
 func newFakeLibpod() *fakeLibpod {
@@ -120,6 +121,14 @@ func (f *fakeLibpod) handler(t *testing.T) http.HandlerFunc {
 			ins.State.ExitCode = c.ExitCode
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(ins)
+		case strings.HasSuffix(path, "/logs") && r.Method == http.MethodGet:
+			id := strings.TrimSuffix(strings.TrimPrefix(path, "/libpod/containers/"), "/logs")
+			c, ok := f.containers[id]
+			if !ok {
+				http.Error(w, "no such container", http.StatusNotFound)
+				return
+			}
+			_, _ = io.WriteString(w, c.Logs)
 		case r.Method == http.MethodDelete && strings.HasPrefix(path, "/libpod/containers/"):
 			id := strings.TrimPrefix(path, "/libpod/containers/")
 			if _, ok := f.containers[id]; !ok {
@@ -286,6 +295,40 @@ func TestProvider_GetPodStatus_Terminated(t *testing.T) {
 	}
 	if cs.State.Terminated.Reason != "Error" {
 		t.Errorf("reason: %q want Error", cs.State.Terminated.Reason)
+	}
+	if cs.State.Terminated.Message != "" {
+		t.Errorf("termination logs leaked without opt-in: %q", cs.State.Terminated.Message)
+	}
+}
+
+func TestProvider_GetPodStatus_TerminatedLogTail(t *testing.T) {
+	p, fake := newProviderWithFake(t)
+	pod := newTestPod("evidence", "uid-status-evidence")
+	pod.Annotations = map[string]string{TerminationLogTailAnnotation: "true"}
+	if err := p.CreatePod(context.Background(), pod); err != nil {
+		t.Fatal(err)
+	}
+	suffix := "DKS_RESULT:{\"classification\":\"pass\"}"
+	fake.mu.Lock()
+	for _, c := range fake.containers {
+		c.State = "exited"
+		c.Logs = strings.Repeat("x", maxTerminationMessageBytes+512) + suffix
+	}
+	fake.mu.Unlock()
+
+	status, err := p.GetPodStatus(context.Background(), pod.Namespace, pod.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	term := status.ContainerStatuses[0].State.Terminated
+	if term == nil {
+		t.Fatalf("container is not terminal: %+v", status.ContainerStatuses[0])
+	}
+	if len(term.Message) > maxTerminationMessageBytes {
+		t.Fatalf("termination message has %d bytes, want <= %d", len(term.Message), maxTerminationMessageBytes)
+	}
+	if !strings.Contains(term.Message, suffix) {
+		t.Fatalf("termination message lost DKS result suffix: %q", term.Message)
 	}
 }
 

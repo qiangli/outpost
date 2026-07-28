@@ -136,7 +136,20 @@ func (b *podmanBackend) Status(ctx context.Context, pod *corev1.Pod) (*corev1.Po
 	if err != nil {
 		return nil, err
 	}
-	return inspectToPodStatus(ctx, pod, inspect), nil
+	status := inspectToPodStatus(ctx, pod, inspect)
+	if pod.Annotations[TerminationLogTailAnnotation] == "true" &&
+		len(status.ContainerStatuses) == 1 &&
+		status.ContainerStatuses[0].State.Terminated != nil {
+		logs, logErr := b.client.ContainerLogs(ctx, cid)
+		if logErr != nil {
+			slog.Warn("vknode: read terminal container logs",
+				"pod", podKey(pod.Namespace, pod.Name), "container", cid, "err", logErr)
+		} else {
+			status.ContainerStatuses[0].State.Terminated.Message = terminationLogTail(logs)
+			_ = logs.Close()
+		}
+	}
+	return status, nil
 }
 
 // List rebuilds skeleton Pods from libpod's managed containers (those

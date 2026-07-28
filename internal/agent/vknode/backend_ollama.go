@@ -129,6 +129,7 @@ type procEntry struct {
 	Exited     bool              `json:"exited,omitempty"`
 	ExitCode   int32             `json:"exit_code,omitempty"`
 	FinishedAt time.Time         `json:"finished_at,omitempty"`
+	LogTail    bool              `json:"log_tail,omitempty"`
 }
 
 // procPort records one resolved containerPort→hostPort mapping. For a
@@ -218,6 +219,7 @@ func (b *nativeProcessBackend) Ensure(ctx context.Context, pod *corev1.Pod) erro
 		Env:       envMap(c.Env),
 		Ports:     portsFromContainer(c),
 		StartedAt: time.Now(),
+		LogTail:   pod.Annotations[TerminationLogTailAnnotation] == "true",
 	}
 
 	spec := launchSpec{
@@ -314,7 +316,7 @@ func (b *nativeProcessBackend) Status(ctx context.Context, pod *corev1.Pod) (*co
 		cname = pod.Spec.Containers[0].Name
 	}
 	if e.Exited {
-		return b.terminatedStatus(cname, e), nil
+		return b.terminatedStatus(string(pod.UID), cname, e), nil
 	}
 	if !b.alive(e.PID) {
 		return nil, nil
@@ -504,7 +506,7 @@ func (b *nativeProcessBackend) runningStatus(cname string, e procEntry) *corev1.
 	}
 }
 
-func (b *nativeProcessBackend) terminatedStatus(cname string, e procEntry) *corev1.PodStatus {
+func (b *nativeProcessBackend) terminatedStatus(uid, cname string, e procEntry) *corev1.PodStatus {
 	started := metav1.NewTime(e.StartedAt)
 	finished := metav1.NewTime(e.FinishedAt)
 	reason := "Error"
@@ -522,6 +524,7 @@ func (b *nativeProcessBackend) terminatedStatus(cname string, e procEntry) *core
 			Terminated: &corev1.ContainerStateTerminated{
 				ExitCode:    e.ExitCode,
 				Reason:      reason,
+				Message:     b.terminationLogTail(uid, e),
 				ContainerID: fmt.Sprintf("process://%d", e.PID),
 				StartedAt:   started,
 				FinishedAt:  finished,
@@ -539,6 +542,18 @@ func (b *nativeProcessBackend) terminatedStatus(cname string, e procEntry) *core
 			{Type: corev1.ContainersReady, Status: corev1.ConditionFalse, Reason: "ContainersNotReady", LastTransitionTime: now},
 		},
 	}
+}
+
+func (b *nativeProcessBackend) terminationLogTail(uid string, e procEntry) string {
+	if !e.LogTail || uid == "" {
+		return ""
+	}
+	logFile, err := os.Open(filepath.Join(b.dataDir, uid+".log"))
+	if err != nil {
+		return ""
+	}
+	defer logFile.Close()
+	return terminationLogTail(logFile)
 }
 
 func pendingStatus(cname string, e procEntry) *corev1.PodStatus {

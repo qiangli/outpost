@@ -101,6 +101,7 @@ func TestNativeProcessBackend_TerminalStatusAndLogs(t *testing.T) {
 
 	successPod, _ := makeHelperPod(t, "success-pod", "uid-success", "exit")
 	successMarker := "native-success-marker"
+	successPod.Annotations = map[string]string{TerminationLogTailAnnotation: "true"}
 	successPod.Spec.Containers[0].Env = append(successPod.Spec.Containers[0].Env,
 		corev1.EnvVar{Name: "HELPER_MARKER", Value: successMarker})
 	if err := be.Ensure(ctx, successPod); err != nil {
@@ -112,6 +113,10 @@ func TestNativeProcessBackend_TerminalStatusAndLogs(t *testing.T) {
 	}
 	assertTerminatedExitCode(t, successStatus, 0)
 	assertLogContains(t, filepath.Join(dir, "uid-success.log"), successMarker)
+	successTerm := successStatus.ContainerStatuses[0].State.Terminated
+	if successTerm == nil || !strings.Contains(successTerm.Message, successMarker) {
+		t.Fatalf("termination message does not contain %q: %+v", successMarker, successTerm)
+	}
 
 	failPod, _ := makeHelperPod(t, "fail-pod", "uid-fail", "fail")
 	if err := be.Ensure(ctx, failPod); err != nil {
@@ -122,6 +127,70 @@ func TestNativeProcessBackend_TerminalStatusAndLogs(t *testing.T) {
 		t.Fatalf("fail phase = %q, want Failed; status = %+v", failStatus.Phase, failStatus)
 	}
 	assertTerminatedExitCode(t, failStatus, 42)
+}
+
+func TestNativeProcessBackend_TerminationLogTailIsBoundedAndRestartSafe(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	raw, err := NewNativeProcessBackend(NativeProcessConfig{DataDir: dir})
+	if err != nil {
+		t.Fatalf("NewNativeProcessBackend: %v", err)
+	}
+	be := raw.(*nativeProcessBackend)
+
+	suffix := "DKS_RESULT:{\"classification\":\"pass\"}"
+	pod, _ := makeHelperPod(t, "bounded-pod", "uid-bounded", "exit")
+	pod.Annotations = map[string]string{TerminationLogTailAnnotation: "true"}
+	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env,
+		corev1.EnvVar{Name: "HELPER_MARKER", Value: strings.Repeat("x", maxTerminationMessageBytes+512) + suffix})
+	if err := be.Ensure(ctx, pod); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	status := waitForTerminalStatus(t, be, ctx, pod)
+	message := status.ContainerStatuses[0].State.Terminated.Message
+	if len(message) > maxTerminationMessageBytes {
+		t.Fatalf("termination message has %d bytes, want <= %d", len(message), maxTerminationMessageBytes)
+	}
+	if !strings.Contains(message, suffix) {
+		t.Fatalf("termination message lost result suffix: %q", message)
+	}
+
+	// A new backend instance must recover the opt-in from registry.json and
+	// expose the same terminal evidence after an outpost restart.
+	restartedRaw, err := NewNativeProcessBackend(NativeProcessConfig{DataDir: dir})
+	if err != nil {
+		t.Fatalf("NewNativeProcessBackend after restart: %v", err)
+	}
+	restarted := restartedRaw.(*nativeProcessBackend)
+	recovered, err := restarted.Status(ctx, pod)
+	if err != nil {
+		t.Fatalf("Status after restart: %v", err)
+	}
+	if recovered == nil || recovered.ContainerStatuses[0].State.Terminated == nil {
+		t.Fatalf("terminal status not recovered after restart: %+v", recovered)
+	}
+	if got := recovered.ContainerStatuses[0].State.Terminated.Message; got != message {
+		t.Fatalf("termination message changed after restart\n got: %q\nwant: %q", got, message)
+	}
+}
+
+func TestNativeProcessBackend_TerminationLogTailRequiresOptIn(t *testing.T) {
+	ctx := context.Background()
+	raw, err := NewNativeProcessBackend(NativeProcessConfig{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewNativeProcessBackend: %v", err)
+	}
+	be := raw.(*nativeProcessBackend)
+	pod, _ := makeHelperPod(t, "private-log-pod", "uid-private-log", "exit")
+	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env,
+		corev1.EnvVar{Name: "HELPER_MARKER", Value: "must-not-enter-pod-status"})
+	if err := be.Ensure(ctx, pod); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	status := waitForTerminalStatus(t, be, ctx, pod)
+	if got := status.ContainerStatuses[0].State.Terminated.Message; got != "" {
+		t.Fatalf("termination message = %q without opt-in, want empty", got)
+	}
 }
 
 // makeHelperPod builds a Pod whose container execs this test binary back
