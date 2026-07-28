@@ -108,7 +108,7 @@ func TestMergePairingClusterCreds(t *testing.T) {
 	existing := &conf.FileConfig{
 		Cluster: &conf.ClusterConfig{
 			Enabled:   &clusterEnabled,
-			Mode:      "agent",
+			Runtimes:  conf.ClusterRuntimes{Agent: true, Virtual: []string{conf.ClusterRuntimeVKNative}},
 			APIURL:    "https://127.0.0.1:6443",
 			NodeName:  "host-d-node",
 			NodeToken: "stale-node-token",
@@ -135,7 +135,7 @@ func TestMergePairingClusterCreds(t *testing.T) {
 		t.Errorf("cluster creds not refreshed: %+v", merged.Cluster)
 	}
 	// Operator fields preserved.
-	if merged.Cluster.Enabled == nil || !*merged.Cluster.Enabled || merged.Cluster.Mode != "agent" ||
+	if merged.Cluster.Enabled == nil || !*merged.Cluster.Enabled || !merged.Cluster.Runtimes.Agent || len(merged.Cluster.Runtimes.Virtual) != 1 ||
 		merged.Cluster.APIURL != "https://127.0.0.1:6443" || merged.Cluster.NodeName != "host-d-node" {
 		t.Errorf("operator cluster fields not preserved: %+v", merged.Cluster)
 	}

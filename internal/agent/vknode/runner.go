@@ -227,7 +227,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 // race at node/node.go:599, where the periodic status-update timer
 // fires while the apiserver connection is being torn down and derefs a
 // nil *corev1.Node — is contained by the errgroup and surfaced to the
-// caller as cluster-mode degradation instead of an unrecovered panic
+// caller as virtual-runtime degradation instead of an unrecovered panic
 // that unwinds past errgroup and takes down the whole outpost process.
 //
 // vknode is an optional subsystem; its failure must never be fatal to

@@ -33,9 +33,9 @@ import (
 
 // ErrPodmanNotFound is returned by Up when neither `podman` nor `docker`
 // is on PATH. The outpost daemon surfaces it as a clear "install Docker
-// Desktop / Rancher Desktop / podman to enable --cluster-mode=agent"
+// Desktop / Rancher Desktop / podman to enable the agent runtime"
 // message; on macOS this is the expected gating.
-var ErrPodmanNotFound = errors.New("runtime: no `podman` or `docker` binary on PATH (install Docker Desktop / Rancher Desktop / podman to enable --cluster-mode=agent)")
+var ErrPodmanNotFound = errors.New("runtime: no `podman` or `docker` binary on PATH (install Docker Desktop / Rancher Desktop / podman to enable the DKS agent runtime)")
 
 // Options is the supervisor's input. All fields except ExtraEnv are
 // required; LoginServer/AuthKey/PodCIDR may be empty for single-node
@@ -45,6 +45,10 @@ type Options struct {
 	// joins as Node <AgentName>; the container itself is named
 	// <AgentName>-runtime.
 	AgentName string
+	// HostName is the registered physical host that owns this Node.
+	// It may differ from AgentName when the operator overrides the
+	// cluster node-name prefix.
+	HostName string
 
 	// Image is the runtime container image (e.g. "outpost-runtime:dev").
 	// Built once via `outpost cluster build-runtime` or pulled from a
@@ -169,6 +173,10 @@ func Up(ctx context.Context, opts Options) error {
 	// peers (a peer stops learning the route). Persisting the key makes a
 	// restart re-attach as the SAME node — idempotent, no duplicates.
 	tsStateVol := "outpost-" + opts.AgentName + "-ts-state"
+	hostName := opts.HostName
+	if hostName == "" {
+		hostName = opts.AgentName
+	}
 	args := []string{
 		"run", "-d",
 		"--name", containerName,
@@ -197,6 +205,7 @@ func Up(ctx context.Context, opts Options) error {
 		// bridge-nf-call sysctls don't even exist.
 		"-v", "/lib/modules:/lib/modules:ro",
 		"-e", "OUTPOST_AGENT_NAME=" + opts.AgentName,
+		"-e", "OUTPOST_HOST_NAME=" + hostName,
 		"-e", "OUTPOST_NODE_TOKEN=" + opts.NodeToken,
 	}
 	if opts.APIServer != "" {
@@ -246,7 +255,7 @@ func Up(ctx context.Context, opts Options) error {
 }
 
 // Down stops + removes the container. Used during outpost shutdown +
-// when the operator flips --cluster-mode=off.
+// when the operator disables DKS.
 func Down(ctx context.Context, opts Options) error {
 	bin, err := pickPodmanBin(opts.PodmanBin)
 	if err != nil {
@@ -394,7 +403,7 @@ func streamToSlog(r interface {
 
 // PodmanAvailable reports whether the runtime is usable on this host.
 // Outpost CLI / admincore status surface uses this to render a clear
-// "cluster-mode=agent unavailable — install podman" hint instead of
+// "DKS agent runtime unavailable — install podman" hint instead of
 // failing silently at start time.
 func PodmanAvailable() bool {
 	_, err := pickPodmanBin("")

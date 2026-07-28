@@ -43,7 +43,7 @@ type Client struct {
 // works against a unix socket (Linux, macOS — and Windows, where podman
 // also publishes %TEMP%\podman\<machine>-api.sock) and against a Windows
 // NAMED PIPE (`\\.\pipe\podman-<machine>`). Hardcoding a unix dial here
-// is what previously made `--cluster-mode=vk-podman` unreachable on
+// is what previously made the vk-podman runtime unreachable on
 // Windows: podman's default endpoint there is the pipe.
 func NewClient(socket string) (*Client, error) {
 	if strings.TrimSpace(socket) == "" {

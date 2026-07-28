@@ -1166,21 +1166,14 @@ function buildFilesSubBlock(parent, cfg, status) {
 }
 
 // buildClusterSubBlock populates the top-level Cluster section:
-// cluster status banner + cluster toggle + kubeconfig YAML
-// editor + node-name + Save/Save+Join/Leave buttons. Promoted out of
-// the Podman twister to its own entry (the cluster venue); the podman
-// dependency (agent mode dials the local podman socket) stays visible
-// in the banner/hints. The cluster
-// toggle gates on having credentials pasted (has_token); the
-// kubeconfig editor stays editable but the save buttons gate on
-// cfg.podman_enabled — pasting a config with podman off doesn't
-// help (the runner needs the local socket).
+// cluster status, concurrent runtime selection, join toggle, and
+// kubeconfig readiness.
 function buildClusterSubBlock(parent, cfg, status) {
   const podmanOn = !!(cfg.podman && cfg.podman.enabled);
   const cv = cfg.cluster || {};
 
   // --- cluster status banner ----------------------------------------------
-  parent.append(el('h4', {}, 'Cluster (virtual-kubelet → podman) ', el('code', {class: 'key-hint'}, 'cluster.enabled')));
+  parent.append(el('h4', {}, 'DKS nodes ', el('code', {class: 'key-hint'}, 'cluster.runtimes')));
   const banner = el('div', {class: 'item-row'});
   if (cv.has_token) {
     banner.append(el('span', {class: 'grow'},
@@ -1214,10 +1207,52 @@ function buildClusterSubBlock(parent, cfg, status) {
       'Enabled — outpost will fetch a kubeconfig from cloudbox on next start.'));
   } else {
     banner.append(el('span', {class: 'grow hint'},
-      podmanOn ? 'Disabled. Toggle Cluster below to join (cloudbox auto-fetches a kubeconfig using the saved access_token).' :
-                 'Disabled. Enable Podman first — cluster mode dials the local podman socket.'));
+      'Disabled. Select one or more runtimes, then join.'));
   }
   parent.append(banner);
+
+  const selectedVirtual = new Set(cv.virtual || []);
+  const runtimeBox = el('div', {class: 'item-row'});
+  const agentInput = el('input', {type: 'checkbox'});
+  agentInput.checked = !!cv.agent;
+  const virtualInputs = {};
+  const runtimeLabels = [
+    ['vk-native', 'native host processes'],
+    ['vk-podman', 'Podman containers'],
+    ['vk-ollama', 'native Ollama processes'],
+  ];
+  const runtimeChoices = el('span', {class: 'grow'});
+  runtimeChoices.append(el('label', {}, agentInput, ' agent (real k3s) '));
+  for (const [name, description] of runtimeLabels) {
+    const input = el('input', {type: 'checkbox'});
+    input.checked = selectedVirtual.has(name);
+    virtualInputs[name] = input;
+    runtimeChoices.append(el('label', {style: 'margin-left:0.8rem'}, input, ` ${name} (${description})`));
+  }
+  const saveRuntimes = el('button', {type: 'button'}, 'Save runtimes');
+  saveRuntimes.addEventListener('click', async () => {
+    const virtual = runtimeLabels.map(([name]) => name).filter(name => virtualInputs[name].checked);
+    if (!agentInput.checked && virtual.length === 0) {
+      msg('err', 'Select at least one cluster runtime.');
+      return;
+    }
+    saveRuntimes.disabled = true;
+    try {
+      const res = await api('POST', '/api/config/builtins', {
+        cluster_agent: agentInput.checked,
+        cluster_virtual: virtual,
+      });
+      msg('ok', 'Cluster runtimes saved.');
+      noteRestartPending(res);
+      await render();
+    } catch (e) {
+      msg('err', e.message || 'Save failed');
+    } finally {
+      saveRuntimes.disabled = false;
+    }
+  });
+  runtimeBox.append(runtimeChoices, saveRuntimes);
+  parent.append(runtimeBox);
 
   // --- cluster toggle row -------------------------------------------------
   // Opt-in / opt-out for the cloudbox-managed cluster. The daemon
@@ -1228,10 +1263,12 @@ function buildClusterSubBlock(parent, cfg, status) {
   // access_token exists). Bring-your-own kubeconfig is no longer
   // supported in the SPA — operators with a third-party cluster
   // should pair a second outpost against the cloudbox managing it.
-  const clusterRow = el('div', {class: 'item-row' + (!podmanOn ? ' dim' : '')});
+  const clusterRow = el('div', {class: 'item-row'});
   const clusterOn = !!(cv && cv.enabled);
   const paired = !!(status && status.configured);
-  const clusterGateOK = podmanOn && paired;
+  const hasRuntime = !!cv.agent || selectedVirtual.size > 0;
+  const needsPodman = !!cv.agent || selectedVirtual.has('vk-podman');
+  const clusterGateOK = paired && hasRuntime && (!needsPodman || podmanOn);
   const csw = switchEl({checked: clusterOn && clusterGateOK, disabled: !clusterGateOK});
   csw.input.addEventListener('change', async () => {
     const newVal = csw.input.checked;
@@ -1251,10 +1288,12 @@ function buildClusterSubBlock(parent, cfg, status) {
     csw.wrap,
     el('span', {class: 'label'}, 'Join cluster ', el('code', {class: 'key-hint'}, 'cluster.enabled')),
   );
-  if (!podmanOn) {
-    clusterRow.append(el('span', {class: 'hint'}, '(enable Podman first)'));
-  } else if (!paired) {
+  if (!paired) {
     clusterRow.append(el('span', {class: 'hint'}, '(pair this host first)'));
+  } else if (!hasRuntime) {
+    clusterRow.append(el('span', {class: 'hint'}, '(select and save at least one runtime first)'));
+  } else if (needsPodman && !podmanOn) {
+    clusterRow.append(el('span', {class: 'hint'}, '(agent and vk-podman require Podman)'));
   } else {
     clusterRow.append(el('span', {class: 'hint'},
       'cloudbox auto-fetches a kubeconfig using the saved access_token on next boot. Token + CA never leave this machine.'));

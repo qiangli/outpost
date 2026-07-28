@@ -57,11 +57,9 @@ type KubeconfigResult struct {
 	RestartPending bool        `json:"restart_pending"`
 }
 
-// ClearKubeconfig removes the cluster credentials and the Enabled
-// flag so a future boot doesn't try to dial a stale apiserver. Used
-// by the "Leave cluster" affordance in the admin UI. Returns
-// RestartPending=true when the cluster was previously joined so the
-// caller can poll Status.
+// ClearKubeconfig disables DKS and removes cloud-issued membership while
+// preserving the configured runtime set. Callers apply teardown through the
+// pending restart.
 func (s *Server) ClearKubeconfig() (KubeconfigResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -70,7 +68,7 @@ func (s *Server) ClearKubeconfig() (KubeconfigResult, error) {
 		return KubeconfigResult{}, err
 	}
 	wasEnabled := fc.ClusterOn()
-	fc.Cluster = nil
+	disableClusterMembership(fc)
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		return KubeconfigResult{}, internalErr("%s", err.Error())
 	}
@@ -81,17 +79,29 @@ func (s *Server) ClearKubeconfig() (KubeconfigResult, error) {
 	return KubeconfigResult{OK: true, RestartPending: restart}, nil
 }
 
+func disableClusterMembership(fc *conf.FileConfig) {
+	if fc.Cluster == nil {
+		fc.Cluster = &conf.ClusterConfig{}
+	}
+	disabled := false
+	fc.Cluster.Enabled = &disabled
+	fc.Cluster.NodeToken = ""
+	fc.Cluster.STCPSecret = ""
+	fc.Cluster.APIURL = ""
+	fc.Cluster.Token = ""
+	fc.Cluster.CA = nil
+	fc.Cluster.K8sAPIPort = 0
+	fc.Cluster.KubeletProxyPort = 0
+	fc.Cluster.OverlayLoginServer = ""
+	fc.Cluster.OverlayAuthKey = ""
+	fc.Cluster.OverlayPodCIDR = ""
+}
+
 // LeaveCluster is the per-node "leave DKS" state change — distinct from
 // ClearKubeconfig's full wipe. It DISABLES cluster mode but PRESERVES the
-// node's identity + MODE (agent stays agent, vk-* stays vk-*), clearing only
+// node identities + runtime set, clearing only
 // the cloud-ISSUED membership so a rejoin's boot reattach re-fetches fresh
 // values (new pod CIDR, overlay key, kubelet port, apiserver creds).
-//
-// Why preserving Mode is load-bearing: ClusterConfig.Mode == "" normalizes to
-// vk-podman (NormalizeClusterMode), so wiping the whole Cluster block — which
-// ClearKubeconfig does — makes an agent node silently rejoin as a virtual-
-// kubelet node. Leave must keep Mode + NodeName so the node comes back as the
-// SAME kind of node. See docs/dks-node-model-and-venues.md.
 //
 // Disabling (not deleting) the Cluster block means the next boot takes the
 // cluster-OFF path, which tears the runtime container down (main.go), instead
@@ -105,24 +115,7 @@ func (s *Server) LeaveCluster(ctx context.Context) (KubeconfigResult, error) {
 		return KubeconfigResult{}, err
 	}
 	wasEnabled := fc.ClusterOn()
-	if fc.Cluster == nil {
-		// Nothing to leave, but make the desired state explicit so a later
-		// join has a Mode-bearing block to flip on.
-		fc.Cluster = &conf.ClusterConfig{}
-	}
-	disabled := false
-	fc.Cluster.Enabled = &disabled
-	// Clear ONLY cloud-issued membership — keep Mode + NodeName (identity).
-	fc.Cluster.NodeToken = ""
-	fc.Cluster.STCPSecret = ""
-	fc.Cluster.APIURL = ""
-	fc.Cluster.Token = ""
-	fc.Cluster.CA = nil
-	fc.Cluster.K8sAPIPort = 0
-	fc.Cluster.KubeletProxyPort = 0
-	fc.Cluster.OverlayLoginServer = ""
-	fc.Cluster.OverlayAuthKey = ""
-	fc.Cluster.OverlayPodCIDR = ""
+	disableClusterMembership(fc)
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		return KubeconfigResult{}, internalErr("%s", err.Error())
 	}
@@ -142,8 +135,7 @@ func (s *Server) LeaveCluster(ctx context.Context) (KubeconfigResult, error) {
 }
 
 // JoinCluster is the symmetric partner to LeaveCluster: it re-ENABLES cluster
-// mode, retaining the Mode + NodeName LeaveCluster preserved, so the node
-// rejoins as the same kind of node. The cloud-issued credentials LeaveCluster
+// mode, retaining the runtimes + NodeName LeaveCluster preserved. The cloud-issued credentials LeaveCluster
 // cleared are re-fetched by the boot-time reattach — this method only flips the
 // desired state on; the reconcile happens on the ensuing restart. Idempotent.
 func (s *Server) JoinCluster() (KubeconfigResult, error) {
@@ -155,6 +147,9 @@ func (s *Server) JoinCluster() (KubeconfigResult, error) {
 	}
 	if fc.Cluster == nil {
 		fc.Cluster = &conf.ClusterConfig{}
+	}
+	if err := fc.Cluster.ValidateRuntimes(); err != nil {
+		return KubeconfigResult{}, badRequest("%s", err.Error())
 	}
 	enabled := true
 	fc.Cluster.Enabled = &enabled

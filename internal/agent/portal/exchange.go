@@ -209,7 +209,7 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		// in cluster mode AND has already materialized the node-token.
 		// Outpost persists into ClusterConfig.{NodeToken,STCPSecret,
 		// K8sAPIPort} so the daemon can spin up the k3s-agent path on
-		// next boot (operator still has to flip --cluster-mode=agent).
+		// next boot (operator still has to enable cluster.runtimes.agent).
 		ClusterNodeToken   string `json:"cluster_node_token"`
 		ClusterSTCPSecret  string `json:"cluster_stcp_secret"`
 		ClusterAPIPort     int    `json:"cluster_api_port"`

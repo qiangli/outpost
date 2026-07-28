@@ -1,5 +1,5 @@
 # outpost-runtime image — the Linux kubelet runtime an outpost spins up
-# when --cluster-mode=agent is on. The outpost daemon itself runs on the
+# when cluster.runtimes.agent is on. The outpost daemon itself runs on the
 # host OS (macOS, Linux, Windows); only this image runs k3s agent +
 # tailscaled + the CNI plugin, isolated in a podman container.
 #

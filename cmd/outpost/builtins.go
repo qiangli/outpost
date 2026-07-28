@@ -81,11 +81,8 @@ func builtinsShowCmd() *cobra.Command {
 				row("  "+s.Name, s.Enabled)
 			}
 			row("cluster", view.Cluster.Enabled)
-			mode := view.Cluster.Mode
-			if mode == "" {
-				mode = "agent"
-			}
-			fmt.Printf("  %-22s  %s\n", "cluster_mode", mode)
+			row("cluster_agent", view.Cluster.Agent)
+			fmt.Printf("  %-22s  %s\n", "cluster_virtual", strings.Join(view.Cluster.Virtual, ","))
 			return nil
 		},
 	}
@@ -97,7 +94,8 @@ func builtinsSetCmd() *cobra.Command {
 	var (
 		shell, desktop, clipboard, ssh, sshLocalFwd, sshRemoteFwd, sshAgentFwd, sftp, podman, sandbox, ollama, ollamaPool, otel, otelPool, ycodeShare, ycodeShareRequireLogin, cluster string
 		files, filesAllowWrite, filesScope                                                                                                                                             string
-		clusterMode                                                                                                                                                                    string
+		clusterAgent                                                                                                                                                                   string
+		clusterVirtual                                                                                                                                                                 []string
 		updateMode, autoUpgradeLegacy, autoRollback                                                                                                                                    string
 		warmServing                                                                                                                                                                    string
 		warmBudgetFrac                                                                                                                                                                 float64
@@ -223,19 +221,16 @@ func builtinsSetCmd() *cobra.Command {
 			if params.Cluster, err = parseToggle("cluster", cluster); err != nil {
 				return err
 			}
-			if clusterMode != "" {
-				// Accept the three canonical modes plus the back-compat
-				// aliases ("" / "vkpodman" → vk-podman). Persist the
-				// normalized canonical value so on-disk configs converge,
-				// while the legacy "vkpodman" spelling keeps resolving.
-				raw := strings.ToLower(strings.TrimSpace(clusterMode))
-				switch raw {
-				case "agent", "vk-podman", "vkpodman", "vk-native", "vk-ollama":
-					m := conf.NormalizeClusterMode(raw)
-					params.ClusterMode = &m
-				default:
-					return fmt.Errorf("--cluster-mode must be agent|vk-podman|vk-native|vk-ollama (alias: vkpodman), got %q", clusterMode)
+			if params.ClusterAgent, err = parseToggle("cluster-agent", clusterAgent); err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("cluster-virtual") {
+				for _, mode := range clusterVirtual {
+					if !conf.ValidVirtualRuntime(strings.ToLower(strings.TrimSpace(mode))) {
+						return fmt.Errorf("--cluster-virtual entries must be vk-podman, vk-native, or vk-ollama; got %q", mode)
+					}
 				}
+				params.ClusterVirtual = clusterVirtual
 			}
 			// --update=auto|manual|never is the canonical knob; the
 			// deprecated --auto-upgrade=on|off folds in as auto/never.
@@ -385,7 +380,8 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&ycodeShareRequireLogin, "ycode-share-require-login", "", "on|off — require cloudbox OS-password elevation for the 'ycode' app (default off; on = OS password popup like /shell)")
 	cmd.Flags().StringToStringVar(&ycodeShareSurfaces, "ycode-share-surface", nil, "Toggle a ycode-share surface, repeatable: --ycode-share-surface ycode-canvas=on --ycode-share-surface ycode-git=on")
 	cmd.Flags().StringVar(&cluster, "cluster", "", "on|off — join cloudbox virtual-podman cluster (opt-in: hands a remote control plane the right to schedule work on this host)")
-	cmd.Flags().StringVar(&clusterMode, "cluster-mode", "", "agent|vk-podman|vk-native|vk-ollama — agent (real k3s-agent in the outpost-runtime container, conformance-track), vk-podman (v1 virtual-kubelet shim landing pods as local podman containers; alias: vkpodman), vk-native (virtual-kubelet landing pods as host processes), or vk-ollama (legacy native-process mode for Metal/CUDA workloads)")
+	cmd.Flags().StringVar(&clusterAgent, "cluster-agent", "", "on|off — run one real k3s-agent Node")
+	cmd.Flags().StringSliceVar(&clusterVirtual, "cluster-virtual", nil, "virtual-kubelet backends to run concurrently: vk-podman,vk-native,vk-ollama (replaces the complete set)")
 	cmd.Flags().StringVar(&updateMode, "update", "", "auto|manual|never — policy for cloudbox-pushed self-upgrades")
 	cmd.Flags().StringVar(&autoUpgradeLegacy, "auto-upgrade", "", "deprecated alias for --update (on→auto, off→never)")
 	_ = cmd.Flags().MarkDeprecated("auto-upgrade", "use --update=auto|manual|never")

@@ -412,6 +412,9 @@ exec /usr/local/bin/k3s agent \
     --server="https://127.0.0.1:${OUTPOST_API_PORT}" \
     --token="${OUTPOST_NODE_TOKEN}" \
     --node-name="${OUTPOST_AGENT_NAME}" \
+    --node-label="outpost.dhnt.io/host=${OUTPOST_HOST_NAME}" \
+    --node-label="outpost.dhnt.io/runtime=agent" \
+    --node-label="outpost.dhnt.io/backend=k3s" \
     --with-node-id \
     --disable-apiserver-lb \
     --resolv-conf="${K3S_RESOLV}" \

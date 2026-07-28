@@ -393,66 +393,40 @@ func TestEnsureBashyServiceSSOSecrets(t *testing.T) {
 	}
 }
 
-// TestNormalizeClusterMode locks in the back-compat aliases — the
-// persisted "vkpodman" wire value and an empty Mode both resolve to
-// vk-podman, while the canonical modes round-trip unchanged.
-func TestNormalizeClusterMode(t *testing.T) {
-	cases := map[string]string{
-		"":           ClusterModeVKPodman,
-		"vkpodman":   ClusterModeVKPodman,
-		"VKPodman":   ClusterModeVKPodman,
-		" vkpodman ": ClusterModeVKPodman,
-		"vk-podman":  ClusterModeVKPodman,
-		"agent":      ClusterModeAgentMode,
-		"AGENT":      ClusterModeAgentMode,
-		"vk-native":  ClusterModeVKNative,
-		"VK-Native":  ClusterModeVKNative,
-		"vk-ollama":  ClusterModeVKOllama,
-		"VK-Ollama":  ClusterModeVKOllama,
+func TestClusterRuntimes(t *testing.T) {
+	c := &ClusterConfig{Runtimes: ClusterRuntimes{
+		Agent:   true,
+		Virtual: []string{ClusterRuntimeVKNative, ClusterRuntimeVKPodman, ClusterRuntimeVKOllama},
+	}}
+	if !c.HasAgentRuntime() {
+		t.Fatal("agent runtime not enabled")
 	}
-	for in, want := range cases {
-		if got := NormalizeClusterMode(in); got != want {
-			t.Errorf("NormalizeClusterMode(%q) = %q, want %q", in, got, want)
+	got := c.VirtualRuntimes()
+	if len(got) != 3 {
+		t.Fatalf("VirtualRuntimes = %v", got)
+	}
+	got[0] = "changed"
+	if c.Runtimes.Virtual[0] != ClusterRuntimeVKNative {
+		t.Fatal("VirtualRuntimes returned the config's backing slice")
+	}
+	for _, mode := range c.Runtimes.Virtual {
+		if !ValidVirtualRuntime(mode) {
+			t.Errorf("ValidVirtualRuntime(%q) = false", mode)
 		}
 	}
-}
-
-// TestClusterModeHelpers verifies the predicate helpers off the
-// normalized mode, including the load-bearing rule that "vkpodman" and
-// "" select neither agent nor native-process (i.e. the libpod vk-podman
-// backend).
-func TestClusterModeHelpers(t *testing.T) {
-	for _, mode := range []string{"", "vkpodman", "vk-podman"} {
-		c := &ClusterConfig{Mode: mode}
-		if c.ClusterModeAgent() {
-			t.Errorf("Mode=%q: ClusterModeAgent() = true, want false", mode)
-		}
-		if c.ClusterModeVKNative() {
-			t.Errorf("Mode=%q: ClusterModeVKNative() = true, want false", mode)
-		}
-		if c.ClusterModeVKOllama() {
-			t.Errorf("Mode=%q: ClusterModeVKOllama() = true, want false", mode)
-		}
-		if c.ClusterModeNativeProcess() {
-			t.Errorf("Mode=%q: ClusterModeNativeProcess() = true, want false", mode)
-		}
-		if c.ClusterMode() != ClusterModeVKPodman {
-			t.Errorf("Mode=%q: ClusterMode() = %q, want vk-podman", mode, c.ClusterMode())
-		}
+	if ValidVirtualRuntime(ClusterRuntimeAgent) || ValidVirtualRuntime("unknown") {
+		t.Fatal("non-virtual runtime accepted")
 	}
-	if c := (&ClusterConfig{Mode: "agent"}); !c.ClusterModeAgent() || c.ClusterModeVKNative() || c.ClusterModeVKOllama() || c.ClusterModeNativeProcess() {
-		t.Errorf("Mode=agent: helpers wrong (agent=%v native=%v ollama=%v nativeProcess=%v)", c.ClusterModeAgent(), c.ClusterModeVKNative(), c.ClusterModeVKOllama(), c.ClusterModeNativeProcess())
+	if err := c.ValidateRuntimes(); err != nil {
+		t.Fatal(err)
 	}
-	if c := (&ClusterConfig{Mode: "vk-native"}); !c.ClusterModeVKNative() || !c.ClusterModeNativeProcess() || c.ClusterModeAgent() || c.ClusterModeVKOllama() {
-		t.Errorf("Mode=vk-native: helpers wrong (native=%v nativeProcess=%v agent=%v ollama=%v)", c.ClusterModeVKNative(), c.ClusterModeNativeProcess(), c.ClusterModeAgent(), c.ClusterModeVKOllama())
+	if err := (&ClusterConfig{}).ValidateRuntimes(); err == nil {
+		t.Fatal("empty runtime set accepted")
 	}
-	if c := (&ClusterConfig{Mode: "vk-ollama"}); !c.ClusterModeVKOllama() || !c.ClusterModeNativeProcess() || c.ClusterModeAgent() || c.ClusterModeVKNative() {
-		t.Errorf("Mode=vk-ollama: helpers wrong (agent=%v native=%v ollama=%v nativeProcess=%v)", c.ClusterModeAgent(), c.ClusterModeVKNative(), c.ClusterModeVKOllama(), c.ClusterModeNativeProcess())
-	}
-	// nil receiver normalizes like an empty Mode.
-	var nilc *ClusterConfig
-	if nilc.ClusterMode() != ClusterModeVKPodman || nilc.ClusterModeAgent() || nilc.ClusterModeVKNative() || nilc.ClusterModeVKOllama() || nilc.ClusterModeNativeProcess() {
-		t.Errorf("nil receiver: helpers wrong")
+	if err := (&ClusterConfig{Runtimes: ClusterRuntimes{
+		Virtual: []string{ClusterRuntimeVKNative, ClusterRuntimeVKNative},
+	}}).ValidateRuntimes(); err == nil {
+		t.Fatal("duplicate runtime accepted")
 	}
 }
 

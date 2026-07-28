@@ -274,7 +274,7 @@ func renderLaunchDaemonPlist(self, user, home string) string {
 // servicePATH is the PATH given to the supervised daemon. launchd hands a
 // daemon only /usr/bin:/bin:/usr/sbin:/sbin, which excludes every common
 // package-manager prefix — so a Homebrew or bashy-installed `podman` is
-// invisible and `--cluster-mode=agent` fails with "no podman or docker binary
+// invisible and the DKS agent runtime fails with "no podman or docker binary
 // on PATH" even though `which podman` resolves fine in a shell. The
 // hand-rolled plists this template replaced all carried a PATH for exactly
 // this reason; regenerating one without it is a silent regression.

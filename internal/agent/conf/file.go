@@ -593,10 +593,9 @@ type FileConfig struct {
 	// docs/qa-poller-host-setup.md.
 	Supervised []SupervisedProgram `json:"supervised,omitempty"`
 
-	// Cluster, when present and Enabled, opts this outpost into the
-	// cloudbox virtual-podman cluster: vkpodman joins a cloud-side k3s
-	// API server as a virtual node and runs scheduled Pods as local
-	// podman containers. See internal/agent/vknode. Off by default.
+	// Cluster, when present and explicitly Enabled, opts this outpost into
+	// DKS. Its runtime set may contain one real k3s agent plus one node for
+	// each selected virtual backend. See internal/agent/{runtime,vknode}.
 	Cluster *ClusterConfig `json:"cluster,omitempty"`
 
 	// LAN peer discovery + LAN-direct dial (Wave 3A). All default off
@@ -687,37 +686,17 @@ type FileConfig struct {
 // "join cluster" time. APIURL/Token/CA together build a client-go
 // rest.Config; NodeName defaults to AgentName.
 //
-// We store the three credential fields directly (rather than parsing a
-// kubeconfig file on every boot) so the join flow can accept a pasted
-// kubeconfig once, persist what matters, and be done. Token rotation
-// becomes a one-line file save instead of a file-format dance.
+// We store the three credential fields directly so cloud-issued membership
+// can rotate without rewriting a kubeconfig document.
 type ClusterConfig struct {
-	// Enabled is the master switch, default-ON like the o3 built-ins
-	// (see ClusterOn): a *bool so "absent" (nil) means join-by-default
-	// while an explicit false is a deliberate opt-out that survives the
-	// next save. Cannot be a plain bool: reattach/Exchange create an
-	// empty ClusterConfig{} to stash NodeToken/STCPSecret, and a plain
-	// false zero-value there would silently opt every paired host out.
-	// When effectively off, the rest is ignored and neither the vkpodman
-	// loop nor the k3s-agent supervisor starts.
+	// Enabled is the opt-in master switch. nil and false are both off.
+	// Runtime selection is preserved while disabled.
 	Enabled *bool `json:"enabled,omitempty"`
 
-	// Mode selects which runtime joins the cluster on this outpost:
-	//   - "" or "vkpodman" or "vk-podman" — v1 virtual-kubelet that
-	//     translates k8s Pods to local podman containers (per-outpost
-	//     pod-shape limits: no PodIP, PVC, init/sidecar containers, etc.)
-	//   - "vk-native" — virtual-kubelet with the generic native-process
-	//     backend: Pods become host processes on this OS.
-	//   - "vk-ollama" — legacy/specialized native-process mode with the
-	//     ollama marker image and data dir (Metal/CUDA-capable).
-	//   - "agent" — real `k3s agent` subprocess that joins as a normal
-	//     kubelet via the matrix-tunnel STCP visitor (Phase 1 of the
-	//     "real shared k8s" plan; Linux-only).
-	// The "" and "vkpodman" spellings are back-compat aliases for
-	// vk-podman — see NormalizeClusterMode. Cloudbox does not push a Mode
-	// at pairing time — operator sets this via `outpost builtins set
-	// --cluster-mode=vk-native`.
-	Mode string `json:"mode,omitempty"`
+	// Runtimes selects the independent Kubernetes Nodes this host owns.
+	// Agent starts one real k3s-agent Node. Virtual contains at most one
+	// instance of each supported virtual-kubelet backend.
+	Runtimes ClusterRuntimes `json:"runtimes"`
 
 	// APIURL is the cluster's apiserver — typically the cloudbox-proxied
 	// URL like https://ai.dhnt.io/api/cluster/agent for production, or
@@ -738,7 +717,7 @@ type ClusterConfig struct {
 	NodeName string `json:"node_name,omitempty"`
 
 	// NodeToken is the k3s join token (K10…::node:…) cloudbox handed
-	// out at register time. Consumed only by Mode="agent"; passed as
+	// out at register time. Consumed only by the agent runtime; passed as
 	// `k3s agent --token`. Empty when cloudbox isn't running in cluster
 	// mode or hasn't materialized the token yet (re-pair to refresh).
 	NodeToken string `json:"node_token,omitempty"`
@@ -746,7 +725,7 @@ type ClusterConfig struct {
 	// STCPSecret authenticates the local frp STCP visitor that opens a
 	// 127.0.0.1:<K8sAPIPort> listener and tunnels each accepted conn to
 	// cloudbox's embedded apiserver. Cluster-wide; minted by cloudbox at
-	// register time. Consumed only by Mode="agent".
+	// register time. Consumed only by the agent runtime.
 	STCPSecret string `json:"stcp_secret,omitempty"`
 
 	// K8sAPIPort is the TCP port the STCP visitor binds locally for the
@@ -827,83 +806,53 @@ type ClusterConfig struct {
 	CAPubkey string `json:"ca_pubkey,omitempty"`
 }
 
-// Canonical --cluster-mode values, after normalization. These are the
-// modes the operator selects between:
-//
-//   - ClusterModeAgentMode  — real `k3s agent` subprocess (libpod-hosted
-//     kubelet) joining via the matrix-tunnel STCP visitor.
-//   - ClusterModeVKPodman   — v1 virtual-kubelet, Pods → local libpod
-//     containers (vknode podmanBackend).
-//   - ClusterModeVKNative   — virtual-kubelet, Pods → native host
-//     processes (vknode nativeProcessBackend).
-//   - ClusterModeVKOllama   — virtual-kubelet, Pods → native host
-//     processes using the legacy ollama defaults.
+type ClusterRuntimes struct {
+	Agent   bool     `json:"agent"`
+	Virtual []string `json:"virtual,omitempty"`
+}
+
 const (
-	ClusterModeAgentMode = "agent"
-	ClusterModeVKPodman  = "vk-podman"
-	ClusterModeVKNative  = "vk-native"
-	ClusterModeVKOllama  = "vk-ollama"
+	ClusterRuntimeAgent    = "agent"
+	ClusterRuntimeVKPodman = "vk-podman"
+	ClusterRuntimeVKNative = "vk-native"
+	ClusterRuntimeVKOllama = "vk-ollama"
 )
 
-// NormalizeClusterMode canonicalizes a raw --cluster-mode flag value or
-// a persisted ClusterConfig.Mode into one of the ClusterMode* constants.
-//
-// Back-compat aliases — the persisted wire value MUST keep working:
-//
-//   - ""         → vk-podman (legacy default before vk-ollama existed)
-//   - "vkpodman" → vk-podman (the original on-disk spelling)
-//
-// Unknown values are lower-cased/trimmed and returned as-is so callers
-// can detect and reject them; the canonical values round-trip unchanged.
-func NormalizeClusterMode(mode string) string {
-	switch m := strings.ToLower(strings.TrimSpace(mode)); m {
-	case "", "vkpodman", ClusterModeVKPodman:
-		return ClusterModeVKPodman
-	case ClusterModeAgentMode:
-		return ClusterModeAgentMode
-	case ClusterModeVKNative:
-		return ClusterModeVKNative
-	case ClusterModeVKOllama:
-		return ClusterModeVKOllama
+func ValidVirtualRuntime(mode string) bool {
+	switch mode {
+	case ClusterRuntimeVKPodman, ClusterRuntimeVKNative, ClusterRuntimeVKOllama:
+		return true
 	default:
-		return m
+		return false
 	}
 }
 
-// ClusterMode returns the normalized cluster mode for this config —
-// always one of the ClusterMode* constants for a valid config. A nil
-// receiver normalizes the same way an empty Mode does (vk-podman).
-func (c *ClusterConfig) ClusterMode() string {
+func (c *ClusterConfig) HasAgentRuntime() bool {
+	return c != nil && c.Runtimes.Agent
+}
+
+func (c *ClusterConfig) VirtualRuntimes() []string {
 	if c == nil {
-		return ClusterModeVKPodman
+		return nil
 	}
-	return NormalizeClusterMode(c.Mode)
+	return append([]string(nil), c.Runtimes.Virtual...)
 }
 
-// ClusterModeAgent reports whether the outpost should run the real
-// `k3s agent` path rather than a virtual-kubelet backend. Centralized
-// so future modes can be added without touching every call site.
-func (c *ClusterConfig) ClusterModeAgent() bool {
-	return c.ClusterMode() == ClusterModeAgentMode
-}
-
-// ClusterModeVKNative reports whether the outpost should run the
-// virtual-kubelet with the generic native host-process backend rather
-// than the libpod backend.
-func (c *ClusterConfig) ClusterModeVKNative() bool {
-	return c.ClusterMode() == ClusterModeVKNative
-}
-
-// ClusterModeVKOllama reports whether the outpost should run the
-// virtual-kubelet with the legacy ollama host-process backend.
-func (c *ClusterConfig) ClusterModeVKOllama() bool {
-	return c.ClusterMode() == ClusterModeVKOllama
-}
-
-// ClusterModeNativeProcess reports whether the selected mode uses
-// vknode's native host-process backend family.
-func (c *ClusterConfig) ClusterModeNativeProcess() bool {
-	return c.ClusterModeVKNative() || c.ClusterModeVKOllama()
+func (c *ClusterConfig) ValidateRuntimes() error {
+	if c == nil || (!c.Runtimes.Agent && len(c.Runtimes.Virtual) == 0) {
+		return fmt.Errorf("cluster requires an agent or virtual runtime")
+	}
+	seen := make(map[string]struct{}, len(c.Runtimes.Virtual))
+	for _, mode := range c.Runtimes.Virtual {
+		if !ValidVirtualRuntime(mode) {
+			return fmt.Errorf("unsupported virtual runtime %q", mode)
+		}
+		if _, duplicate := seen[mode]; duplicate {
+			return fmt.Errorf("duplicate virtual runtime %q", mode)
+		}
+		seen[mode] = struct{}{}
+	}
+	return nil
 }
 
 // OutboundConfig is one local mount that proxies to a remote outpost.

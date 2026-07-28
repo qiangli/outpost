@@ -42,7 +42,7 @@ func TestClusterView_PodNetworkMode(t *testing.T) {
 				Token:     "t",
 				Cluster: &conf.ClusterConfig{
 					Enabled:        &on,
-					Mode:           "agent",
+					Runtimes:       conf.ClusterRuntimes{Agent: true},
 					OverlayPodCIDR: tt.podCIDR,
 				},
 			}

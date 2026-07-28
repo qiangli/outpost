@@ -6,8 +6,8 @@ node) supports GPU workloads when:
 1. The outpost host has an **NVIDIA driver** installed.
 2. The host has the **NVIDIA container toolkit** configured for
    containerd.
-3. The outpost runs in **real k3s-agent mode** (`outpost builtins set
-   --cluster-mode=agent` — the default since `20d3d14`).
+3. The outpost enables its **real k3s-agent runtime** (`outpost builtins set
+   --cluster-agent on`).
 4. The cluster admin has installed the **`gpu-device-plugin` bundle**
    on cloudbox (`POST /api/cluster/install/gpu-device-plugin`, or via
    the SPA's Cluster page).
@@ -61,14 +61,15 @@ sudo systemctl restart containerd
 
 (Source: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
 
-## 3. Switch outpost to real k3s-agent mode
+## 3. Enable the real k3s-agent runtime
 
-The vkpodman cluster mode doesn't translate `resources.limits."nvidia.com/gpu"`
-to host device mounts; use the real k3s-agent mode for ML workloads.
+The virtual backends don't translate `resources.limits."nvidia.com/gpu"` to
+host device mounts; enable the real k3s-agent runtime for ML workloads. Other
+selected virtual runtimes may remain enabled concurrently.
 
 ```
-outpost builtins set --cluster-mode=agent
-outpost restart   # restart picks up the new mode
+outpost builtins set --cluster-agent on
+outpost restart
 ```
 
 Verify the outpost daemon is reporting GPUs to cloudbox:

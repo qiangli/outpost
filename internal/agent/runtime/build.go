@@ -147,7 +147,7 @@ func BuildImage(ctx context.Context, opts BuildOptions) (string, error) {
 
 // EnsureImage builds the runtime image iff it is absent OR was built by a
 // different outpost version — so an `outpost upgrade` (or any binary swap)
-// makes the container image self-rebuild on the next cluster-mode start,
+// makes the container image self-rebuild on the next DKS agent start,
 // with no manual `outpost cluster build-runtime` step. It returns whether
 // a rebuild happened.
 //

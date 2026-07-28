@@ -1,6 +1,7 @@
 package admincore
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
@@ -116,4 +117,24 @@ func TestSetBuiltinsFreshConfigDefaultsO3On(t *testing.T) {
 		t.Fatalf("fresh config: cluster on, want opt-in")
 	}
 	_ = core
+}
+
+func TestSetBuiltinsConcurrentClusterRuntimes(t *testing.T) {
+	core, cfgPath := newTestCore(t)
+	on := true
+	virtual := []string{"vk-native", "vk-podman", "vk-ollama"}
+	if _, err := core.SetBuiltins(BuiltinsParams{
+		Cluster:        &on,
+		ClusterAgent:   &on,
+		ClusterVirtual: virtual,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fc, err := conf.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fc.Cluster.HasAgentRuntime() || !reflect.DeepEqual(fc.Cluster.VirtualRuntimes(), virtual) {
+		t.Fatalf("runtimes = %+v", fc.Cluster.Runtimes)
+	}
 }

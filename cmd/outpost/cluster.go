@@ -198,7 +198,7 @@ func clusterBuildRuntimeCmd() *cobra.Command {
 		Short: "Build the outpost-runtime container image from embedded sources",
 		Long: `Materialize the embedded Dockerfile + entrypoint + outpost-cni
 source to a tempdir and drive ` + "`podman build`" + ` to produce the
-local outpost-runtime image the cluster-mode supervisor expects.
+local outpost-runtime image the DKS agent supervisor expects.
 
 Caching: base images (` + "`golang:1.25-alpine`, `debian:trixie-slim`" + `)
 are cached in podman's local image store — important because Docker

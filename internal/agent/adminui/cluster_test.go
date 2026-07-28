@@ -60,7 +60,7 @@ func TestCluster_ToggleViaBuiltins(t *testing.T) {
 	s, cookie := loginAsCurrentUser(t, configPath, seed)
 
 	w := doJSON(s, http.MethodPost, "/api/config/builtins",
-		map[string]any{"cluster": true}, cookie)
+		map[string]any{"cluster": true, "cluster_agent": true}, cookie)
 	if w.Code != http.StatusOK {
 		t.Fatalf("toggle on: %d %s", w.Code, w.Body.String())
 	}
@@ -137,6 +137,10 @@ func TestCluster_ClearKubeconfig(t *testing.T) {
 			Enabled: ptrTrue(),
 			APIURL:  "https://k",
 			Token:   "t",
+			Runtimes: conf.ClusterRuntimes{
+				Agent:   true,
+				Virtual: []string{conf.ClusterRuntimeVKNative},
+			},
 		},
 	}
 	s, cookie := loginAsCurrentUser(t, configPath, seed)
@@ -146,8 +150,13 @@ func TestCluster_ClearKubeconfig(t *testing.T) {
 		t.Fatalf("clear: %d %s", w.Code, w.Body.String())
 	}
 	fc, _ := conf.LoadFile(configPath)
-	if fc.Cluster != nil {
-		t.Errorf("Cluster not cleared: %+v", fc.Cluster)
+	if fc.Cluster == nil || fc.ClusterOn() || !fc.Cluster.Runtimes.Agent ||
+		len(fc.Cluster.Runtimes.Virtual) != 1 ||
+		fc.Cluster.Runtimes.Virtual[0] != conf.ClusterRuntimeVKNative {
+		t.Errorf("runtime selection was not preserved: %+v", fc.Cluster)
+	}
+	if fc.Cluster.APIURL != "" || fc.Cluster.Token != "" {
+		t.Errorf("credentials not cleared: %+v", fc.Cluster)
 	}
 }
 

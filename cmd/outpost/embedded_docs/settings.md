@@ -474,16 +474,17 @@ for agent calls).
 | Field | File key | CLI | UI | MCP |
 |---|---|---|---|---|
 | Joined | `cluster.enabled` | `builtins set --cluster` / `cluster clear` | Inbound > Cluster | `outpost_set_builtins` / `outpost_clear_kubeconfig` |
+| Real agent node | `cluster.runtimes.agent` | `builtins set --cluster-agent on|off` | Inbound > Cluster | `cluster_agent` |
+| Virtual nodes | `cluster.runtimes.virtual` | `builtins set --cluster-virtual vk-native,vk-podman` | Inbound > Cluster | `cluster_virtual` |
 | Apiserver URL | `cluster.api_url` | (fetched from cloudbox at boot) | display | (auto-fetched) |
 | Bearer token | `cluster.token` | (fetched from cloudbox at boot) | `has_token` flag only | (auto-fetched; never read back) |
 | CA bundle | `cluster.ca` | (fetched from cloudbox at boot) | `has_ca` flag only | (auto-fetched; never read back) |
 | Node name override | `cluster.node_name` | (set in cloudbox's host record) | display | (managed in cloudbox) |
 
-Save = restart (the cluster runtime is built once at boot). Default
-cluster mode is `agent` (real k3s-agent in a podman-supervised
-container); `vk-native` runs scheduled pods as host processes, and
-`vkpodman` is the legacy container-backed alternative opt-in via the
-`--cluster-mode=vkpodman` flag on `start`.
+Save = restart (the cluster runtimes are built once at boot). A host may
+run one real k3s-agent Node and one Node for each selected virtual-kubelet
+backend concurrently. Virtual node names are `<node>-vk-native`,
+`<node>-vk-podman`, and `<node>-vk-ollama`.
 
 Platform support per mode:
 

@@ -42,15 +42,16 @@ func toBuiltinView(enabled bool, bt agent.BuiltinTarget) BuiltinView {
 // Token + CA bytes never leave the agent; presence is reported via
 // has_token / has_ca.
 type ClusterView struct {
-	Enabled       bool   `json:"enabled"`
-	Mode          string `json:"mode,omitempty"`
-	APIURL        string `json:"api_url,omitempty"`
-	NodeName      string `json:"node_name,omitempty"`
-	HasToken      bool   `json:"has_token"`
-	HasCA         bool   `json:"has_ca"`
-	HasNodeToken  bool   `json:"has_node_token,omitempty"`
-	HasSTCPSecret bool   `json:"has_stcp_secret,omitempty"`
-	K8sAPIPort    int    `json:"k8s_api_port,omitempty"`
+	Enabled       bool     `json:"enabled"`
+	Agent         bool     `json:"agent"`
+	Virtual       []string `json:"virtual,omitempty"`
+	APIURL        string   `json:"api_url,omitempty"`
+	NodeName      string   `json:"node_name,omitempty"`
+	HasToken      bool     `json:"has_token"`
+	HasCA         bool     `json:"has_ca"`
+	HasNodeToken  bool     `json:"has_node_token,omitempty"`
+	HasSTCPSecret bool     `json:"has_stcp_secret,omitempty"`
+	K8sAPIPort    int      `json:"k8s_api_port,omitempty"`
 	// PodNetworkMode is "overlay" (cloudbox allocated a per-node pod
 	// CIDR — the only multi-node-correct mode) or "single-node-fallback"
 	// (no CIDR: a fixed range identical on every node, so pod IPs
@@ -154,7 +155,8 @@ func toClusterView(fc *conf.FileConfig) ClusterView {
 		Enabled:          fc.ClusterOn(),
 		PodNetworkMode:   string(podNet.Mode),
 		PodCIDR:          podNet.PodCIDR,
-		Mode:             fc.Cluster.Mode,
+		Agent:            fc.Cluster.Runtimes.Agent,
+		Virtual:          fc.Cluster.VirtualRuntimes(),
 		APIURL:           fc.Cluster.APIURL,
 		NodeName:         fc.ClusterNodeName(),
 		HasToken:         fc.Cluster.Token != "",

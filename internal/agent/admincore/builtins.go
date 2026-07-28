@@ -53,15 +53,8 @@ type BuiltinsParams struct {
 	YcodeShareRequireLogin *bool           `json:"ycode_share_require_login,omitempty"`
 	YcodeShareSurfaces     map[string]bool `json:"ycode_share_surfaces,omitempty"`
 	Cluster                *bool           `json:"cluster,omitempty"`
-	// ClusterMode selects which runtime joins the cluster:
-	// "" / "vkpodman" / "vk-podman" → libpod virtual-kubelet (default).
-	// "vk-native" → generic native-process virtual-kubelet backend.
-	// "vk-ollama" → legacy native-process (ollama) virtual-kubelet backend.
-	// "agent" → real `k3s agent` subprocess (Linux only). Pointer-string
-	// so nil = "leave unchanged"; non-nil with an unknown value is
-	// rejected by SetBuiltins with a 400-class APIError. The persisted
-	// value is normalized via conf.NormalizeClusterMode.
-	ClusterMode *string `json:"cluster_mode,omitempty"`
+	ClusterAgent           *bool           `json:"cluster_agent,omitempty"`
+	ClusterVirtual         []string        `json:"cluster_virtual,omitempty"`
 	// UpdateMode is one of "auto" / "manual" / "never" (see
 	// conf.UpdateMode* constants). Pointer-string so nil = "leave
 	// unchanged"; non-nil with an invalid value is rejected by
@@ -368,25 +361,38 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 		// ClusterOn wants to distinguish from the default-on nil.
 		fc.Cluster.Enabled = p.Cluster
 	}
-	if p.ClusterMode != nil {
-		// Accept the three canonical modes plus the back-compat aliases
-		// ("" / "vkpodman" → vk-podman) and persist the normalized
-		// canonical value so on-disk configs converge.
-		switch strings.ToLower(strings.TrimSpace(*p.ClusterMode)) {
-		case "", "vkpodman", "vk-podman", "agent", "vk-native", "vk-ollama":
-			if fc.Cluster == nil {
-				fc.Cluster = &conf.ClusterConfig{}
-			}
-			fc.Cluster.Mode = conf.NormalizeClusterMode(*p.ClusterMode)
-		default:
-			return BuiltinsResult{}, badRequest("cluster_mode must be one of agent / vk-podman / vk-native / vk-ollama (alias: vkpodman)")
+	if p.ClusterAgent != nil || p.ClusterVirtual != nil {
+		if fc.Cluster == nil {
+			fc.Cluster = &conf.ClusterConfig{}
 		}
+		if p.ClusterAgent != nil {
+			fc.Cluster.Runtimes.Agent = *p.ClusterAgent
+		}
+		if p.ClusterVirtual != nil {
+			seen := make(map[string]struct{}, len(p.ClusterVirtual))
+			virtual := make([]string, 0, len(p.ClusterVirtual))
+			for _, raw := range p.ClusterVirtual {
+				mode := strings.ToLower(strings.TrimSpace(raw))
+				if !conf.ValidVirtualRuntime(mode) {
+					return BuiltinsResult{}, badRequest("cluster_virtual entries must be vk-podman, vk-native, or vk-ollama")
+				}
+				if _, duplicate := seen[mode]; duplicate {
+					return BuiltinsResult{}, badRequest("cluster_virtual contains duplicate runtime %q", mode)
+				}
+				seen[mode] = struct{}{}
+				virtual = append(virtual, mode)
+			}
+			fc.Cluster.Runtimes.Virtual = virtual
+		}
+	}
+	if fc.ClusterOn() && !fc.Cluster.HasAgentRuntime() && len(fc.Cluster.VirtualRuntimes()) == 0 {
+		return BuiltinsResult{}, badRequest("an enabled cluster requires cluster_agent or at least one cluster_virtual runtime")
 	}
 	// UpdateMode is live-read by the upgrade worker on each
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterMode == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.Loom == nil && p.LoomPort == nil && p.Meet == nil && p.MeetPort == nil && p.BashyServices == nil && p.BashyVersion == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil && p.ActrunnerSandbox == nil && p.ActrunnerSandboxImage == nil && p.ActrunnerDockerHost == nil && p.CloudDOEnabled == nil && p.CloudDOToken == nil
+	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterAgent == nil && p.ClusterVirtual == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.Loom == nil && p.LoomPort == nil && p.Meet == nil && p.MeetPort == nil && p.BashyServices == nil && p.BashyVersion == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil && p.ActrunnerSandbox == nil && p.ActrunnerSandboxImage == nil && p.ActrunnerDockerHost == nil && p.CloudDOEnabled == nil && p.CloudDOToken == nil
 	if p.UpdateMode != nil {
 		if !conf.ValidUpdateMode(*p.UpdateMode) {
 			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")

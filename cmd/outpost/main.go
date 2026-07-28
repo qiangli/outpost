@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -1502,7 +1503,7 @@ func startCmd() *cobra.Command {
 			// each recipe natively with `bashy podman`, loading it into this
 			// node's k3s containerd — "recipes, not blobs". Cluster-agent only
 			// (needs the <name>-runtime container's containerd) + paired.
-			if fc.ClusterOn() && fc.Cluster.ClusterModeAgent() && fc.AccessToken != "" && fc.AgentName != "" {
+			if fc.ClusterOn() && fc.Cluster.HasAgentRuntime() && fc.AccessToken != "" && fc.AgentName != "" {
 				g.Go(func() error {
 					bashyBin, berr := bashyResolver.Path(gctx)
 					if berr != nil {
@@ -1513,7 +1514,7 @@ func startCmd() *cobra.Command {
 					return recipebuilder.New(recipebuilder.Config{
 						CloudboxBase:     cloudboxHTTPBase(fc),
 						AccessToken:      fc.AccessToken,
-						RuntimeContainer: fc.AgentName + "-runtime",
+						RuntimeContainer: fc.ClusterNodeName() + "-runtime",
 						BashyBin:         bashyBin,
 					}).Run(gctx)
 				})
@@ -1662,7 +1663,8 @@ func startCmd() *cobra.Command {
 						return map[string]any{}
 					}
 					return map[string]any{
-						"mode":               cur.Cluster.Mode,
+						"agent":              cur.Cluster.Runtimes.Agent,
+						"virtual":            cur.Cluster.Runtimes.Virtual,
 						"kubelet_proxy_port": cur.Cluster.KubeletProxyPort,
 						"k8s_api_port":       cur.Cluster.K8sAPIPort,
 					}
@@ -1691,13 +1693,13 @@ func startCmd() *cobra.Command {
 			// here MUST match the publisher's User + ProxyName ("cloudbox"
 			// / "k3s-apiserver" — fixed by cloudbox-side constants).
 			var visitors []agent.STCPVisitor
-			if fc.ClusterOn() && fc.Cluster.ClusterModeAgent() {
+			if fc.ClusterOn() && fc.Cluster.HasAgentRuntime() {
 				apiPort := fc.Cluster.K8sAPIPort
 				if apiPort == 0 {
 					apiPort = 6443
 				}
 				if fc.Cluster.STCPSecret == "" {
-					slog.Warn("cluster mode=agent: STCPSecret empty; visitor disabled (re-pair to fetch from cloudbox)")
+					slog.Warn("cluster agent runtime: STCPSecret empty; visitor disabled (re-pair to fetch from cloudbox)")
 				} else {
 					visitors = append(visitors, agent.STCPVisitor{
 						Name:       "k3s-apiserver-visitor",
@@ -1986,17 +1988,17 @@ func startCmd() *cobra.Command {
 			// be mounted. Boot errors are logged but never fatal: a
 			// half-configured cluster section shouldn't prevent the rest
 			// of outpost from running.
-			if fc.ClusterOn() {
-				// Mode=agent: launch the real `k3s agent` subprocess
-				// against the loopback STCP visitor wired into the
-				// matrix tunnel above. vkpodman stays disabled in this
-				// mode — outposts can't run both the v1 virtual-kubelet
-				// AND a real kubelet on the same Node identity.
-				if fc.Cluster.ClusterModeAgent() {
+			if runtimeErr := fc.Cluster.ValidateRuntimes(); fc.ClusterOn() && runtimeErr != nil {
+				slog.Warn("cluster: disabled by invalid runtime configuration", "err", runtimeErr)
+			} else if fc.ClusterOn() {
+				// The real agent and all selected virtual backends are
+				// independent nodes owned by this registered host.
+				if fc.Cluster.HasAgentRuntime() {
 					if err := startK3sAgentRunner(gctx, g, fc); err != nil {
-						slog.Warn("cluster mode=agent: disabled", "err", err)
+						slog.Warn("cluster agent runtime: disabled", "err", err)
 					}
-				} else {
+				}
+				if len(fc.Cluster.VirtualRuntimes()) > 0 {
 					// Retried rather than one-shot: at boot the OS service
 					// starts outpost before any login-time container runtime,
 					// so the first attempt routinely finds no podman. A single
@@ -2117,22 +2119,21 @@ func notifyDeparting(ctx context.Context, cloudboxBase, accessToken, agentName s
 // startK3sAgentRunner launches the real `k3s agent` subprocess
 // (k3sagent.Run) that joins the cloudbox-embedded apiserver via the
 // STCP visitor wired into the matrix tunnel. Phase 1 of the
-// "real shared k8s" plan — replaces the v1 vkpodman virtual-kubelet
-// path when fc.Cluster.Mode == "agent".
+// "real shared k8s" agent runtime.
 //
 // Setup errors return; the long-running loop's errors flow through the
 // errgroup the same way the tunnel's do. Like startClusterRunner, we
-// never make a cluster-mode boot failure fatal to the outpost.
+// never make an agent-runtime boot failure fatal to the outpost.
 func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig) error {
 	cc := fc.Cluster
 	if cc == nil {
-		return errors.New("cluster mode=agent: no Cluster config")
+		return errors.New("cluster agent runtime: no Cluster config")
 	}
 	if cc.NodeToken == "" {
-		return errors.New("cluster mode=agent: NodeToken empty (re-pair to refresh)")
+		return errors.New("cluster agent runtime: NodeToken empty (re-pair to refresh)")
 	}
 	if cc.STCPSecret == "" {
-		return errors.New("cluster mode=agent: STCPSecret empty (re-pair to refresh)")
+		return errors.New("cluster agent runtime: STCPSecret empty (re-pair to refresh)")
 	}
 	apiPort := cc.K8sAPIPort
 	if apiPort == 0 {
@@ -2140,7 +2141,7 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 	}
 	nodeName := fc.ClusterNodeName()
 	if nodeName == "" {
-		return errors.New("cluster mode=agent: NodeName empty (agent_name unset?)")
+		return errors.New("cluster agent runtime: NodeName empty (agent_name unset?)")
 	}
 
 	// Refactor (post-Phase 3): the kubelet runtime moved into a
@@ -2151,6 +2152,7 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 	// outpost = one identity = one Node (named after the outpost).
 	rtOpts := runtime.Options{
 		AgentName:          nodeName,
+		HostName:           fc.AgentName,
 		NodeToken:          cc.NodeToken,
 		APIServer:          fmt.Sprintf("https://127.0.0.1:%d", apiPort),
 		APIPort:            apiPort,
@@ -2180,25 +2182,25 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 		stateDir := filepath.Join(cacheDir, "outpost")
 		if rebuilt, eerr := runtime.EnsureImage(ctx, runtime.BuildOptions{},
 			agent.ReadBuildInfo().ShortCommit(), stateDir); eerr != nil {
-			slog.Warn("cluster mode=agent: runtime image ensure failed; using existing image if present", "err", eerr)
+			slog.Warn("cluster agent runtime: image ensure failed; using existing image if present", "err", eerr)
 		} else if rebuilt {
-			slog.Info("cluster mode=agent: runtime image rebuilt to match this outpost version")
+			slog.Info("cluster agent runtime: image rebuilt to match this outpost version")
 		}
 	}
 
 	if err := runtime.Up(ctx, rtOpts); err != nil {
 		if errors.Is(err, runtime.ErrPodmanNotFound) {
-			slog.Warn("cluster mode=agent: " + err.Error())
+			slog.Warn("cluster agent runtime: " + err.Error())
 			return nil
 		}
-		slog.Warn("cluster mode=agent: runtime start failed", "err", err)
+		slog.Warn("cluster agent runtime: start failed", "err", err)
 		return nil
 	}
 	g.Go(func() error {
 		// Tail the container's logs into outpost's slog stream.
 		// runtime.TailLogs returns when the container exits OR ctx
 		// fires; either way the supervisor loop on the next
-		// cluster-mode toggle restarts via Up().
+		// Runtime selection changes restart via Up().
 		_ = runtime.TailLogs(ctx, rtOpts)
 		return nil
 	})
@@ -2265,7 +2267,7 @@ func sandboxPrewarmImages(fc *conf.FileConfig) []string {
 // long-running loop's errors flow through the errgroup the same way
 // the tunnel's do.
 //
-// We never make a cluster-mode boot failure fatal to the agent: a
+// We never make a virtual-runtime boot failure fatal to the agent: a
 // half-configured Cluster section shouldn't stop the matrix tunnel or
 // admin UI from coming up. The caller logs the returned error and
 // moves on.
@@ -2294,7 +2296,7 @@ func joinClusterWithRetry(ctx context.Context, g *errgroup.Group, fc *conf.FileC
 		if ctx.Err() != nil {
 			return
 		}
-		slog.Warn("cluster mode: not ready, will retry",
+		slog.Warn("cluster virtual runtimes: not ready, will retry",
 			"err", err, "attempt", attempt, "retry_in", delay)
 		select {
 		case <-ctx.Done():
@@ -2308,55 +2310,29 @@ func joinClusterWithRetry(ctx context.Context, g *errgroup.Group, fc *conf.FileC
 }
 
 func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service) error {
-	nodeName := fc.ClusterNodeName()
-	if nodeName == "" {
+	nodeBase := fc.ClusterNodeName()
+	if nodeBase == "" {
 		return errors.New("ClusterNodeName empty (agent_name unset?)")
 	}
+	hostName := strings.TrimSpace(fc.AgentName)
+	if hostName == "" {
+		return errors.New("AgentName empty")
+	}
+	modes := fc.Cluster.VirtualRuntimes()
+	if len(modes) == 0 {
+		return errors.New("cluster: no virtual runtimes configured")
+	}
 
-	// Native-process modes realize Pods as host processes, so they do
-	// NOT need a local podman socket. The libpod vk-podman path still
-	// requires podman. Build the backend up front; an empty backend
-	// means the runner falls back to the podman substrate keyed off
-	// bt.Socket.
-	var (
-		backend    vknode.Backend
-		podmanSock string
-	)
-	switch {
-	case fc.Cluster.ClusterModeVKNative():
-		base, err := conf.DefaultCacheDir()
-		if err != nil {
-			return fmt.Errorf("cluster mode=vk-native: data dir: %w", err)
+	var podmanSock string
+	for _, mode := range modes {
+		if mode == conf.ClusterRuntimeVKPodman {
+			sock, err := ensurePodmanRuntime(ctx)
+			if err != nil {
+				return err
+			}
+			podmanSock = sock
+			break
 		}
-		be, err := vknode.NewNativeProcessBackend(vknode.NativeProcessConfig{
-			DataDir: filepath.Join(base, "vk-native"),
-		})
-		if err != nil {
-			return fmt.Errorf("cluster mode=vk-native: backend: %w", err)
-		}
-		backend = be
-	case fc.Cluster.ClusterModeVKOllama():
-		base, err := conf.DefaultCacheDir()
-		if err != nil {
-			return fmt.Errorf("cluster mode=vk-ollama: data dir: %w", err)
-		}
-		be, err := vknode.NewOllamaBackend(vknode.OllamaConfig{
-			DataDir: filepath.Join(base, "vk-ollama"),
-		})
-		if err != nil {
-			return fmt.Errorf("cluster mode=vk-ollama: backend: %w", err)
-		}
-		backend = be
-	default:
-		// Brings the podman machine up when it isn't running yet, rather
-		// than treating "not up" as a permanent failure — see
-		// ensurePodmanRuntime. Callers retry, so a runtime that appears
-		// later is picked up without restarting outpost.
-		sock, err := ensurePodmanRuntime(ctx)
-		if err != nil {
-			return err
-		}
-		podmanSock = sock
 	}
 
 	// Bootstrap: if we have an outpost access_token and either no
@@ -2370,14 +2346,14 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 	// apiserver with).
 	cloudboxBase := cloudboxHTTPBase(fc)
 	if shouldFetchKubeconfig(fc) && fc.AccessToken != "" && cloudboxBase != "" {
-		slog.Info("cluster mode: fetching kubeconfig from cloudbox", "node", nodeName, "cloudbox", cloudboxBase)
-		fetched, err := vknode.FetchKubeconfig(ctx, cloudboxBase, fc.AccessToken, nodeName)
+		slog.Info("cluster: fetching shared virtual-node kubeconfig", "host", hostName, "cloudbox", cloudboxBase)
+		fetched, err := vknode.FetchKubeconfig(ctx, cloudboxBase, fc.AccessToken, hostName)
 		if err != nil {
 			if fc.Cluster == nil || fc.Cluster.Token == "" {
-				return fmt.Errorf("cluster mode: fetch kubeconfig: %w", err)
+				return fmt.Errorf("cluster virtual runtimes: fetch kubeconfig: %w", err)
 			}
-			slog.Warn("cluster mode: fetch failed; falling back to cached credentials",
-				"err", err, "node", nodeName)
+			slog.Warn("cluster virtual runtimes: fetch failed; falling back to cached credentials",
+				"err", err, "host", hostName)
 		} else {
 			persistClusterCredential(fc, cfgPath, fetched)
 		}
@@ -2385,7 +2361,7 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 
 	cc := fc.Cluster
 	if cc == nil || cc.APIURL == "" || cc.Token == "" {
-		return errors.New("cluster mode: no usable credentials (no access_token to fetch with, and no pasted kubeconfig either)")
+		return errors.New("cluster virtual runtimes: no usable credentials")
 	}
 
 	// Write the live bearer token to a file so client-go's transport
@@ -2409,17 +2385,16 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 	// time), compute the owner's per-user namespace via the same
 	// formula cloudbox uses, and pass it to the Provider. nil
 	// Access = no check; we'd hit that only if access_token isn't a
-	// JWT (e.g. very old paired outposts, before the JWT format) —
-	// log loudly and let the runner proceed in permissive mode so
-	// the cluster path still works for legacy installs.
+	// JWT. A malformed token is a configuration error: virtual nodes must not
+	// start without the owner namespace gate.
 	var access *vknode.Access
 	if fc.AccessToken != "" {
 		if owner, err := vknode.OwnerEmailFromAccessToken(fc.AccessToken); err == nil {
 			ns := vknode.NamespaceForEmail(owner)
 			access = vknode.NewAccess(ns)
-			slog.Info("cluster mode: namespace access gate", "owner", owner, "namespace", ns)
+			slog.Info("cluster virtual runtimes: namespace access gate", "owner", owner, "namespace", ns)
 		} else {
-			slog.Warn("cluster mode: could not derive owner from access_token; namespace check disabled (legacy token?)", "err", err)
+			return fmt.Errorf("cluster virtual runtimes: derive owner from access_token: %w", err)
 		}
 	}
 
@@ -2429,31 +2404,81 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 	// Only set the label when a probe cycle has actually recorded a peer
 	// — an empty snapshot (single machine, or peerplane off) leaves the
 	// tier label off entirely, same as before this wiring.
-	var extraNodeLabels map[string]string
+	extraNodeLabels := map[string]string{
+		vknode.NodeHostLabel:      hostName,
+		"outpost.dhnt.io/runtime": "virtual",
+	}
 	if peerSvc != nil {
 		if snap := peerSvc.Snapshot(); len(snap) > 0 {
 			tier := vknode.LocalityTierForMeasured(string(peerplane.BestTier(snap)))
-			extraNodeLabels = vknode.NodeLocalityLabels("", tier)
-			slog.Info("cluster mode: measured locality tier", "node", nodeName, "tier", tier, "peers", len(snap))
+			for key, value := range vknode.NodeLocalityLabels("", tier) {
+				extraNodeLabels[key] = value
+			}
+			slog.Info("cluster: measured locality tier", "host", hostName, "tier", tier, "peers", len(snap))
 		}
 	}
 
-	g.Go(func() error {
-		slog.Info("cluster mode: joining", "node", nodeName, "apiserver", cc.APIURL,
-			"mode", fc.Cluster.ClusterMode(), "podman_socket", podmanSock)
-		if err := vknode.Run(ctx, vknode.RunOptions{
-			NodeName:        nodeName,
-			PodmanSocket:    podmanSock,
-			Backend:         backend,
-			Kube:            kubeCfg,
-			Access:          access,
-			TransientApps:   appsAsTransient{apps},
-			ExtraNodeLabels: extraNodeLabels,
-		}); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Warn("cluster mode: runner exited", "err", err)
+	cacheBase, err := conf.DefaultCacheDir()
+	if err != nil {
+		return fmt.Errorf("cluster: virtual runtime data dir: %w", err)
+	}
+	type virtualRuntimeSpec struct {
+		mode    string
+		node    string
+		backend vknode.Backend
+		labels  map[string]string
+	}
+	specs := make([]virtualRuntimeSpec, 0, len(modes))
+	for _, mode := range modes {
+		var backend vknode.Backend
+		switch mode {
+		case conf.ClusterRuntimeVKPodman:
+		case conf.ClusterRuntimeVKNative:
+			backend, err = vknode.NewNativeProcessBackend(vknode.NativeProcessConfig{
+				DataDir: filepath.Join(cacheBase, mode),
+			})
+		case conf.ClusterRuntimeVKOllama:
+			backend, err = vknode.NewOllamaBackend(vknode.OllamaConfig{
+				DataDir: filepath.Join(cacheBase, mode),
+			})
+		default:
+			err = fmt.Errorf("unsupported virtual runtime %q", mode)
 		}
-		return nil
-	})
+		if err != nil {
+			return fmt.Errorf("cluster runtime %s: backend: %w", mode, err)
+		}
+		labels := maps.Clone(extraNodeLabels)
+		labels["outpost.dhnt.io/backend"] = mode
+		specs = append(specs, virtualRuntimeSpec{
+			mode:    mode,
+			node:    nodeBase + "-" + mode,
+			backend: backend,
+			labels:  labels,
+		})
+	}
+
+	// Start only after every backend has initialized successfully. This keeps a
+	// retry from launching a second copy of an earlier runtime when a later
+	// backend fails construction.
+	for _, spec := range specs {
+		spec := spec
+		g.Go(func() error {
+			slog.Info("cluster: virtual node joining", "node", spec.node, "host", hostName,
+				"backend", spec.mode, "apiserver", cc.APIURL, "podman_socket", podmanSock)
+			if err := vknode.Run(ctx, vknode.RunOptions{
+				NodeName:        spec.node,
+				PodmanSocket:    podmanSock,
+				Backend:         spec.backend,
+				Kube:            kubeCfg,
+				Access:          access,
+				TransientApps:   appsAsTransient{apps},
+				ExtraNodeLabels: spec.labels,
+			}); err != nil && !errors.Is(err, context.Canceled) {
+				slog.Warn("cluster: virtual runner exited", "node", spec.node, "backend", spec.mode, "err", err)
+			}
+			return nil
+		})
+	}
 
 	// Token rotation. Only spin the refresher when we have a working
 	// fetch path (access_token + cloudbox URL); when the operator
@@ -2463,7 +2488,7 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 		refresher := vknode.NewRefresher(vknode.RefreshDeps{
 			CloudboxBase:  cloudboxBase,
 			AccessToken:   fc.AccessToken,
-			NodeName:      nodeName,
+			NodeName:      hostName,
 			TokenFilePath: tokenFile,
 			OnRotation: func(p *vknode.ParsedKubeconfig) {
 				persistClusterCredential(fc, cfgPath, p)
@@ -2482,18 +2507,18 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 	// up: the owner-only set stays in place until the next successful
 	// fetch (see access_refresh.go for the backoff policy).
 	if access != nil && fc.AccessToken != "" && cloudboxBase != "" {
-		if resp, err := vknode.FetchAccess(ctx, cloudboxBase, fc.AccessToken, nodeName); err == nil {
+		if resp, err := vknode.FetchAccess(ctx, cloudboxBase, fc.AccessToken, hostName); err == nil {
 			access.Set(resp.AllowedNamespaces...)
-			slog.Info("cluster mode: initial access refresh",
-				"node", nodeName, "namespaces", resp.AllowedNamespaces)
+			slog.Info("cluster virtual runtimes: initial access refresh",
+				"host", hostName, "namespaces", resp.AllowedNamespaces)
 		} else {
-			slog.Warn("cluster mode: initial access fetch failed (will retry on loop)",
-				"node", nodeName, "err", err)
+			slog.Warn("cluster virtual runtimes: initial access fetch failed (will retry on loop)",
+				"host", hostName, "err", err)
 		}
 		accessRefresher := vknode.NewAccessRefresher(vknode.AccessRefreshDeps{
 			CloudboxBase: cloudboxBase,
 			AccessToken:  fc.AccessToken,
-			NodeName:     nodeName,
+			NodeName:     hostName,
 			Access:       access,
 		})
 		g.Go(func() error { return accessRefresher.Run(ctx) })
@@ -2514,9 +2539,7 @@ func shouldFetchKubeconfig(fc *conf.FileConfig) bool {
 	}
 	exp := vknode.TokenExpiry(fc.Cluster.Token)
 	if exp.IsZero() {
-		// Non-JWT token (e.g. pasted from a non-cloudbox cluster).
-		// Don't auto-fetch — that path is operator-managed.
-		return false
+		return true
 	}
 	return time.Now().After(exp)
 }
@@ -2543,7 +2566,7 @@ func persistClusterCredential(fc *conf.FileConfig, cfgPath string, p *vknode.Par
 		return
 	}
 	if err := conf.SaveFile(cfgPath, fc); err != nil {
-		slog.Warn("cluster mode: rotated credentials but file save failed",
+		slog.Warn("cluster virtual runtimes: rotated credentials but file save failed",
 			"err", err, "path", cfgPath)
 	}
 }
@@ -2698,7 +2721,7 @@ func cloudboxHTTPBase(fc *conf.FileConfig) string {
 
 // appsAsTransient bridges *agent.AppRegistry to vknode.TransientApps.
 // Each transient pod registration uses RequireLogin: false because
-// cluster-mode auth happens at cloudbox's /api/cluster/svc/* entry
+// Cluster service auth happens at cloudbox's /api/cluster/svc/* entry
 // point (TokenReview-gated), not via the per-app elevation cookie
 // the default AppRegistry.Register would require. The flag is the
 // only deviation from the default Register path; everything else
@@ -3310,7 +3333,7 @@ func mergePairing(path string, exchanged *conf.FileConfig) *conf.FileConfig {
 			prev := merged.Cluster
 			nc := *exchanged.Cluster
 			nc.Enabled = prev.Enabled
-			nc.Mode = prev.Mode
+			nc.Runtimes = prev.Runtimes
 			nc.APIURL = prev.APIURL
 			nc.Token = prev.Token
 			nc.CA = prev.CA
