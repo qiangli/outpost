@@ -247,6 +247,65 @@ func TestNativeProcessBackend_RecoversDurableExitAfterProviderLoss(t *testing.T)
 	}
 }
 
+func TestNativeProcessBackend_DetachedHelperRecordsExitWithoutProvider(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	uid := "uid-detached-helper"
+	statusPath := nativeStatusPath(dir, uid)
+	pid, err := defaultLaunch(ctx, launchSpec{
+		Path:       exe,
+		Args:       []string{"-test.run=^TestHelperProcess$"},
+		Env:        append(os.Environ(), "GO_WANT_HELPER_PROCESS=1", "HELPER_MODE=fail"),
+		LogPath:    filepath.Join(dir, uid+".log"),
+		StatusPath: statusPath,
+		// Deliberately no OnExit callback: this is the old provider
+		// disappearing while the detached helper owns the workload.
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := NewNativeProcessBackend(NativeProcessConfig{DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	be := raw.(*nativeProcessBackend)
+	pod, _ := makeHelperPod(t, "detached-helper", uid, "fail")
+	be.mu.Lock()
+	err = be.saveRegistry(map[string]procEntry{
+		uid: {
+			Namespace: pod.Namespace,
+			Name:      pod.Name,
+			Container: pod.Spec.Containers[0].Name,
+			Image:     pod.Spec.Containers[0].Image,
+			PID:       pid,
+			StartedAt: time.Now(),
+		},
+	})
+	be.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(5*time.Second, func() bool {
+		_, statErr := os.Stat(statusPath)
+		return statErr == nil && !be.alive(pid)
+	}) {
+		t.Fatal("detached helper did not publish an exit record")
+	}
+	status, err := be.Status(ctx, pod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status == nil || status.Phase != corev1.PodFailed {
+		t.Fatalf("recovered status = %+v, want Failed", status)
+	}
+	assertTerminatedExitCode(t, status, 42)
+}
+
 // makeHelperPod builds a Pod whose container execs this test binary back
 // into TestHelperProcess in the given mode. For "serve" it declares a
 // containerPort, allocates a hostPort the same way the Provider would,
