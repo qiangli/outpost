@@ -1,7 +1,9 @@
 package vknode
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"net"
@@ -315,5 +317,43 @@ func TestIsNotFound_IsConflict(t *testing.T) {
 	}
 	if !IsConflict(&APIError{Status: 409}) {
 		t.Error("409 should be Conflict")
+	}
+}
+
+func TestDemuxContainerLogs(t *testing.T) {
+	var framed bytes.Buffer
+	writeContainerLogFrame(t, &framed, 1, "stdout line\n")
+	writeContainerLogFrame(t, &framed, 2, "stderr line\n")
+	logs := demuxContainerLogs(io.NopCloser(bytes.NewReader(framed.Bytes())))
+	got, err := io.ReadAll(logs)
+	if err != nil {
+		t.Fatalf("read demultiplexed logs: %v", err)
+	}
+	if want := "stdout line\nstderr line\n"; string(got) != want {
+		t.Fatalf("demultiplexed logs = %q, want %q", got, want)
+	}
+}
+
+func TestDemuxContainerLogsPreservesPlainText(t *testing.T) {
+	const want = "Results: 1 passed, 0 failed, 0 skipped, 0 timed out\n"
+	logs := demuxContainerLogs(io.NopCloser(strings.NewReader(want)))
+	got, err := io.ReadAll(logs)
+	if err != nil {
+		t.Fatalf("read plain logs: %v", err)
+	}
+	if string(got) != want {
+		t.Fatalf("plain logs = %q, want %q", got, want)
+	}
+}
+
+func writeContainerLogFrame(t *testing.T, dst io.Writer, stream byte, payload string) {
+	t.Helper()
+	header := [8]byte{stream}
+	binary.BigEndian.PutUint32(header[4:], uint32(len(payload)))
+	if _, err := dst.Write(header[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(dst, payload); err != nil {
+		t.Fatal(err)
 	}
 }

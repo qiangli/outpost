@@ -1,7 +1,9 @@
 package vknode
 
 import (
+	"bufio"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -260,7 +262,61 @@ func (c *Client) ContainerLogs(ctx context.Context, id string) (io.ReadCloser, e
 		defer resp.Body.Close()
 		return nil, statusErr("container logs", resp)
 	}
-	return resp.Body, nil
+	return demuxContainerLogs(resp.Body), nil
+}
+
+// libpod returns non-TTY logs using Docker's raw-stream framing: an 8-byte
+// header (stream, three zero bytes, big-endian payload length) before every
+// stdout/stderr chunk. Passing those bytes through Pod status corrupts the
+// line-oriented DKS result channel. Some libpod-compatible test doubles return
+// plain text, so detect framing from the first header and preserve plain input.
+func demuxContainerLogs(body io.ReadCloser) io.ReadCloser {
+	br := bufio.NewReader(body)
+	header, err := br.Peek(8)
+	if err != nil || !isContainerLogHeader(header) {
+		return &readerCloser{Reader: br, Closer: body}
+	}
+	return &containerLogDemuxer{reader: br, closer: body}
+}
+
+type readerCloser struct {
+	io.Reader
+	io.Closer
+}
+
+type containerLogDemuxer struct {
+	reader    *bufio.Reader
+	closer    io.Closer
+	remaining uint32
+}
+
+func (r *containerLogDemuxer) Read(dst []byte) (int, error) {
+	for r.remaining == 0 {
+		var header [8]byte
+		if _, err := io.ReadFull(r.reader, header[:]); err != nil {
+			return 0, err
+		}
+		if !isContainerLogHeader(header[:]) {
+			return 0, fmt.Errorf("vknode: malformed libpod log frame")
+		}
+		r.remaining = binary.BigEndian.Uint32(header[4:])
+	}
+	if uint32(len(dst)) > r.remaining {
+		dst = dst[:r.remaining]
+	}
+	n, err := r.reader.Read(dst)
+	r.remaining -= uint32(n)
+	return n, err
+}
+
+func (r *containerLogDemuxer) Close() error {
+	return r.closer.Close()
+}
+
+func isContainerLogHeader(header []byte) bool {
+	return len(header) == 8 &&
+		(header[0] == 1 || header[0] == 2) &&
+		header[1] == 0 && header[2] == 0 && header[3] == 0
 }
 
 // ListContainers issues GET /libpod/containers/json. When all is true,
