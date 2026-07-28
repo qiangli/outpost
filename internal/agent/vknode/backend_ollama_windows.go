@@ -25,19 +25,21 @@ const stillActive = 259
 // ctx is intentionally not tied to the process lifetime: the workload
 // must outlive the Ensure call that launched it.
 func defaultLaunch(_ context.Context, spec launchSpec) (int, error) {
-	cmd := exec.Command(spec.Path, spec.Args...)
-	cmd.Env = spec.Env
-	cmd.Dir = spec.Dir
-	if spec.LogPath != "" {
-		if f, err := os.OpenFile(spec.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
-			cmd.Stdout = f
-			cmd.Stderr = f
-			defer f.Close()
-		}
-	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP}
-	if err := cmd.Start(); err != nil {
+	helper, descriptor, err := prepareNativeHelper(spec)
+	if err != nil {
 		return 0, err
+	}
+	cmd := exec.Command(helper, nativeExecHelperArg, descriptor)
+	cmd.Env = spec.Env
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS | windows.CREATE_BREAKAWAY_FROM_JOB}
+	if err := cmd.Start(); err != nil {
+		cmd = exec.Command(helper, nativeExecHelperArg, descriptor)
+		cmd.Env = spec.Env
+		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS}
+		if retryErr := cmd.Start(); retryErr != nil {
+			_ = os.Remove(descriptor)
+			return 0, retryErr
+		}
 	}
 	pid := cmd.Process.Pid
 	go func() {

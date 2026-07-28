@@ -144,12 +144,13 @@ type procPort struct {
 
 // launchSpec is the OS-agnostic description handed to the launch hook.
 type launchSpec struct {
-	Path    string   // resolved absolute binary path
-	Args    []string // args after argv[0]
-	Env     []string // full environment ("K=V" entries)
-	Dir     string   // working directory ("" = inherit)
-	LogPath string   // file to redirect stdout+stderr into
-	OnExit  func(pid int, exitCode int32, finishedAt time.Time)
+	Path       string   // resolved absolute binary path
+	Args       []string // args after argv[0]
+	Env        []string // full environment ("K=V" entries)
+	Dir        string   // working directory ("" = inherit)
+	LogPath    string   // file to redirect stdout+stderr into
+	StatusPath string   // durable exit record written by the detached helper
+	OnExit     func(pid int, exitCode int32, finishedAt time.Time)
 }
 
 // Ensure starts (or adopts) the native process backing pod. Idempotent
@@ -204,6 +205,8 @@ func (b *nativeProcessBackend) Ensure(ctx context.Context, pod *corev1.Pod) erro
 		return fmt.Errorf("vknode: resolve binary %q for pod %s: %w",
 			argv[0], podKey(pod.Namespace, pod.Name), err)
 	}
+	_ = os.Remove(nativeStatusPath(b.dataDir, uid))
+	_ = os.Remove(nativeStatusPath(b.dataDir, uid) + ".launch")
 
 	image := c.Image
 	if image == "" {
@@ -223,11 +226,12 @@ func (b *nativeProcessBackend) Ensure(ctx context.Context, pod *corev1.Pod) erro
 	}
 
 	spec := launchSpec{
-		Path:    bin,
-		Args:    argv[1:],
-		Env:     mergeEnv(os.Environ(), c.Env),
-		Dir:     c.WorkingDir,
-		LogPath: filepath.Join(b.dataDir, uid+".log"),
+		Path:       bin,
+		Args:       argv[1:],
+		Env:        mergeEnv(os.Environ(), c.Env),
+		Dir:        c.WorkingDir,
+		LogPath:    filepath.Join(b.dataDir, uid+".log"),
+		StatusPath: nativeStatusPath(b.dataDir, uid),
 		OnExit: func(pid int, exitCode int32, finishedAt time.Time) {
 			b.recordExit(uid, pid, exitCode, finishedAt)
 		},
@@ -283,6 +287,8 @@ func (b *nativeProcessBackend) Delete(ctx context.Context, pod *corev1.Pod) erro
 		return fmt.Errorf("vknode: persist registry after delete of pod %s: %w",
 			podKey(pod.Namespace, pod.Name), err)
 	}
+	_ = os.Remove(nativeStatusPath(b.dataDir, uid))
+	_ = os.Remove(nativeStatusPath(b.dataDir, uid) + ".launch")
 	slog.Info("vknode: deleted process",
 		"pod", podKey(pod.Namespace, pod.Name), "pid", e.PID)
 	return nil
@@ -319,6 +325,13 @@ func (b *nativeProcessBackend) Status(ctx context.Context, pod *corev1.Pod) (*co
 		return b.terminatedStatus(string(pod.UID), cname, e), nil
 	}
 	if !b.alive(e.PID) {
+		recovered, recoverErr := b.recoverExit(string(pod.UID), e)
+		if recoverErr != nil {
+			return nil, recoverErr
+		}
+		if recovered.Exited {
+			return b.terminatedStatus(string(pod.UID), cname, recovered), nil
+		}
 		return nil, nil
 	}
 
@@ -337,6 +350,23 @@ func (b *nativeProcessBackend) Status(ctx context.Context, pod *corev1.Pod) (*co
 func (b *nativeProcessBackend) List(ctx context.Context) ([]*corev1.Pod, error) {
 	b.mu.Lock()
 	reg, err := b.loadRegistry()
+	if err == nil {
+		changed := false
+		for uid, e := range reg {
+			if !e.Exited && !b.alive(e.PID) {
+				if record, readErr := readNativeExitRecord(nativeStatusPath(b.dataDir, uid)); readErr == nil {
+					e.Exited = true
+					e.ExitCode = record.ExitCode
+					e.FinishedAt = record.FinishedAt
+					reg[uid] = e
+					changed = true
+				}
+			}
+		}
+		if changed {
+			err = b.saveRegistry(reg)
+		}
+	}
 	b.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -450,6 +480,21 @@ func (b *nativeProcessBackend) recordExit(uid string, pid int, exitCode int32, f
 	if err := b.saveRegistry(reg); err != nil {
 		slog.Warn("vknode: persist process exit", "uid", uid, "pid", e.PID, "exitCode", exitCode, "err", err)
 	}
+}
+
+func (b *nativeProcessBackend) recoverExit(uid string, entry procEntry) (procEntry, error) {
+	record, err := readNativeExitRecord(nativeStatusPath(b.dataDir, uid))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return entry, nil
+		}
+		return entry, fmt.Errorf("vknode: read durable process exit for %s: %w", uid, err)
+	}
+	b.recordExit(uid, entry.PID, record.ExitCode, record.FinishedAt)
+	entry.Exited = true
+	entry.ExitCode = record.ExitCode
+	entry.FinishedAt = record.FinishedAt
+	return entry, nil
 }
 
 // --- readiness ---------------------------------------------------------

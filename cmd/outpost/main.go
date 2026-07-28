@@ -76,6 +76,9 @@ import (
 const defaultPortal = "https://ai.dhnt.io"
 
 func main() {
+	if code, handled := vknode.RunNativeProcessHelper(os.Args); handled {
+		os.Exit(code)
+	}
 	// First instruction of main: record this invocation to a durable
 	// file so we have post-mortem evidence even if a sandbox/hook
 	// kills us before any normal logging fires. See trace.go.

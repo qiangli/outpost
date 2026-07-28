@@ -39,6 +39,9 @@ import (
 )
 
 func main() {
+	if code, handled := vknode.RunNativeProcessHelper(os.Args); handled {
+		os.Exit(code)
+	}
 	var (
 		kubeconfig  string
 		nodeName    string

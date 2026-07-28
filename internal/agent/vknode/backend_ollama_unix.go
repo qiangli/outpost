@@ -22,20 +22,15 @@ import (
 // ctx is intentionally not tied to the process lifetime: the workload
 // must outlive the Ensure call that launched it.
 func defaultLaunch(_ context.Context, spec launchSpec) (int, error) {
-	cmd := exec.Command(spec.Path, spec.Args...)
-	cmd.Env = spec.Env
-	cmd.Dir = spec.Dir
-	if spec.LogPath != "" {
-		if f, err := os.OpenFile(spec.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
-			cmd.Stdout = f
-			cmd.Stderr = f
-			// The child dups these fds at fork; close our copy after
-			// Start so the file isn't held open by this process forever.
-			defer f.Close()
-		}
+	helper, descriptor, err := prepareNativeHelper(spec)
+	if err != nil {
+		return 0, err
 	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd := exec.Command(helper, nativeExecHelperArg, descriptor)
+	cmd.Env = spec.Env
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
+		_ = os.Remove(descriptor)
 		return 0, err
 	}
 	pid := cmd.Process.Pid

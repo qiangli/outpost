@@ -16,6 +16,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
+func TestMain(m *testing.M) {
+	if code, handled := RunNativeProcessHelper(os.Args); handled {
+		os.Exit(code)
+	}
+	os.Exit(m.Run())
+}
+
 // TestHelperProcess is re-exec'd by the ollama backend as the "native
 // process" under test (the classic os/exec helper-process pattern), so
 // no real ollama/llama-server binary is needed. Behavior is selected by
@@ -190,6 +197,53 @@ func TestNativeProcessBackend_TerminationLogTailRequiresOptIn(t *testing.T) {
 	status := waitForTerminalStatus(t, be, ctx, pod)
 	if got := status.ContainerStatuses[0].State.Terminated.Message; got != "" {
 		t.Fatalf("termination message = %q without opt-in, want empty", got)
+	}
+}
+
+func TestNativeProcessBackend_RecoversDurableExitAfterProviderLoss(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	raw, err := NewNativeProcessBackend(NativeProcessConfig{DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	be := raw.(*nativeProcessBackend)
+	pod, _ := makeHelperPod(t, "recovered-exit", "uid-recovered-exit", "exit")
+
+	be.mu.Lock()
+	if err := be.saveRegistry(map[string]procEntry{
+		string(pod.UID): {
+			Namespace: pod.Namespace,
+			Name:      pod.Name,
+			Container: pod.Spec.Containers[0].Name,
+			Image:     pod.Spec.Containers[0].Image,
+			PID:       99999999,
+			StartedAt: time.Now().Add(-time.Second),
+		},
+	}); err != nil {
+		be.mu.Unlock()
+		t.Fatal(err)
+	}
+	be.mu.Unlock()
+	finished := time.Now()
+	if err := writeNativeExitRecord(nativeStatusPath(dir, string(pod.UID)), nativeExitRecord{
+		ExitCode:   42,
+		FinishedAt: finished,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := be.Status(ctx, pod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status == nil || status.Phase != corev1.PodFailed {
+		t.Fatalf("recovered status = %+v, want Failed", status)
+	}
+	assertTerminatedExitCode(t, status, 42)
+	reg := readRegistryFile(t, dir)
+	if !reg[string(pod.UID)].Exited {
+		t.Fatalf("durable exit was not persisted into registry: %+v", reg)
 	}
 }
 
