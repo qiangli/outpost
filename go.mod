@@ -49,6 +49,7 @@ require (
 	github.com/JohannesKaufmann/dom v0.3.1 // indirect
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2 // indirect
 	github.com/STARRY-S/zip v0.2.3 // indirect
+	github.com/a2aproject/a2a-go/v2 v2.3.1 // indirect
 	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/asticode/go-astikit v0.59.0 // indirect
 	github.com/asticode/go-astisub v0.40.0 // indirect
@@ -63,6 +64,7 @@ require (
 	github.com/chromedp/chromedp v0.15.1 // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
+	github.com/coder/acp-go-sdk v0.13.5 // indirect
 	github.com/creack/pty/v2 v2.0.1 // indirect
 	github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
