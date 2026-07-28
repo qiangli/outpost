@@ -291,7 +291,15 @@ if [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ]; then
     sleep 2
     UP_ARGS="--login-server=${LOGIN_SERVER} --authkey=${OUTPOST_OVERLAY_AUTHKEY} --reset --accept-routes"
     [ -n "${OUTPOST_POD_CIDR}" ] && UP_ARGS="${UP_ARGS} --advertise-routes=${OUTPOST_POD_CIDR}"
-    tailscale up ${UP_ARGS} || log "WARN tailscale up failed; continuing"
+    # A runtime image refresh recreates this container while the old
+    # single-use key may already be consumed and the overlay-control visitor
+    # may still be reconnecting. `tailscale up` can then wait indefinitely.
+    # Never let optional overlay registration prevent the primary k3s agent
+    # from starting; the daemon-side overlay refresher mints a fresh key and
+    # heals this registration after boot.
+    OVERLAY_UP_TIMEOUT="${OUTPOST_OVERLAY_UP_TIMEOUT:-30}"
+    timeout --foreground "${OVERLAY_UP_TIMEOUT}s" tailscale up ${UP_ARGS} \
+        || log "WARN tailscale up failed or timed out after ${OVERLAY_UP_TIMEOUT}s; continuing to k3s"
 fi
 
 # Workload pods reach kube-apiserver via the kubernetes Service ClusterIP
