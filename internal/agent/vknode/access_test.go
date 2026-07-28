@@ -2,12 +2,9 @@ package vknode
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestAccess_AllowedAndSet(t *testing.T) {
@@ -78,49 +75,4 @@ func TestNamespaceForEmail_MatchesIndependentOracle(t *testing.T) {
 			t.Errorf("NamespaceForEmail(%q) = %q, oracle = %q", email, got, want)
 		}
 	}
-}
-
-func TestOwnerEmailFromAccessToken_ExtractsEmailClaim(t *testing.T) {
-	tok := makeAccessJWT(t, map[string]any{
-		"email":    "alice@example.com",
-		"token_id": "abc-123",
-		"exp":      time.Now().Add(time.Hour).Unix(),
-	})
-	got, err := OwnerEmailFromAccessToken(tok)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "alice@example.com" {
-		t.Errorf("email = %q, want alice@example.com", got)
-	}
-}
-
-func TestOwnerEmailFromAccessToken_Errors(t *testing.T) {
-	cases := []struct {
-		name, tok string
-	}{
-		{"not a jwt", "opaque-token"},
-		{"missing email", makeAccessJWT(t, map[string]any{"token_id": "x"})},
-		{"empty email", makeAccessJWT(t, map[string]any{"email": ""})},
-		{"empty token", ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := OwnerEmailFromAccessToken(tc.tok); err == nil {
-				t.Errorf("expected error for %q", tc.name)
-			}
-		})
-	}
-}
-
-// makeAccessJWT mints an unsigned JWT with the given claims — same
-// pattern as bootstrap_test.go's makeJWT but kept self-contained so
-// the access tests don't depend on bootstrap_test's helper visibility.
-func makeAccessJWT(t *testing.T, claims map[string]any) string {
-	t.Helper()
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	body, _ := json.Marshal(claims)
-	payload := base64.RawURLEncoding.EncodeToString(body)
-	sig := base64.RawURLEncoding.EncodeToString([]byte("not-real-sig"))
-	return header + "." + payload + "." + sig
 }

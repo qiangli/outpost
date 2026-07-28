@@ -2,10 +2,7 @@ package vknode
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
-	"errors"
 	"strings"
 	"sync"
 )
@@ -102,38 +99,4 @@ func (a *Access) Snapshot() []string {
 func NamespaceForEmail(email string) string {
 	h := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
 	return "user-" + hex.EncodeToString(h[:6])
-}
-
-// OwnerEmailFromAccessToken decodes the email claim out of a cloudbox-
-// issued access_token without verifying the signature. The token came
-// from cloudbox over TLS and was already validated against
-// JWTTokenSecret on the cloudbox side; here we just need to read the
-// email payload so we can derive the owner's namespace.
-//
-// Returns the empty string + an error when the token isn't a parseable
-// JWT or doesn't carry an email claim — callers treat that as "owner
-// unknown" and either error out or fall back to nil-Access for the
-// dev case.
-func OwnerEmailFromAccessToken(token string) (string, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return "", errors.New("vknode: access_token is not a JWT")
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		payload, err = base64.URLEncoding.DecodeString(parts[1])
-		if err != nil {
-			return "", err
-		}
-	}
-	var claims struct {
-		Email string `json:"email"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", err
-	}
-	if claims.Email == "" {
-		return "", errors.New("vknode: access_token has no email claim")
-	}
-	return claims.Email, nil
 }

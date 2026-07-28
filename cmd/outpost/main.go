@@ -2380,22 +2380,21 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 		return err
 	}
 
-	// Namespace-access gate. Derive the outpost owner's email from
-	// the access_token's email claim (set by cloudbox at register
-	// time), compute the owner's per-user namespace via the same
-	// formula cloudbox uses, and pass it to the Provider. nil
-	// Access = no check; we'd hit that only if access_token isn't a
-	// JWT. A malformed token is a configuration error: virtual nodes must not
-	// start without the owner namespace gate.
+	// Namespace-access gate. Cloudbox has already authenticated the
+	// opaque host token and owns the namespace mapping, so fetch the
+	// authoritative owner + sharee allow-set instead of decoding claims
+	// from the token locally. A paired virtual node must not start without
+	// this gate.
 	var access *vknode.Access
 	if fc.AccessToken != "" {
-		if owner, err := vknode.OwnerEmailFromAccessToken(fc.AccessToken); err == nil {
-			ns := vknode.NamespaceForEmail(owner)
-			access = vknode.NewAccess(ns)
-			slog.Info("cluster virtual runtimes: namespace access gate", "owner", owner, "namespace", ns)
-		} else {
-			return fmt.Errorf("cluster virtual runtimes: derive owner from access_token: %w", err)
+		resp, err := vknode.FetchAccess(ctx, cloudboxBase, fc.AccessToken, hostName)
+		if err != nil {
+			return fmt.Errorf("cluster virtual runtimes: fetch namespace access: %w", err)
 		}
+		access = vknode.NewAccess(resp.AllowedNamespaces...)
+		slog.Info("cluster virtual runtimes: namespace access gate",
+			"owner_namespace", resp.OwnerNamespace,
+			"namespaces", resp.AllowedNamespaces)
 	}
 
 	// Locality tier label. Stamp the Node with this host's MEASURED
@@ -2501,20 +2500,10 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 
 	// Namespace allow-set refresh. Cloudbox is the source of truth for
 	// which sharee namespaces may schedule on this node (owner +
-	// HostShare rows with app="podman"). We do one synchronous fetch
-	// before the runner starts to populate the gate, then spawn a
-	// background loop that keeps it current. Failures never propagate
-	// up: the owner-only set stays in place until the next successful
-	// fetch (see access_refresh.go for the backoff policy).
+	// HostShare rows with app="podman"). The synchronous fetch above
+	// populated the gate before any runner started; this loop keeps it
+	// current. Refresh failures preserve the last known allow-set.
 	if access != nil && fc.AccessToken != "" && cloudboxBase != "" {
-		if resp, err := vknode.FetchAccess(ctx, cloudboxBase, fc.AccessToken, hostName); err == nil {
-			access.Set(resp.AllowedNamespaces...)
-			slog.Info("cluster virtual runtimes: initial access refresh",
-				"host", hostName, "namespaces", resp.AllowedNamespaces)
-		} else {
-			slog.Warn("cluster virtual runtimes: initial access fetch failed (will retry on loop)",
-				"host", hostName, "err", err)
-		}
 		accessRefresher := vknode.NewAccessRefresher(vknode.AccessRefreshDeps{
 			CloudboxBase: cloudboxBase,
 			AccessToken:  fc.AccessToken,
