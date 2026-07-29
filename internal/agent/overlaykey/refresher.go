@@ -69,6 +69,7 @@ func (r *Refresher) interval() time.Duration {
 type tailscaleStatus struct {
 	BackendState string      `json:"BackendState"`
 	Self         *peerStatus `json:"Self"`
+	Health       []string    `json:"Health"`
 }
 
 // peerStatus is the sliver of a node's own status we read. InNetworkMap is the
@@ -109,7 +110,19 @@ func (r *Refresher) Healthy(ctx context.Context) (bool, error) {
 	if !strings.EqualFold(st.BackendState, "Running") {
 		return false, nil
 	}
+	if hasCoordinationServerFailure(st.Health) {
+		return false, nil
+	}
 	return st.Self != nil && st.Self.InNetworkMap, nil
+}
+
+func hasCoordinationServerFailure(health []string) bool {
+	for _, msg := range health {
+		if strings.Contains(strings.ToLower(msg), "unable to connect to the tailscale coordination server") {
+			return true
+		}
+	}
+	return false
 }
 
 // Heal fetches a fresh single-use key and re-registers this node.

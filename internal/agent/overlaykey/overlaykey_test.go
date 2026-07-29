@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func testClient(url string) *Client {
@@ -87,6 +90,16 @@ func TestHealthyReadsBackendState(t *testing.T) {
 		want   bool
 	}{
 		{"running and in network map", `{"BackendState":"Running","Self":{"InNetworkMap":true}}`, true},
+		{
+			"running and cached in network map but coordination server unreachable",
+			`{"BackendState":"Running","Self":{"Online":false,"InNetworkMap":true},"Health":["Unable to connect to the Tailscale coordination server to synchronize the state of your tailnet. Peer reachability may degrade."]}`,
+			false,
+		},
+		{
+			"running with unrelated health warning",
+			`{"BackendState":"Running","Self":{"Online":false,"InNetworkMap":true},"Health":["Some peers are using an old client version."]}`,
+			true,
+		},
 		// The stranded state a cloudbox deploy leaves behind: tailscaled still
 		// reports Running from cached state, but the node is in no netmap it
 		// polled (every /machine/map is a 404 "node not found"). A Running-only
@@ -110,6 +123,87 @@ func TestHealthyReadsBackendState(t *testing.T) {
 				t.Errorf("%s -> healthy=%v, want %v", c.name, got, c.want)
 			}
 		})
+	}
+}
+
+func TestRunRetriesUntilOverlayControlListenerReturns(t *testing.T) {
+	var fetches atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetch := fetches.Add(1)
+		_ = json.NewEncoder(w).Encode(Credentials{
+			LoginServer: "https://cb/overlay/headscale",
+			AuthKey:     fmt.Sprintf("tskey-%d", fetch),
+			PodCIDR:     "10.42.1.0/24",
+		})
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var ups []string
+	statusCalls := 0
+	r := &Refresher{
+		Client:     testClient(srv.URL),
+		Interval:   time.Millisecond,
+		ControlURL: "https://127.0.0.1:8091",
+		Exec: func(ctx context.Context, args ...string) ([]byte, error) {
+			if len(args) > 1 && args[1] == "status" {
+				statusCalls++
+				if statusCalls >= 4 {
+					cancel()
+					return []byte(`{"BackendState":"Running","Self":{"Online":true,"InNetworkMap":true}}`), nil
+				}
+				return []byte(`{"BackendState":"Running","Self":{"Online":false,"InNetworkMap":true},"Health":["Unable to connect to the Tailscale coordination server to synchronize the state of your tailnet."]}`), nil
+			}
+			joined := strings.Join(args, " ")
+			ups = append(ups, joined)
+			if len(ups) == 1 {
+				return []byte("dial tcp 127.0.0.1:8091: connect: connection refused"), errors.New("listener unavailable")
+			}
+			return nil, nil
+		},
+	}
+	if err := r.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := fetches.Load(); got != 2 {
+		t.Fatalf("authkey fetches = %d, want 2", got)
+	}
+	if len(ups) != 2 {
+		t.Fatalf("tailscale up calls = %d, want 2: %v", len(ups), ups)
+	}
+	if !strings.Contains(ups[1], "--authkey=tskey-2") || !strings.Contains(ups[1], "--login-server=https://127.0.0.1:8091") {
+		t.Fatalf("second heal did not use fresh key and loopback control URL: %q", ups[1])
+	}
+}
+
+func TestRunDoesNotMintKeysWhenStatusIsUnknown(t *testing.T) {
+	var fetches atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	r := &Refresher{
+		Client:   testClient(srv.URL),
+		Interval: time.Millisecond,
+		Exec: func(ctx context.Context, args ...string) ([]byte, error) {
+			calls++
+			if calls >= 3 {
+				cancel()
+			}
+			return []byte("{not-json"), nil
+		},
+	}
+	if err := r.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := fetches.Load(); got != 0 {
+		t.Fatalf("authkey fetches = %d, want 0 for unknown tailscale status", got)
 	}
 }
 

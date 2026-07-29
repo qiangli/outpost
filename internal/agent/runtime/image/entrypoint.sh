@@ -207,20 +207,19 @@ remotePort = ${OUTPOST_KUBELET_PORT}
 EOF
 fi
 
-log "starting frpc (matrix tunnel + STCP visitor)"
-frpc -c /tmp/frpc.toml >/tmp/frpc.log 2>&1 &
-FRPC_PID=$!
-
-# A dead frpc means the k3s agent can never reach the apiserver, so staying
-# up is worse than exiting: the container looks healthy, the node reports
-# NotReady, and nothing says why. Fail loudly and let the supervisor (podman
-# restart policy / the outpost daemon) recreate us.
-(
-    wait "${FRPC_PID}" 2>/dev/null
-    log "FATAL frpc exited — the apiserver tunnel is gone; stopping the container"
-    tail -5 /tmp/frpc.log 2>/dev/null || true
-    kill -TERM 1 2>/dev/null || true
-) &
+FRPC_REQUIRED_PORTS="${OUTPOST_API_PORT}"
+if [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ]; then
+    FRPC_REQUIRED_PORTS="${FRPC_REQUIRED_PORTS},${OVERLAY_CONTROL_BACKEND_PORT}"
+fi
+export FRPC_REQUIRED_PORTS
+FRPC_CONFIG=/tmp/frpc.toml \
+FRPC_LOG=/tmp/frpc.log \
+FRPC_STARTUP_GRACE_TICKS="${FRPC_STARTUP_GRACE_TICKS:-20}" \
+FRPC_MISS_THRESHOLD="${FRPC_MISS_THRESHOLD:-3}" \
+FRPC_PROBE_INTERVAL="${FRPC_PROBE_INTERVAL:-2}" \
+FRPC_RESTART_BACKOFF="${FRPC_RESTART_BACKOFF:-2}" \
+FRPC_RESTART_BACKOFF_MAX="${FRPC_RESTART_BACKOFF_MAX:-30}" \
+    /usr/local/bin/frpc-supervisor.sh &
 
 # Wait for the STCP visitor to bind locally. The visitor LISTENS even
 # before the publisher accepts a stream, so a successful connect to
