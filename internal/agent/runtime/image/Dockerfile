@@ -105,7 +105,8 @@ RUN chmod +x /opt/cni/bin/outpost-cni && mkdir -p /etc/cni/net.d
 
 # Entrypoint reads OUTPOST_* env, writes the CNI conflist, starts
 # tailscaled (if overlay creds are set), then exec's k3s agent.
+COPY frpc-supervisor.sh /usr/local/bin/frpc-supervisor.sh
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh /usr/local/bin/frpc-supervisor.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
