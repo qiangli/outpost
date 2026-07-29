@@ -55,7 +55,7 @@ line=$(sed -n "${count}p" "$FRPC_TEST_STATE")
 [ "$line" = "up" ]
 `)
 	writeExecutable(t, filepath.Join(fakes, "sleep"), `#!/bin/sh
-exit 0
+/bin/sleep 0.01
 `)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -257,6 +257,22 @@ exit 0
 		t.Fatalf("start tcp listener: %v", err)
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
+	accepted := make(chan struct{}, 1)
+	acceptDone := make(chan struct{})
+	go func() {
+		defer close(acceptDone)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+			select {
+			case accepted <- struct{}{}:
+			default:
+			}
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -290,14 +306,20 @@ exit 0
 		t.Fatalf("supervisor did not start frpc")
 	}
 
-	time.Sleep(5 * time.Second)
+	select {
+	case <-accepted:
+	case <-time.After(10 * time.Second):
+		_ = listener.Close()
+		t.Fatal("production /dev/tcp probe did not connect to the live listener")
+	}
 
 	if countLines(starts) > 1 {
-		listener.Close()
+		_ = listener.Close()
 		t.Fatalf("supervisor restarted frpc while listener was still up (unexpected probe failure)")
 	}
 
-	listener.Close()
+	_ = listener.Close()
+	<-acceptDone
 
 	dl2 := time.Now().Add(10 * time.Second)
 	for time.Now().Before(dl2) {
@@ -330,6 +352,7 @@ func findDevTCPBash(t *testing.T) string {
 	defer ln.Close()
 
 	for _, candidate := range []string{
+		"/bin/bash",
 		"/opt/homebrew/bin/bash",
 		"/usr/local/bin/bash",
 	} {
