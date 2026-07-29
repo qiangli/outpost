@@ -53,7 +53,16 @@ frpc_alive() {
 stop_frpc() {
     if frpc_alive; then
         kill -TERM "${FRPC_PID}" 2>/dev/null || true
-        wait "${FRPC_PID}" 2>/dev/null || true
+        for _i in $(seq 1 50); do
+            if ! frpc_alive; then
+                break
+            fi
+            sleep 0.1
+        done
+        if frpc_alive; then
+            kill -KILL "${FRPC_PID}" 2>/dev/null || true
+            wait "${FRPC_PID}" 2>/dev/null || true
+        fi
     fi
     FRPC_PID=""
 }
