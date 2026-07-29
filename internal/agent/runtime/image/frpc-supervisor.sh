@@ -15,6 +15,7 @@ FRPC_MISS_THRESHOLD="${FRPC_MISS_THRESHOLD:-3}"
 FRPC_PROBE_INTERVAL="${FRPC_PROBE_INTERVAL:-2}"
 FRPC_RESTART_BACKOFF="${FRPC_RESTART_BACKOFF:-2}"
 FRPC_RESTART_BACKOFF_MAX="${FRPC_RESTART_BACKOFF_MAX:-30}"
+FRPC_STOP_GRACE="${FRPC_STOP_GRACE:-5}"
 FRPC_PROBE_BIN="${FRPC_PROBE_BIN:-}"
 
 FRPC_PID=""
@@ -54,17 +55,18 @@ stop_frpc() {
     if [ -n "${FRPC_PID}" ]; then
         if frpc_alive; then
             kill -TERM "${FRPC_PID}" 2>/dev/null || true
-            for _i in $(seq 1 50); do
-                if ! frpc_alive; then
-                    break
-                fi
-                sleep 0.1
-            done
-            if frpc_alive; then
+            (
+                /bin/sleep "${FRPC_STOP_GRACE}"
                 kill -KILL "${FRPC_PID}" 2>/dev/null || true
-            fi
+            ) &
+            watchdog_pid=$!
         fi
         wait "${FRPC_PID}" 2>/dev/null || true
+        if [ -n "${watchdog_pid:-}" ]; then
+            kill "${watchdog_pid}" 2>/dev/null || true
+            wait "${watchdog_pid}" 2>/dev/null || true
+            watchdog_pid=""
+        fi
     fi
     FRPC_PID=""
 }

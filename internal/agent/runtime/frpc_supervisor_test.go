@@ -112,7 +112,7 @@ func TestFRPCSupervisorCleansChildOnCancellation(t *testing.T) {
 	}
 	writeExecutable(t, filepath.Join(fakes, "frpc"), `#!/bin/sh
 echo "$$" > "$FRPC_TEST_CHILD_PID"
-trap 'exit 0' TERM INT
+trap '' TERM INT
 while true; do sleep 1; done
 `)
 	writeExecutable(t, filepath.Join(fakes, "probe"), `#!/bin/sh
@@ -132,6 +132,7 @@ exit 0
 		"FRPC_LOG="+filepath.Join(tmp, "frpc.log"),
 		"FRPC_REQUIRED_PORTS=6443",
 		"FRPC_PROBE_INTERVAL=1",
+		"FRPC_STOP_GRACE=0.1",
 		"FRPC_PROBE_BIN=probe",
 		"FRPC_TEST_CHILD_PID="+childPIDFile,
 	)
