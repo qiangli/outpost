@@ -187,18 +187,8 @@ func lspciGPUs() []GPU {
 		if len(fields) < 4 {
 			continue
 		}
-		vendor := strings.ToLower(fields[2])
-		kind := ""
-		switch {
-		case strings.Contains(vendor, "nvidia"):
-			kind = "nvidia"
-		case strings.Contains(vendor, "amd") || strings.Contains(vendor, "ati"):
-			kind = "amd"
-		case strings.Contains(vendor, "intel"):
-			kind = "intel"
-		}
 		gpus = append(gpus, GPU{
-			Kind:  kind,
+			Kind:  gpuKindFromVendor(fields[2]),
 			Model: fields[3],
 			Count: 1,
 		})

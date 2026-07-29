@@ -81,21 +81,12 @@ func gpuInfo() []GPU {
 		// Apple Silicon: vendor string contains "apple" or
 		// "sppci_vendor_Apple". Unified memory ⇒ no discrete
 		// VRAM number, share system memory.
-		v := strings.ToLower(d.Vendor)
-		switch {
-		case strings.Contains(v, "apple"):
-			g.Kind = "apple-silicon"
-			g.UnifiedMemory = true
-			g.VRAMTotalBytes = mem
-		case strings.Contains(v, "nvidia"):
-			g.Kind = "nvidia"
-		case strings.Contains(v, "amd") || strings.Contains(v, "ati"):
-			g.Kind = "amd"
-		case strings.Contains(v, "intel"):
-			g.Kind = "intel"
-		case strings.Contains(strings.ToLower(d.Name), "apple"):
+		g.Kind = gpuKindFromVendor(d.Vendor)
+		if g.Kind == "" && strings.Contains(strings.ToLower(d.Name), "apple") {
 			// Older OS revisions stash the brand only in _name.
-			g.Kind = "apple-silicon"
+			g.Kind = GPUKindApple
+		}
+		if g.Kind == GPUKindApple {
 			g.UnifiedMemory = true
 			g.VRAMTotalBytes = mem
 		}

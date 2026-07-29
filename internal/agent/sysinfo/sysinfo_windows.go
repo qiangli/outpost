@@ -124,18 +124,8 @@ func gpuInfo() []GPU {
 	}
 	gpus := make([]GPU, 0, len(rows))
 	for _, r := range rows {
-		vendor := strings.ToLower(r.AdapterCompatibility)
-		kind := ""
-		switch {
-		case strings.Contains(vendor, "nvidia"):
-			kind = "nvidia"
-		case strings.Contains(vendor, "amd") || strings.Contains(vendor, "ati"):
-			kind = "amd"
-		case strings.Contains(vendor, "intel"):
-			kind = "intel"
-		}
 		gpus = append(gpus, GPU{
-			Kind:           kind,
+			Kind:           gpuKindFromVendor(r.AdapterCompatibility),
 			Model:          strings.TrimSpace(r.Name),
 			Count:          1,
 			VRAMTotalBytes: r.AdapterRAM,
