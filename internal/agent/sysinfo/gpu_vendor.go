@@ -3,9 +3,15 @@ package sysinfo
 import "strings"
 
 // GPU kind values reported in GPU.Kind. They are part of the
-// cloudbox-outpost wire contract: vknode maps "apple-silicon" to the
-// dhnt.io/metal-vram node resource and "nvidia" to nvidia.com/gpu, and
-// the values also land in the outpost.dhnt.io/gpu-kind node label.
+// cloudbox-outpost wire contract, and they answer the "which kind"
+// question ONLY — they land in the outpost.dhnt.io/gpu-kind node label,
+// where a workload constrains vendor via nodeAffinity.
+//
+// "How much" is a separate, vendor-neutral axis: every kind's
+// VRAMTotalBytes feeds the dhnt.io/vram node resource. Kind still
+// selects two vendor-specific extras — "nvidia" additionally advertises
+// the device-plugin-standard nvidia.com/gpu count, and "apple-silicon"
+// additionally advertises the deprecated dhnt.io/metal-vram alias.
 const (
 	GPUKindApple  = "apple-silicon"
 	GPUKindNVIDIA = "nvidia"

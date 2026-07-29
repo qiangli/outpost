@@ -82,42 +82,6 @@ func gpuInfo() []GPU {
 	return lspciGPUs()
 }
 
-// nvidiaSmiGPUs queries `nvidia-smi --query-gpu=name,memory.total
-// --format=csv,noheader,nounits`. One row per GPU; memory in MiB.
-// Returns nil when nvidia-smi isn't on PATH or returns no rows
-// (drivers loaded but no card visible).
-func nvidiaSmiGPUs() []GPU {
-	bin, err := exec.LookPath("nvidia-smi")
-	if err != nil {
-		return nil
-	}
-	out, err := exec.Command(bin,
-		"--query-gpu=name,memory.total",
-		"--format=csv,noheader,nounits").Output()
-	if err != nil {
-		return nil
-	}
-	gpus := []GPU{}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		fields := strings.Split(line, ",")
-		if len(fields) < 2 {
-			continue
-		}
-		model := strings.TrimSpace(fields[0])
-		memMiB, err := strconv.ParseUint(strings.TrimSpace(fields[1]), 10, 64)
-		if err != nil {
-			continue
-		}
-		gpus = append(gpus, GPU{
-			Kind:           "nvidia",
-			Model:          model,
-			Count:          1,
-			VRAMTotalBytes: memMiB * 1024 * 1024,
-		})
-	}
-	return gpus
-}
-
 // rocmSmiGPUs queries `rocm-smi --showproductname --showmeminfo vram
 // --json`. Output shape: `{"card0":{"Card Series": "...", "VRAM
 // Total Memory (B)": "..."}, ...}`. Returns nil when rocm-smi is

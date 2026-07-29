@@ -28,6 +28,7 @@ func baseShardInput() shardInput {
 		port:       8080,
 		lanGroup:   "home",
 		tier:       "lan",
+		gpuKind:    "nvidia",
 		leaderVRAM: "24Gi",
 		workerVRAM: "24Gi",
 		topology:   "lws",
@@ -46,8 +47,10 @@ func TestShardManifestLWS(t *testing.T) {
 		// nodeAffinity on lan-group + tier
 		"key: outpost.dhnt.io/lan-group",
 		"key: outpost.dhnt.io/tier",
-		// metal-vram requests
-		"dhnt.io/metal-vram: 24Gi",
+		// vendor-neutral VRAM requests
+		"dhnt.io/vram: 24Gi",
+		// vendor is a separate, label-based axis
+		"key: outpost.dhnt.io/gpu-kind",
 		// 1 leader + 2 workers
 		"size: 3",
 		// native host process: no pod net
@@ -75,7 +78,8 @@ func TestShardManifestDeployment(t *testing.T) {
 		"192.168.1.21:50052,192.168.1.22:50052",
 		"key: outpost.dhnt.io/lan-group",
 		"key: outpost.dhnt.io/tier",
-		"dhnt.io/metal-vram: 24Gi",
+		"dhnt.io/vram: 24Gi",
+		"key: outpost.dhnt.io/gpu-kind",
 	}
 	for _, s := range mustContain {
 		if !strings.Contains(out, s) {
@@ -101,14 +105,13 @@ func TestShardManifestAffinityPresentBothPods(t *testing.T) {
 
 func TestShardVarsValidation(t *testing.T) {
 	cases := map[string]func(*shardInput){
-		"missing name":      func(in *shardInput) { in.name = "" },
-		"missing model":     func(in *shardInput) { in.model = "" },
-		"missing image":     func(in *shardInput) { in.image = "" },
-		"missing lan-group": func(in *shardInput) { in.lanGroup = "" },
-		"missing workers":   func(in *shardInput) { in.workerIPs = "  ,  " },
-		"bad rpc-port":      func(in *shardInput) { in.rpcPort = 0 },
-		"bad port":          func(in *shardInput) { in.port = 70000 },
-		"bad topology":      func(in *shardInput) { in.topology = "statefulset" },
+		"missing name":    func(in *shardInput) { in.name = "" },
+		"missing model":   func(in *shardInput) { in.model = "" },
+		"missing image":   func(in *shardInput) { in.image = "" },
+		"missing workers": func(in *shardInput) { in.workerIPs = "  ,  " },
+		"bad rpc-port":    func(in *shardInput) { in.rpcPort = 0 },
+		"bad port":        func(in *shardInput) { in.port = 70000 },
+		"bad topology":    func(in *shardInput) { in.topology = "statefulset" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -121,15 +124,20 @@ func TestShardVarsValidation(t *testing.T) {
 	}
 }
 
-func TestShardTierDefaults(t *testing.T) {
+// TestShardTierNoDefault: an unset tier stays unset. The old default of
+// "lan" silently injected a requiredDuringScheduling term the operator
+// never asked for — and since a node only carries outpost.dhnt.io/tier
+// when cloudbox measured its locality, that default could pin the group
+// to a label the target nodes lacked. Absent means unconstrained.
+func TestShardTierNoDefault(t *testing.T) {
 	in := baseShardInput()
 	in.tier = ""
 	data, err := buildShardVars(in)
 	if err != nil {
 		t.Fatalf("buildShardVars: %v", err)
 	}
-	if data.Tier != "lan" {
-		t.Errorf("empty tier should default to lan, got %q", data.Tier)
+	if data.Tier != "" {
+		t.Errorf("empty tier must stay empty, got %q", data.Tier)
 	}
 }
 
@@ -150,5 +158,76 @@ func TestShardInitCmdBuilds(t *testing.T) {
 	}
 	if !found {
 		t.Error("shard-init not registered under cluster command")
+	}
+}
+
+// TestShardManifestOmitsUnsetAffinityTerms is the regression guard for the
+// defect that made the scaffold unusable: --lan-group was required and
+// always emitted, but outpost only stamps outpost.dhnt.io/lan-group on
+// nodes with cloudbox-issued locality data — which on a real fleet was NO
+// node. A requiredDuringScheduling term naming an absent label matches
+// nothing, so every rendered manifest was unschedulable everywhere.
+func TestShardManifestOmitsUnsetAffinityTerms(t *testing.T) {
+	in := baseShardInput()
+	in.lanGroup = ""
+	in.tier = ""
+	out := renderShard(t, in)
+
+	if strings.Contains(out, "outpost.dhnt.io/lan-group") {
+		t.Errorf("unset lan-group must not be emitted\n---\n%s", out)
+	}
+	if strings.Contains(out, "outpost.dhnt.io/tier") {
+		t.Errorf("unset tier must not be emitted\n---\n%s", out)
+	}
+	// The term that WAS set still lands, on both pods.
+	if got := strings.Count(out, "key: outpost.dhnt.io/gpu-kind"); got != 2 {
+		t.Errorf("expected gpu-kind affinity on leader and worker (2), got %d\n---\n%s", got, out)
+	}
+}
+
+// TestShardManifestNoAffinityAtAll: with no placement constraint the
+// affinity block must be absent entirely rather than rendered empty —
+// an "affinity:" key with no nodeAffinity under it is invalid YAML shape
+// for the pod spec.
+func TestShardManifestNoAffinityAtAll(t *testing.T) {
+	in := baseShardInput()
+	in.lanGroup = ""
+	in.tier = ""
+	in.gpuKind = ""
+	out := renderShard(t, in)
+
+	if strings.Contains(out, "affinity:") {
+		t.Errorf("no placement terms set: affinity block must be omitted\n---\n%s", out)
+	}
+	if !strings.Contains(out, "dhnt.io/vram: 24Gi") {
+		t.Errorf("VRAM request must survive regardless of affinity\n---\n%s", out)
+	}
+}
+
+// TestShardManifestLANGroupNoLongerRequired: the flag used to be a hard
+// validation error. Dropping it is deliberate — see the doc on
+// nodeAffinityBlock.
+func TestShardManifestLANGroupNoLongerRequired(t *testing.T) {
+	in := baseShardInput()
+	in.lanGroup = ""
+	if _, err := buildShardVars(in); err != nil {
+		t.Fatalf("lan-group must be optional, got error: %v", err)
+	}
+}
+
+// TestShardManifestCarriesVKToleration: vknode taints its Node
+// virtual-kubelet.io/provider=outpost:NoSchedule, so a shard pod without
+// this toleration is refused by the only nodes that can run it. Both the
+// leader and every worker need it, in both topologies.
+func TestShardManifestCarriesVKToleration(t *testing.T) {
+	for _, topo := range []string{"lws", "deployment"} {
+		t.Run(topo, func(t *testing.T) {
+			in := baseShardInput()
+			in.topology = topo
+			out := renderShard(t, in)
+			if got := strings.Count(out, "key: virtual-kubelet.io/provider"); got != 2 {
+				t.Errorf("expected the vk toleration on leader and worker (2), got %d\n---\n%s", got, out)
+			}
+		})
 	}
 }

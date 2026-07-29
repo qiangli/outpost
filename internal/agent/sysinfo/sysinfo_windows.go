@@ -86,17 +86,31 @@ func hostname() string {
 	return h
 }
 
-// gpuInfo shells out to PowerShell's Get-CimInstance Win32_VideoController
-// for adapter enumeration. AdapterRAM is the legacy field for VRAM
-// in bytes (capped at 4 GiB by Win32 — a known issue for big
-// modern cards). Newer Win11 builds expose AdapterRAM as uint64
-// but the cap is still there in the WDDM layer; consumers should
-// treat 4294967295 as "unknown" rather than literal.
+// gpuInfo enumerates the host's adapters, preferring the vendor tool
+// over WMI.
 //
-// We export the raw value anyway — Phase 1 routing can sanity-check
-// "4 GiB exactly" + Kind=nvidia and look at the model name as a
-// fallback (e.g. "RTX 4090" → 24 GB known).
+// nvidia-smi FIRST, and not merely for symmetry with Linux: WMI's
+// Win32_VideoController.AdapterRAM is a legacy uint32 field capped at
+// 4 GiB, so it physically cannot describe a modern card. An 8 GiB
+// RTX 3070 reports 4293918720 there; nvidia-smi reports the true 8192
+// MiB. Since VRAMTotalBytes feeds VRAM-headroom routing and the
+// dhnt.io/vram node capacity, taking WMI's word would understate every
+// large NVIDIA card by 2x or more.
+//
+// WMI remains the fallback for non-NVIDIA adapters (Intel iGPUs, AMD),
+// where it is the only enumeration available — but a reading that is
+// indistinguishable from the 4 GiB cap is reported as unknown (0)
+// rather than passed off as a measurement. See wmiVRAMLooksCapped.
 func gpuInfo() []GPU {
+	if gs := nvidiaSmiGPUs(); len(gs) > 0 {
+		return gs
+	}
+	return wmiGPUs()
+}
+
+// wmiGPUs shells out to PowerShell's Get-CimInstance
+// Win32_VideoController for adapter enumeration.
+func wmiGPUs() []GPU {
 	out, err := exec.Command("powershell", "-NoProfile", "-Command",
 		"Get-CimInstance Win32_VideoController | "+
 			"Select-Object Name, AdapterRAM, AdapterCompatibility | "+
@@ -124,11 +138,16 @@ func gpuInfo() []GPU {
 	}
 	gpus := make([]GPU, 0, len(rows))
 	for _, r := range rows {
+		vram := r.AdapterRAM
+		if wmiVRAMLooksCapped(vram) {
+			// Unknown, not 4 GiB — see wmiVRAMLooksCapped.
+			vram = 0
+		}
 		gpus = append(gpus, GPU{
 			Kind:           gpuKindFromVendor(r.AdapterCompatibility),
 			Model:          strings.TrimSpace(r.Name),
 			Count:          1,
-			VRAMTotalBytes: r.AdapterRAM,
+			VRAMTotalBytes: vram,
 		})
 	}
 	return gpus

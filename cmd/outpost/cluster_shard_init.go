@@ -38,13 +38,18 @@ import (
 // the headless Service in deployment-mode is cosmetic. This keeps the
 // whole thing renderable + testable fully offline.
 //
-// Placement: nodeAffinity pins every replica to a single LAN group +
-// tier (outpost.dhnt.io/lan-group / outpost.dhnt.io/tier) — RPC sharding
-// is latency-sensitive, so we never want the scheduler spreading a shard
-// group across a WAN boundary. Each container requests dhnt.io/metal-vram
-// so the scheduler only lands shards on boxes with the GPU memory to hold
-// their slice (the same extended resource vknode advertises in node
-// capacity, see internal/agent/vknode/node.go).
+// Placement: nodeAffinity pins every replica to whichever of lan-group /
+// tier / gpu-kind the operator supplies — RPC sharding is latency-
+// sensitive, so we never want the scheduler spreading a shard group
+// across a WAN boundary. Each term is OPTIONAL and omitted when unset:
+// these are requiredDuringScheduling terms, so naming a label no node
+// carries yields a manifest that matches nothing at all. Each container requests dhnt.io/vram — the
+// vendor-neutral GPU-memory resource vknode advertises in node capacity
+// (see internal/agent/vknode/node.go) — so the scheduler only lands
+// shards on boxes with the memory to hold their slice. Vendor is a
+// SEPARATE axis: --gpu-kind adds an affinity on
+// outpost.dhnt.io/gpu-kind, because a llama.cpp build is CUDA or Metal
+// or ROCm and a shard group must not mix them.
 func clusterShardInitCmd() *cobra.Command {
 	var (
 		name       string
@@ -55,6 +60,7 @@ func clusterShardInitCmd() *cobra.Command {
 		port       int
 		lanGroup   string
 		tier       string
+		gpuKind    string
 		leaderVRAM string
 		workerVRAM string
 		topology   string
@@ -66,8 +72,8 @@ func clusterShardInitCmd() *cobra.Command {
 		Long: `Emit a kubectl-ready manifest for a cross-machine llama.cpp shard:
 a coordinator running 'llama-server --rpc <worker IPs>' plus one
 rpc-server worker per --worker-ips entry. nodeAffinity pins the group
-to a single lan-group + tier, and every container requests
-dhnt.io/metal-vram. Workers are addressed by host IP because they run
+to whichever of --lan-group / --tier / --gpu-kind you supply, and every
+container requests dhnt.io/vram. Workers are addressed by host IP because they run
 as native host processes with no pod network.
 
 Example:
@@ -76,7 +82,7 @@ Example:
     --image ghcr.io/ggml-org/llama.cpp:full \
     --model /models/llama-70b-q4.gguf \
     --worker-ips 192.168.1.21,192.168.1.22 \
-    --lan-group home --tier lan \
+    --gpu-kind nvidia --tier lan \
     --leader-vram 24Gi --worker-vram 24Gi | kubectl apply -f -`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			data, err := buildShardVars(shardInput{
@@ -88,6 +94,7 @@ Example:
 				port:       port,
 				lanGroup:   lanGroup,
 				tier:       tier,
+				gpuKind:    gpuKind,
 				leaderVRAM: leaderVRAM,
 				workerVRAM: workerVRAM,
 				topology:   topology,
@@ -120,10 +127,11 @@ Example:
 	cmd.Flags().StringVar(&workerIPs, "worker-ips", "", "Comma-separated rpc-server host IPs the leader shards to [required]")
 	cmd.Flags().IntVar(&rpcPort, "rpc-port", 50052, "Port each rpc-server listens on")
 	cmd.Flags().IntVar(&port, "port", 8080, "Port the leader llama-server serves the OpenAI/Ollama API on")
-	cmd.Flags().StringVar(&lanGroup, "lan-group", "", "nodeAffinity: outpost.dhnt.io/lan-group value [required]")
-	cmd.Flags().StringVar(&tier, "tier", "lan", "nodeAffinity: outpost.dhnt.io/tier value (tp|lan|wan|remote)")
-	cmd.Flags().StringVar(&leaderVRAM, "leader-vram", "8Gi", "dhnt.io/metal-vram request for the leader")
-	cmd.Flags().StringVar(&workerVRAM, "worker-vram", "8Gi", "dhnt.io/metal-vram request per worker")
+	cmd.Flags().StringVar(&lanGroup, "lan-group", "", "nodeAffinity: outpost.dhnt.io/lan-group value; empty = no LAN constraint (the label is only stamped on nodes with measured locality)")
+	cmd.Flags().StringVar(&tier, "tier", "", "nodeAffinity: outpost.dhnt.io/tier value (tp|lan|wan|remote); empty = no tier constraint")
+	cmd.Flags().StringVar(&gpuKind, "gpu-kind", "", "nodeAffinity: outpost.dhnt.io/gpu-kind value (nvidia|apple-silicon|amd|intel); empty = any vendor. Set it — a llama.cpp build is CUDA or Metal, never both")
+	cmd.Flags().StringVar(&leaderVRAM, "leader-vram", "8Gi", "dhnt.io/vram request for the leader (vendor-neutral GPU memory)")
+	cmd.Flags().StringVar(&workerVRAM, "worker-vram", "8Gi", "dhnt.io/vram request per worker (vendor-neutral GPU memory)")
 	cmd.Flags().StringVar(&topology, "topology", "lws", "Output shape: lws (LeaderWorkerSet) or deployment (Deployment + headless Service)")
 	cmd.Flags().StringVar(&outPath, "output", "", "Write to PATH instead of stdout")
 	return cmd
@@ -138,6 +146,7 @@ type shardInput struct {
 	port       int
 	lanGroup   string
 	tier       string
+	gpuKind    string
 	leaderVRAM string
 	workerVRAM string
 	topology   string
@@ -154,6 +163,7 @@ type shardVars struct {
 	Port       int
 	LANGroup   string
 	Tier       string
+	GPUKind    string
 	LeaderVRAM string
 	WorkerVRAM string
 	UseLWS     bool
@@ -175,9 +185,6 @@ func buildShardVars(in shardInput) (shardVars, error) {
 	if strings.TrimSpace(in.model) == "" {
 		return shardVars{}, errors.New("--model required")
 	}
-	if strings.TrimSpace(in.lanGroup) == "" {
-		return shardVars{}, errors.New("--lan-group required (shard groups must be LAN-pinned)")
-	}
 	if in.rpcPort <= 0 || in.rpcPort > 65535 {
 		return shardVars{}, errors.New("--rpc-port must be 1..65535")
 	}
@@ -185,9 +192,6 @@ func buildShardVars(in shardInput) (shardVars, error) {
 		return shardVars{}, errors.New("--port must be 1..65535")
 	}
 	tier := strings.TrimSpace(in.tier)
-	if tier == "" {
-		tier = "lan"
-	}
 
 	var ips []string
 	for raw := range strings.SplitSeq(in.workerIPs, ",") {
@@ -223,6 +227,7 @@ func buildShardVars(in shardInput) (shardVars, error) {
 		Port:         in.port,
 		LANGroup:     in.lanGroup,
 		Tier:         tier,
+		GPUKind:      in.gpuKind,
 		LeaderVRAM:   in.leaderVRAM,
 		WorkerVRAM:   in.workerVRAM,
 		UseLWS:       topo == "lws",
@@ -256,17 +261,60 @@ func renderShardManifest(out io.Writer, data shardVars) error {
 		Funcs(template.FuncMap{
 			"add1":         func(n int) int { return n + 1 },
 			"nodeAffinity": nodeAffinityBlock,
+			"vkToleration": vkTolerationBlock,
 		}).
 		Parse(shardManifestTemplate))
 	return tmpl.Execute(out, data)
 }
 
-// nodeAffinityBlock renders the lan-group + tier nodeAffinity YAML
-// indented by `pad` spaces, so the same placement contract drops cleanly
-// into both the LWS pod specs (deeper nesting) and the Deployment pod
-// specs (shallower). Returned without a trailing newline; call sites
-// prefix it with `{{- nodeAffinity N .LANGroup .Tier}}` on its own line.
-func nodeAffinityBlock(pad int, lanGroup, tier string) string {
+// vkTolerationBlock renders the virtual-kubelet provider toleration,
+// indented by `pad` spaces. Returned without a trailing newline.
+//
+// Every vknode registers its Node with the taint
+// virtual-kubelet.io/provider=outpost:NoSchedule, so a pod WITHOUT this
+// toleration is refused by exactly the nodes a shard is meant to run
+// on — the vk-ollama nodes that realize these pods as native host
+// processes. `outpost cluster init` has always emitted it; shard-init
+// did not, which meant a scaffolded shard could never be placed even
+// once its resource request was satisfiable.
+func vkTolerationBlock(pad int) string {
+	p := strings.Repeat(" ", pad)
+	var b strings.Builder
+	fmt.Fprintf(&b, "%stolerations:\n", p)
+	fmt.Fprintf(&b, "%s- key: virtual-kubelet.io/provider\n", p)
+	fmt.Fprintf(&b, "%s  operator: Exists", p)
+	return b.String()
+}
+
+// nodeAffinityBlock renders the placement nodeAffinity YAML indented by
+// `pad` spaces, so the same placement contract drops cleanly into both
+// the LWS pod specs (deeper nesting) and the Deployment pod specs
+// (shallower). Returned without a trailing newline; call sites prefix it
+// with `{{- nodeAffinity N .LANGroup .Tier .GPUKind}}` on its own line.
+//
+// EVERY term is omitted when its value is empty, and that is load-bearing
+// rather than mere tidiness: these are requiredDuringScheduling terms, so
+// a term naming a label no node carries makes the whole manifest match
+// zero nodes. lan-group in particular is stamped only when cloudbox has
+// issued measured locality data (see vknode.NodeLocalityLabels), which on
+// a young fleet is no node at all — emitting it unconditionally is how a
+// scaffold ends up rendering a manifest that can never be placed.
+func nodeAffinityBlock(pad int, lanGroup, tier, gpuKind string) string {
+	type term struct{ key, value string }
+	terms := []term{
+		{"outpost.dhnt.io/lan-group", lanGroup},
+		{"outpost.dhnt.io/tier", tier},
+		{"outpost.dhnt.io/gpu-kind", gpuKind},
+	}
+	present := make([]term, 0, len(terms))
+	for _, t := range terms {
+		if strings.TrimSpace(t.value) != "" {
+			present = append(present, t)
+		}
+	}
+	if len(present) == 0 {
+		return ""
+	}
 	p := strings.Repeat(" ", pad)
 	var b strings.Builder
 	fmt.Fprintf(&b, "%saffinity:\n", p)
@@ -274,14 +322,16 @@ func nodeAffinityBlock(pad int, lanGroup, tier string) string {
 	fmt.Fprintf(&b, "%s    requiredDuringSchedulingIgnoredDuringExecution:\n", p)
 	fmt.Fprintf(&b, "%s      nodeSelectorTerms:\n", p)
 	fmt.Fprintf(&b, "%s      - matchExpressions:\n", p)
-	fmt.Fprintf(&b, "%s        - key: outpost.dhnt.io/lan-group\n", p)
-	fmt.Fprintf(&b, "%s          operator: In\n", p)
-	fmt.Fprintf(&b, "%s          values:\n", p)
-	fmt.Fprintf(&b, "%s          - %s\n", p, lanGroup)
-	fmt.Fprintf(&b, "%s        - key: outpost.dhnt.io/tier\n", p)
-	fmt.Fprintf(&b, "%s          operator: In\n", p)
-	fmt.Fprintf(&b, "%s          values:\n", p)
-	fmt.Fprintf(&b, "%s          - %s", p, tier)
+	for i, t := range present {
+		fmt.Fprintf(&b, "%s        - key: %s\n", p, t.key)
+		fmt.Fprintf(&b, "%s          operator: In\n", p)
+		fmt.Fprintf(&b, "%s          values:\n", p)
+		if i == len(present)-1 {
+			fmt.Fprintf(&b, "%s          - %s", p, t.value)
+		} else {
+			fmt.Fprintf(&b, "%s          - %s\n", p, t.value)
+		}
+	}
 	return b.String()
 }
 
@@ -310,7 +360,8 @@ spec:
           app: {{.Name}}
           role: leader
       spec:
-{{nodeAffinity 8 .LANGroup .Tier}}
+{{vkToleration 8}}
+{{nodeAffinity 8 .LANGroup .Tier .GPUKind}}
         containers:
         - name: leader
           image: {{.Image}}
@@ -332,7 +383,7 @@ spec:
           - containerPort: {{.Port}}
           resources:
             requests:
-              dhnt.io/metal-vram: {{.LeaderVRAM}}
+              dhnt.io/vram: {{.LeaderVRAM}}
     workerTemplate:
       metadata:
         labels:
@@ -340,7 +391,8 @@ spec:
           role: worker
       spec:
         hostNetwork: true
-{{nodeAffinity 8 .LANGroup .Tier}}
+{{vkToleration 8}}
+{{nodeAffinity 8 .LANGroup .Tier .GPUKind}}
         containers:
         - name: worker
           image: {{.Image}}
@@ -356,7 +408,7 @@ spec:
             hostPort: {{.RPCPort}}
           resources:
             requests:
-              dhnt.io/metal-vram: {{.WorkerVRAM}}
+              dhnt.io/vram: {{.WorkerVRAM}}
 {{- else -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -377,7 +429,8 @@ spec:
         app: {{.Name}}
         role: leader
     spec:
-{{nodeAffinity 6 .LANGroup .Tier}}
+{{vkToleration 6}}
+{{nodeAffinity 6 .LANGroup .Tier .GPUKind}}
       containers:
       - name: leader
         image: {{.Image}}
@@ -399,7 +452,7 @@ spec:
         - containerPort: {{.Port}}
         resources:
           requests:
-            dhnt.io/metal-vram: {{.LeaderVRAM}}
+            dhnt.io/vram: {{.LeaderVRAM}}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -421,7 +474,8 @@ spec:
         role: worker
     spec:
       hostNetwork: true
-{{nodeAffinity 6 .LANGroup .Tier}}
+{{vkToleration 6}}
+{{nodeAffinity 6 .LANGroup .Tier .GPUKind}}
       containers:
       - name: worker
         image: {{.Image}}
@@ -437,7 +491,7 @@ spec:
           hostPort: {{.RPCPort}}
         resources:
           requests:
-            dhnt.io/metal-vram: {{.WorkerVRAM}}
+            dhnt.io/vram: {{.WorkerVRAM}}
 ---
 apiVersion: v1
 kind: Service

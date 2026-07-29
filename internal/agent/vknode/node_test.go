@@ -77,8 +77,13 @@ func TestBuildNodeFromInfo_AppleSiliconMetalVRAM(t *testing.T) {
 	if got := n.Status.Capacity[corev1.ResourceMemory]; got.Value() != 64*1024*1024*1024 {
 		t.Errorf("memory capacity = %s, want 64Gi", got.String())
 	}
+	if got := n.Status.Capacity[resourceVRAM]; got.Value() != vram {
+		t.Errorf("VRAM capacity = %s, want %d", got.String(), int64(vram))
+	}
+	// The Apple-only alias stays advertised alongside the neutral
+	// resource so manifests written against it keep scheduling.
 	if got := n.Status.Capacity[resourceMetalVRAM]; got.Value() != vram {
-		t.Errorf("metal VRAM capacity = %s, want %d", got.String(), int64(vram))
+		t.Errorf("metal VRAM alias = %s, want %d", got.String(), int64(vram))
 	}
 	if _, ok := n.Status.Capacity[resourceNVIDIAGPU]; ok {
 		t.Errorf("unexpected NVIDIA resource: %+v", n.Status.Capacity)
@@ -112,8 +117,14 @@ func TestBuildNodeFromInfo_NVIDIAGPU(t *testing.T) {
 	if got := n.Status.Capacity[resourceNVIDIAGPU]; got.Value() != 2 {
 		t.Errorf("nvidia GPU capacity = %s, want 2", got.String())
 	}
+	// The whole point of the vendor-neutral resource: an NVIDIA box
+	// advertises requestable VRAM too, so a shard manifest is placeable
+	// here and not only on Apple hardware.
+	if got := n.Status.Capacity[resourceVRAM]; got.Value() != 24*1024*1024*1024 {
+		t.Errorf("VRAM capacity = %s, want 24Gi", got.String())
+	}
 	if _, ok := n.Status.Capacity[resourceMetalVRAM]; ok {
-		t.Errorf("unexpected metal VRAM resource: %+v", n.Status.Capacity)
+		t.Errorf("metal alias must stay Apple-only: %+v", n.Status.Capacity)
 	}
 	if n.Labels[labelGPUKind] != "nvidia" {
 		t.Errorf("GPU kind label = %q", n.Labels[labelGPUKind])
@@ -307,5 +318,47 @@ func TestNodeProvider_SetPinger(t *testing.T) {
 	np.SetPinger(func(_ context.Context) error { return nil })
 	if err := np.Ping(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestCapacityFromInfo_UnmeasuredVRAMNotAdvertised guards the sysinfo
+// contract that 0 means "could not measure", not "has none". A node that
+// advertised 0 would be indistinguishable from one with a tiny card; a
+// node that advertised some default would attract shards it cannot hold.
+// Neither is acceptable, so the resource is simply absent.
+func TestCapacityFromInfo_UnmeasuredVRAMNotAdvertised(t *testing.T) {
+	cap := capacityFromInfo(sysinfo.Info{
+		CPUCount:      8,
+		MemTotalBytes: 16 * 1024 * 1024 * 1024,
+		GPUs: []sysinfo.GPU{{
+			Kind:  sysinfo.GPUKindIntel,
+			Model: "Intel UHD Graphics",
+			Count: 1,
+			// VRAMTotalBytes deliberately zero.
+		}},
+	})
+	if _, ok := cap[resourceVRAM]; ok {
+		t.Errorf("unmeasured VRAM must not be advertised: %+v", cap)
+	}
+}
+
+// TestCapacityFromInfo_VRAMSumsAcrossVendors covers a mixed box (an
+// integrated GPU beside a discrete card): the resource is bytes of GPU
+// memory, so every measured device contributes.
+func TestCapacityFromInfo_VRAMSumsAcrossVendors(t *testing.T) {
+	const (
+		discrete   = 8 * 1024 * 1024 * 1024
+		integrated = 2 * 1024 * 1024 * 1024
+	)
+	cap := capacityFromInfo(sysinfo.Info{
+		CPUCount:      12,
+		MemTotalBytes: 16 * 1024 * 1024 * 1024,
+		GPUs: []sysinfo.GPU{
+			{Kind: sysinfo.GPUKindNVIDIA, Count: 1, VRAMTotalBytes: discrete},
+			{Kind: sysinfo.GPUKindIntel, Count: 1, VRAMTotalBytes: integrated},
+		},
+	})
+	if got := cap[resourceVRAM]; got.Value() != discrete+integrated {
+		t.Errorf("VRAM capacity = %s, want %d", got.String(), int64(discrete+integrated))
 	}
 }

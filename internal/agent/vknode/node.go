@@ -19,7 +19,34 @@ const (
 	labelGPUKind  = "outpost.dhnt.io/gpu-kind"
 	labelGPUModel = "outpost.dhnt.io/gpu-model"
 
+	// resourceVRAM is the vendor-neutral GPU-memory resource, in bytes.
+	// It is THE quantity to request when a workload needs to fit in GPU
+	// memory — a model shard, an image batch — regardless of who made
+	// the card.
+	//
+	// The division of labour here is the k8s-native one, and it is worth
+	// stating because the earlier metal-vram design collapsed it:
+	//
+	//   - HOW MUCH is a consumable → an extended RESOURCE. The scheduler
+	//     must subtract it, so two shards can't both claim the same GiB.
+	//   - WHICH KIND is an attribute → a LABEL (outpost.dhnt.io/gpu-kind,
+	//     already stamped by addGPULabels). Vendor is not consumable;
+	//     placing a CUDA build on an Apple GPU is an affinity question,
+	//     not an arithmetic one.
+	//
+	// Baking the vendor into the resource name conflated the two and made
+	// the resource unrequestable on three quarters of the fleet: a
+	// manifest asking for dhnt.io/metal-vram is unschedulable on every
+	// NVIDIA/AMD/Intel host no matter how much VRAM it has.
+	resourceVRAM = corev1.ResourceName("dhnt.io/vram")
+
+	// resourceMetalVRAM is the Apple-only predecessor of resourceVRAM,
+	// still advertised on apple-silicon nodes so manifests written
+	// against it keep scheduling. DEPRECATED — new manifests want
+	// resourceVRAM plus a gpu-kind affinity. Remove once no in-tree
+	// scaffold emits it and the fleet has rolled past this release.
 	resourceMetalVRAM = corev1.ResourceName("dhnt.io/metal-vram")
+
 	resourceNVIDIAGPU = corev1.ResourceName("nvidia.com/gpu")
 )
 
@@ -219,18 +246,30 @@ func capacityFromInfo(info sysinfo.Info) corev1.ResourceList {
 		corev1.ResourcePods:   *resource.NewQuantity(110, resource.DecimalSI),
 	}
 
+	// VRAM is summed across EVERY vendor — the resource describes bytes
+	// of GPU memory, and bytes do not care who made the card. A device
+	// reporting 0 contributes nothing: sysinfo uses 0 to mean "could not
+	// measure" (see wmiVRAMLooksCapped), and advertising an unmeasured
+	// card as some default would be worse than not advertising it.
+	var vram uint64
 	var metalVRAM uint64
 	var nvidiaGPUs int64
 	for _, gpu := range info.GPUs {
+		vram += gpu.VRAMTotalBytes
 		switch gpu.Kind {
-		case "apple-silicon":
+		case sysinfo.GPUKindApple:
 			metalVRAM += gpu.VRAMTotalBytes
-		case "nvidia":
+		case sysinfo.GPUKindNVIDIA:
 			if gpu.Count > 0 {
 				nvidiaGPUs += int64(gpu.Count)
 			}
 		}
 	}
+	if vram > 0 {
+		capacity[resourceVRAM] = *resource.NewQuantity(uint64ToInt64(vram), resource.BinarySI)
+	}
+	// Deprecated alias, apple-silicon only — keeps pre-existing manifests
+	// schedulable on the nodes they were written for. See resourceMetalVRAM.
 	if metalVRAM > 0 {
 		capacity[resourceMetalVRAM] = *resource.NewQuantity(uint64ToInt64(metalVRAM), resource.BinarySI)
 	}
