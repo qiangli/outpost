@@ -29,6 +29,7 @@ func baseShardInput() shardInput {
 		lanGroup:   "home",
 		tier:       "lan",
 		gpuKind:    "nvidia",
+		backend:    "vk-ollama",
 		leaderVRAM: "24Gi",
 		workerVRAM: "24Gi",
 		topology:   "lws",
@@ -194,6 +195,7 @@ func TestShardManifestNoAffinityAtAll(t *testing.T) {
 	in.lanGroup = ""
 	in.tier = ""
 	in.gpuKind = ""
+	in.backend = ""
 	out := renderShard(t, in)
 
 	if strings.Contains(out, "affinity:") {
@@ -229,5 +231,57 @@ func TestShardManifestCarriesVKToleration(t *testing.T) {
 				t.Errorf("expected the vk toleration on leader and worker (2), got %d\n---\n%s", got, out)
 			}
 		})
+	}
+}
+
+// TestShardManifestVRAMHasEqualLimit guards the constraint that made the
+// scaffold un-appliable regardless of hardware: dhnt.io/vram is an
+// EXTENDED resource, and Kubernetes refuses a pod naming one in requests
+// without an equal limit ("Limit must be set for non overcommitable
+// resources"). The object was rejected by the API server, so the
+// scheduler never saw it.
+func TestShardManifestVRAMHasEqualLimit(t *testing.T) {
+	for _, topo := range []string{"lws", "deployment"} {
+		t.Run(topo, func(t *testing.T) {
+			in := baseShardInput()
+			in.topology = topo
+			in.leaderVRAM = "24Gi"
+			in.workerVRAM = "16Gi"
+			out := renderShard(t, in)
+
+			// One requests + one limits per container, leader and worker.
+			if got := strings.Count(out, "dhnt.io/vram: 24Gi"); got != 2 {
+				t.Errorf("leader VRAM should appear in both requests and limits (2), got %d\n---\n%s", got, out)
+			}
+			if got := strings.Count(out, "dhnt.io/vram: 16Gi"); got != 2 {
+				t.Errorf("worker VRAM should appear in both requests and limits (2), got %d\n---\n%s", got, out)
+			}
+			if got := strings.Count(out, "limits:"); got != 2 {
+				t.Errorf("expected a limits block on leader and worker (2), got %d\n---\n%s", got, out)
+			}
+		})
+	}
+}
+
+// TestShardManifestPinsBackend: the scaffold's entire contract — workers
+// addressed by host IP, no pod network, host GPU visible — is vk-ollama's
+// native-process behaviour. Without this term the scheduler is free to
+// place a shard on vk-podman, where llama-server would run inside
+// podman's Linux VM and (on macOS/Windows) see no GPU at all. Observed
+// live: leader and worker both landed on a vk-podman node.
+func TestShardManifestPinsBackend(t *testing.T) {
+	out := renderShard(t, baseShardInput())
+	if got := strings.Count(out, "key: outpost.dhnt.io/backend"); got != 2 {
+		t.Errorf("expected backend affinity on leader and worker (2), got %d\n---\n%s", got, out)
+	}
+	if !strings.Contains(out, "- vk-ollama") {
+		t.Errorf("backend value missing\n---\n%s", out)
+	}
+
+	// Opt-out leaves it unconstrained.
+	in := baseShardInput()
+	in.backend = ""
+	if out := renderShard(t, in); strings.Contains(out, "outpost.dhnt.io/backend") {
+		t.Errorf("empty --backend must drop the term\n---\n%s", out)
 	}
 }

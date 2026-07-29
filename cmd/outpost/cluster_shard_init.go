@@ -61,6 +61,7 @@ func clusterShardInitCmd() *cobra.Command {
 		lanGroup   string
 		tier       string
 		gpuKind    string
+		backend    string
 		leaderVRAM string
 		workerVRAM string
 		topology   string
@@ -95,6 +96,7 @@ Example:
 				lanGroup:   lanGroup,
 				tier:       tier,
 				gpuKind:    gpuKind,
+				backend:    backend,
 				leaderVRAM: leaderVRAM,
 				workerVRAM: workerVRAM,
 				topology:   topology,
@@ -129,6 +131,7 @@ Example:
 	cmd.Flags().IntVar(&port, "port", 8080, "Port the leader llama-server serves the OpenAI/Ollama API on")
 	cmd.Flags().StringVar(&lanGroup, "lan-group", "", "nodeAffinity: outpost.dhnt.io/lan-group value; empty = no LAN constraint (the label is only stamped on nodes with measured locality)")
 	cmd.Flags().StringVar(&tier, "tier", "", "nodeAffinity: outpost.dhnt.io/tier value (tp|lan|wan|remote); empty = no tier constraint")
+	cmd.Flags().StringVar(&backend, "backend", "vk-ollama", "nodeAffinity: outpost.dhnt.io/backend value — the vk backend that realizes these pods (vk-ollama runs them as native host processes, which is what a shard needs); empty = any backend")
 	cmd.Flags().StringVar(&gpuKind, "gpu-kind", "", "nodeAffinity: outpost.dhnt.io/gpu-kind value (nvidia|apple-silicon|amd|intel); empty = any vendor. Set it — a llama.cpp build is CUDA or Metal, never both")
 	cmd.Flags().StringVar(&leaderVRAM, "leader-vram", "8Gi", "dhnt.io/vram request for the leader (vendor-neutral GPU memory)")
 	cmd.Flags().StringVar(&workerVRAM, "worker-vram", "8Gi", "dhnt.io/vram request per worker (vendor-neutral GPU memory)")
@@ -147,6 +150,7 @@ type shardInput struct {
 	lanGroup   string
 	tier       string
 	gpuKind    string
+	backend    string
 	leaderVRAM string
 	workerVRAM string
 	topology   string
@@ -164,6 +168,7 @@ type shardVars struct {
 	LANGroup   string
 	Tier       string
 	GPUKind    string
+	Backend    string
 	LeaderVRAM string
 	WorkerVRAM string
 	UseLWS     bool
@@ -192,6 +197,14 @@ func buildShardVars(in shardInput) (shardVars, error) {
 		return shardVars{}, errors.New("--port must be 1..65535")
 	}
 	tier := strings.TrimSpace(in.tier)
+	// The --backend flag defaults to vk-ollama, the backend this whole
+	// scaffold is written around: it realizes a Pod as a NATIVE host
+	// process, which is why workers are addressed by host IP and why the
+	// leader can see the host GPU at all. Landing these pods on
+	// vk-podman instead would run llama-server inside podman's Linux VM
+	// — different semantics, and on macOS/Windows no host GPU at all.
+	// Pass --backend "" to opt out of the constraint.
+	backend := strings.TrimSpace(in.backend)
 
 	var ips []string
 	for raw := range strings.SplitSeq(in.workerIPs, ",") {
@@ -228,6 +241,7 @@ func buildShardVars(in shardInput) (shardVars, error) {
 		LANGroup:     in.lanGroup,
 		Tier:         tier,
 		GPUKind:      in.gpuKind,
+		Backend:      backend,
 		LeaderVRAM:   in.leaderVRAM,
 		WorkerVRAM:   in.workerVRAM,
 		UseLWS:       topo == "lws",
@@ -290,7 +304,7 @@ func vkTolerationBlock(pad int) string {
 // `pad` spaces, so the same placement contract drops cleanly into both
 // the LWS pod specs (deeper nesting) and the Deployment pod specs
 // (shallower). Returned without a trailing newline; call sites prefix it
-// with `{{- nodeAffinity N .LANGroup .Tier .GPUKind}}` on its own line.
+// with `{{- nodeAffinity N .LANGroup .Tier .GPUKind .Backend}}` on its own line.
 //
 // EVERY term is omitted when its value is empty, and that is load-bearing
 // rather than mere tidiness: these are requiredDuringScheduling terms, so
@@ -299,12 +313,13 @@ func vkTolerationBlock(pad int) string {
 // issued measured locality data (see vknode.NodeLocalityLabels), which on
 // a young fleet is no node at all — emitting it unconditionally is how a
 // scaffold ends up rendering a manifest that can never be placed.
-func nodeAffinityBlock(pad int, lanGroup, tier, gpuKind string) string {
+func nodeAffinityBlock(pad int, lanGroup, tier, gpuKind, backend string) string {
 	type term struct{ key, value string }
 	terms := []term{
 		{"outpost.dhnt.io/lan-group", lanGroup},
 		{"outpost.dhnt.io/tier", tier},
 		{"outpost.dhnt.io/gpu-kind", gpuKind},
+		{"outpost.dhnt.io/backend", backend},
 	}
 	present := make([]term, 0, len(terms))
 	for _, t := range terms {
@@ -361,7 +376,7 @@ spec:
           role: leader
       spec:
 {{vkToleration 8}}
-{{nodeAffinity 8 .LANGroup .Tier .GPUKind}}
+{{nodeAffinity 8 .LANGroup .Tier .GPUKind .Backend}}
         containers:
         - name: leader
           image: {{.Image}}
@@ -382,7 +397,14 @@ spec:
           ports:
           - containerPort: {{.Port}}
           resources:
+            # An extended resource is NON-OVERCOMMITTABLE: Kubernetes
+            # rejects a pod that names one in requests without an equal
+            # limit ("Limit must be set for non overcommitable
+            # resources"). requests alone never even reached the
+            # scheduler — the API server refused the object.
             requests:
+              dhnt.io/vram: {{.LeaderVRAM}}
+            limits:
               dhnt.io/vram: {{.LeaderVRAM}}
     workerTemplate:
       metadata:
@@ -392,7 +414,7 @@ spec:
       spec:
         hostNetwork: true
 {{vkToleration 8}}
-{{nodeAffinity 8 .LANGroup .Tier .GPUKind}}
+{{nodeAffinity 8 .LANGroup .Tier .GPUKind .Backend}}
         containers:
         - name: worker
           image: {{.Image}}
@@ -408,6 +430,8 @@ spec:
             hostPort: {{.RPCPort}}
           resources:
             requests:
+              dhnt.io/vram: {{.WorkerVRAM}}
+            limits:
               dhnt.io/vram: {{.WorkerVRAM}}
 {{- else -}}
 apiVersion: apps/v1
@@ -430,7 +454,7 @@ spec:
         role: leader
     spec:
 {{vkToleration 6}}
-{{nodeAffinity 6 .LANGroup .Tier .GPUKind}}
+{{nodeAffinity 6 .LANGroup .Tier .GPUKind .Backend}}
       containers:
       - name: leader
         image: {{.Image}}
@@ -451,7 +475,10 @@ spec:
         ports:
         - containerPort: {{.Port}}
         resources:
+          # Extended resources need an equal limit — see the LWS branch.
           requests:
+            dhnt.io/vram: {{.LeaderVRAM}}
+          limits:
             dhnt.io/vram: {{.LeaderVRAM}}
 ---
 apiVersion: apps/v1
@@ -475,7 +502,7 @@ spec:
     spec:
       hostNetwork: true
 {{vkToleration 6}}
-{{nodeAffinity 6 .LANGroup .Tier .GPUKind}}
+{{nodeAffinity 6 .LANGroup .Tier .GPUKind .Backend}}
       containers:
       - name: worker
         image: {{.Image}}
@@ -491,6 +518,8 @@ spec:
           hostPort: {{.RPCPort}}
         resources:
           requests:
+            dhnt.io/vram: {{.WorkerVRAM}}
+          limits:
             dhnt.io/vram: {{.WorkerVRAM}}
 ---
 apiVersion: v1
