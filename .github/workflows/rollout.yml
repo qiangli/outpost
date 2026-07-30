@@ -20,10 +20,25 @@
 #      is designed to catch.
 #   5. Re-POST the same envelope WITHOUT the hosts filter; cloudbox
 #      fans out to every paired host. The canary gets a 304 same_commit
-#      no-op; other same-platform hosts apply; cross-platform hosts
-#      fail at the probe step (envelope is built for one platform).
-#      Cross-platform rejections surface as a warning, not failure —
-#      operator runs per-platform follow-ups for mixed fleets.
+#      no-op; every other host applies.
+#
+#      Cross-platform hosts are handled by the cloud side, not by this
+#      workflow: POST /api/v1/fleet/upgrade looks the release_id up in
+#      its release ledger and swaps in each host's OWN os/arch
+#      artifact, keyed off the os/arch the host self-reports on its
+#      /apps poll. The single `platform` input below therefore only
+#      picks the CANARY's binary — it does not constrain the fan-out.
+#
+#      That per-platform swap requires the tag to be REGISTERED with
+#      cloudbox (release.yml posts the artifact map as
+#      `prerelease: true`). If it isn't, cloudbox falls back to this
+#      envelope's single URL and every host of a different platform
+#      probe-fails with "exec format error" while still reporting
+#      "accepted" in the fan-out summary — which is precisely how the
+#      linux + windows fleet sat stranded across five releases. A
+#      `no_artifact` result row means the release ships nothing for
+#      that host's platform; a mass of non-"ok" rows on a mixed fleet
+#      means registration didn't happen.
 #
 # Required repository secrets:
 #   CLOUDBOX_BASE_URL              — e.g. https://ai.dhnt.io
@@ -327,13 +342,17 @@ jobs:
           # defend receiver-side too (ledger-seeded replay guard +
           # normalized same_commit), but the envelope shouldn't rely
           # on the receiver being new enough.
-          # Hosts of a different platform fail at the worker's probe
-          # step (`<candidate> version --json` won't match the
-          # envelope's commit because the binary is built for a
-          # different arch); those land as non-"ok" per-host results
-          # and we surface them as a warning, not a failure — they're
-          # the expected outcome for the mixed-platform case, not a
-          # bug. The operator runs a per-platform POST follow-up.
+          # Hosts of a different platform are NOT a special case here:
+          # cloudbox resolves each host's own os/arch artifact from the
+          # registered release ledger before dispatching, so a mixed
+          # fleet upgrades in this one pass. Non-"ok" rows are still
+          # surfaced as a warning rather than a failure (update_mode=
+          # manual/never, offline, or a genuinely missing artifact for
+          # some platform) — but on a mixed fleet a *pile* of them now
+          # means the tag was never registered with cloudbox, and the
+          # fan-out silently fell back to this single-platform
+          # envelope. Check release.yml's "register prerelease" step
+          # before assuming the hosts are at fault.
           canary="${{ steps.cfg.outputs.host }}"
           others=$(curl -fsS \
             -H "Authorization: Bearer $CLOUDBOX_FLEET_UPGRADE_TOKEN" \

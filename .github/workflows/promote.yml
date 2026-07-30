@@ -158,8 +158,14 @@ jobs:
               --arg url "${base}/${name}" --arg sha "$sha" \
               '$cur + {($key): {url: $url, sha256: $sha}}')
           done
+          # prerelease:false is what makes this build the FLEET TARGET — the
+          # release GET /api/v1/fleet/target hands out, and therefore what
+          # every update_mode=auto host pulls unattended. Stated
+          # explicitly rather than left absent (which also decodes to false):
+          # this one boolean is the QA gate, so it should be readable here
+          # rather than inferred. release.yml posts the same shape with true.
           jq -n --arg tag "$VER" --arg commit "$COMMIT" --argjson artifacts "$artifacts" \
-            '{tag: $tag, commit: $commit, artifacts: $artifacts}' > payload.json
+            '{tag: $tag, commit: $commit, prerelease: false, artifacts: $artifacts}' > payload.json
           jq . payload.json
           echo "path=payload.json" >> "$GITHUB_OUTPUT"
 

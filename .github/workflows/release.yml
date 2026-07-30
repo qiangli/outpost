@@ -257,8 +257,80 @@ jobs:
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
           echo "base=${base}" >> "$GITHUB_OUTPUT"
 
-      # NOTE: this workflow now builds ONLY -dev pre-releases, so it never notifies
-      # the fleet. The fleet-notify webhook (and the official --latest release) live
-      # in .github/workflows/promote.yml, which byte-promotes these tested assets
-      # after the per-OS QA gates are green. Keeping the webhook out of here is what
-      # guarantees the fleet only ever sees bytes that passed QA.
+      # This workflow builds ONLY -dev pre-releases, and it registers them with
+      # cloudbox as `prerelease: true`. That is NOT the same as notifying the
+      # fleet, and the distinction is the whole point:
+      #
+      #   - REGISTERING (here) stores the tag's per-platform artifact MAP so the
+      #     canary→fleet fan-out can hand every host its OWN os/arch binary.
+      #     Without a row, cloudbox falls back to the single URL in the rollout
+      #     envelope — which is built for ONE platform (the canary's) — and every
+      #     host of a different platform gets a foreign binary that dies at the
+      #     receiver's probe with "exec format error". That is exactly how the
+      #     linux + windows fleet sat stranded across five consecutive releases
+      #     while the rollout summary reported "accepted".
+      #
+      #   - NOTIFYING (promote.yml, `prerelease: false`) is what makes a build
+      #     the fleet TARGET — the thing every update_mode=auto host pulls
+      #     unattended. That still happens only after the per-OS QA gates go
+      #     green and the bytes are promoted.
+      #
+      # The cloud side enforces the split at the wire level: the pull endpoint
+      # (GET /api/v1/fleet/target) never returns a prerelease, while the push
+      # fan-out (POST /api/v1/fleet/upgrade) resolves per-platform artifacts for
+      # any registered tag. So a -dev build is reachable by an explicit,
+      # operator-triggered rollout and by nothing else.
+      - name: build webhook payload
+        id: payload
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          # Assets are stamped with the BASE version (v1.2.3) even on a -dev
+          # tag, because promote.yml re-publishes these exact bytes under the
+          # bare tag. So the download PATH uses $TAG (the release object the
+          # assets hang off) while the FILENAME uses $base_ver.
+          base_ver="${TAG%-dev}"
+          base="https://github.com/${REPO}/releases/download/${TAG}"
+          artifacts="{}"
+          for f in dist/outpost-${base_ver}-*; do
+            name=$(basename "$f")
+            case "$name" in *.sha256) continue ;; esac
+            platform=${name#outpost-${base_ver}-}; platform=${platform%.exe}
+            os=${platform%-*}; arch=${platform##*-}
+            sha=$(shasum -a 256 "$f" | awk '{print $1}')
+            artifacts=$(jq -n --argjson cur "$artifacts" --arg key "${os}_${arch}" \
+              --arg url "${base}/${name}" --arg sha "$sha" \
+              '$cur + {($key): {url: $url, sha256: $sha}}')
+          done
+          # Fail loudly rather than registering an empty map — an empty
+          # artifacts object is rejected by cloudbox anyway, and a silent skip
+          # here would put us straight back to the single-platform fan-out.
+          if [ "$(echo "$artifacts" | jq 'length')" -eq 0 ]; then
+            echo "::error::no artifacts matched dist/outpost-${base_ver}-* — asset naming changed?"
+            ls -la dist/
+            exit 1
+          fi
+          jq -n --arg tag "$TAG" --arg commit "$COMMIT" --argjson artifacts "$artifacts" \
+            '{tag: $tag, commit: $commit, prerelease: true, artifacts: $artifacts}' > payload.json
+          jq . payload.json
+          echo "path=payload.json" >> "$GITHUB_OUTPUT"
+
+      - name: register prerelease with cloudbox (per-platform artifact map)
+        env:
+          URL: ${{ secrets.CLOUDBOX_RELEASE_WEBHOOK_URL }}
+          SECRET: ${{ secrets.CLOUDBOX_RELEASE_WEBHOOK_SECRET }}
+          PAYLOAD: ${{ steps.payload.outputs.path }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [ -z "$URL" ] || [ -z "$SECRET" ]; then
+            echo "::warning::CLOUDBOX_RELEASE_WEBHOOK_URL / _SECRET not set; skipping registration — the rollout will fall back to a single-platform envelope and non-canary platforms will probe-fail"
+            exit 0
+          fi
+          sig=$(openssl dgst -sha256 -hmac "$SECRET" "$PAYLOAD" | awk '{print $2}')
+          curl -fsS -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "X-Outpost-Release-Sig: sha256=${sig}" \
+            --data-binary "@${PAYLOAD}"
+          echo "registered ${TAG} as a PRERELEASE — the rollout can now fan out per-platform; the pull path still offers only promoted builds"
