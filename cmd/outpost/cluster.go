@@ -171,7 +171,7 @@ func clusterCmd() *cobra.Command {
 	}
 	cmd.AddCommand(clusterKubeconfigCmd(), clusterUserKubeconfigCmd(),
 		clusterInitCmd(), clusterShardInitCmd(), clusterClearCmd(), clusterBuildRuntimeCmd(),
-		clusterLeaveCmd(), clusterJoinCmd())
+		clusterLeaveCmd(), clusterJoinCmd(), clusterRecipeCmd())
 	return cmd
 }
 
