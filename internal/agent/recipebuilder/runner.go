@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 // Runner performs the three side-effecting steps of building a recipe. It is an
@@ -19,6 +20,10 @@ type Runner interface {
 	// Load streams the built image into the node's k3s containerd (via the
 	// <name>-runtime container's `k3s ctr images import`).
 	Load(ctx context.Context, ref, runtimeContainer string) error
+	// ImagePresent checks the image store of the current runtime container, not
+	// the host build cache. Runtime recreation can erase containerd while the
+	// recipe digest remains unchanged.
+	ImagePresent(ctx context.Context, ref, runtimeContainer string) (bool, error)
 }
 
 // execRunner shells out to `bashy podman` / `bashy git`. bashyBin is the
@@ -83,6 +88,22 @@ func (e execRunner) Load(ctx context.Context, ref, runtimeContainer string) erro
 		return fmt.Errorf("import %s into %s: %w", ref, runtimeContainer, err)
 	}
 	return nil
+}
+
+func (e execRunner) ImagePresent(ctx context.Context, ref, runtimeContainer string) (bool, error) {
+	cmd := exec.CommandContext(ctx, e.bashyBin, "podman", "exec", runtimeContainer,
+		"k3s", "ctr", "images", "ls", "-q", "name=="+ref)
+	cmd.Stderr = e.errw()
+	out, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("inspect %s in %s: %w", ref, runtimeContainer, err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(line) == ref {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (e execRunner) run(ctx context.Context, name string, args ...string) error {

@@ -111,12 +111,19 @@ func (b *Builder) tick(ctx context.Context) {
 		return
 	}
 	for _, r := range recipes {
-		if !r.valid() {
-			slog.Warn("recipebuilder: skipping invalid recipe", "name", r.Name)
+		if err := r.validate(); err != nil {
+			slog.Warn("recipebuilder: skipping invalid recipe", "name", r.Name, "err", err)
 			continue
 		}
 		if b.built[r.Name] == r.ContextSha256 && r.ContextSha256 != "" {
-			continue // already built this exact source
+			present, err := b.runner.ImagePresent(ctx, r.ref(), b.cfg.RuntimeContainer)
+			if err != nil {
+				slog.Warn("recipebuilder: image presence check failed", "recipe", r.Name, "err", err)
+				continue
+			}
+			if present {
+				continue // exact source is still loaded in the current runtime
+			}
 		}
 		if err := b.buildOne(ctx, r); err != nil {
 			slog.Warn("recipebuilder: build+load failed", "recipe", r.Name, "err", err)
@@ -143,6 +150,30 @@ func (b *Builder) buildOne(ctx context.Context, r Recipe) error {
 			return err
 		}
 		ctxRoot = dest
+	case "inline_tar":
+		raw, err := decodeInlineArchive(r.ContextArchive, r.ContextSha256)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(b.workDir, 0o700); err != nil {
+			return fmt.Errorf("create workdir: %w", err)
+		}
+		dest := filepath.Join(b.workDir, r.Name)
+		tmp, err := os.MkdirTemp(b.workDir, "."+r.Name+"-")
+		if err != nil {
+			return fmt.Errorf("create context tempdir: %w", err)
+		}
+		defer os.RemoveAll(tmp)
+		if err := extractInlineArchive(raw, tmp); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(dest); err != nil {
+			return fmt.Errorf("clean workdir: %w", err)
+		}
+		if err := os.Rename(tmp, dest); err != nil {
+			return fmt.Errorf("install context: %w", err)
+		}
+		ctxRoot = dest
 	default:
 		return fmt.Errorf("unsupported context_type %q", r.ContextType)
 	}
@@ -156,6 +187,13 @@ func (b *Builder) buildOne(ctx context.Context, r Recipe) error {
 	}
 	if err := b.runner.Load(ctx, r.ref(), b.cfg.RuntimeContainer); err != nil {
 		return fmt.Errorf("load: %w", err)
+	}
+	present, err := b.runner.ImagePresent(ctx, r.ref(), b.cfg.RuntimeContainer)
+	if err != nil {
+		return fmt.Errorf("verify loaded image: %w", err)
+	}
+	if !present {
+		return fmt.Errorf("verify loaded image: %s is absent from runtime %s", r.ref(), b.cfg.RuntimeContainer)
 	}
 	return nil
 }
