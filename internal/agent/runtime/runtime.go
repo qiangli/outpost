@@ -130,6 +130,41 @@ type Options struct {
 // via Options.Image.
 const DefaultImage = "outpost-runtime:dev"
 
+const (
+	nodeIDVolumeSuffix          = "node-id"
+	tailscaleStateVolumeSuffix  = "ts-state"
+	cniStateVolumeSuffix        = "cni"
+	workloadStorageVolumeSuffix = "k3s-storage"
+)
+
+func runtimeVolumeName(agentName, suffix string) string {
+	return "outpost-" + agentName + "-" + suffix
+}
+
+// persistentVolumeMounts are deliberately narrow. In particular, never replace
+// the k3s-storage mount with /var/lib/rancher/k3s: containerd and its
+// snapshotter also live under that parent, and putting the complete tree on an
+// outer-runtime volume breaks nested mounts and kubelet filesystem statistics.
+//
+// The local-path provisioner stores workload PVC contents under
+// /var/lib/rancher/k3s/storage. Keeping only that directory on a stable,
+// outpost-managed volume lets those PVCs survive a runtime-container recreate
+// and a leave/rejoin without coupling the inner container runtime to Podman.
+//
+// The other mounts retain their existing lifecycle: node-id keeps the kubelet
+// identity stable; ts-state keeps the Tailscale machine key stable between
+// restarts; and cni keeps the IPAM allocation ledger stable while the runtime
+// container is recreated. Leave purges the latter two membership volumes but
+// not node-id or workload storage (see identityVolumes).
+func persistentVolumeMounts(agentName string) []string {
+	return []string{
+		runtimeVolumeName(agentName, nodeIDVolumeSuffix) + ":/etc/rancher/node",
+		runtimeVolumeName(agentName, tailscaleStateVolumeSuffix) + ":/var/lib/tailscale",
+		runtimeVolumeName(agentName, cniStateVolumeSuffix) + ":/var/lib/cloudbox/cni",
+		runtimeVolumeName(agentName, workloadStorageVolumeSuffix) + ":/var/lib/rancher/k3s/storage",
+	}
+}
+
 // Up ensures the runtime container is running with the supplied
 // credentials. Idempotent: if a container with the expected name
 // already exists, Up restarts it (so credential changes take effect).
@@ -156,23 +191,6 @@ func Up(ctx context.Context, opts Options) error {
 	_ = exec.CommandContext(ctx, bin, "stop", containerName).Run()
 	_ = exec.CommandContext(ctx, bin, "rm", "-f", containerName).Run()
 
-	// Persist only the node-identity directory (/etc/rancher/node) — the
-	// agent's `--with-node-id` flag writes node-id + node-password into
-	// /etc/rancher/node/node-id and /etc/rancher/node/node-password.k3s.
-	// Persisting just that subtree (not the whole /var/lib/rancher/k3s
-	// tree) lets the same outpost identity reattach across container
-	// restarts without piping containerd's storage layer through a
-	// podman named volume (which broke nested FUSE mounts + the
-	// kubelet's eviction-manager stats provider).
-	nodeIDVol := "outpost-" + opts.AgentName + "-node-id"
-	// Persist the tailscale state too (/var/lib/tailscale holds the
-	// machine key). Without it, every container restart mints a NEW machine
-	// key, so Headscale registers a brand-new node each time and leaves the
-	// old one behind — the overlay accretes stale duplicate nodes that all
-	// advertise the same pod CIDR, which confuses route propagation to
-	// peers (a peer stops learning the route). Persisting the key makes a
-	// restart re-attach as the SAME node — idempotent, no duplicates.
-	tsStateVol := "outpost-" + opts.AgentName + "-ts-state"
 	hostName := opts.HostName
 	if hostName == "" {
 		hostName = opts.AgentName
@@ -189,25 +207,21 @@ func Up(ctx context.Context, opts Options) error {
 		// is supported by both upstream podman and ycode podman
 		// (the latter since the --cgroupns flag was added).
 		"--cgroupns=host",
-		"-v", nodeIDVol + ":/etc/rancher/node",
-		"-v", tsStateVol + ":/var/lib/tailscale",
-		// Persist the CNI IPAM state (/var/lib/cloudbox/cni holds one
-		// <container-id>.ip file per pod). Ephemeral, it was wiped on
-		// every container recreate, so the plugin's "used addresses"
-		// scan came up empty and handed a fresh pod an IP a
-		// still-running pod already held — duplicate pod IPs. Persisting
-		// it keeps the allocation ledger across restarts.
-		"-v", "outpost-" + opts.AgentName + "-cni:/var/lib/cloudbox/cni",
+	}
+	for _, mount := range persistentVolumeMounts(opts.AgentName) {
+		args = append(args, "-v", mount)
+	}
+	args = append(args,
 		// Host kernel modules (read-only) so the entrypoint can
 		// `modprobe br_netfilter` — required for kube-proxy's ClusterIP
 		// DNAT to apply to on-bridge (same-node) service traffic, which
 		// is what makes in-cluster DNS work. Without the module the
 		// bridge-nf-call sysctls don't even exist.
 		"-v", "/lib/modules:/lib/modules:ro",
-		"-e", "OUTPOST_AGENT_NAME=" + opts.AgentName,
-		"-e", "OUTPOST_HOST_NAME=" + hostName,
-		"-e", "OUTPOST_NODE_TOKEN=" + opts.NodeToken,
-	}
+		"-e", "OUTPOST_AGENT_NAME="+opts.AgentName,
+		"-e", "OUTPOST_HOST_NAME="+hostName,
+		"-e", "OUTPOST_NODE_TOKEN="+opts.NodeToken,
+	)
 	if opts.APIServer != "" {
 		args = append(args, "-e", "OUTPOST_API_SERVER="+opts.APIServer)
 	}
@@ -267,12 +281,12 @@ func Down(ctx context.Context, opts Options) error {
 	return nil
 }
 
-// identityVolumes are the podman named volumes `leave` purges so a rejoin gets a
-// clean OVERLAY identity: the tailscale machine key (ts-state) and the CNI IPAM
-// ledger. cloudbox deletes this node's Headscale registration and releases its
-// pod CIDR on leave, so re-attaching the old machine key would try to be a node
-// the coordinator no longer knows, and the stale IPAM ledger would hand out
-// addresses from the previous pod CIDR — both wrong for a fresh rejoin.
+// identityVolumes are the podman named volumes `leave` purges so a rejoin gets
+// a clean OVERLAY identity: the tailscale machine key (ts-state) and the CNI
+// IPAM ledger. cloudbox deletes this node's Headscale registration and releases
+// its pod CIDR on leave, so re-attaching the old machine key would try to be a
+// node the coordinator no longer knows, and the stale IPAM ledger would hand
+// out addresses from the previous pod CIDR — both wrong for a fresh rejoin.
 //
 // The k3s node-id volume is DELIBERATELY EXCLUDED: it carries the k8s node NAME
 // + node-password, which are orthogonal to the overlay. Purging it would churn
@@ -280,10 +294,14 @@ func Down(ctx context.Context, opts Options) error {
 // orphaning labels/affinity and accreting node objects. Keeping it lets the
 // node RETURN under a stable name (the kubelet re-registers it at startup), so
 // leave/join is idempotent in the cluster's eyes.
+//
+// The k3s-storage volume is also DELIBERATELY EXCLUDED. It is workload data,
+// not node membership state: cluster leave must not silently delete local-path
+// PVC contents.
 func identityVolumes(agentName string) []string {
 	return []string{
-		"outpost-" + agentName + "-ts-state",
-		"outpost-" + agentName + "-cni",
+		runtimeVolumeName(agentName, tailscaleStateVolumeSuffix),
+		runtimeVolumeName(agentName, cniStateVolumeSuffix),
 	}
 }
 
