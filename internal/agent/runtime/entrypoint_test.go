@@ -27,3 +27,22 @@ func TestEmbeddedEntrypointBoundsOverlayLoginBeforeK3s(t *testing.T) {
 		t.Fatal("overlay timeout does not explicitly continue to k3s")
 	}
 }
+
+func TestEmbeddedEntrypointReconcilesIPAMBeforeK3s(t *testing.T) {
+	data, err := fs.ReadFile(imageFS, "image/entrypoint.sh")
+	if err != nil {
+		t.Fatalf("read embedded entrypoint: %v", err)
+	}
+	script := string(data)
+	reconcileAt := strings.Index(script, "/opt/cni/bin/outpost-cni reconcile-ipam")
+	if reconcileAt < 0 {
+		t.Fatal("entrypoint does not reconcile stale IPAM on runtime recreation")
+	}
+	k3sAt := strings.LastIndex(script, "exec k3s agent")
+	if k3sAt < 0 {
+		t.Fatal("entrypoint no longer execs k3s agent")
+	}
+	if reconcileAt > k3sAt {
+		t.Fatal("stale IPAM must be reconciled before k3s starts")
+	}
+}

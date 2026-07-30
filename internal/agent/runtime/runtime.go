@@ -21,6 +21,8 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -123,6 +125,10 @@ type Options struct {
 	// ExtraEnv is appended to the container's env in KEY=VALUE form.
 	// Escape hatch for development.
 	ExtraEnv []string
+
+	// ForceRecreate replaces an otherwise matching runtime. The caller sets
+	// this when EnsureImage rebuilt the local image in this process.
+	ForceRecreate bool
 }
 
 // DefaultImage is the runtime image tag the outpost daemon expects to
@@ -135,6 +141,7 @@ const (
 	tailscaleStateVolumeSuffix  = "ts-state"
 	cniStateVolumeSuffix        = "cni"
 	workloadStorageVolumeSuffix = "k3s-storage"
+	runtimeConfigLabel          = "io.dhnt.runtime-config-sha256"
 )
 
 func runtimeVolumeName(agentName, suffix string) string {
@@ -153,9 +160,11 @@ func runtimeVolumeName(agentName, suffix string) string {
 //
 // The other mounts retain their existing lifecycle: node-id keeps the kubelet
 // identity stable; ts-state keeps the Tailscale machine key stable between
-// restarts; and cni keeps the IPAM allocation ledger stable while the runtime
-// container is recreated. Leave purges the latter two membership volumes but
-// not node-id or workload storage (see identityVolumes).
+// restarts; and cni keeps the IPAM allocation ledger stable while the same
+// inner container runtime survives. On a proven runtime recreation the old
+// lease directory is quarantined inside the cni volume before k3s starts.
+// Leave purges the latter two membership volumes but not node-id or workload
+// storage (see identityVolumes).
 func persistentVolumeMounts(agentName string) []string {
 	return []string{
 		runtimeVolumeName(agentName, nodeIDVolumeSuffix) + ":/etc/rancher/node",
@@ -166,8 +175,9 @@ func persistentVolumeMounts(agentName string) []string {
 }
 
 // Up ensures the runtime container is running with the supplied
-// credentials. Idempotent: if a container with the expected name
-// already exists, Up restarts it (so credential changes take effect).
+// credentials. Idempotent: if a matching container with the expected name
+// already exists, Up reuses it (or starts it if stopped). Configuration/image
+// changes replace it and mark the new inner runtime for stale-IPAM recovery.
 // Returns immediately after the container is started; container exit
 // is observed through ctx + a follow-up goroutine the caller spins
 // to tail logs.
@@ -185,11 +195,39 @@ func Up(ctx context.Context, opts Options) error {
 	}
 	containerName := opts.AgentName + "-runtime"
 
-	// Stop + remove any prior instance so the new env takes effect.
-	// Errors swallowed — rm of a non-existent container is normal on
-	// first boot.
-	_ = exec.CommandContext(ctx, bin, "stop", containerName).Run()
-	_ = exec.CommandContext(ctx, bin, "rm", "-f", containerName).Run()
+	fingerprint, err := runtimeFingerprint(ctx, bin, image, opts)
+	if err != nil {
+		return err
+	}
+	existingFingerprint, running, containerExists := inspectRuntime(ctx, bin, containerName)
+	if containerExists && !opts.ForceRecreate && existingFingerprint == fingerprint {
+		if running {
+			slog.Info("runtime: reusing running container", "name", containerName)
+			return nil
+		}
+		if out, err := exec.CommandContext(ctx, bin, "start", containerName).CombinedOutput(); err != nil {
+			return fmt.Errorf("runtime: %s start: %w (%s)", bin, err, strings.TrimSpace(string(out)))
+		}
+		slog.Info("runtime: restarted existing container", "name", containerName)
+		return nil
+	}
+
+	// A successful inspect proves that this specific container exists and can
+	// safely be removed. An inspect error is deliberately not followed by rm:
+	// if the engine itself is unhealthy, the subsequent run fails closed
+	// instead of destroying state based on an ambiguous result.
+	if containerExists {
+		_ = exec.CommandContext(ctx, bin, "stop", containerName).Run()
+		if out, err := exec.CommandContext(ctx, bin, "rm", "-f", containerName).CombinedOutput(); err != nil {
+			return fmt.Errorf("runtime: %s rm: %w (%s)", bin, err, strings.TrimSpace(string(out)))
+		}
+	}
+
+	// The CNI volume can outlive a manually removed runtime container. Its
+	// presence still proves that this is not a first boot; all leases belong to
+	// the erased inner containerd and must be quarantined before new CNI ADDs.
+	runtimeRecreated := containerExists || volumeExists(ctx, bin,
+		runtimeVolumeName(opts.AgentName, cniStateVolumeSuffix))
 
 	hostName := opts.HostName
 	if hostName == "" {
@@ -198,6 +236,7 @@ func Up(ctx context.Context, opts Options) error {
 	args := []string{
 		"run", "-d",
 		"--name", containerName,
+		"--label", runtimeConfigLabel + "=" + fingerprint,
 		"--privileged",
 		// Share the VM root's cgroup namespace. The container hosts
 		// k3s-agent + kubelet which need cpuset and other v2
@@ -222,6 +261,9 @@ func Up(ctx context.Context, opts Options) error {
 		"-e", "OUTPOST_HOST_NAME="+hostName,
 		"-e", "OUTPOST_NODE_TOKEN="+opts.NodeToken,
 	)
+	if runtimeRecreated {
+		args = append(args, "-e", "OUTPOST_RUNTIME_RECREATED=1")
+	}
 	if opts.APIServer != "" {
 		args = append(args, "-e", "OUTPOST_API_SERVER="+opts.APIServer)
 	}
@@ -264,8 +306,80 @@ func Up(ctx context.Context, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("runtime: %s run: %w (%s)", bin, err, strings.TrimSpace(string(out)))
 	}
-	slog.Info("runtime: container started", "id", strings.TrimSpace(string(out))[:12])
+	id := strings.TrimSpace(string(out))
+	if len(id) > 12 {
+		id = id[:12]
+	}
+	slog.Info("runtime: container started", "id", id)
 	return nil
+}
+
+type fingerprintInput struct {
+	AgentName     string
+	HostName      string
+	ImageIdentity string
+	NodeToken     string
+	APIServer     string
+	CloudboxHost  string
+	CloudboxPort  int
+	STCPSecret    string
+	MatrixToken   string
+	APIPort       int
+	KubeletPort   int
+	PodCIDR       string
+	OverlayLogin  string
+	ExtraEnv      []string
+}
+
+func runtimeFingerprint(ctx context.Context, bin, image string, opts Options) (string, error) {
+	identity := image
+	if out, err := exec.CommandContext(ctx, bin, "image", "inspect", "--format", "{{.Id}}", image).CombinedOutput(); err == nil {
+		if inspected := strings.TrimSpace(string(out)); inspected != "" {
+			identity = inspected
+		}
+	}
+	input := fingerprintInput{
+		AgentName:     opts.AgentName,
+		HostName:      opts.HostName,
+		ImageIdentity: identity,
+		NodeToken:     opts.NodeToken,
+		APIServer:     opts.APIServer,
+		CloudboxHost:  opts.CloudboxHost,
+		CloudboxPort:  opts.CloudboxPort,
+		STCPSecret:    opts.STCPSecret,
+		MatrixToken:   opts.MatrixToken,
+		APIPort:       opts.APIPort,
+		KubeletPort:   opts.KubeletPort,
+		PodCIDR:       opts.PodCIDR,
+		OverlayLogin:  opts.OverlayLoginServer,
+		ExtraEnv:      opts.ExtraEnv,
+	}
+	payload, err := json.Marshal(input)
+	if err != nil {
+		return "", fmt.Errorf("runtime: fingerprint config: %w", err)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(payload)), nil
+}
+
+func inspectRuntime(ctx context.Context, bin, containerName string) (fingerprint string, running, exists bool) {
+	format := fmt.Sprintf(`{{ index .Config.Labels %q }}|{{.State.Running}}`, runtimeConfigLabel)
+	out, err := exec.CommandContext(ctx, bin, "inspect", "--format", format, containerName).CombinedOutput()
+	if err != nil {
+		return "", false, false
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(out)), "|", 2)
+	if len(parts) != 2 {
+		return "", false, true
+	}
+	fingerprint = strings.TrimSpace(parts[0])
+	if fingerprint == "<no value>" {
+		fingerprint = ""
+	}
+	return fingerprint, strings.EqualFold(strings.TrimSpace(parts[1]), "true"), true
+}
+
+func volumeExists(ctx context.Context, bin, volumeName string) bool {
+	return exec.CommandContext(ctx, bin, "volume", "inspect", volumeName).Run() == nil
 }
 
 // Down stops + removes the container. Used during outpost shutdown +

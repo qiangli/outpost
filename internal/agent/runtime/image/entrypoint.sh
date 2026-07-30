@@ -18,8 +18,22 @@ set -eu
 : "${OUTPOST_POD_CIDR:=}"
 : "${OUTPOST_OVERLAY_LOGIN:=}"
 : "${OUTPOST_OVERLAY_AUTHKEY:=}"
+: "${OUTPOST_RUNTIME_RECREATED:=0}"
 
 log() { printf '[runtime] %s\n' "$*" >&2; }
+
+# The CNI ledger is persisted outside the runtime container, while inner
+# containerd/sandbox state is intentionally ephemeral. The outer supervisor
+# sets this marker only when it proved this container is newly replacing an
+# earlier inner runtime (or found an orphaned CNI volume with no container).
+# At that point every old sandbox is gone, so retaining its leases would
+# eventually exhaust the node /24. Move them aside for forensics, then start
+# from an empty atomic directory. Ordinary daemon restarts reuse the existing
+# runtime container and never take this path.
+if [ "${OUTPOST_RUNTIME_RECREATED}" = "1" ]; then
+    log "inner runtime recreated; quarantining stale CNI IPAM leases"
+    /opt/cni/bin/outpost-cni reconcile-ipam
+fi
 
 # Load br_netfilter so /proc/sys/net/bridge/bridge-nf-call-* exist, then
 # turn bridge-nf-call-iptables ON. This is LOAD-BEARING, not best-effort:

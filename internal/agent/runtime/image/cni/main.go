@@ -34,6 +34,17 @@ import (
 const supportedCNIVersion = "0.4.0"
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "reconcile-ipam" {
+		moved, err := plugin.QuarantineStaleIPAM()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if moved != "" {
+			fmt.Fprintf(os.Stderr, "quarantined stale IPAM leases at %s\n", moved)
+		}
+		return
+	}
 	cmd := os.Getenv("CNI_COMMAND")
 	switch cmd {
 	case "ADD":

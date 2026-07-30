@@ -2187,6 +2187,7 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 			agent.ReadBuildInfo().ShortCommit(), stateDir); eerr != nil {
 			slog.Warn("cluster agent runtime: image ensure failed; using existing image if present", "err", eerr)
 		} else if rebuilt {
+			rtOpts.ForceRecreate = true
 			slog.Info("cluster agent runtime: image rebuilt to match this outpost version")
 		}
 	}
