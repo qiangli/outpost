@@ -3529,17 +3529,6 @@ func outpostLogPath() (string, error) {
 	return filepath.Join(dir, "outpost.log"), nil
 }
 
-// processAlive returns true if a process with the given pid is currently
-// running. Uses signal 0 — POSIX's "check whether you could deliver a
-// signal" no-op. Good enough for a quick post-spawn liveness check.
-func processAlive(pid int) bool {
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return p.Signal(syscall.Signal(0)) == nil
-}
-
 // pidFilePath returns the path where startCmd records its pid so stopCmd
 // (and the duplicate-instance check) can find it later.
 func pidFilePath() (string, error) {
