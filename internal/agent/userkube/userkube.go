@@ -211,17 +211,10 @@ func Render(contextName string, p *vknode.ParsedKubeconfig) string {
 		"current-context: " + contextName + "\n"
 }
 
-// writeAtomic creates parent dirs, writes to <path>.tmp, then
-// renames over <path>. 0600 — kubeconfig contains a bearer token.
+// writeAtomic validates the rendered kubeconfig and durably replaces path
+// through a same-directory 0600 temporary file.
 func writeAtomic(path, body string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return writeValidatedAtomic(path, []byte(body))
 }
 
 func recordStatus(path, node, apiURL string, err error) {

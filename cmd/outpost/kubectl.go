@@ -158,7 +158,7 @@ func ensureUserKubeconfig(ctx context.Context, refresh bool) (string, error) {
 		// Stale cache is still preferable to a hard fail when
 		// cloudbox is briefly unreachable — kubectl will surface
 		// any auth error itself if the token expired.
-		if !refresh && fileExists(path) {
+		if !refresh && validKubeconfigFile(path) {
 			fmt.Fprintf(os.Stderr, "warning: failed to refresh kubeconfig (%v); using cached copy\n", err)
 			return path, nil
 		}
@@ -175,11 +175,15 @@ func kubeconfigFresh(path string) bool {
 	if err != nil {
 		return false
 	}
-	return time.Since(st.ModTime()) < kubeconfigStaleAfter
+	return time.Since(st.ModTime()) < kubeconfigStaleAfter && validKubeconfigFile(path)
 }
 
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
+func validKubeconfigFile(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	_, err = userkube.ValidateKubeconfig(data)
 	return err == nil
 }
 
