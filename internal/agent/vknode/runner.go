@@ -94,6 +94,18 @@ func Run(ctx context.Context, opts RunOptions) error {
 		return errors.New("vknode: Kube REST config required")
 	}
 
+	client, err := kubernetes.NewForConfig(opts.Kube)
+	if err != nil {
+		return fmt.Errorf("kube client: %w", err)
+	}
+	if setter, ok := opts.Backend.(interface {
+		setNativeArtifactCredentialResolver(NativeArtifactCredentialResolver)
+	}); ok {
+		setter.setNativeArtifactCredentialResolver(
+			&kubernetesNativeArtifactCredentialResolver{client: client},
+		)
+	}
+
 	var (
 		prov    *Provider
 		provErr error
@@ -113,11 +125,6 @@ func Run(ctx context.Context, opts RunOptions) error {
 	prov.SetTransientApps(opts.TransientApps)
 	if err := prov.Reconcile(ctx); err != nil {
 		return fmt.Errorf("reconcile: %w", err)
-	}
-
-	client, err := kubernetes.NewForConfig(opts.Kube)
-	if err != nil {
-		return fmt.Errorf("kube client: %w", err)
 	}
 
 	// Pod informer scoped to "pods assigned to this node" — we don't

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,6 +43,9 @@ type nativeProcessBackend struct {
 	hostIP  string // readiness-dial / base-URL host (default 127.0.0.1)
 	image   string // marker image recorded when a Pod omits one
 
+	artifactCredentials NativeArtifactCredentialResolver
+	artifactHTTPClient  *http.Client
+
 	// Hooks — defaulted by NewNativeProcessBackend, overridable in tests.
 	lookPath  func(name string) (string, error)
 	launch    func(ctx context.Context, spec launchSpec) (int, error)
@@ -58,6 +62,15 @@ type NativeProcessConfig struct {
 	DataDir string // where the JSON registry + process logs live
 	HostIP  string // host the process is reachable on (default 127.0.0.1)
 	Image   string // image recorded when a Pod omits one
+
+	// ArtifactCredentials resolves a Pod's runtime-only named credential
+	// profile. Production runners install a namespace-scoped Kubernetes
+	// Secret resolver; standalone callers may provide their own broker.
+	ArtifactCredentials NativeArtifactCredentialResolver
+
+	// ArtifactHTTPClient is optional and primarily useful to brokers/tests.
+	// nil uses a bounded default client.
+	ArtifactHTTPClient *http.Client
 }
 
 // OllamaConfig is the legacy config alias for NewOllamaBackend.
@@ -81,13 +94,15 @@ func NewNativeProcessBackend(cfg NativeProcessConfig) (Backend, error) {
 		return nil, fmt.Errorf("vknode: create native-process data dir: %w", err)
 	}
 	b := &nativeProcessBackend{
-		dataDir:   cfg.DataDir,
-		hostIP:    cfg.HostIP,
-		image:     cfg.Image,
-		lookPath:  defaultLookPath,
-		launch:    defaultLaunch,
-		alive:     processAlive,
-		terminate: killProcessTree,
+		dataDir:             cfg.DataDir,
+		hostIP:              cfg.HostIP,
+		image:               cfg.Image,
+		artifactCredentials: cfg.ArtifactCredentials,
+		artifactHTTPClient:  cfg.ArtifactHTTPClient,
+		lookPath:            defaultLookPath,
+		launch:              defaultLaunch,
+		alive:               processAlive,
+		terminate:           killProcessTree,
 	}
 	if b.hostIP == "" {
 		b.hostIP = "127.0.0.1"
@@ -95,8 +110,20 @@ func NewNativeProcessBackend(cfg NativeProcessConfig) (Backend, error) {
 	if b.image == "" {
 		b.image = DefaultNativeProcessImage
 	}
+	if b.artifactHTTPClient == nil {
+		b.artifactHTTPClient = defaultNativeArtifactHTTPClient()
+	}
 	b.ready = b.tcpReady
 	return b, nil
+}
+
+func (b *nativeProcessBackend) setNativeArtifactCredentialResolver(r NativeArtifactCredentialResolver) {
+	// Preserve an explicitly configured resolver (for example, a
+	// venue-local one-time credential broker). The Kubernetes Secret
+	// resolver is only the production default.
+	if b.artifactCredentials == nil {
+		b.artifactCredentials = r
+	}
 }
 
 // NewOllamaBackend returns a native-process Backend using the legacy
