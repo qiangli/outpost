@@ -1,0 +1,41 @@
+# Line endings are part of the CONTRACT for anything that runs inside a Linux
+# container or is exec'd by a kernel, not a style preference.
+#
+# Windows checkouts default to core.autocrlf=true, which rewrites LF to CRLF in
+# the working tree. Several of these files are compiled into the outpost binary
+# with go:embed, so a CRLF working tree produces a binary carrying CRLF scripts
+# — and `go:embed` is byte-exact, so nothing downstream corrects it.
+#
+# The failure that motivated this is worth recording because it is invisible:
+# the container runtime image built on a Windows host had an /entrypoint.sh whose
+# shebang read `#!/bin/sh\r`. The kernel then looks for an interpreter literally
+# named "/bin/sh\r", does not find it, and reports:
+#
+#     exec container process (missing dynamic library?) `/entrypoint.sh`:
+#     No such file or directory
+#
+# which points at the script rather than at its interpreter and reads like a
+# missing file or a broken image. The file was present and executable; it was
+# 447 bytes larger than the same file on macOS — exactly one CR per its 447
+# lines. The DKS agent node on that host stayed NotReady with no other symptom.
+#
+# Default: let git normalize text in the repository, and keep the working tree
+# LF for everything that must be read by a Unix kernel or shell.
+* text=auto eol=lf
+
+# Explicit for the files where a CRLF would be fatal rather than merely untidy.
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+Containerfile   text eol=lf
+*.bash          text eol=lf
+
+# Windows-native scripts genuinely want CRLF.
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+*.ps1           text eol=crlf
+
+# Binary, never touched.
+*.png           binary
+*.gz            binary
+*.zip           binary
+*.tar           binary
