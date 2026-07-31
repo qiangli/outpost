@@ -7,7 +7,7 @@
 #
 # An agent-first equivalent lives alongside in DAG.md (`bashy dag build`, …).
 
-.PHONY: help build build-all test test-headless tidy clean install
+.PHONY: help build build-all test test-headless tidy fmtcheck hooks clean install
 
 .DEFAULT_GOAL := help
 
@@ -27,8 +27,15 @@ test:  ## Run Go tests in short mode (internal/agent/shell needs a real TTY)
 test-headless:  ## Short tests minus internal/agent/shell (safe without a controlling TTY)
 	@go test -short $$(go list ./... | grep -v internal/agent/shell)
 
-tidy:  ## go mod tidy + go fmt + go vet
+tidy:  ## go mod tidy + go fmt + go vet (APPLIES fixes — not a gate)
 	@./scripts/tidy.sh
+
+fmtcheck:  ## gofmt gate — reports unformatted files, never rewrites them
+	@./scripts/fmtcheck.sh
+
+hooks:  ## install the pre-push gates (gofmt + .sibling-pins drift)
+	@git config core.hooksPath scripts/hooks
+	@echo "hooks installed: core.hooksPath=scripts/hooks"
 
 install:  ## Build + install into $$DHNT_BIN_DIR (default $$HOME/.local/bin)
 	@./scripts/install-bin.sh
