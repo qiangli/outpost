@@ -49,8 +49,20 @@ type ServerOptions struct {
 	TunnelBindAddr string
 	TunnelBindPort int
 
-	// APIPort is the apiserver's port inside the container (default 6443).
-	// It is also published to the host so `kubectl` works locally.
+	// APIPort is the apiserver's port, used BOTH inside the container and as
+	// the published host port so the kubeconfig k3s writes is valid on the
+	// host unmodified.
+	//
+	// DEFAULT 16443, NOT 6443, and the difference is load-bearing. A host that
+	// JOINS a cluster already binds 127.0.0.1:6443 — that is where its STCP
+	// visitor puts the apiserver it joins. A host that also HOSTS a plane
+	// would collide, and the collision is silent and vicious: kubectl reaches
+	// whichever listener won the port while presenting the OTHER cluster's CA,
+	// so it reports `certificate signed by unknown authority` and every
+	// instinct says "bad certificate" rather than "wrong server".
+	//
+	// Hosting and joining are independent decisions, so they must not contend
+	// for one port.
 	APIPort int
 
 	// KubeconfigDir is a HOST directory the container writes its admin
@@ -68,6 +80,10 @@ type ServerOptions struct {
 	PodmanBin     string
 	ForceRecreate bool
 }
+
+// DefaultControlPlaneAPIPort is where a HOSTED apiserver listens. Deliberately
+// not 6443: that belongs to the visitor for a cluster this host JOINS.
+const DefaultControlPlaneAPIPort = 16443
 
 // ServerContainerName is the container this host's control plane runs in.
 func ServerContainerName(agentName string) string { return agentName + "-control-plane" }
@@ -102,7 +118,7 @@ func (o *ServerOptions) applyDefaults() {
 		o.TunnelBindPort = 7000
 	}
 	if o.APIPort == 0 {
-		o.APIPort = 6443
+		o.APIPort = DefaultControlPlaneAPIPort
 	}
 }
 

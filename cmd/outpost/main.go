@@ -2607,9 +2607,12 @@ func startControlPlaneTunnel(ctx context.Context, g *errgroup.Group, fc *conf.Fi
 		STCPSecret:     secret,
 		TunnelBindAddr: addr,
 		TunnelBindPort: port,
-		APIPort:        clusterAPIPort(fc.Cluster),
-		KubeconfigDir:  kubeDir,
-		TLSSANs:        fc.Cluster.TunnelSANs(),
+		// Deliberately NOT clusterAPIPort: that is the port this host's
+		// visitor binds for the cluster it JOINS. Letting the hosted plane
+		// reuse it makes kubectl hit whichever listener won.
+		APIPort:       runtime.DefaultControlPlaneAPIPort,
+		KubeconfigDir: kubeDir,
+		TLSSANs:       fc.Cluster.TunnelSANs(),
 	}
 	if opts.AgentName == "" {
 		slog.Warn("control plane: disabled (no node name)")

@@ -51,8 +51,20 @@ func TestServerOptions_DefaultsToLoopback(t *testing.T) {
 	if o.TunnelBindAddr != "127.0.0.1" {
 		t.Errorf("bind addr = %q, want loopback", o.TunnelBindAddr)
 	}
-	if o.TunnelBindPort != 7000 || o.APIPort != 6443 {
-		t.Errorf("ports = %d/%d, want 7000/6443", o.TunnelBindPort, o.APIPort)
+	if o.TunnelBindPort != 7000 {
+		t.Errorf("tunnel port = %d, want 7000", o.TunnelBindPort)
+	}
+	// THE HOSTED APISERVER MUST NOT DEFAULT TO 6443. A host that JOINS a
+	// cluster already binds 127.0.0.1:6443 for that cluster's visitor; a host
+	// that also HOSTS one would collide, and kubectl would then reach
+	// whichever listener won while presenting the other cluster's CA —
+	// surfacing as "certificate signed by unknown authority", which sends you
+	// looking at certificates instead of at ports.
+	if o.APIPort == 6443 {
+		t.Error("hosted apiserver defaulted to 6443, colliding with the join-side visitor")
+	}
+	if o.APIPort != DefaultControlPlaneAPIPort {
+		t.Errorf("api port = %d, want %d", o.APIPort, DefaultControlPlaneAPIPort)
 	}
 	if o.Image != DefaultImage {
 		t.Errorf("image = %q, want the shared runtime image", o.Image)
@@ -103,7 +115,7 @@ func TestServerFingerprint_ChangesWithEveryMeaningfulField(t *testing.T) {
 		"stcp secret":  func(o *ServerOptions) { o.STCPSecret = "other" },
 		"bind addr":    func(o *ServerOptions) { o.TunnelBindAddr = "0.0.0.0" },
 		"bind port":    func(o *ServerOptions) { o.TunnelBindPort = 7100 },
-		"api port":     func(o *ServerOptions) { o.APIPort = 16443 },
+		"api port":     func(o *ServerOptions) { o.APIPort = 26443 },
 		"tls sans":     func(o *ServerOptions) { o.TLSSANs = "10.0.0.5" },
 		"cluster cidr": func(o *ServerOptions) { o.ClusterCIDR = "10.42.0.0/16" },
 		"service cidr": func(o *ServerOptions) { o.ServiceCIDR = "10.43.0.0/16" },
