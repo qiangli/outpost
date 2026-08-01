@@ -1735,7 +1735,7 @@ func startCmd() *cobra.Command {
 				Protocol:   cfg.Protocol,
 				Token:      cfg.Token,
 				User:       cfg.AgentName,
-			}, proxies, visitors)
+			}, proxies, visitors, nil)
 			if err != nil {
 				return err
 			}

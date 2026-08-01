@@ -45,7 +45,7 @@ func TestTunnelRunHonorsCtxCancellation(t *testing.T) {
 		ServerPort: 1,
 		Token:      "test",
 		User:       "test",
-	}, nil, nil)
+	}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewTunnel: %v", err)
 	}

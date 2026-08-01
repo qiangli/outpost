@@ -45,6 +45,40 @@ type TCPProxy struct {
 	RemotePort int
 }
 
+// STCPProxy PUBLISHES a local service as frp's "secret TCP" — the
+// publisher half of STCPVisitor below. A control-plane host uses this to
+// offer its apiserver to workers: it publishes 127.0.0.1:6443 under a
+// name + shared secret, and each worker's visitor binds that back onto
+// its OWN loopback.
+//
+// That indirection is the reason the k3s agent needs no changes and no
+// certificate work anywhere: whatever the placement, the agent dials
+// 127.0.0.1, which is already an apiserver SAN. Publishing the apiserver
+// at a routable address instead would require that address as a SAN and
+// the cert re-issued every time a worker joined.
+//
+// Secret must match the visitor's; it is what authenticates consumer to
+// publisher, independently of TunnelConfig.Token (which only gates
+// logins to the tunnel server itself).
+type STCPProxy struct {
+	Name      string
+	LocalIP   string
+	LocalPort int
+	Secret    string
+
+	// AllowUsers names the tunnel users permitted to visit this service.
+	// frp defaults to SAME-USER-ONLY, so leaving this empty means a
+	// worker logged in under a different user is refused with
+	// "visitor connection of [...] user [...] not allowed" — which is
+	// correct behaviour and easy to mistake for a broken tunnel.
+	//
+	// A control plane publishing its apiserver must therefore list its
+	// workers, or ["*"] for any authenticated client. This is a real
+	// access control and the second gate after Secret: the secret proves
+	// you know it, AllowUsers decides who may present it.
+	AllowUsers []string
+}
+
 // STCPVisitor declares a "secret TCP" visitor — frp's reverse-direction
 // primitive that opens a local listener and tunnels each accepted conn
 // through the matrix-tunnel server to a service some OTHER frp client
@@ -90,6 +124,7 @@ type Tunnel struct {
 	cfg      TunnelConfig
 	proxies  []TCPProxy
 	visitors []STCPVisitor
+	stcps    []STCPProxy
 
 	mu  sync.Mutex
 	svc *tunnelclient.Service
@@ -99,18 +134,19 @@ type Tunnel struct {
 // optional STCP visitors) pre-registered via the in-memory ConfigSource —
 // no config-file path involved. Pass nil for visitors when only legacy
 // outbound-proxy behavior is needed.
-func NewTunnel(tc TunnelConfig, proxies []TCPProxy, visitors []STCPVisitor) (*Tunnel, error) {
-	svc, err := newTunnelService(tc, proxies, visitors)
+func NewTunnel(tc TunnelConfig, proxies []TCPProxy, visitors []STCPVisitor, stcps []STCPProxy) (*Tunnel, error) {
+	svc, err := newTunnelService(tc, proxies, visitors, stcps)
 	if err != nil {
 		return nil, err
 	}
-	return &Tunnel{cfg: tc, proxies: proxies, visitors: visitors, svc: svc}, nil
+	return &Tunnel{cfg: tc, proxies: proxies, visitors: visitors,
+		stcps:    stcps, svc: svc}, nil
 }
 
 // newTunnelService builds a fresh FRP Service from the same config — used
 // both at first New and by the Run supervisor when the previous Service
 // exited.
-func newTunnelService(tc TunnelConfig, proxies []TCPProxy, visitors []STCPVisitor) (*tunnelclient.Service, error) {
+func newTunnelService(tc TunnelConfig, proxies []TCPProxy, visitors []STCPVisitor, stcps []STCPProxy) (*tunnelclient.Service, error) {
 	// LoginFailExit defaults to true, which makes the agent exit if the
 	// matrix-tunnel server isn't reachable on the first dial. For a
 	// long-running home-host agent that needs to survive cloud restarts
@@ -162,6 +198,21 @@ func newTunnelService(tc TunnelConfig, proxies []TCPProxy, visitors []STCPVisito
 			RemotePort: p.RemotePort,
 		}
 		configurers = append(configurers, pc)
+	}
+	for _, p := range stcps {
+		sc := &v1.STCPProxyConfig{
+			ProxyBaseConfig: v1.ProxyBaseConfig{
+				Name: p.Name,
+				Type: "stcp",
+				ProxyBackend: v1.ProxyBackend{
+					LocalIP:   orDefault(p.LocalIP, "127.0.0.1"),
+					LocalPort: p.LocalPort,
+				},
+			},
+			Secretkey:  p.Secret,
+			AllowUsers: p.AllowUsers,
+		}
+		configurers = append(configurers, sc)
 	}
 	configurers = tunnelconfig.CompleteProxyConfigurers(configurers)
 
@@ -225,7 +276,7 @@ func (t *Tunnel) Run(ctx context.Context) error {
 		case <-time.After(backoff):
 		}
 
-		next, err := newTunnelService(t.cfg, t.proxies, t.visitors)
+		next, err := newTunnelService(t.cfg, t.proxies, t.visitors, t.stcps)
 		if err != nil {
 			// A rebuild failure here means our config is fundamentally
 			// rejected (bad proxy spec, etc.) — there's no point thrashing.
