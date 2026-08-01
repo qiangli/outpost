@@ -146,6 +146,14 @@ type Deps struct {
 	// future restart with the manager wired picks it up) but cannot
 	// re-register the scheduler entry live.
 	Backup BackupApplier
+
+	// ControlPlaneStatusProber, when set, probes the hosted control plane's
+	// container health, apiserver readiness, and cluster node count. Nil when
+	// the cluster runtime isn't wired (no hosted plane configured). The probe
+	// reuses existing readiness surfaces (runtime.CheckServer, runtime.ProbeAPIServer,
+	// cached LastServerHealth) and threads them through an interface seam for
+	// testing. Closure-captured dependencies keep admincore focused.
+	ControlPlaneStatusProber ControlPlaneStatusProber
 }
 
 // LLMPoolStatusView is the wire shape rendered into SafeView. Kept here
