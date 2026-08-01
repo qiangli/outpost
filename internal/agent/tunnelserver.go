@@ -85,13 +85,34 @@ func NewTunnelServer(tc TunnelServerConfig, log *slog.Logger) (*TunnelServer, er
 	return &TunnelServer{svc: svc, log: log}, nil
 }
 
-// Run blocks until ctx is cancelled, serving tunnel clients.
+// Run serves tunnel clients. IT NEVER RETURNS — not on ctx cancellation, and
+// not after Close(). Call it in a goroutine you do not wait on.
+//
+// This is measured upstream behaviour, not a guess. frp v0.68.1's
+// Service.Run ends with a BLOCKING HandleListener on its muxed listener, and
+// that loop exits only when the muxer's sub-listener yields an accept error —
+// which neither cancelling the context nor Close() causes. A probe confirmed
+// both: ctx cancel alone leaves Run blocked, and so does a subsequent Close.
+//
+// WHY THIS WARNING IS HERE IN CAPITALS. The obvious wiring — `g.Go(func()
+// error { srv.Run(ctx); return nil })` — makes the errgroup's Wait() never
+// return. Outpost self-restarts by cancelling that errgroup, waiting, and
+// re-execing, so a tunnel server in the group would hang EVERY restart:
+// pairing changes, builtin toggles, upgrades. The daemon would look alive
+// while quietly refusing to apply anything. That failure is silent and
+// remote-only, which is exactly the kind this comment has to prevent.
+//
+// The leak is survivable because Close DOES release the listeners (verified
+// separately): the port frees for the next boot even though the accept
+// goroutine stays parked. A leaked goroutine in a process that is about to
+// re-exec costs nothing; a stuck port would cost the restart.
 func (t *TunnelServer) Run(ctx context.Context) {
 	t.log.Info("tunnel server: listening")
 	t.svc.Run(ctx)
 }
 
-// Close stops the server.
+// Close stops the server and releases its listeners, freeing the bind port
+// for the next boot. It does NOT unblock Run — see the note there.
 func (t *TunnelServer) Close() error {
 	if t.svc == nil {
 		return nil

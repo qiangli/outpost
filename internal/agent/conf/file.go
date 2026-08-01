@@ -742,6 +742,34 @@ type ClusterConfig struct {
 	// register time. Consumed only by the agent runtime.
 	STCPSecret string `json:"stcp_secret,omitempty"`
 
+	// TunnelToken gates frpc logins to the tunnel server THIS host runs
+	// when it is the control plane. It is the peer-hosted counterpart of
+	// cloudbox's MATRIX_TOKEN and is used the same way: it authenticates
+	// the SESSION, not a hostname, which is why a worker may dial this
+	// server at whatever address reaches it with no certificate
+	// implications.
+	//
+	// Auto-generated on first control-plane boot (EnsureClusterTunnelToken)
+	// rather than required from the operator — the same treatment
+	// AdminSessionKey and MCPBearerToken get. An operator who wants to
+	// pre-seed it across hosts still can; generation only fills a blank.
+	//
+	// It is NOT STCPSecret. That one authenticates the STCP proxy/visitor
+	// pair carrying the apiserver; this one authenticates the tunnel
+	// session that carries everything. Conflating them would mean a worker
+	// authorized to reach the apiserver could also open arbitrary proxies.
+	TunnelToken string `json:"tunnel_token,omitempty"`
+
+	// TunnelBindAddr / TunnelBindPort are where that server listens.
+	//
+	// The default is 127.0.0.1 — NOT 0.0.0.0. The intended reach path is a
+	// mesh forward on this host, so the tunnel stays off the LAN unless an
+	// operator widens it deliberately. A control plane that silently
+	// listened on every interface the moment it was enabled would be a
+	// surprising default for a laptop.
+	TunnelBindAddr string `json:"tunnel_bind_addr,omitempty"`
+	TunnelBindPort int    `json:"tunnel_bind_port,omitempty"`
+
 	// K8sAPIPort is the TCP port the STCP visitor binds locally for the
 	// apiserver listener. `k3s agent --server` dials
 	// https://127.0.0.1:<K8sAPIPort>. Matches cloudbox's
@@ -823,6 +851,30 @@ type ClusterConfig struct {
 // ControlPlaneOn reports whether this host hosts the apiserver.
 func (c *ClusterConfig) ControlPlaneOn() bool {
 	return c != nil && c.ControlPlane != nil && *c.ControlPlane
+}
+
+// DefaultTunnelBindAddr / DefaultTunnelBindPort mirror the client-side frp
+// defaults, so a worker that is told only "the control plane is at <host>"
+// dials the right place.
+const (
+	DefaultTunnelBindAddr = "127.0.0.1"
+	DefaultTunnelBindPort = 7000
+)
+
+// TunnelBind returns the address the control-plane tunnel server listens on.
+func (c *ClusterConfig) TunnelBind() (string, int) {
+	if c == nil {
+		return DefaultTunnelBindAddr, DefaultTunnelBindPort
+	}
+	addr := strings.TrimSpace(c.TunnelBindAddr)
+	if addr == "" {
+		addr = DefaultTunnelBindAddr
+	}
+	port := c.TunnelBindPort
+	if port <= 0 {
+		port = DefaultTunnelBindPort
+	}
+	return addr, port
 }
 
 type ClusterRuntimes struct {
@@ -2121,6 +2173,36 @@ func EnsureMCPBearerToken(path string, fc *FileConfig) (string, error) {
 		}
 	}
 	return fc.MCPBearerToken, nil
+}
+
+// EnsureClusterTunnelToken generates the control-plane tunnel token on first
+// use and persists it, mirroring EnsureMCPBearerToken.
+//
+// Generated rather than required because the alternative is worse in both
+// directions: demanding a token before the server will start turns "host the
+// control plane here" into a two-step setup, and defaulting to a well-known
+// value would put an unauthenticated frps in front of an apiserver. A
+// generated secret is the only option that is both usable and safe by
+// default. An operator pre-seeding the same token across hosts still can —
+// this only ever fills a blank.
+func EnsureClusterTunnelToken(path string, fc *FileConfig) (string, error) {
+	if fc == nil || fc.Cluster == nil {
+		return "", fmt.Errorf("nil cluster config")
+	}
+	if len(fc.Cluster.TunnelToken) >= 32 {
+		return fc.Cluster.TunnelToken, nil
+	}
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generate cluster tunnel token: %w", err)
+	}
+	fc.Cluster.TunnelToken = hex.EncodeToString(b[:])
+	if path != "" {
+		if err := SaveFile(path, fc); err != nil {
+			return "", fmt.Errorf("save cluster tunnel token: %w", err)
+		}
+	}
+	return fc.Cluster.TunnelToken, nil
 }
 
 // EnsureAppSSOSecrets walks fc.Apps and generates a 32-byte hex

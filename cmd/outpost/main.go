@@ -1999,6 +1999,15 @@ func startCmd() *cobra.Command {
 			// be mounted. Boot errors are logged but never fatal: a
 			// half-configured cluster section shouldn't prevent the rest
 			// of outpost from running.
+			// Control-plane tunnel server. Gated on ControlPlaneOn alone —
+			// NOT on ClusterOn or on any runtime being configured. Hosting
+			// the apiserver and joining the cluster are separate decisions,
+			// and a control plane that refused to accept workers because the
+			// operator had not also given this host a runtime would be a
+			// confusing failure: the workers' symptom would be "connection
+			// refused" with nothing wrong on their side.
+			startControlPlaneTunnel(gctx, g, fc, cfgPath)
+
 			if runtimeErr := fc.Cluster.ValidateRuntimes(); fc.ClusterOn() && runtimeErr != nil {
 				slog.Warn("cluster: disabled by invalid runtime configuration", "err", runtimeErr)
 			} else if fc.ClusterOn() {
@@ -2528,6 +2537,60 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 	startControlPlaneReconcilers(ctx, g, fc, kubeCfg)
 
 	return nil
+}
+
+// startControlPlaneTunnel runs the frp SERVER on a host that is the control
+// plane, so worker outposts can dial it exactly the way they dial cloudbox.
+//
+// This is the last piece that made placement a real choice rather than a
+// design intent. The worker side was already identical in all three
+// placements — frpc dials an frps and binds 127.0.0.1:<api-port> for
+// `k3s agent` — and the only thing that did not exist anywhere but cloudbox
+// was the server end of that dial.
+//
+// A no-op on every host that is not the control plane, which is nearly all of
+// them.
+func startControlPlaneTunnel(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string) {
+	if fc == nil || !fc.Cluster.ControlPlaneOn() {
+		return
+	}
+	token, err := conf.EnsureClusterTunnelToken(cfgPath, fc)
+	if err != nil {
+		// Non-fatal, like every other cluster boot failure here: a host that
+		// cannot mint a token should still serve its apps and shell.
+		slog.Warn("control plane: tunnel server disabled (no token)", "err", err)
+		return
+	}
+	addr, port := fc.Cluster.TunnelBind()
+
+	srv, err := agent.NewTunnelServer(agent.TunnelServerConfig{
+		BindAddr: addr,
+		BindPort: port,
+		Token:    token,
+	}, slog.Default().With("svc", "control-plane-tunnel"))
+	if err != nil {
+		slog.Warn("control plane: tunnel server disabled", "err", err)
+		return
+	}
+
+	slog.Info("control plane: tunnel server starting", "addr", addr, "port", port)
+
+	// DELIBERATELY NOT g.Go — see TunnelServer.Run. frp's Run never returns,
+	// so putting it in the errgroup would make g.Wait() block forever and
+	// hang every self-restart (pairing changes, builtin toggles, upgrades).
+	go srv.Run(ctx)
+
+	// The shutdown half DOES belong in the errgroup: it returns, and Close
+	// releases the listeners so the bind port is free for the re-exec. A
+	// worker's frpc reconnects on its own, so dropping sessions here costs a
+	// retry interval, not a rejoin.
+	g.Go(func() error {
+		<-ctx.Done()
+		if err := srv.Close(); err != nil {
+			slog.Debug("control plane: tunnel server close", "err", err)
+		}
+		return nil
+	})
 }
 
 // Node runtime labels, matching the cloud-hosted control plane's values
