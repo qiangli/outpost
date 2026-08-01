@@ -500,6 +500,23 @@ switching placement is a configuration change, not a migration.
 | Tunnel bind port | `cluster.tunnel_bind_port` | `cluster control-plane --bind-port` | Inbound > Cluster | `outpost_set_control_plane` |
 | Join token | `cluster.tunnel_token` | `cluster control-plane token` | `has_tunnel_token` flag only | `outpost_control_plane_token` |
 | Rotate the join token | `cluster.tunnel_token` | `cluster control-plane token rotate --yes` | — | `outpost_rotate_control_plane_token` |
+| Hosted-plane kubeconfig | `cluster.control_plane_kubeconfig` | (edit agent.json) | — | — |
+| Hosted apiserver address | `cluster.control_plane_api_addr` | (edit agent.json) | — | — |
+| Join a peer's plane | `cluster.join_endpoint` / `cluster.join_token` | (edit agent.json) | — | — |
+
+The last three rows have **no CLI/MCP/UI surface yet** — they are set by
+editing `agent.json`. That is a known gap, called out here rather than left
+for someone to discover.
+
+`control_plane_kubeconfig` is what the cluster-wide reconcilers (node
+addressing, runtime capability) act through. It must be an admin kubeconfig
+for the plane THIS host hosts — k3s writes one at
+`/etc/rancher/k3s/k3s.yaml`. Empty means those reconcilers stay off, which is
+the honest default: without credentials for the hosted plane there is nothing
+they can legitimately act on. The visible symptom of leaving it unset on a
+peer-hosted plane is `kubectl logs`/`exec` failing with a 502 while scheduling
+and pod execution work fine.
+
 
 Save = restart (the tunnel server is built once at boot, like every other
 listener outpost owns).

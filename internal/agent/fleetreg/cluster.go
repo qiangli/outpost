@@ -53,9 +53,25 @@ type ClusterInfo struct {
 	// Runtimes are the enabled backends (agent, vk-native, vk-podman, …).
 	Runtimes []string `json:"runtimes,omitempty"`
 
+	// HostsControlPlane reports that this host RUNS a control plane. It is a
+	// fact about the host, deliberately separate from the row's own cluster:
+	// hosting and joining became independent decisions, so a host can run a
+	// plane for others while being a node of somebody else's.
+	//
+	// ControlPlane above stays the narrower claim — "this host hosts THE
+	// CLUSTER IN THIS ROW" — because that is what the inventory needs to name
+	// a cluster's control-plane member.
+	HostsControlPlane bool `json:"hosts_control_plane,omitempty"`
+	// ControlPlaneEndpoint is where that hosted plane's tunnel listens, when
+	// this host runs one.
+	ControlPlaneEndpoint string `json:"control_plane_endpoint,omitempty"`
+
 	// CA is the cluster's TLS CA bundle. Never serialized — it is read only to
 	// derive the cluster identity below.
 	CA []byte `json:"-"`
+	// NodeToken is the k3s join token. Never serialized — it is a CREDENTIAL,
+	// read only for the CA hash it embeds.
+	NodeToken string `json:"-"`
 }
 
 // ClusterID is the stable identity of the cluster this host joined.
@@ -74,9 +90,20 @@ type ClusterInfo struct {
 // Falling back to the URL host is correct for the case that produces an empty
 // CA — cloudbox fronting the apiserver behind a real, publicly-trusted cert —
 // because there every member DOES agree on the URL.
+// A JOIN TOKEN ALREADY CARRIES THE CLUSTER'S CA HASH, and it is the right
+// source when joining a peer plane. k3s node tokens are
+// `K10<sha256-of-cluster-CA>::<user>:<secret>`, so the identity is available
+// even though the peer's CA bundle itself is not — a worker joining someone
+// else's plane holds a token but no CA (its ClusterConfig.CA belongs to the
+// cloudbox pairing, a DIFFERENT cluster). Reading it here is what stops a
+// peer-joined host from being grouped under the cloudbox cluster whose CA it
+// happens to be carrying.
 func (c *ClusterInfo) ClusterID() string {
 	if c == nil {
 		return ""
+	}
+	if h := caHashFromNodeToken(c.NodeToken); h != "" {
+		return "k8s-" + h[:12]
 	}
 	if pem := normalizePEM(c.CA); len(pem) > 0 {
 		sum := sha256.Sum256(pem)
@@ -86,6 +113,32 @@ func (c *ClusterInfo) ClusterID() string {
 		return h
 	}
 	return ""
+}
+
+// caHashFromNodeToken pulls the cluster CA hash out of a k3s node token.
+// Returns "" for the short-form token (`K10::…` or a bare secret), which
+// carries no hash — callers then fall back to the CA or the URL.
+func caHashFromNodeToken(tok string) string {
+	tok = strings.TrimSpace(tok)
+	if !strings.HasPrefix(tok, "K10") {
+		return ""
+	}
+	rest := tok[len("K10"):]
+	i := strings.Index(rest, "::")
+	if i <= 0 {
+		return ""
+	}
+	h := rest[:i]
+	// Must look like a sha256 hex digest; anything else is not an identity.
+	if len(h) != 64 {
+		return ""
+	}
+	for _, r := range h {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return ""
+		}
+	}
+	return h
 }
 
 // normalizePEM strips whitespace differences so two hosts holding the same CA

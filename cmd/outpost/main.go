@@ -73,7 +73,7 @@ import (
 	"github.com/qiangli/outpost/internal/telemetry"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 // defaultPortal is the public ai.dhnt.io address used when the user
@@ -2552,7 +2552,9 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 		g.Go(func() error { return accessRefresher.Run(ctx) })
 	}
 
-	startControlPlaneReconcilers(ctx, g, fc, kubeCfg)
+	// NOTE: the control-plane reconcilers are NOT started here. This
+	// kubeconfig is for the cluster this host JOINS; they must act on the
+	// cluster it HOSTS. They are started from startControlPlaneTunnel.
 
 	return nil
 }
@@ -2611,6 +2613,10 @@ func startControlPlaneTunnel(ctx context.Context, g *errgroup.Group, fc *conf.Fi
 	})
 
 	startAPIServerPublisher(ctx, g, fc, cfgPath, addr, port, token)
+
+	// The reconcilers act on the plane THIS host hosts, so they belong here
+	// beside the server rather than in the join path.
+	startControlPlaneReconcilers(ctx, g, fc)
 }
 
 // startAPIServerPublisher runs the frpc that PUBLISHES this host's apiserver
@@ -2736,11 +2742,39 @@ func clusterReport(fc *conf.FileConfig, cloudboxBase string) *fleetreg.ClusterIn
 		return nil
 	}
 	cc := fc.Cluster
+
+	// THE ROW DESCRIBES THE CLUSTER THIS HOST IS A NODE OF — the JOIN, not
+	// whatever plane it may also host. Those were the same thing until
+	// hosting and joining became independent, and this function kept reading
+	// cc.APIURL (the cloudbox-issued field) after they diverged. The result
+	// was two wrong rows: a host that had moved to a peer plane still
+	// reported cloudbox, and a host running a plane for others reported
+	// "self-hosted" while pointing at cloudbox's endpoint.
+	endpoint := cc.APIURL
+	if cc.JoinsPeerPlane() {
+		// The apiserver is reached through a local tunnel; the loopback port
+		// is this host's own artifact, which is exactly why the identity below
+		// comes from the token's CA hash rather than from this address.
+		endpoint = fmt.Sprintf("https://127.0.0.1:%d", clusterAPIPort(cc))
+	}
+
+	// hostsThisCluster is the narrow claim the inventory needs: does this host
+	// run the plane named in THIS row? Hosting a plane while joining someone
+	// else's must NOT read as "this cluster's control plane" — that would name
+	// the wrong host as the plane's owner on the cluster page.
+	hostsThisCluster := cc.ControlPlaneOn() && isLoopbackURL(endpoint)
+
+	cpAddr, cpPort := cc.TunnelBind()
 	info := &fleetreg.ClusterInfo{
-		Placement:    fleetreg.ClassifyPlacement(cc.APIURL, cloudboxBase, cc.ControlPlaneOn()),
-		Endpoint:     cc.APIURL,
-		ControlPlane: cc.ControlPlaneOn(),
+		Placement:    fleetreg.ClassifyPlacement(endpoint, cloudboxBase, hostsThisCluster),
+		Endpoint:     endpoint,
+		ControlPlane: hostsThisCluster,
 		CA:           cc.CA,
+		NodeToken:    cc.NodeToken,
+	}
+	if cc.ControlPlaneOn() {
+		info.HostsControlPlane = true
+		info.ControlPlaneEndpoint = net.JoinHostPort(cpAddr, strconv.Itoa(cpPort))
 	}
 	base := fc.ClusterNodeName()
 	if cc.HasAgentRuntime() {
@@ -2761,8 +2795,23 @@ func clusterReport(fc *conf.FileConfig, cloudboxBase string) *fleetreg.ClusterIn
 	return info
 }
 
-func startControlPlaneReconcilers(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, kubeCfg *rest.Config) {
+func startControlPlaneReconcilers(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig) {
 	if fc == nil || fc.Cluster == nil || !fc.Cluster.ControlPlaneOn() {
+		return
+	}
+	// The kubeconfig for the plane this host HOSTS — not the one cloudbox
+	// issues for the cluster it joins. Without it there is nothing these
+	// reconcilers can legitimately act on, so they stay off rather than
+	// silently managing the wrong cluster.
+	path := strings.TrimSpace(fc.Cluster.ControlPlaneKubeconfig)
+	if path == "" {
+		slog.Info("control-plane reconcilers: off (set cluster.control_plane_kubeconfig " +
+			"to an admin kubeconfig for the plane this host hosts)")
+		return
+	}
+	kubeCfg, err := clientcmd.BuildConfigFromFlags("", path)
+	if err != nil {
+		slog.Warn("control-plane reconcilers: load kubeconfig", "path", path, "err", err)
 		return
 	}
 	cs, err := kubernetes.NewForConfig(kubeCfg)
@@ -2770,6 +2819,7 @@ func startControlPlaneReconcilers(ctx context.Context, g *errgroup.Group, fc *co
 		slog.Warn("control-plane reconcilers: build client", "err", err)
 		return
 	}
+	slog.Info("control-plane reconcilers: starting", "kubeconfig", path)
 
 	// Runtime capability. Node Ready is a kubelet heartbeat, not proof
 	// the runtime can create a sandbox; without this the scheduler places
@@ -4085,4 +4135,35 @@ func resolveActrunnerDockerHost(ctx context.Context, fc *conf.FileConfig) string
 		return p
 	}
 	return "unix://" + p
+}
+
+// clusterAPIPort is the loopback port the STCP visitor binds for the
+// apiserver. Mirrors the default the runtime uses.
+func clusterAPIPort(cc *conf.ClusterConfig) int {
+	if cc != nil && cc.K8sAPIPort != 0 {
+		return cc.K8sAPIPort
+	}
+	return 6443
+}
+
+// isLoopbackURL reports whether a URL's host is loopback — i.e. the apiserver
+// is reached on this machine rather than across the network.
+func isLoopbackURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	if !strings.Contains(raw, "//") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	h := u.Hostname()
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }

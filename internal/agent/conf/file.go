@@ -784,6 +784,23 @@ type ClusterConfig struct {
 	// Default 127.0.0.1:6443.
 	ControlPlaneAPIAddr string `json:"control_plane_api_addr,omitempty"`
 
+	// ControlPlaneKubeconfig is an admin kubeconfig for the plane THIS HOST
+	// HOSTS (k3s writes one at /etc/rancher/k3s/k3s.yaml).
+	//
+	// The cluster-wide reconcilers — node addressing, runtime capability —
+	// must act on the cluster this host is the control plane OF. They were
+	// wired to the kubeconfig cloudbox issues, which is the cluster this host
+	// JOINS: a different cluster entirely once placement became a choice. So
+	// they patched cloudbox's nodes (harmlessly, cloudbox runs its own) and
+	// left the peer-hosted plane unmanaged, which surfaced as `kubectl logs`
+	// failing with a 502 while everything else worked.
+	//
+	// Empty means the reconcilers do not run. That is the honest default:
+	// without credentials for the hosted plane there is nothing they can
+	// legitimately act on, and guessing a path would make a missing file look
+	// like a broken cluster.
+	ControlPlaneKubeconfig string `json:"control_plane_kubeconfig,omitempty"`
+
 	// JoinEndpoint / JoinToken point this host at a control plane that is
 	// NOT cloudbox's — the worker-side counterpart of ControlPlane above.
 	//

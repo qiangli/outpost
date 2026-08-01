@@ -153,3 +153,65 @@ func TestSnapshot_ClusterMoveChangesContentHash(t *testing.T) {
 		t.Error("joining a cluster did not change the pushed inventory")
 	}
 }
+
+// A worker that joined a PEER plane holds that plane's node token but not its
+// CA — its ClusterConfig.CA is the cloudbox pairing's, a DIFFERENT cluster.
+// Identity must come from the token, or the host gets grouped under the
+// cluster whose CA it happens to be carrying.
+func TestClusterID_PrefersNodeTokenCAHashOverACarriedCA(t *testing.T) {
+	const peerHash = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+	c := &ClusterInfo{
+		Endpoint:  "https://127.0.0.1:6443",
+		NodeToken: "K10" + peerHash + "::server:secret",
+		CA:        []byte(testCA), // cloudbox's — must NOT win
+	}
+	got := c.ClusterID()
+	if got != "k8s-"+peerHash[:12] {
+		t.Fatalf("id = %q, want it derived from the token's CA hash", got)
+	}
+	// And a host carrying only the CA still uses it.
+	if (&ClusterInfo{CA: []byte(testCA)}).ClusterID() == got {
+		t.Error("token-derived and CA-derived ids collided")
+	}
+}
+
+// Two members of one peer cluster hold the SAME node token, so they agree on
+// identity even though their loopback ports differ. This is the grouping
+// property, restated for the token path.
+func TestClusterID_TokenPathAgreesAcrossMembers(t *testing.T) {
+	const h = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	a := &ClusterInfo{Endpoint: "https://127.0.0.1:6443", NodeToken: "K10" + h + "::node:x"}
+	b := &ClusterInfo{Endpoint: "https://127.0.0.1:36443", NodeToken: "K10" + h + "::node:x"}
+	if a.ClusterID() != b.ClusterID() {
+		t.Fatalf("members disagree: %s vs %s", a.ClusterID(), b.ClusterID())
+	}
+}
+
+// Malformed or short-form tokens carry no hash and must fall through rather
+// than minting a garbage identity.
+func TestCaHashFromNodeToken_RejectsNonDigests(t *testing.T) {
+	for _, tok := range []string{
+		"", "plain-secret", "K10::node:x", "K10short::node:x",
+		"K10" + "zz23456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" + "::node:x",
+	} {
+		if h := caHashFromNodeToken(tok); h != "" {
+			t.Errorf("token %q yielded %q, want no hash", tok, h)
+		}
+	}
+}
+
+// The node token is a CREDENTIAL. It is read for its hash and must never be
+// serialized into the reported detail.
+func TestClusterAsset_NeverShipsTheNodeToken(t *testing.T) {
+	const h = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	a, ok := clusterAsset(&ClusterInfo{
+		Placement: PlacementPeer, Endpoint: "https://127.0.0.1:6443",
+		NodeToken: "K10" + h + "::node:SUPERSECRET",
+	})
+	if !ok {
+		t.Fatal("expected a row")
+	}
+	if strings.Contains(a.Detail, "SUPERSECRET") || strings.Contains(a.Detail, "K10") {
+		t.Fatalf("node token leaked into the reported detail: %s", a.Detail)
+	}
+}

@@ -112,3 +112,80 @@ func TestJoinTarget_BareHostGetsDefaultPort(t *testing.T) {
 		t.Errorf("got %s:%d, want 10.0.0.5:%d", host, port, conf.DefaultTunnelBindPort)
 	}
 }
+
+// THE TWO ROWS THAT WERE LIVE-WRONG. Both were produced by clusterReport
+// reading cc.APIURL (cloudbox-issued) and ControlPlaneOn() (a fact about the
+// host) after hosting and joining became independent decisions.
+func TestClusterReport_JoinedPeerPlaneIsNotReportedAsCloudbox(t *testing.T) {
+	const h = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	fc := &conf.FileConfig{
+		AgentName: "worker",
+		Cluster: &conf.ClusterConfig{
+			Enabled:      boolPtr(true),
+			Runtimes:     conf.ClusterRuntimes{Agent: true},
+			APIURL:       "https://ai.example.io/api/cluster/agent", // stale cloudbox value
+			JoinEndpoint: "10.0.0.5:7000",
+			NodeToken:    "K10" + h + "::node:x",
+		},
+	}
+	got := clusterReport(fc, "https://ai.example.io")
+	if got == nil {
+		t.Fatal("no report")
+	}
+	if got.Placement != "peer" {
+		t.Errorf("placement = %q, want peer — the host moved to a peer plane", got.Placement)
+	}
+	if got.ControlPlane {
+		t.Error("a worker reported itself as the cluster's control plane")
+	}
+	// Identity must be the peer cluster's, not cloudbox's URL.
+	if id := got.ClusterID(); id != "k8s-"+h[:12] {
+		t.Errorf("cluster id = %q, want the peer cluster's", id)
+	}
+}
+
+// A host that HOSTS a plane while JOINING cloudbox's must not claim to be
+// cloudbox's control plane — that would name the wrong host as the cluster's
+// owner on the inventory page.
+func TestClusterReport_HostingAPlaneDoesNotClaimTheJoinedOne(t *testing.T) {
+	fc := &conf.FileConfig{
+		AgentName: "dual",
+		Cluster: &conf.ClusterConfig{
+			Enabled:      boolPtr(true),
+			Runtimes:     conf.ClusterRuntimes{Agent: true},
+			APIURL:       "https://ai.example.io/api/cluster/agent",
+			ControlPlane: boolPtr(true), // hosts a plane for OTHER machines
+		},
+	}
+	got := clusterReport(fc, "https://ai.example.io")
+	if got == nil {
+		t.Fatal("no report")
+	}
+	if got.ControlPlane {
+		t.Error("claimed to be the control plane of the cluster it merely joined")
+	}
+	if got.Placement != "cloudbox" {
+		t.Errorf("placement = %q, want cloudbox — that is the cluster it is a node of", got.Placement)
+	}
+	// The hosting fact is still reported, just not conflated with the row.
+	if !got.HostsControlPlane || got.ControlPlaneEndpoint == "" {
+		t.Errorf("hosting fact lost: hosts=%v endpoint=%q", got.HostsControlPlane, got.ControlPlaneEndpoint)
+	}
+}
+
+// The genuinely self-hosted case: hosts the plane AND is a node of it.
+func TestClusterReport_SelfHostedClaimsItsOwnCluster(t *testing.T) {
+	fc := &conf.FileConfig{
+		AgentName: "solo",
+		Cluster: &conf.ClusterConfig{
+			Enabled:      boolPtr(true),
+			Runtimes:     conf.ClusterRuntimes{Agent: true},
+			APIURL:       "https://127.0.0.1:6443",
+			ControlPlane: boolPtr(true),
+		},
+	}
+	got := clusterReport(fc, "https://ai.example.io")
+	if got == nil || !got.ControlPlane || got.Placement != "self" {
+		t.Fatalf("got %+v, want a self-hosted control plane", got)
+	}
+}
