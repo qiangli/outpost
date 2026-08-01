@@ -124,7 +124,53 @@ kubectl --kubeconfig ~/.kube/outpost-control-plane/k3s.yaml get nodes
 Wait for the tunnelled worker's node to report `Ready`. The same readiness is
 available in `outpost cluster control-plane status`.
 
-## 5. Recover
+## 5. Leave a worker
+
+On the **tunnelled worker**, leave the peer-hosted plane with:
+
+```bash
+outpost cluster leave --yes
+```
+
+For a peer-joined worker this:
+
+- clears only the local peer membership fields — `cluster.join_endpoint`,
+  `cluster.join_token`, `cluster.stcp_secret`, and `cluster.node_token`;
+- disables cluster mode and stops the local runtime container on the ensuing
+  restart, preserving the selected runtime set so a rejoin returns as the same
+  kind of node;
+- leaves cloudbox pairing and every unrelated app, shell, LLM, outbound, and
+  mesh setting untouched. Leaving the cluster is not logging out of the portal.
+
+Without `--yes` the command prints a plane-appropriate confirmation and does
+nothing else, so it is safe to run to see what it would do.
+
+The command is idempotent: running it on a worker that has already left is a
+harmless no-op that requests no restart. It is recoverable: rejoin later by
+re-running the full `outpost cluster join <endpoint> ...` with credentials read
+again from the control-plane host.
+
+### Boundary: the Kubernetes Node object is not deleted by the worker
+
+Leaving does **not** delete this worker's `Node` object from the peer plane's
+apiserver, and it does not contact cloudbox to reclaim anything — cloudbox never
+issued a peer-joined node. The worker holds only a k3s **join token**, which is
+not an admin credential for the peer apiserver, and leave deliberately does not
+add one to a worker. Removing the stale `Node` object is the **control-plane
+host's** garbage-collection responsibility. On that host, after the worker has
+left, delete it explicitly if it is not GC'd:
+
+```bash
+kubectl --kubeconfig ~/.kube/outpost-control-plane/k3s.yaml delete node <worker-node-name>
+```
+
+This is the intentional difference from the cloud-managed leave path. A
+cloud-managed node's `outpost cluster leave` POSTs `/api/v1/cluster/leave` so
+cloudbox reclaims the k8s Node, overlay registration, and pod-CIDR reservation
+it issued. A peer worker skips that reclaim entirely because those resources
+live on a machine cloudbox does not control.
+
+## 6. Recover
 
 ### The control-plane container exited
 
@@ -154,10 +200,14 @@ the full `outpost cluster join <endpoint> ...` command on every tunnelled
 worker. Confirm the new nodes with `kubectl get nodes` through the hosted
 plane's admin kubeconfig.
 
-## 6. Limits
+## 7. Limits
 
-- Multi-node pod networking is **not designed yet**. Cross-node pod traffic
-  does not work today; gaps B4/B5 remain open and the design is pending.
+- Multi-node pod networking is implemented as stock k3s flannel VXLAN on
+  workers over the Tailscale node underlay
+  (`--flannel-iface=tailscale0`). The peer k3s controller-manager is the
+  sole pod-CIDR allocator; no cloudbox-style peer allocator is required.
+  Cross-node pod, Service, and DNS traffic still needs the two-machine
+  hardware acceptance proof before this is considered production-ready.
 - `kubectl logs` and `kubectl exec` through a tunnelled worker are not yet
   proven (F19).
 - Peer-hosted DKS supports one control plane only. There is no HA control
