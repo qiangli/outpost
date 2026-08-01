@@ -24,6 +24,9 @@ type peerPlaneIn struct {
 	STCPSecret *string `json:"stcp_secret,omitempty" jsonschema:"SENSITIVE - the peer's stcp_secret, which authorizes reaching its apiserver"`
 	NodeToken  *string `json:"node_token,omitempty" jsonschema:"SENSITIVE - the k3s node token, read on the peer with 'outpost cluster token'"`
 	APIPort    *int    `json:"api_port,omitempty" jsonschema:"local port this worker binds the joined apiserver on; defaults to 6443"`
+
+	ClusterAgent   *bool    `json:"cluster_agent,omitempty" jsonschema:"run one real k3s-agent Node on the joined plane. Omit to leave the current selection alone; omitting both runtime fields on a host with no selection yields the agent-only default."`
+	ClusterVirtual []string `json:"cluster_virtual,omitempty" jsonschema:"complete set of virtual-kubelet backends to register on the joined plane: vk-podman, vk-native, vk-ollama. Replaces the whole set; omit to leave the current selection alone."`
 }
 
 // peerPlaneOut is REDACTED by construction — there is no field that could
@@ -38,6 +41,9 @@ type peerPlaneOut struct {
 	HasNodeToken   bool   `json:"has_node_token"`
 	ClusterEnabled bool   `json:"cluster_enabled"`
 	RestartPending bool   `json:"restart_pending"`
+
+	RuntimeAgent   bool     `json:"runtime_agent"`
+	RuntimeVirtual []string `json:"runtime_virtual,omitempty"`
 }
 
 func toPeerPlaneOut(res admincore.PeerPlaneResult) peerPlaneOut {
@@ -51,6 +57,8 @@ func toPeerPlaneOut(res admincore.PeerPlaneResult) peerPlaneOut {
 		HasNodeToken:   res.HasNodeToken,
 		ClusterEnabled: res.ClusterEnabled,
 		RestartPending: res.RestartPending,
+		RuntimeAgent:   res.RuntimeAgent,
+		RuntimeVirtual: res.RuntimeVirtual,
 	}
 }
 
@@ -80,7 +88,9 @@ func (s *Server) registerPeerPlaneTools() {
 		Name: "outpost_cluster_join_peer",
 		Description: "Join a control plane hosted by a PEER outpost rather than by cloudbox. Requires the peer's tunnel endpoint and token; " +
 			"supply stcp_secret and node_token too or the node will authenticate and then fail to reach the apiserver. " +
-			"Enables cluster mode (selecting the agent runtime if none is configured) and triggers a restart. " +
+			"Enables cluster mode and triggers a restart. Runtime selection: pass cluster_agent / cluster_virtual to register " +
+			"virtual-kubelet nodes on the joined plane (a peer plane supports them — it authenticates vk with k3s client certs); " +
+			"omit both and the join selects the agent runtime only when nothing is selected already, never overwriting a prior choice. " +
 			"Distinct from outpost_cluster_join, which re-enables cluster mode against whichever plane is already configured.",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in peerPlaneIn) (*mcp.CallToolResult, peerPlaneOut, error) {
 		res, err := s.core.JoinPeerPlane(admincore.PeerPlaneParams{
@@ -89,6 +99,8 @@ func (s *Server) registerPeerPlaneTools() {
 			STCPSecret: in.STCPSecret,
 			NodeToken:  in.NodeToken,
 			APIPort:    in.APIPort,
+			Agent:      in.ClusterAgent,
+			Virtual:    in.ClusterVirtual,
 		})
 		if err != nil {
 			return apiErrResult[peerPlaneOut](err)

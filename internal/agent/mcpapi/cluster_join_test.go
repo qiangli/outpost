@@ -250,3 +250,88 @@ func TestControlPlaneStatusTool_NoCredentialValues(t *testing.T) {
 		}
 	}
 }
+
+// The runtime selection has to survive the protocol round-trip: an agent
+// driving a peer join is the caller most likely to want a vk node, and the
+// arg names have to match the agent.json keys SetBuiltins already uses.
+func TestPeerPlaneTools_RuntimeSelection(t *testing.T) {
+	session, _ := connectTestMCP(t)
+
+	type view struct {
+		RuntimeAgent   bool     `json:"runtime_agent"`
+		RuntimeVirtual []string `json:"runtime_virtual"`
+	}
+	decode := func(body string) view {
+		t.Helper()
+		var v view
+		if err := json.Unmarshal([]byte(body), &v); err != nil {
+			t.Fatalf("decode %q: %v", body, err)
+		}
+		return v
+	}
+
+	// Selecting vk-podman + vk-native on a peer plane, the case
+	// dag-to-k8s-job.sh and dks-native-job.sh need.
+	body, isErr := callJSON(t, session, "outpost_cluster_join_peer", map[string]any{
+		"endpoint":        "10.0.0.5",
+		"token":           "t",
+		"cluster_agent":   false,
+		"cluster_virtual": []string{"vk-podman", "vk-native"},
+	})
+	if isErr {
+		t.Fatalf("join_peer with a runtime selection failed: %s", body)
+	}
+	got := decode(body)
+	if got.RuntimeAgent {
+		t.Errorf("agent runtime selected despite cluster_agent=false: %s", body)
+	}
+	if len(got.RuntimeVirtual) != 2 || got.RuntimeVirtual[0] != "vk-podman" || got.RuntimeVirtual[1] != "vk-native" {
+		t.Errorf("virtual selection = %v: %s", got.RuntimeVirtual, body)
+	}
+
+	// A later credential-only join must not reinstate the agent runtime.
+	body, isErr = callJSON(t, session, "outpost_cluster_join_peer", map[string]any{"token": "rotated"})
+	if isErr {
+		t.Fatalf("re-join failed: %s", body)
+	}
+	if got = decode(body); got.RuntimeAgent || len(got.RuntimeVirtual) != 2 {
+		t.Errorf("re-join clobbered the selection: %s", body)
+	}
+
+	// The status read reports it too, so an agent need not re-derive it.
+	body, _ = callJSON(t, session, "outpost_cluster_peer_plane", map[string]any{})
+	if got = decode(body); got.RuntimeAgent || len(got.RuntimeVirtual) != 2 {
+		t.Errorf("peer_plane view = %s", body)
+	}
+
+	// An unknown backend is a readable tool error, not a persisted typo.
+	body, isErr = callJSON(t, session, "outpost_cluster_join_peer", map[string]any{
+		"cluster_virtual": []string{"vk-nonesuch"},
+	})
+	if !isErr {
+		t.Fatalf("an unknown virtual runtime was accepted: %s", body)
+	}
+}
+
+// The default is the regression that matters most: an agent that names no
+// runtime must keep getting the agent-only node every deployed worker has.
+func TestPeerPlaneTools_DefaultIsAgentOnly(t *testing.T) {
+	session, _ := connectTestMCP(t)
+	body, isErr := callJSON(t, session, "outpost_cluster_join_peer", map[string]any{
+		"endpoint": "10.0.0.5",
+		"token":    "t",
+	})
+	if isErr {
+		t.Fatalf("join_peer failed: %s", body)
+	}
+	var v struct {
+		RuntimeAgent   bool     `json:"runtime_agent"`
+		RuntimeVirtual []string `json:"runtime_virtual"`
+	}
+	if err := json.Unmarshal([]byte(body), &v); err != nil {
+		t.Fatalf("decode %q: %v", body, err)
+	}
+	if !v.RuntimeAgent || len(v.RuntimeVirtual) != 0 {
+		t.Fatalf("default join is no longer agent-only: %s", body)
+	}
+}
