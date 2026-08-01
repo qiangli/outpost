@@ -369,18 +369,9 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 			fc.Cluster.Runtimes.Agent = *p.ClusterAgent
 		}
 		if p.ClusterVirtual != nil {
-			seen := make(map[string]struct{}, len(p.ClusterVirtual))
-			virtual := make([]string, 0, len(p.ClusterVirtual))
-			for _, raw := range p.ClusterVirtual {
-				mode := strings.ToLower(strings.TrimSpace(raw))
-				if !conf.ValidVirtualRuntime(mode) {
-					return BuiltinsResult{}, badRequest("cluster_virtual entries must be vk-podman, vk-native, or vk-ollama")
-				}
-				if _, duplicate := seen[mode]; duplicate {
-					return BuiltinsResult{}, badRequest("cluster_virtual contains duplicate runtime %q", mode)
-				}
-				seen[mode] = struct{}{}
-				virtual = append(virtual, mode)
+			virtual, err := conf.NormalizeVirtualRuntimes(p.ClusterVirtual)
+			if err != nil {
+				return BuiltinsResult{}, badRequest("cluster_virtual: %s", err.Error())
 			}
 			fc.Cluster.Runtimes.Virtual = virtual
 		}
