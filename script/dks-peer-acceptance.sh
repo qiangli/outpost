@@ -458,15 +458,21 @@ fi
 
 # ---------------------------------------------------------------------------
 # 3. flannel-iface — flannel pinned to tailscale0 on BOTH selected workers.
-# PASS requires, for NODE_A AND NODE_B, all three evidence items:
+# PASS requires, for NODE_A AND NODE_B, all four evidence items:
 #   - flannel public-ip annotation present and inside 100.64/10;
 #   - host k3s agent argv contains --flannel-iface=tailscale0;
-#   - host tailscale0 carries an IPv4 address.
+#   - host tailscale0 carries an IPv4 address;
+#   - that annotation EQUALS the observed tailscale0 IPv4 on that SAME node.
+# The equality item exists because the annotation and the interface can each
+# individually look fine (both present, both tailnet-shaped) while naming two
+# DIFFERENT tailnet addresses on the same node — e.g. flannel's public-ip was
+# stamped from a stale/second tailscale0 address. That is not proof flannel is
+# actually pinned to the observed interface, so it must not PASS.
 # Host evidence comes from hostPID/hostNetwork inspection pods
 # (DKS_ALLOW_NODE_DEBUG=1) or an operator-supplied DKS_HOST_EVIDENCE file.
 # ANY missing item on EITHER node => BLOCKED, never PASS. Only observed
 # contradictory values (non-tailnet annotation, argv without the flag,
-# tailscale0 present without IPv4) => FAIL.
+# tailscale0 present without IPv4, annotation != tailscale0 IPv4) => FAIL.
 # ---------------------------------------------------------------------------
 if dks_selected flannel-iface; then
     if [ "$TWO_NODES" != "1" ]; then
@@ -504,11 +510,24 @@ if dks_selected flannel-iface; then
                     no-flannel-iface) FI_FAIL="$FI_FAIL $node:k3s-agent-argv-lacks-flannel-iface-tailscale0" ;;
                     *) FI_MISSING="$FI_MISSING $node:k3s-argv-${EV_ARGV:-no-evidence}" ;;
                 esac
+                ts0_ip=""
                 case "$EV_TS0" in
-                    ipv4:*) FI_OK="$FI_OK $node:tailscale0-$EV_TS0" ;;
+                    ipv4:*) ts0_ip="${EV_TS0#ipv4:}"; FI_OK="$FI_OK $node:tailscale0-$EV_TS0" ;;
                     absent|no-ipv4) FI_FAIL="$FI_FAIL $node:tailscale0-$EV_TS0" ;;
                     *) FI_MISSING="$FI_MISSING $node:tailscale0-${EV_TS0:-no-evidence}" ;;
                 esac
+                # Per-node equality: only meaningful once BOTH the annotation
+                # and the tailscale0 IPv4 are independently present on this
+                # SAME node. A mismatch here is an observed contradiction
+                # (FAIL), not missing evidence -- both values were read, they
+                # just disagree.
+                if [ -n "$ann" ] && [ -n "$ts0_ip" ]; then
+                    if [ "$ann" != "$ts0_ip" ]; then
+                        FI_FAIL="$FI_FAIL $node:annotation-vs-tailscale0-mismatch(annotation=$ann,tailscale0=$ts0_ip)"
+                    else
+                        FI_OK="$FI_OK $node:annotation-equals-tailscale0"
+                    fi
+                fi
                 FI_IDX=$((FI_IDX + 1))
             done
             if [ -n "$FI_FAIL" ]; then
@@ -619,6 +638,12 @@ fi
 if dks_selected service-clusterip; then
     if [ "$TWO_NODES" != "1" ]; then
         dks_record service-clusterip BLOCKED "$NO_TWO"
+    elif [ -n "${ERR_A:-}" ]; then
+        # The check execs FROM POD_A; a not-Ready POD_A makes kubectl exec
+        # itself fail (e.g. "container not running"), which would otherwise
+        # match the FAIL heuristic below even though nothing about clusterIP
+        # routing was actually exercised. Missing precondition -> BLOCKED.
+        dks_record service-clusterip BLOCKED "source probe pod on $NODE_A did not become Ready: $ERR_A"
     elif [ -z "${SVC_IP:-}" ]; then
         dks_record service-clusterip BLOCKED "Service got no clusterIP (backend pod on $NODE_B unavailable)"
     else
@@ -637,6 +662,10 @@ fi
 if dks_selected cluster-dns; then
     if [ "$TWO_NODES" != "1" ]; then
         dks_record cluster-dns BLOCKED "$NO_TWO"
+    elif [ -n "${ERR_A:-}" ]; then
+        # Same reasoning as service-clusterip: nslookup runs FROM POD_A, so a
+        # not-Ready POD_A must BLOCK, not false-FAIL on an exec error.
+        dks_record cluster-dns BLOCKED "source probe pod on $NODE_A did not become Ready: $ERR_A"
     elif [ -z "${SVC_IP:-}" ]; then
         dks_record cluster-dns BLOCKED "no Service to resolve (backend pod on $NODE_B unavailable)"
     else
@@ -731,13 +760,27 @@ spec:
         labelSelector: {matchLabels: {app: $NC}}
       containers: [{name: nanochat, image: $DKS_NANOCHAT_IMAGE}]
 YAML
-        sleep 10
+        # Bounded on DKS_TIMEOUT via the deployment's own rollout status,
+        # not a fixed sleep: a fixed sleep 10 either wastes time on a fast
+        # pull or false-FAILs a slow one long before DKS_TIMEOUT is reached.
+        k rollout status "deployment/$NC" --timeout="${DKS_TIMEOUT}s" >/dev/null 2>&1
+        ROLLOUT_RC=$?
         PLACED="$(k get pods -l "app=$NC" -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' 2>/dev/null | sort -u | wc -l | tr -d ' ')"
         READYN="$(k get pods -l "app=$NC" --field-selector=status.phase=Running -o name 2>/dev/null | wc -l | tr -d ' ')"
-        if [ "$PLACED" -ge 2 ] && [ "$READYN" -ge 2 ]; then
+        if [ "$ROLLOUT_RC" -eq 0 ] && [ "$PLACED" -ge 2 ] && [ "$READYN" -ge 2 ]; then
             dks_record nanochat PASS "2 nanochat replicas Running across $PLACED distinct nodes"
         else
-            dks_record nanochat FAIL "nanochat placed on $PLACED node(s), $READYN Running: $(k get pods -l "app=$NC" -o wide 2>&1 | tail -3)"
+            # An image that never became pullable within DKS_TIMEOUT is a
+            # missing precondition (the workload was never proven either way),
+            # not a contradiction of the ADR's cross-node placement claim --
+            # distinguish it from a real scheduling/placement defect so a slow
+            # registry doesn't masquerade as a topology-spread failure.
+            PULL_ISSUE="$(k get pods -l "app=$NC" -o jsonpath='{range .items[*]}{.status.containerStatuses[0].state.waiting.reason}{"\n"}{end}' 2>/dev/null | grep -E 'ImagePullBackOff|ErrImagePull' | head -1)"
+            if [ -n "$PULL_ISSUE" ]; then
+                dks_record nanochat BLOCKED "DKS_NANOCHAT_IMAGE ($DKS_NANOCHAT_IMAGE) not pullable within ${DKS_TIMEOUT}s: $PULL_ISSUE"
+            else
+                dks_record nanochat FAIL "nanochat placed on $PLACED node(s), $READYN Running: $(k get pods -l "app=$NC" -o wide 2>&1 | tail -3)"
+            fi
         fi
     fi
 fi

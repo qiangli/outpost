@@ -195,6 +195,12 @@ case "$*" in
             *"-insp-"*"-1") cat "${DKS_STUB_EV_B:-/dev/null}" ;;
         esac
         exit 0 ;;
+    *"rollout status deployment/"*) exit "${DKS_STUB_ROLLOUT_RC:-0}" ;;
+    *"app="*".spec.nodeName"*) cat "${DKS_STUB_NC_NODES:-/dev/null}"; exit 0 ;;
+    *"app="*"status.phase=Running"*) cat "${DKS_STUB_NC_READY:-/dev/null}"; exit 0 ;;
+    *"app="*"waiting.reason"*) cat "${DKS_STUB_NC_PULL:-/dev/null}"; exit 0 ;;
+    *"pod "*"-a -o jsonpath={.status.containerStatuses[0].ready}") echo "${DKS_STUB_READY_A:-false}"; exit 0 ;;
+    *"pod "*"-b -o jsonpath={.status.containerStatuses[0].ready}") echo "${DKS_STUB_READY_B:-false}"; exit 0 ;;
 esac
 exit 0
 STUB
@@ -210,10 +216,17 @@ printf 'node-a 100.64.0.5\nnode-b\n' >"$FIX/ann-missing-b"
 printf 'node-a 100.64.0.5\nnode-b 10.0.0.6\n' >"$FIX/ann-bad-b"
 # Inspection-pod EV output per node.
 printf 'EV k3s_argv=flannel-iface-tailscale0\nEV tailscale0=ipv4:100.64.0.5\nEV cni_confdir=empty\n' >"$FIX/ev-good"
+# Matches node-b's annotation in ann-good (100.64.0.6) -- the second node's
+# own evidence, distinct from ev-good's (which is node-a's address).
+printf 'EV k3s_argv=flannel-iface-tailscale0\nEV tailscale0=ipv4:100.64.0.6\nEV cni_confdir=empty\n' >"$FIX/ev-good-b"
 printf 'EV k3s_argv=absent\nEV tailscale0=tool-missing\n' >"$FIX/ev-missing"
 printf 'EV k3s_argv=no-flannel-iface\nEV tailscale0=ipv4:100.64.0.6\n' >"$FIX/ev-contra-argv"
 printf 'EV k3s_argv=flannel-iface-tailscale0\nEV tailscale0=absent\nEV cni_confdir=listing:10-flannel.conflist,10-outpost.conflist,\n' >"$FIX/ev-stale"
 printf 'EV cni_confdir=unreadable\n' >"$FIX/ev-unreadable"
+# Well-formed (tailnet-shaped) but a DIFFERENT address than ann-good's
+# node-b annotation (100.64.0.6) -- the false-PASS scenario the equality
+# fix closes: both the annotation and tailscale0 look individually fine.
+printf 'EV k3s_argv=flannel-iface-tailscale0\nEV tailscale0=ipv4:100.64.9.9\nEV cni_confdir=empty\n' >"$FIX/ev-mismatch-b"
 # Operator host-evidence files.
 printf 'node-a k3s_argv=flannel-iface-tailscale0 tailscale0=ipv4:100.64.0.5 cni_confdir=empty\nnode-b k3s_argv=flannel-iface-tailscale0 tailscale0=ipv4:100.64.0.6 cni_confdir=empty\n' >"$FIX/hostev-both"
 printf 'node-a k3s_argv=flannel-iface-tailscale0 tailscale0=ipv4:100.64.0.5\n' >"$FIX/hostev-one"
@@ -223,11 +236,21 @@ printf 'node-a k3s_argv=flannel-iface-tailscale0 tailscale0=ipv4:100.64.0.5\n' >
 printf 'node-a True 10.42.0.0/24 v1.31.0+k3s1\nnode-b True 10.42.1.0/24 v1.31.0+k3s1\nnode-stale False 10.42.0.0/24 v1.31.0+k3s1\nnode-virt True 10.42.1.0/24 v0.1.0-vknode\n' >"$FIX/cidrs-excluded-dups"
 printf 'node-a True 10.42.0.0/24 v1.31.0+k3s1\nnode-b True 10.42.0.0/24 v1.31.0+k3s1\n' >"$FIX/cidrs-ready-dup"
 
+# nanochat placement/readiness fixtures.
+printf 'node-a\nnode-b\n' >"$FIX/nc-nodes-2"     # 2 distinct nodes
+printf 'node-a\nnode-a\n' >"$FIX/nc-nodes-1"     # both replicas on one node
+printf 'pod/x\npod/y\n' >"$FIX/nc-ready-2"       # 2 Running pods
+printf 'pod/x\n' >"$FIX/nc-ready-1"              # 1 Running pod
+printf 'ImagePullBackOff\n' >"$FIX/nc-pull-issue"
+
 stub_reset() {
     STUB_NODES="$FIX/two-nodes"; STUB_CIDRS=/dev/null; STUB_ANN=/dev/null
     STUB_EV_A=/dev/null; STUB_EV_B=/dev/null; STUB_LOG=""
     STUB_APPLY_RC=0; STUB_PHASE=Succeeded; STUB_DEBUG=0; STUB_HOSTEV=""
     STUB_TIMEOUT=5
+    STUB_ROLLOUT_RC=0; STUB_NC_NODES=/dev/null; STUB_NC_READY=/dev/null
+    STUB_NC_PULL=/dev/null; STUB_NANOCHAT_IMG="stub/nanochat:latest"
+    STUB_READY_A=false; STUB_READY_B=false
 }
 
 # run_case <DKS_ONLY> — executes the real runner; sets RH_OUT / RH_RC.
@@ -239,6 +262,10 @@ run_case() {
         DKS_STUB_APPLY_RC="$STUB_APPLY_RC" DKS_STUB_POD_PHASE="$STUB_PHASE" \
         DKS_ALLOW_NODE_DEBUG="$STUB_DEBUG" DKS_HOST_EVIDENCE="$STUB_HOSTEV" \
         DKS_TIMEOUT="$STUB_TIMEOUT" \
+        DKS_STUB_ROLLOUT_RC="$STUB_ROLLOUT_RC" DKS_STUB_NC_NODES="$STUB_NC_NODES" \
+        DKS_STUB_NC_READY="$STUB_NC_READY" DKS_STUB_NC_PULL="$STUB_NC_PULL" \
+        DKS_NANOCHAT_IMAGE="$STUB_NANOCHAT_IMG" \
+        DKS_STUB_READY_A="$STUB_READY_A" DKS_STUB_READY_B="$STUB_READY_B" \
         "$BASH_BIN" "$HARNESS" 2>&1)"
     RH_RC=$?
 }
@@ -292,10 +319,22 @@ run_case flannel-iface
 expect "flannel: inspection yields no evidence" 2 "CHECK flannel-iface BLOCKED" "CHECK flannel-iface FAIL"
 
 # --- flannel-iface: full host evidence on BOTH nodes is the only PASS ---------
+# ev-good-b (not ev-good) for NODE_B: ann-good gives node-a=100.64.0.5 and
+# node-b=100.64.0.6, so each node's tailscale0 evidence must match ITS OWN
+# annotation, not just be independently well-formed.
 stub_reset; STUB_ANN="$FIX/ann-good"; STUB_DEBUG=1
-STUB_EV_A="$FIX/ev-good"; STUB_EV_B="$FIX/ev-good"; STUB_LOG="$FIX/log-flannel-pass"
+STUB_EV_A="$FIX/ev-good"; STUB_EV_B="$FIX/ev-good-b"; STUB_LOG="$FIX/log-flannel-pass"
 run_case flannel-iface
 expect "flannel: full evidence both nodes" 0 "CHECK flannel-iface PASS"
+case "$RH_OUT" in *"annotation-equals-tailscale0"*) ok "flannel: equality evidence named on PASS" ;; *) bad "flannel: equality evidence named on PASS" "$RH_OUT" ;; esac
+
+# --- flannel-iface: annotation and tailscale0 individually valid but for
+# DIFFERENT addresses on the SAME node must FAIL, never PASS -----------------
+stub_reset; STUB_ANN="$FIX/ann-good"; STUB_DEBUG=1
+STUB_EV_A="$FIX/ev-good"; STUB_EV_B="$FIX/ev-mismatch-b"
+run_case flannel-iface
+expect "flannel: annotation vs tailscale0 mismatch" 1 "CHECK flannel-iface FAIL" "CHECK flannel-iface PASS"
+case "$RH_OUT" in *"annotation-vs-tailscale0-mismatch"*) ok "flannel: mismatch reason named" ;; *) bad "flannel: mismatch reason named" "$RH_OUT" ;; esac
 
 # The applied inspection-pod manifests must request host visibility — an
 # ordinary pod cannot see host k3s argv, host tailscale0, or /etc/cni/net.d.
@@ -381,6 +420,44 @@ case "$RH_OUT" in *"excluded from distinct-pod-cidrs (virtual-kubelet): node-vir
 stub_reset; STUB_CIDRS="$FIX/cidrs-ready-dup"
 run_case distinct-pod-cidrs
 expect "cidrs: Ready duplicate still fails" 1 "CHECK distinct-pod-cidrs FAIL"
+
+# --- service-clusterip / cluster-dns: BLOCKED when the source probe (POD_A)
+# never became Ready, even though the backend (POD_B) and its Service are
+# fine. Before this gate, `kubectl exec` into a not-Ready POD_A produced an
+# error string that satisfied the FAIL heuristic below it -- a false FAIL for
+# a precondition that was never met, not a contradiction of clusterIP routing.
+stub_reset; STUB_READY_A=false; STUB_READY_B=true; STUB_TIMEOUT=1
+run_case service-clusterip
+expect "service-clusterip: source probe not Ready -> BLOCKED" 2 "CHECK service-clusterip BLOCKED" "CHECK service-clusterip FAIL"
+case "$RH_OUT" in *"source probe pod on node-a did not become Ready"*) ok "service-clusterip: ERR_A reason named" ;; *) bad "service-clusterip: ERR_A reason named" "$RH_OUT" ;; esac
+
+stub_reset; STUB_READY_A=false; STUB_READY_B=true; STUB_TIMEOUT=1
+run_case cluster-dns
+expect "cluster-dns: source probe not Ready -> BLOCKED" 2 "CHECK cluster-dns BLOCKED" "CHECK cluster-dns FAIL"
+case "$RH_OUT" in *"source probe pod on node-a did not become Ready"*) ok "cluster-dns: ERR_A reason named" ;; *) bad "cluster-dns: ERR_A reason named" "$RH_OUT" ;; esac
+
+# --- nanochat: bounded rollout (DKS_TIMEOUT), not a fixed sleep --------------
+stub_reset; STUB_ROLLOUT_RC=0; STUB_NC_NODES="$FIX/nc-nodes-2"; STUB_NC_READY="$FIX/nc-ready-2"
+run_case nanochat
+expect "nanochat: rollout succeeds, 2 replicas across 2 nodes -> PASS" 0 "CHECK nanochat PASS"
+
+# A slow/failed image pull is a missing precondition, not a placement defect:
+# it must BLOCK, never FAIL, and must name the precondition.
+stub_reset; STUB_ROLLOUT_RC=1; STUB_NC_PULL="$FIX/nc-pull-issue"
+run_case nanochat
+expect "nanochat: image never pullable within DKS_TIMEOUT -> BLOCKED" 2 "CHECK nanochat BLOCKED" "CHECK nanochat FAIL"
+case "$RH_OUT" in *"not pullable within"*) ok "nanochat: pull-issue reason named" ;; *) bad "nanochat: pull-issue reason named" "$RH_OUT" ;; esac
+
+# A real placement/scheduling defect (rollout never completes, no pull issue
+# observed) must still FAIL -- the BLOCKED carve-out is for image pulls only.
+stub_reset; STUB_ROLLOUT_RC=1; STUB_NC_NODES="$FIX/nc-nodes-1"; STUB_NC_READY="$FIX/nc-ready-1"
+run_case nanochat
+expect "nanochat: real placement defect (no pull issue) -> FAIL" 1 "CHECK nanochat FAIL" "CHECK nanochat BLOCKED"
+
+# Pre-existing contract (now exercised): no image configured -> BLOCKED.
+stub_reset; STUB_NANOCHAT_IMG=""
+run_case nanochat
+expect "nanochat: DKS_NANOCHAT_IMAGE unset -> BLOCKED" 2 "CHECK nanochat BLOCKED"
 
 # --- cleanup contract: every inspection pod deleted, even on create/wait fail -
 # Create fails: kubectl apply exits 1 for every pod. The pods were registered

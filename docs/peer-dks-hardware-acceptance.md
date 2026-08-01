@@ -118,7 +118,7 @@ Summary line: `SUMMARY pass=4 fail=3 blocked=4` → `RESULT FAIL`
 
 ### Proven offline (no cluster required)
 
-`bash script/dks-peer-acceptance_test.sh` → **132 pass, 0 fail** (pure unit tests;
+`bash script/dks-peer-acceptance_test.sh` → **156 pass, 0 fail** (pure unit tests;
 runner/integration tests execute end-to-end with a stub kubectl). It asserts the
 harness's own logic, including the mandatory invariants this story turns on:
 
@@ -142,6 +142,25 @@ harness's own logic, including the mandatory invariants this story turns on:
   RBAC unavailable;
 - **NEW**: stale-node exclusion — distinct-pod-cidrs scoped to Ready nodes only;
   mixed input filters leave Ready-only result;
+- **NEW**: flannel-iface requires per-node equality between the
+  `flannel.alpha.coreos.com/public-ip` annotation and the observed
+  `tailscale0` IPv4 on that SAME node — an annotation and interface that are
+  each individually well-formed but name *different* tailnet addresses is an
+  observed contradiction (`FAIL`), never a `PASS`; missing evidence on either
+  side stays `BLOCKED` (regression guard: `ev-good`/`ev-good-b`/`ev-mismatch-b`
+  fixtures cover the equality-PASS and mismatch-FAIL cases explicitly);
+- **NEW**: `service-clusterip` / `cluster-dns` gate on the source probe pod
+  (`POD_A`) having become Ready (`ERR_A`), not just on the backend Service
+  having a clusterIP — a not-Ready `POD_A` makes `kubectl exec` itself fail,
+  which previously satisfied the FAIL heuristic and reported a false `FAIL`
+  instead of `BLOCKED` for a precondition that was never met;
+- **NEW**: `nanochat` waits on `kubectl rollout status --timeout="$DKS_TIMEOUT"s`
+  instead of a fixed `sleep 10`, so a slow-but-eventually-successful pull is not
+  penalized and a genuinely stuck rollout is not given less time than the
+  operator configured. A rollout that never completes because the image was
+  never pullable (`ImagePullBackOff`/`ErrImagePull`) is a missing precondition
+  (`BLOCKED`, naming the image), distinct from a real cross-node placement
+  defect (`FAIL`);
 - tailnet CGNAT range boundaries (`100.63` / `100.128` correctly rejected);
 - one-line-per-check record shape (embedded `\n` and `\r` collapsed);
 - `DKS_ONLY` exact-matches and never prefix-matches;
