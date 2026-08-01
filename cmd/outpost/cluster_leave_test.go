@@ -76,6 +76,17 @@ func TestClusterLeave_Confirmation_PeerWorker(t *testing.T) {
 	if strings.Contains(out, "pod CIDR on cloudbox") {
 		t.Errorf("peer confirmation wrongly claims a cloudbox reclaim:\n%s", out)
 	}
+	// Verify the rejoin guidance is correct: --token-stdin for join token,
+	// environment variables for STCP secret and node token.
+	if !strings.Contains(out, "--token-stdin for the join token") {
+		t.Errorf("peer confirmation missing --token-stdin guidance:\n%s", out)
+	}
+	if !strings.Contains(out, "OUTPOST_CLUSTER_STCP_SECRET") {
+		t.Errorf("peer confirmation missing OUTPOST_CLUSTER_STCP_SECRET guidance:\n%s", out)
+	}
+	if !strings.Contains(out, "OUTPOST_CLUSTER_NODE_TOKEN") {
+		t.Errorf("peer confirmation missing OUTPOST_CLUSTER_NODE_TOKEN guidance:\n%s", out)
+	}
 	// No secret values must appear in operator-facing output.
 	if strings.Contains(out, "10.0.0.5:7000") || strings.Contains(out, "\"t\"") {
 		t.Errorf("confirmation leaked config values:\n%s", out)
@@ -161,5 +172,34 @@ func TestClusterLeave_Yes_CloudNode_NotifiesCloudboxOnce(t *testing.T) {
 	}
 	if notifyCalls != 1 {
 		t.Errorf("notifyLeave invoked %d times for a cloud-managed node, want 1", notifyCalls)
+	}
+}
+
+// The --yes output for a peer-joined worker must correctly distinguish token
+// secret handling: --token-stdin for the join token, and separate environment
+// variables for the STCP secret and node token.
+func TestClusterLeave_Yes_PeerWorker_CorrectTokenGuidance(t *testing.T) {
+	fc := &conf.FileConfig{
+		AgentName:   "worker-1",
+		AccessToken: "tok",
+		ServerAddr:  "ai.dhnt.io",
+		Cluster: &conf.ClusterConfig{
+			JoinEndpoint: "10.0.0.5:7000",
+			JoinToken:    "t",
+		},
+	}
+	var buf bytes.Buffer
+	if err := runClusterLeave(context.Background(), fc, true, &buf, fakeClusterLeaveDeps(nil)); err != nil {
+		t.Fatalf("runClusterLeave: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "--token-stdin for the join token") {
+		t.Errorf("--yes output missing --token-stdin guidance:\n%s", out)
+	}
+	if !strings.Contains(out, "OUTPOST_CLUSTER_STCP_SECRET") {
+		t.Errorf("--yes output missing OUTPOST_CLUSTER_STCP_SECRET guidance:\n%s", out)
+	}
+	if !strings.Contains(out, "OUTPOST_CLUSTER_NODE_TOKEN") {
+		t.Errorf("--yes output missing OUTPOST_CLUSTER_NODE_TOKEN guidance:\n%s", out)
 	}
 }

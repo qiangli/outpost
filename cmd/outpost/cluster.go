@@ -122,8 +122,9 @@ func runClusterLeave(ctx context.Context, fc *conf.FileConfig, yes bool, w io.Wr
 			fmt.Fprintln(w, "peer plane — it falls back to the cloudbox-hosted plane instead. Rejoin with a")
 			fmt.Fprintln(w, "FULL `outpost cluster join <endpoint>` supplying the join token, STCP secret,")
 			fmt.Fprintln(w, "and node token again — read from the control-plane host with")
-			fmt.Fprintln(w, "`outpost cluster control-plane token` and `outpost cluster token`. Keep secrets")
-			fmt.Fprintln(w, "out of argv with --token-stdin.")
+			fmt.Fprintln(w, "`outpost cluster control-plane token` and `outpost cluster token`. Use")
+			fmt.Fprintln(w, "--token-stdin for the join token, and OUTPOST_CLUSTER_STCP_SECRET and")
+			fmt.Fprintln(w, "OUTPOST_CLUSTER_NODE_TOKEN environment variables for the other two.")
 		} else {
 			fmt.Fprintln(w, "This removes this host's k8s node, overlay registration, and pod CIDR on cloudbox,")
 			fmt.Fprintln(w, "and disables cluster mode locally.")
@@ -179,8 +180,9 @@ func runClusterLeave(ctx context.Context, fc *conf.FileConfig, yes bool, w io.Wr
 		fmt.Fprintln(w, "peer plane (it falls back to the cloudbox-hosted plane). Rejoin with a FULL")
 		fmt.Fprintln(w, "`outpost cluster join <endpoint>` supplying the join token, STCP secret, and node")
 		fmt.Fprintln(w, "token again — read from the control-plane host with")
-		fmt.Fprintln(w, "`outpost cluster control-plane token` and `outpost cluster token` (use")
-		fmt.Fprintln(w, "--token-stdin to keep secrets out of argv).")
+		fmt.Fprintln(w, "`outpost cluster control-plane token` and `outpost cluster token`. Use")
+		fmt.Fprintln(w, "--token-stdin for the join token, and OUTPOST_CLUSTER_STCP_SECRET and")
+		fmt.Fprintln(w, "OUTPOST_CLUSTER_NODE_TOKEN environment variables for the other two.")
 	} else {
 		fmt.Fprintln(w, "local: cluster mode disabled (mode preserved); runtime stopping via restart. Rejoin with `outpost cluster join`.")
 	}
