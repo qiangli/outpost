@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	"github.com/qiangli/outpost/internal/agent/runtime"
 )
 
 // fakeControlPlaneStatusProber is a test double that returns fixed results.
@@ -33,8 +31,8 @@ func TestControlPlaneStatusView_NoProber(t *testing.T) {
 	if got.ContainerExists || got.ContainerRunning || got.APIServerServing {
 		t.Error("status without prober should have all probes false")
 	}
-	if got.NodeCount != 0 || got.JoinEndpointAvailable {
-		t.Error("status without prober should have counts/flags empty")
+	if len(got.Nodes) > 0 || got.JoinEndpoint != "" {
+		t.Error("status without prober should have empty nodes and endpoint")
 	}
 }
 
@@ -42,14 +40,18 @@ func TestControlPlaneStatusView_NoProber(t *testing.T) {
 func TestControlPlaneStatusView_WithProber(t *testing.T) {
 	s := newTestServer(t)
 	fakeStatus := ControlPlaneStatus{
-		Hosted:               true,
-		ContainerExists:      true,
-		ContainerRunning:     true,
-		APIServerServing:     true,
-		APIServerStatusCode:  200,
-		NodeCount:            3,
-		JoinEndpointAvailable: true,
-		CheckedAt:            time.Now(),
+		Hosted:              true,
+		ContainerExists:     true,
+		ContainerRunning:    true,
+		APIServerServing:    true,
+		APIServerStatusCode: 200,
+		Nodes: []Node{
+			{Name: "node1", Ready: true},
+			{Name: "node2", Ready: true},
+			{Name: "node3", Ready: false},
+		},
+		JoinEndpoint: "https://127.0.0.1:6443",
+		CheckedAt:    time.Now(),
 	}
 	s.deps.ControlPlaneStatusProber = &fakeControlPlaneStatusProber{status: fakeStatus}
 
@@ -73,16 +75,25 @@ func TestControlPlaneStatusView_WithProber(t *testing.T) {
 	if got.APIServerStatusCode != fakeStatus.APIServerStatusCode {
 		t.Errorf("apiserver_status_code = %d, want %d", got.APIServerStatusCode, fakeStatus.APIServerStatusCode)
 	}
-	if got.NodeCount != fakeStatus.NodeCount {
-		t.Errorf("node_count = %d, want %d", got.NodeCount, fakeStatus.NodeCount)
+	if len(got.Nodes) != len(fakeStatus.Nodes) {
+		t.Errorf("nodes length = %d, want %d", len(got.Nodes), len(fakeStatus.Nodes))
 	}
-	if got.JoinEndpointAvailable != fakeStatus.JoinEndpointAvailable {
-		t.Errorf("join_endpoint_available = %v, want %v", got.JoinEndpointAvailable, fakeStatus.JoinEndpointAvailable)
+	for i, node := range got.Nodes {
+		if node.Name != fakeStatus.Nodes[i].Name {
+			t.Errorf("node[%d].name = %s, want %s", i, node.Name, fakeStatus.Nodes[i].Name)
+		}
+		if node.Ready != fakeStatus.Nodes[i].Ready {
+			t.Errorf("node[%d].ready = %v, want %v", i, node.Ready, fakeStatus.Nodes[i].Ready)
+		}
+	}
+	if got.JoinEndpoint != fakeStatus.JoinEndpoint {
+		t.Errorf("join_endpoint = %s, want %s", got.JoinEndpoint, fakeStatus.JoinEndpoint)
 	}
 }
 
-// TestDefaultControlPlaneStatusProber_NotHosted tests the prober when hosting is off.
-func TestDefaultControlPlaneStatusProber_NotHosted(t *testing.T) {
+// TestDefaultControlPlaneStatusProber_HostingState tests the prober with
+// different hosting configurations, routed through the fake seam.
+func TestDefaultControlPlaneStatusProber_HostingState(t *testing.T) {
 	tests := []struct {
 		name string
 		// controlPlaneEnabled determines whether hosting is on.
@@ -96,17 +107,15 @@ func TestDefaultControlPlaneStatusProber_NotHosted(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			prober := NewDefaultControlPlaneStatusProber(
-				"test-host",
-				func() bool { return tt.controlPlaneEnabled },
-				func() bool { return false },
-				func() runtime.ServerOptions { return runtime.ServerOptions{} },
-				nil,
-			)
+			fakeStatus := ControlPlaneStatus{
+				Hosted: tt.expectedHosted,
+			}
+			s := newTestServer(t)
+			s.deps.ControlPlaneStatusProber = &fakeControlPlaneStatusProber{status: fakeStatus}
 
-			status, err := prober.ProbeControlPlaneStatus(context.Background())
+			status, err := s.ControlPlaneStatusView(context.Background())
 			if err != nil {
-				t.Fatalf("ProbeControlPlaneStatus: %v", err)
+				t.Fatalf("ControlPlaneStatusView: %v", err)
 			}
 
 			if status.Hosted != tt.expectedHosted {
@@ -117,8 +126,8 @@ func TestDefaultControlPlaneStatusProber_NotHosted(t *testing.T) {
 }
 
 // TestFakeProber_TableDriven uses table-driven test with a fake prober to
-// cover combinations of container states and apiserver health without calling
-// the real runtime probe (which would fail on missing containers).
+// cover combinations of container states, node readiness, and endpoint
+// configuration without calling the real runtime probe.
 func TestFakeProber_TableDriven(t *testing.T) {
 	tests := []struct {
 		name string
@@ -130,127 +139,155 @@ func TestFakeProber_TableDriven(t *testing.T) {
 		{
 			name: "hosting off",
 			fakeStatus: ControlPlaneStatus{
-				Hosted:                false,
-				ContainerExists:       false,
-				ContainerRunning:      false,
-				APIServerServing:      false,
-				APIServerStatusCode:   0,
-				NodeCount:             0,
-				JoinEndpointAvailable: false,
+				Hosted:              false,
+				ContainerExists:     false,
+				ContainerRunning:    false,
+				APIServerServing:    false,
+				APIServerStatusCode: 0,
+				Nodes:               nil,
+				JoinEndpoint:        "",
 			},
 			expectedStatus: ControlPlaneStatus{
-				Hosted:                false,
-				ContainerExists:       false,
-				ContainerRunning:      false,
-				APIServerServing:      false,
-				APIServerStatusCode:   0,
-				NodeCount:             0,
-				JoinEndpointAvailable: false,
+				Hosted:              false,
+				ContainerExists:     false,
+				ContainerRunning:    false,
+				APIServerServing:    false,
+				APIServerStatusCode: 0,
+				Nodes:               nil,
+				JoinEndpoint:        "",
 			},
 		},
 		{
 			name: "hosting on, container exists, apiserver ready",
 			fakeStatus: ControlPlaneStatus{
-				Hosted:                true,
-				ContainerExists:       true,
-				ContainerRunning:      true,
-				APIServerServing:      true,
-				APIServerStatusCode:   200,
-				NodeCount:             2,
-				JoinEndpointAvailable: true,
+				Hosted:              true,
+				ContainerExists:     true,
+				ContainerRunning:    true,
+				APIServerServing:    true,
+				APIServerStatusCode: 200,
+				Nodes: []Node{
+					{Name: "worker1", Ready: true},
+					{Name: "worker2", Ready: true},
+				},
+				JoinEndpoint: "https://127.0.0.1:6443",
 			},
 			expectedStatus: ControlPlaneStatus{
-				Hosted:                true,
-				ContainerExists:       true,
-				ContainerRunning:      true,
-				APIServerServing:      true,
-				APIServerStatusCode:   200,
-				NodeCount:             2,
-				JoinEndpointAvailable: true,
+				Hosted:              true,
+				ContainerExists:     true,
+				ContainerRunning:    true,
+				APIServerServing:    true,
+				APIServerStatusCode: 200,
+				Nodes: []Node{
+					{Name: "worker1", Ready: true},
+					{Name: "worker2", Ready: true},
+				},
+				JoinEndpoint: "https://127.0.0.1:6443",
 			},
 		},
 		{
 			name: "hosting on, container exists, apiserver not serving",
 			fakeStatus: ControlPlaneStatus{
-				Hosted:                true,
-				ContainerExists:       true,
-				ContainerRunning:      true,
-				APIServerServing:      false,
-				APIServerStatusCode:   0,
-				NodeCount:             2,
-				JoinEndpointAvailable: true,
+				Hosted:              true,
+				ContainerExists:     true,
+				ContainerRunning:    true,
+				APIServerServing:    false,
+				APIServerStatusCode: 0,
+				Nodes: []Node{
+					{Name: "worker1", Ready: false},
+					{Name: "worker2", Ready: true},
+				},
+				JoinEndpoint: "https://127.0.0.1:6443",
 			},
 			expectedStatus: ControlPlaneStatus{
-				Hosted:                true,
-				ContainerExists:       true,
-				ContainerRunning:      true,
-				APIServerServing:      false,
-				APIServerStatusCode:   0,
-				NodeCount:             2,
-				JoinEndpointAvailable: true,
+				Hosted:              true,
+				ContainerExists:     true,
+				ContainerRunning:    true,
+				APIServerServing:    false,
+				APIServerStatusCode: 0,
+				Nodes: []Node{
+					{Name: "worker1", Ready: false},
+					{Name: "worker2", Ready: true},
+				},
+				JoinEndpoint: "https://127.0.0.1:6443",
 			},
 		},
 		{
 			name: "hosting on, container not running",
 			fakeStatus: ControlPlaneStatus{
-				Hosted:                true,
-				ContainerExists:       true,
-				ContainerRunning:      false,
-				APIServerServing:      false,
-				APIServerStatusCode:   0,
-				NodeCount:             0,
-				JoinEndpointAvailable: true,
+				Hosted:              true,
+				ContainerExists:     true,
+				ContainerRunning:    false,
+				APIServerServing:    false,
+				APIServerStatusCode: 0,
+				Nodes:               nil,
+				JoinEndpoint:        "https://127.0.0.1:6443",
 			},
 			expectedStatus: ControlPlaneStatus{
-				Hosted:                true,
-				ContainerExists:       true,
-				ContainerRunning:      false,
-				APIServerServing:      false,
-				APIServerStatusCode:   0,
-				NodeCount:             0,
-				JoinEndpointAvailable: true,
+				Hosted:              true,
+				ContainerExists:     true,
+				ContainerRunning:    false,
+				APIServerServing:    false,
+				APIServerStatusCode: 0,
+				Nodes:               nil,
+				JoinEndpoint:        "https://127.0.0.1:6443",
 			},
 		},
 		{
 			name: "hosting on, endpoint not configured",
 			fakeStatus: ControlPlaneStatus{
-				Hosted:                true,
-				ContainerExists:       true,
-				ContainerRunning:      true,
-				APIServerServing:      true,
-				APIServerStatusCode:   200,
-				NodeCount:             1,
-				JoinEndpointAvailable: false,
+				Hosted:              true,
+				ContainerExists:     true,
+				ContainerRunning:    true,
+				APIServerServing:    true,
+				APIServerStatusCode: 200,
+				Nodes: []Node{
+					{Name: "worker1", Ready: true},
+				},
+				JoinEndpoint: "",
 			},
 			expectedStatus: ControlPlaneStatus{
-				Hosted:                true,
-				ContainerExists:       true,
-				ContainerRunning:      true,
-				APIServerServing:      true,
-				APIServerStatusCode:   200,
-				NodeCount:             1,
-				JoinEndpointAvailable: false,
+				Hosted:              true,
+				ContainerExists:     true,
+				ContainerRunning:    true,
+				APIServerServing:    true,
+				APIServerStatusCode: 200,
+				Nodes: []Node{
+					{Name: "worker1", Ready: true},
+				},
+				JoinEndpoint: "",
 			},
 		},
 		{
-			name: "hosting on, multiple nodes",
+			name: "hosting on, multiple nodes with mixed readiness",
 			fakeStatus: ControlPlaneStatus{
-				Hosted:                true,
-				ContainerExists:       true,
-				ContainerRunning:      true,
-				APIServerServing:      true,
-				APIServerStatusCode:   200,
-				NodeCount:             5,
-				JoinEndpointAvailable: true,
+				Hosted:              true,
+				ContainerExists:     true,
+				ContainerRunning:    true,
+				APIServerServing:    true,
+				APIServerStatusCode: 200,
+				Nodes: []Node{
+					{Name: "worker1", Ready: true},
+					{Name: "worker2", Ready: true},
+					{Name: "worker3", Ready: false},
+					{Name: "worker4", Ready: true},
+					{Name: "worker5", Ready: false},
+				},
+				JoinEndpoint: "https://127.0.0.1:6443",
 			},
 			expectedStatus: ControlPlaneStatus{
-				Hosted:                true,
-				ContainerExists:       true,
-				ContainerRunning:      true,
-				APIServerServing:      true,
-				APIServerStatusCode:   200,
-				NodeCount:             5,
-				JoinEndpointAvailable: true,
+				Hosted:              true,
+				ContainerExists:     true,
+				ContainerRunning:    true,
+				APIServerServing:    true,
+				APIServerStatusCode: 200,
+				Nodes: []Node{
+					{Name: "worker1", Ready: true},
+					{Name: "worker2", Ready: true},
+					{Name: "worker3", Ready: false},
+					{Name: "worker4", Ready: true},
+					{Name: "worker5", Ready: false},
+				},
+				JoinEndpoint: "https://127.0.0.1:6443",
 			},
 		},
 	}
@@ -284,11 +321,20 @@ func TestFakeProber_TableDriven(t *testing.T) {
 			if status.APIServerStatusCode != tt.expectedStatus.APIServerStatusCode {
 				t.Errorf("apiserver_status_code = %d, want %d", status.APIServerStatusCode, tt.expectedStatus.APIServerStatusCode)
 			}
-			if status.NodeCount != tt.expectedStatus.NodeCount {
-				t.Errorf("node_count = %d, want %d", status.NodeCount, tt.expectedStatus.NodeCount)
+			if len(status.Nodes) != len(tt.expectedStatus.Nodes) {
+				t.Errorf("nodes length = %d, want %d", len(status.Nodes), len(tt.expectedStatus.Nodes))
+			} else {
+				for i, node := range status.Nodes {
+					if node.Name != tt.expectedStatus.Nodes[i].Name {
+						t.Errorf("node[%d].name = %s, want %s", i, node.Name, tt.expectedStatus.Nodes[i].Name)
+					}
+					if node.Ready != tt.expectedStatus.Nodes[i].Ready {
+						t.Errorf("node[%d].ready = %v, want %v", i, node.Ready, tt.expectedStatus.Nodes[i].Ready)
+					}
+				}
 			}
-			if status.JoinEndpointAvailable != tt.expectedStatus.JoinEndpointAvailable {
-				t.Errorf("join_endpoint_available = %v, want %v", status.JoinEndpointAvailable, tt.expectedStatus.JoinEndpointAvailable)
+			if status.JoinEndpoint != tt.expectedStatus.JoinEndpoint {
+				t.Errorf("join_endpoint = %s, want %s", status.JoinEndpoint, tt.expectedStatus.JoinEndpoint)
 			}
 		})
 	}

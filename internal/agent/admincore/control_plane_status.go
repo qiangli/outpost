@@ -7,6 +7,14 @@ import (
 	"github.com/qiangli/outpost/internal/agent/runtime"
 )
 
+// Node represents a cluster node joining the control plane.
+type Node struct {
+	// Name is the node's registered name.
+	Name string `json:"name"`
+	// Ready reports whether the node is ready to accept workloads.
+	Ready bool `json:"ready"`
+}
+
 // ControlPlaneStatus is a read-only snapshot of the hosted control plane's
 // health and readiness. It never carries credential values — presence is
 // reported as has_* booleans only.
@@ -27,16 +35,13 @@ type ControlPlaneStatus struct {
 	// APIServerStatusCode is the HTTP status when APIServerServing is true.
 	APIServerStatusCode int `json:"apiserver_status_code,omitempty"`
 
-	// NodeCount is the number of nodes in the cluster joining this plane.
-	// Zero when the plane is not hosted or cannot be queried; absence of a
-	// cluster join path does not mean zero nodes (they may exist but be
-	// unreachable).
-	NodeCount int `json:"node_count"`
+	// Nodes is the list of cluster nodes joining this plane, with readiness status.
+	// Empty when the plane is not hosted or cannot be queried.
+	Nodes []Node `json:"nodes,omitempty"`
 
-	// JoinEndpointAvailable reports whether this host has configured a join
-	// endpoint (has_endpoint) for workers to reach. The actual endpoint is never
-	// returned; it lives in the token reveal path.
-	JoinEndpointAvailable bool `json:"join_endpoint_available"`
+	// JoinEndpoint is the endpoint URL workers can use to join this control plane.
+	// Empty when this host has not configured a join endpoint.
+	JoinEndpoint string `json:"join_endpoint,omitempty"`
 
 	// CheckedAt is when this status was last measured.
 	CheckedAt time.Time `json:"checked_at,omitzero"`
@@ -65,23 +70,20 @@ func (s *Server) ControlPlaneStatusView(ctx context.Context) (ControlPlaneStatus
 }
 
 // defaultControlPlaneStatusProber is the real implementation, wired in
-// cmd/outpost/main.go. It probes the container, apiserver, and cluster
-// using the existing readiness surfaces in internal/agent/runtime.
+// cmd/outpost/main.go. It reads cached control-plane health and queries
+// cluster state using the existing readiness surfaces in internal/agent/runtime.
 type defaultControlPlaneStatusProber struct {
 	// agentName is the outpost's registered identity (the host name).
 	agentName string
 	// controlPlaneEnabled reports whether hosting is actually on.
 	controlPlaneEnabled func() bool
-	// joinEndpointAvailable reports whether a join endpoint has been
-	// configured (independent of whether the container is running).
-	joinEndpointAvailable func() bool
-	// serverOptions builds the runtime.ServerOptions for this host.
-	// Used to probe the container and apiserver.
-	serverOptions func() runtime.ServerOptions
-	// nodeCount returns the number of cluster nodes joined to this plane.
-	// May return 0 if the plane cannot be reached; an error is only for
-	// unexpected system failures.
-	nodeCount func(ctx context.Context) (int, error)
+	// joinEndpoint returns the join endpoint URL for workers (may be empty).
+	// Independent of whether the container is running.
+	joinEndpoint func() string
+	// nodes returns the list of cluster nodes joined to this plane,
+	// with their readiness status. May return empty if the plane cannot be reached;
+	// an error is only for unexpected system failures.
+	nodes func(ctx context.Context) ([]Node, error)
 }
 
 func (p *defaultControlPlaneStatusProber) ProbeControlPlaneStatus(ctx context.Context) (ControlPlaneStatus, error) {
@@ -95,21 +97,23 @@ func (p *defaultControlPlaneStatusProber) ProbeControlPlaneStatus(ctx context.Co
 		return status, nil
 	}
 
-	status.JoinEndpointAvailable = p.joinEndpointAvailable()
+	// Read cached health instead of probing. The supervisor maintains
+	// LastServerHealth; we reuse that answer without repeating the probe.
+	health, ok := runtime.LastServerHealth()
+	if ok {
+		status.ContainerExists = health.ContainerExists
+		status.ContainerRunning = health.ContainerRunning
+		status.APIServerServing = health.Serving
+		status.APIServerStatusCode = health.Status
+	}
 
-	// Probe the container and apiserver.
-	opts := p.serverOptions()
-	health := runtime.CheckServer(ctx, opts)
-	status.ContainerExists = health.ContainerExists
-	status.ContainerRunning = health.ContainerRunning
-	status.APIServerServing = health.Serving
-	status.APIServerStatusCode = health.Status
+	status.JoinEndpoint = p.joinEndpoint()
 
-	// Query node count. A failure here is not fatal; we report what we could
-	// measure and leave the field at zero.
-	if p.nodeCount != nil {
-		if count, err := p.nodeCount(ctx); err == nil {
-			status.NodeCount = count
+	// Query node state. A failure here is not fatal; we report what we could
+	// measure and leave nodes empty.
+	if p.nodes != nil {
+		if nodeList, err := p.nodes(ctx); err == nil {
+			status.Nodes = nodeList
 		}
 	}
 
@@ -124,15 +128,13 @@ func (p *defaultControlPlaneStatusProber) ProbeControlPlaneStatus(ctx context.Co
 func NewDefaultControlPlaneStatusProber(
 	agentName string,
 	controlPlaneEnabled func() bool,
-	joinEndpointAvailable func() bool,
-	serverOptions func() runtime.ServerOptions,
-	nodeCount func(ctx context.Context) (int, error),
+	joinEndpoint func() string,
+	nodes func(ctx context.Context) ([]Node, error),
 ) ControlPlaneStatusProber {
 	return &defaultControlPlaneStatusProber{
-		agentName:             agentName,
-		controlPlaneEnabled:   controlPlaneEnabled,
-		joinEndpointAvailable: joinEndpointAvailable,
-		serverOptions:         serverOptions,
-		nodeCount:             nodeCount,
+		agentName:           agentName,
+		controlPlaneEnabled: controlPlaneEnabled,
+		joinEndpoint:        joinEndpoint,
+		nodes:               nodes,
 	}
 }
