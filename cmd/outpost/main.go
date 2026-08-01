@@ -2170,6 +2170,22 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 	// ycode-podman / Lima). The outpost daemon stays on the host;
 	// only the container hosts k3s-agent + tailscaled + CNI. One
 	// outpost = one identity = one Node (named after the outpost).
+	// WHICH control plane this node joins. Defaults to the cloudbox pairing;
+	// a configured join_endpoint points it at a peer-hosted plane instead.
+	//
+	// Deriving this from JoinTarget rather than reading fc.ServerAddr
+	// directly is what decouples "which cluster do I join" from "which
+	// cloudbox am I paired with" — previously the same fields, so joining a
+	// peer's cluster meant unpairing from cloudbox and losing apps, shell and
+	// the LLM pool along with it.
+	tunnelHost, tunnelPort, tunnelToken, serverUser := fc.JoinTarget()
+	frpProtocol := ""
+	if cc.JoinsPeerPlane() {
+		// A peer's frps is plain TCP: there is no TLS-terminating edge in
+		// front of it, and wss would fail the handshake rather than degrade.
+		frpProtocol = "tcp"
+	}
+
 	rtOpts := runtime.Options{
 		AgentName:          nodeName,
 		HostName:           fc.AgentName,
@@ -2177,10 +2193,12 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 		APIServer:          fmt.Sprintf("https://127.0.0.1:%d", apiPort),
 		APIPort:            apiPort,
 		KubeletPort:        cc.KubeletProxyPort,
-		CloudboxHost:       fc.ServerAddr,
-		CloudboxPort:       fc.ServerPort,
+		CloudboxHost:       tunnelHost,
+		CloudboxPort:       tunnelPort,
 		STCPSecret:         cc.STCPSecret,
-		MatrixToken:        fc.Token,
+		MatrixToken:        tunnelToken,
+		FRPProtocol:        frpProtocol,
+		FRPServerUser:      serverUser,
 		PodCIDR:            cc.OverlayPodCIDR,
 		OverlayLoginServer: cc.OverlayLoginServer,
 		OverlayAuthKey:     cc.OverlayAuthKey,
@@ -2591,7 +2609,96 @@ func startControlPlaneTunnel(ctx context.Context, g *errgroup.Group, fc *conf.Fi
 		}
 		return nil
 	})
+
+	startAPIServerPublisher(ctx, g, fc, cfgPath, addr, port, token)
 }
+
+// startAPIServerPublisher runs the frpc that PUBLISHES this host's apiserver
+// into the tunnel server started above.
+//
+// Without it the server accepts logins and carries nothing: a worker's visitor
+// resolves to a proxy that was never registered, which surfaces as a timeout
+// rather than a refusal — the confusing shape of failure. frps is the switch;
+// this is the thing plugged into it.
+//
+// It is a SECOND frpc, deliberately, alongside the one dialing cloudbox. They
+// serve different planes (cloudbox app traffic vs cluster membership) and have
+// different lifetimes, and a host may run this one while unpaired.
+func startAPIServerPublisher(
+	ctx context.Context, g *errgroup.Group, fc *conf.FileConfig,
+	cfgPath, bindAddr string, bindPort int, token string,
+) {
+	secret, err := conf.EnsureControlPlaneSTCPSecret(cfgPath, fc)
+	if err != nil {
+		slog.Warn("control plane: apiserver not published (no stcp secret)", "err", err)
+		return
+	}
+	apiAddr := fc.Cluster.ControlPlaneAPI()
+	host, portStr, err := net.SplitHostPort(apiAddr)
+	if err != nil {
+		slog.Warn("control plane: apiserver not published (bad address)", "addr", apiAddr, "err", err)
+		return
+	}
+	apiPort, err := strconv.Atoi(portStr)
+	if err != nil {
+		slog.Warn("control plane: apiserver not published (bad port)", "addr", apiAddr, "err", err)
+		return
+	}
+
+	// Dial the loopback side of our own server regardless of what it binds:
+	// a plane bound to 0.0.0.0 for the LAN still reaches itself at 127.0.0.1,
+	// and routing our own publisher out over the network would be pointless.
+	dialAddr := bindAddr
+	if dialAddr == "0.0.0.0" || dialAddr == "::" || dialAddr == "" {
+		dialAddr = "127.0.0.1"
+	}
+
+	pub, err := agent.NewTunnel(agent.TunnelConfig{
+		ServerAddr: dialAddr,
+		ServerPort: bindPort,
+		Protocol:   "tcp",
+		Token:      token,
+		// A user distinct from any worker's. frp scopes STCP visibility by
+		// user, so the publisher must not collide with a visitor.
+		User: controlPlanePublisherUser,
+	}, nil, nil, []agent.STCPProxy{{
+		Name:      clusterAPIServerProxy,
+		LocalIP:   host,
+		LocalPort: apiPort,
+		Secret:    secret,
+		// Any authenticated client may visit. The gate that matters is the
+		// tunnel token: reaching this proxy already required a valid frps
+		// login, and every such client is by definition a member of this
+		// cluster. Enumerating workers here would add a second roster to keep
+		// in sync with no authority the token does not already confer.
+		AllowUsers: []string{"*"},
+	}})
+	if err != nil {
+		slog.Warn("control plane: apiserver publisher init failed", "err", err)
+		return
+	}
+
+	slog.Info("control plane: publishing apiserver", "api", apiAddr, "proxy", clusterAPIServerProxy)
+	g.Go(func() error {
+		// Unlike the server, the tunnel CLIENT does honour ctx cancellation,
+		// so this one can live in the errgroup.
+		if err := pub.Run(ctx); err != nil && ctx.Err() == nil {
+			slog.Warn("control plane: apiserver publisher stopped", "err", err)
+		}
+		return nil
+	})
+}
+
+const (
+	// controlPlanePublisherUser is the frp user the control plane's own
+	// publisher logs in as. Distinct from any worker's so STCP user scoping
+	// cannot collide.
+	controlPlanePublisherUser = "control-plane"
+	// clusterAPIServerProxy is the published service name. Workers' visitors
+	// must use the SAME string — it is the rendezvous key, so it is a
+	// constant rather than anything derived per host.
+	clusterAPIServerProxy = "k3s-apiserver"
+)
 
 // Node runtime labels, matching the cloud-hosted control plane's values
 // exactly (cloudbox internal/cluster/node_identity.go). A node's runtime

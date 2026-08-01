@@ -15,6 +15,8 @@ type controlPlaneOut struct {
 	BindPort       int    `json:"bind_port"`
 	HasToken       bool   `json:"has_token"`
 	TunnelToken    string `json:"tunnel_token,omitempty"`
+	STCPSecret     string `json:"stcp_secret,omitempty"`
+	APIAddr        string `json:"api_addr,omitempty"`
 	LANExposed     bool   `json:"lan_exposed"`
 	RestartPending bool   `json:"restart_pending"`
 }
@@ -130,8 +132,14 @@ Use --quiet to print the bare value for piping.`,
 				fmt.Println(out.TunnelToken)
 				return nil
 			}
-			fmt.Printf("token:    %s\n", out.TunnelToken)
-			fmt.Printf("endpoint: %s\n", net.JoinHostPort(out.BindAddr, strconv.Itoa(out.BindPort)))
+			// Print the WHOLE set a worker needs. Handing over the token
+			// alone produces a worker that authenticates and then cannot
+			// reach the apiserver — a failure that looks like a network
+			// problem rather than a missing credential.
+			fmt.Printf("endpoint:    %s\n", net.JoinHostPort(out.BindAddr, strconv.Itoa(out.BindPort)))
+			fmt.Printf("token:       %s\n", out.TunnelToken)
+			fmt.Printf("stcp secret: %s\n", out.STCPSecret)
+			fmt.Printf("apiserver:   %s (on this host)\n", out.APIAddr)
 			if !out.ControlPlane {
 				fmt.Println("\nNote: this host is NOT currently hosting the apiserver, so nothing is listening.")
 				fmt.Println("Run `outpost cluster control-plane on` to start it.")

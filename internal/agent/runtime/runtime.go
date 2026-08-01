@@ -87,6 +87,22 @@ type Options struct {
 	// holds in MATRIX_TOKEN). Empty disables [auth] in frpc.toml.
 	MatrixToken string
 
+	// FRPProtocol / FRPServerUser select WHICH control plane this node
+	// joins, without changing anything else about the runtime.
+	//
+	// Cloudbox is reached over "wss" (TLS terminated at its edge) and
+	// publishes the apiserver as user "cloudbox". A peer-hosted plane is
+	// reached over plain "tcp" (an frps on another of the user's own
+	// machines, usually via loopback or LAN) and publishes as
+	// "control-plane". The entrypoint defaults both to the cloudbox values,
+	// so an empty pair renders a byte-identical frpc.toml to the one that
+	// shipped before peer-hosted planes existed.
+	//
+	// The serverUser is not cosmetic: frp scopes STCP visibility BY USER, so
+	// a visitor naming the wrong one is refused rather than misrouted.
+	FRPProtocol   string
+	FRPServerUser string
+
 	// APIPort is the loopback port the STCP visitor binds inside the
 	// container (must match cloudbox's ClusterAPIServerPort). Empty
 	// defaults to 6443.
@@ -277,6 +293,12 @@ func Up(ctx context.Context, opts Options) error {
 	if opts.STCPSecret != "" {
 		args = append(args, "-e", "OUTPOST_STCP_SECRET="+opts.STCPSecret)
 	}
+	if opts.FRPProtocol != "" {
+		args = append(args, "-e", "OUTPOST_FRP_PROTOCOL="+opts.FRPProtocol)
+	}
+	if opts.FRPServerUser != "" {
+		args = append(args, "-e", "OUTPOST_FRP_SERVER_USER="+opts.FRPServerUser)
+	}
 	if opts.MatrixToken != "" {
 		args = append(args, "-e", "OUTPOST_MATRIX_TOKEN="+opts.MatrixToken)
 	}
@@ -336,6 +358,8 @@ type fingerprintInput struct {
 	CloudboxPort  int
 	STCPSecret    string
 	MatrixToken   string
+	FRPProtocol   string
+	FRPServerUser string
 	APIPort       int
 	KubeletPort   int
 	PodCIDR       string
@@ -360,6 +384,8 @@ func runtimeFingerprint(ctx context.Context, bin, image string, opts Options) (s
 		CloudboxPort:  opts.CloudboxPort,
 		STCPSecret:    opts.STCPSecret,
 		MatrixToken:   opts.MatrixToken,
+		FRPProtocol:   opts.FRPProtocol,
+		FRPServerUser: opts.FRPServerUser,
 		APIPort:       opts.APIPort,
 		KubeletPort:   opts.KubeletPort,
 		PodCIDR:       opts.PodCIDR,

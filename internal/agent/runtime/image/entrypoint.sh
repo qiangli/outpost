@@ -202,7 +202,7 @@ if [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ]; then
 [[visitors]]
 name = "overlay-control-visitor"
 type = "stcp"
-serverUser = "cloudbox"
+serverUser = "${OUTPOST_FRP_SERVER_USER}"
 serverName = "overlay-control"
 secretKey = "${OUTPOST_STCP_SECRET}"
 bindAddr = "127.0.0.1"

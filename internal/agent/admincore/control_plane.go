@@ -41,6 +41,15 @@ type ControlPlaneResult struct {
 	HasToken     bool   `json:"has_token"`
 	// TunnelToken is empty unless the caller asked to reveal or rotate it.
 	TunnelToken string `json:"tunnel_token,omitempty"`
+	// STCPSecret is the SECOND credential a worker needs — it authorizes
+	// reaching the published apiserver, where the token authorizes the tunnel
+	// session itself. Revealed on the same terms as the token: a worker given
+	// only one of the two fails, so handing over one without the other would
+	// be a half-answer.
+	STCPSecret string `json:"stcp_secret,omitempty"`
+	// APIAddr is where the apiserver listens on THIS host — what the
+	// publisher bridges workers to.
+	APIAddr string `json:"api_addr,omitempty"`
 	// LANExposed is true when the bind address is not loopback. Surfaced as
 	// its own flag rather than left for the reader to infer from an address,
 	// because "this host is accepting cluster joins from the network" is the
@@ -107,8 +116,13 @@ func (s *Server) SetControlPlane(p ControlPlaneParams) (ControlPlaneResult, erro
 		fc.Cluster.ControlPlane = &on
 		changed = changed || was != on
 		if on {
-			// Mint before saving so the token lands in the same write.
+			// Mint BOTH credentials before saving so they land in the same
+			// write. A worker needs the pair; minting only one would leave a
+			// control plane that looks configured and refuses every join.
 			if _, err := conf.EnsureClusterTunnelToken("", fc); err != nil {
+				return ControlPlaneResult{}, internalErr("%s", err.Error())
+			}
+			if _, err := conf.EnsureControlPlaneSTCPSecret("", fc); err != nil {
 				return ControlPlaneResult{}, internalErr("%s", err.Error())
 			}
 		}
@@ -168,12 +182,14 @@ func controlPlaneResult(fc *conf.FileConfig, reveal bool) ControlPlaneResult {
 		ControlPlane: cc.ControlPlaneOn(),
 		BindAddr:     addr,
 		BindPort:     port,
+		APIAddr:      cc.ControlPlaneAPI(),
 		LANExposed:   !isLoopbackIP(addr),
 	}
 	if cc != nil {
 		out.HasToken = cc.TunnelToken != ""
 		if reveal {
 			out.TunnelToken = cc.TunnelToken
+			out.STCPSecret = cc.STCPSecret
 		}
 	}
 	return out

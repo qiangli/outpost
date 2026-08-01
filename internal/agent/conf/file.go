@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -770,6 +771,35 @@ type ClusterConfig struct {
 	TunnelBindAddr string `json:"tunnel_bind_addr,omitempty"`
 	TunnelBindPort int    `json:"tunnel_bind_port,omitempty"`
 
+	// ControlPlaneAPIAddr is where the apiserver listens ON THIS HOST when
+	// it is the control plane — the address the publisher bridges workers to.
+	//
+	// It is a separate field from K8sAPIPort, which is the port a WORKER's
+	// visitor binds locally. The two are the same number in the common case
+	// and it is tempting to merge them, but they answer different questions
+	// ("where does the server listen here" vs "where does the client dial
+	// there") and merging would silently break the moment a host runs its
+	// apiserver on a non-default port.
+	//
+	// Default 127.0.0.1:6443.
+	ControlPlaneAPIAddr string `json:"control_plane_api_addr,omitempty"`
+
+	// JoinEndpoint / JoinToken point this host at a control plane that is
+	// NOT cloudbox's — the worker-side counterpart of ControlPlane above.
+	//
+	// WHY THESE EXIST SEPARATELY from ServerAddr/ServerPort/Token. Those are
+	// the CLOUDBOX PAIRING, and the k3s runtime used to derive its tunnel
+	// target from them. That made "join a peer-hosted plane" impossible
+	// without unpairing from cloudbox — two unrelated decisions welded
+	// together. A host must be able to stay paired with cloudbox (apps,
+	// shell, LLM pool, fleet registry) while joining a cluster hosted on a
+	// peer, because those are different planes serving different purposes.
+	//
+	// Empty means "join the cloudbox-hosted plane", which is the historical
+	// behaviour and stays the default.
+	JoinEndpoint string `json:"join_endpoint,omitempty"`
+	JoinToken    string `json:"join_token,omitempty"`
+
 	// K8sAPIPort is the TCP port the STCP visitor binds locally for the
 	// apiserver listener. `k3s agent --server` dials
 	// https://127.0.0.1:<K8sAPIPort>. Matches cloudbox's
@@ -860,6 +890,62 @@ const (
 	DefaultTunnelBindAddr = "127.0.0.1"
 	DefaultTunnelBindPort = 7000
 )
+
+// DefaultControlPlaneAPIAddr is where k3s serves its apiserver by default.
+const DefaultControlPlaneAPIAddr = "127.0.0.1:6443"
+
+// ControlPlanePublisherUser is the frp user a self-hosted control plane's
+// publisher logs in as, and therefore the serverUser a worker's STCP visitor
+// must name. Both ends must agree, so it lives here rather than being spelled
+// twice.
+const ControlPlanePublisherUser = "control-plane"
+
+// JoinsPeerPlane reports whether this host joins a control plane other than
+// the cloudbox-hosted one.
+func (c *ClusterConfig) JoinsPeerPlane() bool {
+	return c != nil && strings.TrimSpace(c.JoinEndpoint) != ""
+}
+
+// JoinTarget returns the tunnel endpoint, token and frp serverUser this host
+// should use to reach its control plane.
+//
+// It returns the CLOUDBOX pairing when no peer plane is configured, so the
+// caller has one code path and the default stays exactly what it was.
+func (fc *FileConfig) JoinTarget() (host string, port int, token, serverUser string) {
+	if fc == nil {
+		return "", 0, "", ""
+	}
+	if fc.Cluster.JoinsPeerPlane() {
+		h, p := splitHostPortDefault(fc.Cluster.JoinEndpoint, DefaultTunnelBindPort)
+		return h, p, fc.Cluster.JoinToken, ControlPlanePublisherUser
+	}
+	return fc.ServerAddr, fc.ServerPort, fc.Token, "cloudbox"
+}
+
+// splitHostPortDefault parses host:port, tolerating a bare host.
+func splitHostPortDefault(addr string, defPort int) (string, int) {
+	addr = strings.TrimSpace(addr)
+	h, p, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr, defPort
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil || n <= 0 {
+		return h, defPort
+	}
+	return h, n
+}
+
+// ControlPlaneAPI returns the local apiserver address to publish.
+func (c *ClusterConfig) ControlPlaneAPI() string {
+	if c == nil {
+		return DefaultControlPlaneAPIAddr
+	}
+	if a := strings.TrimSpace(c.ControlPlaneAPIAddr); a != "" {
+		return a
+	}
+	return DefaultControlPlaneAPIAddr
+}
 
 // TunnelBind returns the address the control-plane tunnel server listens on.
 func (c *ClusterConfig) TunnelBind() (string, int) {
@@ -2203,6 +2289,37 @@ func EnsureClusterTunnelToken(path string, fc *FileConfig) (string, error) {
 		}
 	}
 	return fc.Cluster.TunnelToken, nil
+}
+
+// EnsureControlPlaneSTCPSecret generates the apiserver STCP secret on a
+// self-hosted control plane.
+//
+// Cloudbox mints this at register time for the cloud-hosted plane; a
+// peer-hosted plane has no such party, so it mints its own. It is a SECOND
+// credential alongside the tunnel token, not a duplicate of it: the token
+// authenticates the frpc session, the secret authorizes reaching this one
+// published service. A worker needs both.
+//
+// Only ever fills a blank — a cloudbox-issued secret on a host that later
+// becomes its own control plane is left exactly as it is.
+func EnsureControlPlaneSTCPSecret(path string, fc *FileConfig) (string, error) {
+	if fc == nil || fc.Cluster == nil {
+		return "", fmt.Errorf("nil cluster config")
+	}
+	if len(fc.Cluster.STCPSecret) >= 32 {
+		return fc.Cluster.STCPSecret, nil
+	}
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generate control-plane stcp secret: %w", err)
+	}
+	fc.Cluster.STCPSecret = hex.EncodeToString(b[:])
+	if path != "" {
+		if err := SaveFile(path, fc); err != nil {
+			return "", fmt.Errorf("save control-plane stcp secret: %w", err)
+		}
+	}
+	return fc.Cluster.STCPSecret, nil
 }
 
 // EnsureAppSSOSecrets walks fc.Apps and generates a 32-byte hex

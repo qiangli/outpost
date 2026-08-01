@@ -77,6 +77,8 @@ type controlPlaneOut struct {
 	BindPort       int    `json:"bind_port"`
 	HasToken       bool   `json:"has_token"`
 	TunnelToken    string `json:"tunnel_token,omitempty"`
+	STCPSecret     string `json:"stcp_secret,omitempty"`
+	APIAddr        string `json:"api_addr,omitempty"`
 	LANExposed     bool   `json:"lan_exposed"`
 	RestartPending bool   `json:"restart_pending"`
 }
@@ -89,6 +91,8 @@ func toControlPlaneOut(res admincore.ControlPlaneResult) controlPlaneOut {
 		BindPort:       res.BindPort,
 		HasToken:       res.HasToken,
 		TunnelToken:    res.TunnelToken,
+		STCPSecret:     res.STCPSecret,
+		APIAddr:        res.APIAddr,
 		LANExposed:     res.LANExposed,
 		RestartPending: res.RestartPending,
 	}
