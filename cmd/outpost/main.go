@@ -2571,7 +2571,30 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 // A no-op on every host that is not the control plane, which is nearly all of
 // them.
 func startControlPlaneTunnel(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string) {
-	if fc == nil || !fc.Cluster.ControlPlaneOn() {
+	if fc == nil {
+		slog.Info("control plane: not hosting (no configuration loaded)")
+		return
+	}
+	// A2 — this decline used to be SILENT, which is why a host that was meant
+	// to host the plane produced no log line at all: cluster.control_plane was
+	// true in the operator's config, yet the flag failed to reach here because
+	// mergePairing keeps only a subset of Cluster fields on register/recover
+	// and drops Cluster.ControlPlane. With no log, the operator had nothing to
+	// go on while workers failed to join. So say WHY we are not hosting — and
+	// escalate to Warn when this host still carries control-plane-only
+	// credentials (a minted tunnel token, or a recorded control-plane
+	// kubeconfig), since creds-present-but-flag-off is the exact signature of a
+	// dropped flag rather than a host that was never a control plane.
+	if !fc.Cluster.ControlPlaneOn() {
+		if c := fc.Cluster; c != nil &&
+			(strings.TrimSpace(c.TunnelToken) != "" ||
+				strings.TrimSpace(c.ControlPlaneKubeconfig) != "") {
+			slog.Warn("control plane: not hosting — control_plane flag is off, " +
+				"but this host carries control-plane credentials; the flag may " +
+				"have been dropped on register/recover (re-set cluster.control_plane)")
+			return
+		}
+		slog.Info("control plane: not hosting (cluster.control_plane is off)")
 		return
 	}
 	// Both credentials, minted together: a worker needs the pair, and a plane
@@ -2625,10 +2648,19 @@ func startControlPlaneTunnel(ctx context.Context, g *errgroup.Group, fc *conf.Fi
 		slog.Warn("control plane: could not record kubeconfig path", "err", err)
 	}
 
-	if err := runtime.UpServer(ctx, opts); err != nil {
-		slog.Warn("control plane: container did not start", "err", err)
-		return
-	}
+	// A1/A3 — supervise the container for the daemon's life instead of a
+	// one-shot UpServer. The container's entrypoint exits 1 on any inner
+	// failure expecting a supervisor to recreate it, and `podman ps` Up is not
+	// evidence the apiserver serves — so the supervisor gates on the apiserver
+	// readiness probe (runtime/health.go), not just container state. A boot
+	// failure (cold engine) is no longer terminal: the loop backs off and
+	// retries, the same way the agent-join side does.
+	g.Go(func() error {
+		if err := runtime.SuperviseServer(ctx, opts, runtime.SupervisorConfig{}); err != nil && ctx.Err() == nil {
+			slog.Warn("control plane: supervisor exited", "err", err)
+		}
+		return nil
+	})
 	g.Go(func() error {
 		<-ctx.Done()
 		// Stop on shutdown so the published ports free for the re-exec. The
