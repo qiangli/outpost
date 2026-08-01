@@ -2985,10 +2985,7 @@ func tryReattach(ctx context.Context, fc *conf.FileConfig, cfgPath string) (*con
 		// are deliberately still refreshed: staying paired with cloudbox for
 		// apps, shell and the LLM pool is independent of which cluster this
 		// host is a node of.
-		if fc.Cluster.JoinsPeerPlane() {
-			slog.Debug("reattach: host joins a peer control plane; leaving cluster credentials alone",
-				"join_endpoint", fc.Cluster.JoinEndpoint)
-		} else if applyCloudboxClusterMembership(fc, refreshed) {
+		if reconcileClusterMembershipOnReattach(fc, refreshed) {
 			changed = true
 		}
 	}
@@ -3056,6 +3053,52 @@ func applyCloudboxClusterMembership(fc, refreshed *conf.FileConfig) bool {
 			fc.Cluster.OverlayPodCIDR = refreshed.Cluster.OverlayPodCIDR
 		}
 	}
+	return changed
+}
+
+// reconcileClusterMembershipOnReattach applies cloudbox's refreshed cluster
+// membership to fc during a boot reattach, honoring the peer-plane guard.
+// Reports whether fc changed.
+//
+// Cloudbox re-issues cluster membership (node token, STCP secret, api/kubelet
+// ports, overlay trio) on every reattach, and those fields describe the
+// CLOUDBOX plane. When this host is a node of a PEER plane instead:
+//
+//   - node token / STCP secret: applying cloudbox's would swap the peer's
+//     credentials for a different cluster's, failing the join with a CA-hash
+//     mismatch that reads like a broken tunnel (commit a69e7a5). So the refresh
+//     is skipped — the peer's own credentials are left untouched.
+//   - overlay trio (B6): skipping the refresh is NOT enough. A host that MOVED
+//     from the cloudbox plane to a peer plane still carries the cloud plane's
+//     overlay login server / auth key / pod CIDR on disk, and the runtime joins
+//     an overlay purely on OverlayLoginServer being non-empty — so a stale trio
+//     attaches this peer-plane node to the CLOUD overlay while its k3s agent
+//     joins the peer plane, a split-brain the node-token guard left behind. The
+//     peer-join flow (admincore.JoinPeerPlane) never sets these three, so
+//     clearing them can only remove cloud leftovers, never a peer's own overlay.
+func reconcileClusterMembershipOnReattach(fc, refreshed *conf.FileConfig) bool {
+	if fc.Cluster.JoinsPeerPlane() {
+		cleared := clearCloudOverlayCreds(fc.Cluster)
+		slog.Debug("reattach: host joins a peer control plane; keeping its cluster credentials and dropping any stale cloud overlay creds",
+			"join_endpoint", fc.Cluster.JoinEndpoint, "cleared_cloud_overlay", cleared)
+		return cleared
+	}
+	return applyCloudboxClusterMembership(fc, refreshed)
+}
+
+// clearCloudOverlayCreds drops the cloudbox overlay credentials from cc,
+// reporting whether anything was cleared. See B6 rationale on
+// reconcileClusterMembershipOnReattach.
+func clearCloudOverlayCreds(cc *conf.ClusterConfig) bool {
+	if cc == nil {
+		return false
+	}
+	changed := cc.OverlayLoginServer != "" ||
+		cc.OverlayAuthKey != "" ||
+		cc.OverlayPodCIDR != ""
+	cc.OverlayLoginServer = ""
+	cc.OverlayAuthKey = ""
+	cc.OverlayPodCIDR = ""
 	return changed
 }
 
@@ -3685,23 +3728,51 @@ func mergePairing(path string, exchanged *conf.FileConfig) *conf.FileConfig {
 	merged.AccessToken = exchanged.AccessToken
 	merged.ClientOnly = exchanged.ClientOnly
 
-	// Cloudbox issues fresh cluster-join credentials at every pairing
-	// (node token / STCP secret / ports / overlay endpoints). Carry those
-	// forward but keep the operator-set cluster fields cloudbox never sends
-	// (Enabled / Mode / APIURL / Token / CA / NodeName).
+	// Cloudbox issues fresh cluster-join credentials at every pairing (node
+	// token / STCP secret / ports / overlay + observability endpoints). Carry
+	// those forward but keep every HOST-authoritative cluster field.
+	//
+	// INVERTED MERGE, and why. The previous shape started from cloudbox's block
+	// and hand-listed the survivors (Enabled / Runtimes / APIURL / Token / CA /
+	// NodeName). That whitelist silently DROPPED any host field not on it — and
+	// it did: Cluster.ControlPlane (which booted a control-plane host as a
+	// worker, story #12) and Cluster.ControlPlaneKubeconfig (F16: the value
+	// never survived a re-pair, so status surfaces could not show it) were both
+	// dropped the moment they were added, as were the join_endpoint pair and the
+	// tunnel/api addrs. So start from the ON-DISK block instead and overlay ONLY
+	// the fields cloudbox owns: every host field — including any added later —
+	// is preserved by DEFAULT rather than by remembering to extend a list.
 	if exchanged.Cluster != nil {
 		if merged.Cluster == nil {
+			// Fresh host: nothing on disk to preserve, take cloudbox's block.
 			merged.Cluster = exchanged.Cluster
 		} else {
-			prev := merged.Cluster
-			nc := *exchanged.Cluster
-			nc.Enabled = prev.Enabled
-			nc.Runtimes = prev.Runtimes
-			nc.APIURL = prev.APIURL
-			nc.Token = prev.Token
-			nc.CA = prev.CA
-			nc.NodeName = prev.NodeName
-			merged.Cluster = &nc
+			cc := merged.Cluster
+			// Cluster MEMBERSHIP (node token, STCP secret, ports, overlay trio)
+			// and the fleet observability endpoints describe whichever plane
+			// this host is a NODE of. A peer-plane member and a self-hosted
+			// control plane mint those themselves; applying cloudbox's would
+			// swap them for a different cluster's — the same class of bug as the
+			// reattach guard (B6 / a69e7a5). So the cloudbox refresh applies only
+			// to a plain cloudbox-plane member. A host that carries its own
+			// control-plane creds (control_plane true) or joins a peer keeps them.
+			if !cc.JoinsPeerPlane() && !cc.ControlPlaneOn() {
+				applyCloudboxClusterMembership(merged, exchanged)
+				if v := exchanged.Cluster.MetricsRemoteURL; v != "" {
+					cc.MetricsRemoteURL = v
+				}
+				if v := exchanged.Cluster.LogsRemoteURL; v != "" {
+					cc.LogsRemoteURL = v
+				}
+				if v := exchanged.Cluster.TracesRemoteURL; v != "" {
+					cc.TracesRemoteURL = v
+				}
+			} else if cc.JoinsPeerPlane() {
+				// B6: same invariant as the boot reattach — a peer-plane
+				// member never keeps the cloud plane's overlay trio past a
+				// cloudbox sync point. See reconcileClusterMembershipOnReattach.
+				clearCloudOverlayCreds(cc)
+			}
 		}
 	}
 	return merged

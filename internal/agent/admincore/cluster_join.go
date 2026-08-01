@@ -149,6 +149,17 @@ func (s *Server) JoinPeerPlane(p PeerPlaneParams) (PeerPlaneResult, error) {
 	enabled := true
 	fc.Cluster.Enabled = &enabled
 
+	// Joining a peer plane makes the CLOUD plane's overlay credentials stale,
+	// and the runtime joins an overlay purely on overlay_login_server being
+	// non-empty — so leaving the trio behind attaches this node to the cloud
+	// overlay while its k3s agent joins the peer plane (B6). The boot reattach
+	// also clears them, but that needs cloudbox reachable; clearing at the
+	// switch itself covers a host that next boots offline. A peer plane never
+	// issues these three, so this can only ever drop cloudbox leftovers.
+	fc.Cluster.OverlayLoginServer = ""
+	fc.Cluster.OverlayAuthKey = ""
+	fc.Cluster.OverlayPodCIDR = ""
+
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		return PeerPlaneResult{}, internalErr("%s", err.Error())
 	}
