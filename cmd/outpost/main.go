@@ -49,6 +49,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/mcpapi"
 	"github.com/qiangli/outpost/internal/agent/mesh"
 	agentmirror "github.com/qiangli/outpost/internal/agent/mirror"
+	"github.com/qiangli/outpost/internal/agent/nodeaddr"
 	"github.com/qiangli/outpost/internal/agent/nodecap"
 	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/otel"
@@ -2571,20 +2572,25 @@ func startControlPlaneReconcilers(ctx context.Context, g *errgroup.Group, fc *co
 	g.Go(func() error { cap.Run(ctx); return nil })
 	slog.Info("control-plane reconcilers: runtime capability canary started")
 
-	// NOT STARTED YET: nodeaddr (apiserver→kubelet addressing).
+	// apiserver→kubelet addressing. Without this, nodes go Ready but
+	// `kubectl logs`, `exec`, `port-forward` and metrics all fail — the
+	// cluster looks healthy while the commands people actually use do not
+	// work.
 	//
-	// It needs a KubeletPortFunc — the loopback port on THIS host where
-	// each node's kubelet is reachable. Cloudbox allocates that per host
-	// at pairing time (ClusterConfig.KubeletProxyPort, "the per-host
-	// loopback port ON CLOUDBOX"); a peer-hosted frps has no equivalent
-	// allocator yet, so there is nothing truthful to return.
-	//
-	// Wiring it with a stub that always reports "no port" would look
-	// wired while being incapable of ever acting — the kind of silent
-	// no-op this codebase treats as worse than an absent feature. The
-	// package is built and tested (internal/agent/nodeaddr); it starts
-	// when the frps side publishes kubelets and can say which port each
-	// node landed on.
+	// The port is DERIVED from the node name rather than allocated and
+	// distributed. Cloudbox allocates per host at pairing because it
+	// mediates every join and can hold the pool; a peer-hosted plane has
+	// no such party, so both ends compute the same number independently
+	// (nodeaddr.KubeletPortForNode). That matters because the tunnel
+	// publishes remotePort == localPort — a registry or a config push
+	// would each add a way for the two sides to disagree.
+	addr := &nodeaddr.Reconciler{
+		Client:  cs,
+		PortFor: nodeaddr.DerivedKubeletPort,
+		Log:     slog.Default(),
+	}
+	g.Go(func() error { addr.Run(ctx); return nil })
+	slog.Info("control-plane reconcilers: apiserver→kubelet addressing started")
 }
 
 // shouldFetchKubeconfig reports whether the boot path should ask

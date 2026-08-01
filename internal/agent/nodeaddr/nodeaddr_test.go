@@ -150,3 +150,41 @@ func TestReconcile_SkipsNodeWithNoPort(t *testing.T) {
 		}
 	}
 }
+
+// Both ends derive the port independently — the same name must always
+// give the same number, or the control plane patches a port the node
+// never bound.
+func TestKubeletPortForNode_Deterministic(t *testing.T) {
+	for _, n := range []string{"alpha", "gpu-box", "laptop-vk-ollama"} {
+		if a, b := KubeletPortForNode(n), KubeletPortForNode(n); a != b {
+			t.Fatalf("%s: %d then %d", n, a, b)
+		}
+	}
+}
+
+// The range dodges three things that would collide in practice:
+// privileged ports, Kubernetes' NodePort range, and Linux's ephemeral
+// range that outbound sockets draw from.
+func TestKubeletPortForNode_AvoidsReservedRanges(t *testing.T) {
+	for i := 0; i < 5000; i++ {
+		p := KubeletPortForNode(fmt.Sprintf("node-%d", i))
+		switch {
+		case p < 1024:
+			t.Fatalf("%d is privileged", p)
+		case p >= 30000 && p <= 32767:
+			t.Fatalf("%d collides with the NodePort range", p)
+		case p >= 32768:
+			t.Fatalf("%d collides with the ephemeral range", p)
+		}
+	}
+}
+
+func TestDerivedKubeletPort(t *testing.T) {
+	p, ok := DerivedKubeletPort("gpu-box")
+	if !ok || p != KubeletPortForNode("gpu-box") {
+		t.Fatalf("got %d/%v, want %d/true", p, ok, KubeletPortForNode("gpu-box"))
+	}
+	if _, ok := DerivedKubeletPort(""); ok {
+		t.Error("an empty node name must not yield a port")
+	}
+}

@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/qiangli/outpost/internal/agent/nodeaddr"
 	"log/slog"
 	"os/exec"
 	"strings"
@@ -283,7 +284,18 @@ func Up(ctx context.Context, opts Options) error {
 		args = append(args, "-e", fmt.Sprintf("OUTPOST_API_PORT=%d", opts.APIPort))
 	}
 	if opts.KubeletPort != 0 {
-		args = append(args, "-e", fmt.Sprintf("OUTPOST_KUBELET_PORT=%d", opts.KubeletPort))
+		// KubeletPort 0 means no cloudbox allocation — either an old
+		// pairing, or a PEER-HOSTED control plane, which has no central
+		// party to allocate from. Derive the same number the control
+		// plane derives (nodeaddr.KubeletPortForNode) so both ends agree
+		// without anything being distributed. The tunnel publishes
+		// remotePort == localPort, so this one number has to match on
+		// both sides or the apiserver dials a port nothing bound.
+		kport := opts.KubeletPort
+		if kport == 0 && opts.AgentName != "" {
+			kport = nodeaddr.KubeletPortForNode(opts.AgentName)
+		}
+		args = append(args, "-e", fmt.Sprintf("OUTPOST_KUBELET_PORT=%d", kport))
 	}
 	if opts.PodCIDR != "" {
 		args = append(args, "-e", "OUTPOST_POD_CIDR="+opts.PodCIDR)

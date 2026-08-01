@@ -72,6 +72,55 @@ func LoopbackForNode(name string, taken map[string]string) string {
 	return "" // 65k nodes; unreachable in practice
 }
 
+// Kubelet port range. Chosen to avoid three things that would collide:
+// the well-known/registered ports below 1024, Kubernetes' NodePort range
+// (30000-32767), and Linux's default ephemeral range (32768-60999) which
+// outbound sockets draw from. 10000 slots is far more than a personal
+// cluster needs.
+const (
+	kubeletPortBase = 21000
+	// 21000..29999 — stops SHORT of NodePort (30000). An earlier value of
+	// 10000 slots ran to 30999 and overlapped it; the test caught it.
+	kubeletPortSlots = 9000
+)
+
+// KubeletPortForNode derives the loopback port on which a node's kubelet
+// is published through the tunnel.
+//
+// DERIVED, NOT ALLOCATED, and that is the point: both ends compute it
+// independently from the node name, so nothing has to distribute it. The
+// control-plane host needs the number to patch DaemonEndpoints; the node
+// needs it to bind kubelet and to name its frpc proxy's remotePort. A
+// registry, a handshake, or a config push would each add a way for the
+// two to disagree — and they must not, because the tunnel publishes
+// remotePort == localPort (see the runtime image's entrypoint).
+//
+// Cloudbox instead ALLOCATES this per host at pairing time
+// (ClusterConfig.KubeletProxyPort). That is the right design when a
+// central party already mediates every join and can hold the pool. A
+// peer-hosted plane has no such party, so derivation replaces it.
+//
+// A collision — two node names hashing to one slot — fails LOUD rather
+// than silently misrouting: frp refuses the second proxy's remotePort and
+// that node's kubelet simply is not published, which surfaces as its
+// `kubectl logs` failing rather than as another node's logs being served.
+// At a handful of nodes over 10000 slots the probability is negligible,
+// and the failure mode is the safe one.
+func KubeletPortForNode(name string) int {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte("kubelet:" + name))
+	return kubeletPortBase + int(h.Sum32()%uint32(kubeletPortSlots))
+}
+
+// DerivedKubeletPort is the KubeletPortFunc that pairs with
+// KubeletPortForNode — the default for a peer-hosted control plane.
+func DerivedKubeletPort(nodeName string) (int, bool) {
+	if nodeName == "" {
+		return 0, false
+	}
+	return KubeletPortForNode(nodeName), true
+}
+
 // KubeletPortFunc reports the loopback port on which THIS control-plane
 // host can reach the named node's kubelet — i.e. the local end of
 // whatever tunnel carries it. Returning ok=false skips the node, which is
