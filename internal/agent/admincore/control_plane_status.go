@@ -5,6 +5,10 @@ import (
 	"time"
 
 	"github.com/qiangli/outpost/internal/agent/runtime"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 // Node represents a cluster node joining the control plane.
@@ -38,10 +42,19 @@ type ControlPlaneStatus struct {
 	// Nodes is the list of cluster nodes joining this plane, with readiness status.
 	// Empty when the plane is not hosted or cannot be queried.
 	Nodes []Node `json:"nodes,omitempty"`
+	// NodeCount is the number of nodes in the cluster.
+	NodeCount int `json:"node_count"`
 
 	// JoinEndpoint is the endpoint URL workers can use to join this control plane.
 	// Empty when this host has not configured a join endpoint.
 	JoinEndpoint string `json:"join_endpoint,omitempty"`
+
+	// HasJoinToken reports whether a join token credential exists (presence only).
+	HasJoinToken bool `json:"has_join_token"`
+	// HasNodeToken reports whether a node token credential exists (presence only).
+	HasNodeToken bool `json:"has_node_token"`
+	// HasSTCPSecret reports whether an STCP secret credential exists (presence only).
+	HasSTCPSecret bool `json:"has_stcp_secret"`
 
 	// CheckedAt is when this status was last measured.
 	CheckedAt time.Time `json:"checked_at,omitzero"`
@@ -84,6 +97,12 @@ type defaultControlPlaneStatusProber struct {
 	// with their readiness status. May return empty if the plane cannot be reached;
 	// an error is only for unexpected system failures.
 	nodes func(ctx context.Context) ([]Node, error)
+	// hasJoinToken reports whether a join token credential is persisted.
+	hasJoinToken func() bool
+	// hasNodeToken reports whether a node token credential is persisted.
+	hasNodeToken func() bool
+	// hasSTCPSecret reports whether an STCP secret credential is persisted.
+	hasSTCPSecret func() bool
 }
 
 func (p *defaultControlPlaneStatusProber) ProbeControlPlaneStatus(ctx context.Context) (ControlPlaneStatus, error) {
@@ -114,7 +133,19 @@ func (p *defaultControlPlaneStatusProber) ProbeControlPlaneStatus(ctx context.Co
 	if p.nodes != nil {
 		if nodeList, err := p.nodes(ctx); err == nil {
 			status.Nodes = nodeList
+			status.NodeCount = len(nodeList)
 		}
+	}
+
+	// Report credential presence (never values).
+	if p.hasJoinToken != nil {
+		status.HasJoinToken = p.hasJoinToken()
+	}
+	if p.hasNodeToken != nil {
+		status.HasNodeToken = p.hasNodeToken()
+	}
+	if p.hasSTCPSecret != nil {
+		status.HasSTCPSecret = p.hasSTCPSecret()
 	}
 
 	return status, nil
@@ -130,11 +161,68 @@ func NewDefaultControlPlaneStatusProber(
 	controlPlaneEnabled func() bool,
 	joinEndpoint func() string,
 	nodes func(ctx context.Context) ([]Node, error),
+	hasJoinToken func() bool,
+	hasNodeToken func() bool,
+	hasSTCPSecret func() bool,
 ) ControlPlaneStatusProber {
 	return &defaultControlPlaneStatusProber{
 		agentName:           agentName,
 		controlPlaneEnabled: controlPlaneEnabled,
 		joinEndpoint:        joinEndpoint,
 		nodes:               nodes,
+		hasJoinToken:        hasJoinToken,
+		hasNodeToken:        hasNodeToken,
+		hasSTCPSecret:       hasSTCPSecret,
 	}
+}
+
+// ReadControlPlaneNodes queries the cluster nodes from a kubeconfig file.
+// Returns empty list if the kubeconfig is unavailable or the query fails;
+// an error is only for unexpected system failures.
+func ReadControlPlaneNodes(ctx context.Context, kubeconfigPath string) ([]Node, error) {
+	if kubeconfigPath == "" {
+		return []Node{}, nil
+	}
+
+	// Load kubeconfig and create a clientset.
+	config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+	if err != nil {
+		// Kubeconfig not available or invalid; return empty list, not an error.
+		return []Node{}, nil
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		// Failed to create client; return empty list, not an error.
+		return []Node{}, nil
+	}
+
+	// List nodes from the cluster.
+	nodeList, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		// Failed to list nodes; return empty list, not an error.
+		return []Node{}, nil
+	}
+
+	// Convert k8s nodes to our Node type.
+	var nodes []Node
+	for _, k8sNode := range nodeList.Items {
+		node := Node{
+			Name:  k8sNode.Name,
+			Ready: isNodeReady(&k8sNode),
+		}
+		nodes = append(nodes, node)
+	}
+
+	return nodes, nil
+}
+
+// isNodeReady checks if a Kubernetes node is in the Ready condition.
+func isNodeReady(k8sNode *corev1.Node) bool {
+	for _, cond := range k8sNode.Status.Conditions {
+		if cond.Type == corev1.NodeReady {
+			return cond.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }
