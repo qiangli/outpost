@@ -118,15 +118,22 @@ Summary line: `SUMMARY pass=4 fail=3 blocked=4` → `RESULT FAIL`
 
 ### Proven offline (no cluster required)
 
-`bash script/dks-peer-acceptance_test.sh` → **52 pass, 0 fail**. It asserts the
-harness's own logic, including the two invariants this story turns on:
+`bash script/dks-peer-acceptance_test.sh` → **67 pass, 0 fail** (pure unit tests;
+runner/integration tests execute end-to-end with a stub kubectl). It asserts the
+harness's own logic, including the mandatory invariants this story turns on:
 
-- a `BLOCKED` check never tallies as, or renders as, `PASS`;
+- a `BLOCKED` check never tallies as, or renders as, `PASS` — mandatory invariant;
 - any `FAIL` makes the runner exit non-zero (verified: real run exited 1);
-- all-blocked reports `INCONCLUSIVE`, never `OK` — a harness that skipped
-  everything cannot read as green;
+- all-blocked reports `INCONCLUSIVE`, never `OK` — mandatory that a skipped-only
+  run exits non-zero;
 - distinct-CIDR comparison: duplicate, empty, missing-field, late-duplicate and
   zero-node inputs all return failure with the offending node named;
+- **NEW**: annotation-only (flannel-iface) never PASS — host inspection required
+  (regression guard: checks missing host evidence return BLOCKED, not PASS);
+- **NEW**: cleanup pod tracking — inspection pods use dksacc-* naming convention
+  and are tracked in CREATED array for cleanup (no leaked debug pods);
+- **NEW**: stale-node exclusion — distinct-pod-cidrs scoped to Ready nodes only;
+  mixed input filters leave Ready-only result;
 - tailnet CGNAT range boundaries (`100.63` / `100.128` correctly rejected);
 - one-line-per-check record shape (embedded `\n` and `\r` collapsed);
 - `DKS_ONLY` exact-matches and never prefix-matches;
@@ -191,6 +198,22 @@ DKS_BASHY_IMAGE=<image> \
 # A single check.
 DKS_ONLY=cross-node-pod-ip bash script/dks-peer-acceptance.sh
 ```
+
+### Exit codes
+
+A gate may read the exit status alone; it carries the full verdict.
+
+| Code | RESULT line    | Meaning                                                     |
+|------|----------------|-------------------------------------------------------------|
+| `0`  | `OK`           | At least one check PASSed and none FAILed.                   |
+| `1`  | `FAIL`         | At least one check FAILed. Outranks INCONCLUSIVE.            |
+| `2`  | `INCONCLUSIVE` | Nothing was proven: no check PASSed — all BLOCKED, or no check ran (e.g. a `DKS_ONLY` name that matches nothing). |
+
+`2` is deliberately non-zero. An all-BLOCKED run means nothing was proven, which
+is not the same as nothing being wrong; scoring it as success would be exactly
+the absence-of-evidence-as-success failure `docs/fleet-evidence-invariant.md`
+forbids. `script/dks-peer-acceptance_test.sh` asserts all three codes against
+the real runner process (offline, with a stub `kubectl`).
 
 The harness creates only namespaced probe pods/Services/Jobs prefixed
 `dksacc-<pid>` and deletes them on exit (`DKS_KEEP=1` to retain). It reads no
