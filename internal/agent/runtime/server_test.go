@@ -2,7 +2,10 @@ package runtime
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 )
@@ -134,5 +137,68 @@ func TestServerFingerprint_ChangesWithEveryMeaningfulField(t *testing.T) {
 					"container would keep running the old configuration", name)
 			}
 		})
+	}
+}
+
+// Widening the tunnel bind so workers can join directly from the network
+// (--bind-addr 0.0.0.0) must publish ONLY the tunnel port that wide — the
+// apiserver publish must stay on loopback regardless, since the documented
+// contract is that --bind-addr widens the tunnel, never the apiserver.
+func TestUpServer_WideTunnelBindDoesNotWidenAPIServerPublish(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("fake Podman executable uses a POSIX shell")
+	}
+	tempDir := t.TempDir()
+	commandLog := filepath.Join(tempDir, "commands.log")
+	fakePodman := filepath.Join(tempDir, "podman")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$OUTPOST_TEST_COMMAND_LOG"
+if [ "$1" = "inspect" ]; then
+  exit 1
+fi
+if [ "$1" = "run" ]; then
+  printf '%s\n' '0123456789abcdef'
+fi
+`
+	if err := os.WriteFile(fakePodman, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OUTPOST_TEST_COMMAND_LOG", commandLog)
+
+	opts := validServerOpts(t)
+	opts.PodmanBin = fakePodman
+	opts.TunnelBindAddr = "0.0.0.0" // operator widened the tunnel for direct worker joins
+
+	if err := UpServer(context.Background(), opts); err != nil {
+		t.Fatalf("UpServer() error = %v", err)
+	}
+
+	data, err := os.ReadFile(commandLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runCmd string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.HasPrefix(line, "run ") {
+			runCmd = line
+		}
+	}
+	if runCmd == "" {
+		t.Fatalf("no `podman run` command was recorded: %s", data)
+	}
+
+	wantTunnel := fmt.Sprintf("-p 0.0.0.0:%d:%d", 7000, 7000)
+	if !strings.Contains(runCmd, wantTunnel) {
+		t.Errorf("run command missing wide tunnel publish %q: %s", wantTunnel, runCmd)
+	}
+
+	wantAPI := fmt.Sprintf("-p 127.0.0.1:%d:%d", DefaultControlPlaneAPIPort, DefaultControlPlaneAPIPort)
+	if !strings.Contains(runCmd, wantAPI) {
+		t.Errorf("run command missing loopback apiserver publish %q: %s", wantAPI, runCmd)
+	}
+
+	wideAPI := fmt.Sprintf("0.0.0.0:%d", DefaultControlPlaneAPIPort)
+	if strings.Contains(runCmd, wideAPI) {
+		t.Errorf("apiserver publish followed the wide tunnel bind — security contract violated: %s", runCmd)
 	}
 }
