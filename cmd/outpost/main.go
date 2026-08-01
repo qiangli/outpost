@@ -864,7 +864,7 @@ func startCmd() *cobra.Command {
 				defer cancel()
 				return admincore.ReadControlPlaneNodes(nodeCtx, cc.ControlPlaneKubeconfig)
 			}
-			hasJoinToken := func() bool { return cc != nil && strings.TrimSpace(cc.JoinToken) != "" }
+			hasJoinToken := func() bool { return hasHostedJoinToken(cc) }
 			hasNodeToken := func() bool { return cc != nil && strings.TrimSpace(cc.NodeToken) != "" }
 			hasSTCPSecret := func() bool { return cc != nil && strings.TrimSpace(cc.STCPSecret) != "" }
 
@@ -4267,4 +4267,12 @@ func isLoopbackURL(raw string) bool {
 	}
 	ip := net.ParseIP(h)
 	return ip != nil && ip.IsLoopback()
+}
+
+// hasHostedJoinToken reports whether this host has a tunnel token, meaning
+// it can accept workers joining its hosted control plane. TunnelToken is the
+// credential THIS host uses to run a plane and accept joins; it is distinct
+// from JoinToken, which is what THIS host uses to join ANOTHER host's plane.
+func hasHostedJoinToken(cc *conf.ClusterConfig) bool {
+	return cc != nil && strings.TrimSpace(cc.TunnelToken) != ""
 }

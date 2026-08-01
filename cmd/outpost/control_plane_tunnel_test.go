@@ -145,3 +145,63 @@ func TestStartControlPlaneTunnel_NoOpWhenNotControlPlane(t *testing.T) {
 		})
 	}
 }
+
+// TestHostedJoinToken verifies that hasHostedJoinToken distinguishes TunnelToken
+// (the credential THIS host uses to host a plane and accept joins) from JoinToken
+// (the credential THIS host uses to join ANOTHER host's plane). The bug was reading
+// JoinToken instead of TunnelToken, causing a hosting plane to incorrectly report
+// has_join_token=false even though workers could join.
+func TestHostedJoinToken(t *testing.T) {
+	tests := []struct {
+		name         string
+		cc           *conf.ClusterConfig
+		wantHasToken bool
+		description  string
+	}{
+		{
+			name:         "hosting with tunnel token",
+			cc:           &conf.ClusterConfig{TunnelToken: "abcd1234efgh5678ijkl90mnopqrst"},
+			wantHasToken: true,
+			description:  "This host is hosting a plane; has_token should be TRUE",
+		},
+		{
+			name:         "only join token (worker joining another plane)",
+			cc:           &conf.ClusterConfig{JoinToken: "xyz789uvwstu1234ghijkl567890mno"},
+			wantHasToken: false,
+			description:  "JoinToken is for workers; hasHostedJoinToken reports on TunnelToken, so FALSE",
+		},
+		{
+			name:         "both tokens present",
+			cc:           &conf.ClusterConfig{TunnelToken: "tunnel-token-32-chars-here----", JoinToken: "join-token-value-here-32-chars--"},
+			wantHasToken: true,
+			description:  "Hosting a plane AND joining another; has_token is TRUE (tunnel present)",
+		},
+		{
+			name:         "neither token",
+			cc:           &conf.ClusterConfig{},
+			wantHasToken: false,
+			description:  "Neither hosting nor joining; has_token is FALSE",
+		},
+		{
+			name:         "tunnel token with whitespace",
+			cc:           &conf.ClusterConfig{TunnelToken: "  abc123  "},
+			wantHasToken: true,
+			description:  "Whitespace-trimmed tunnel token is non-empty",
+		},
+		{
+			name:         "nil cluster config",
+			cc:           nil,
+			wantHasToken: false,
+			description:  "No cluster config; has_token is FALSE",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasHostedJoinToken(tt.cc)
+			if got != tt.wantHasToken {
+				t.Errorf("hasHostedJoinToken()=%v, want %v. %s", got, tt.wantHasToken, tt.description)
+			}
+		})
+	}
+}
