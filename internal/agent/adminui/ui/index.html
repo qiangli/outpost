@@ -1619,7 +1619,7 @@ function buildControlPlaneBlock(parent, cv, paired) {
           const t = await api('POST', '/api/cluster/control-plane/token/rotate', {});
           tokOut.textContent = t.tunnel_token || '(empty)';
           tokOut.style.display = '';
-          msg('ok', 'Token rotated — reconfigure every worker.');
+          msg('ok', 'Token rotated. ' + (t.worker_rejoin_hint || 'Reconfigure every worker with the new token.'));
           noteRestartPending({restarting: t.restart_pending});
         } catch (e) {
           msg('err', e.message || 'Rotate failed');

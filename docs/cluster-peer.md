@@ -208,6 +208,48 @@ the full `outpost cluster join <endpoint> ...` command on every tunnelled
 worker. Confirm the new nodes with `kubectl get nodes` through the hosted
 plane's admin kubeconfig.
 
+### The tunnel token was rotated
+
+`outpost cluster control-plane token rotate` (or the admin UI's Rotate
+button, or the `outpost_rotate_control_plane_token` MCP tool) mints a new
+tunnel token and never touches the STCP secret or the k3s node token — those
+are separate credentials with separate owners (see Concepts), and rotation
+revokes only the one that leaked. Every worker's frpc session fails its next
+reconnect until it is given the new token, but recovery does not require
+resending all three credentials.
+
+Rotate on the control-plane host:
+
+```bash
+outpost cluster control-plane token rotate --yes
+```
+
+The command's own output (and the `worker_rejoin_hint` field on the MCP/API
+response) states the recovery command; run it once per worker, piping the
+token straight across so it never lands in shell history or a process list
+on either machine:
+
+```bash
+outpost cluster control-plane token --quiet | ssh <worker> outpost cluster join --token-stdin
+```
+
+`outpost cluster join --token-stdin` with no endpoint argument updates only
+`cluster.join_token` on the worker — `JoinPeerPlane` treats every other field
+as "leave alone", so the worker's endpoint, STCP secret, and node token stay
+exactly as already configured. This is a single-field update, not a rejoin:
+run it directly on the worker, or from the control-plane host over SSH as
+shown above. If a worker is unreachable, its node stays stranded (frpc
+retries and fails) until someone runs this on it — rotation itself does not
+leave a silent gap, but an offline worker still needs this step once it comes
+back.
+
+Confirm recovery the same way as any other join, from the **control-plane
+host**:
+
+```bash
+kubectl --kubeconfig ~/.kube/outpost-control-plane/k3s.yaml get nodes
+```
+
 ## 7. Limits
 
 - Multi-node pod networking is implemented as stock k3s flannel VXLAN on

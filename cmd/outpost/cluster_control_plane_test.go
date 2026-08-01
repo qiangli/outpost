@@ -99,3 +99,31 @@ func TestPrintControlPlaneStatus_StripsMalformedTokens(t *testing.T) {
 		t.Errorf("output contains a credential value: %s", output)
 	}
 }
+
+// TestControlPlaneOut_CarriesWorkerRejoinHint pins the CLI's rotate-response
+// struct to the admincore field it mirrors. If admincore.ControlPlaneResult
+// gains or renames the hint field without cmd/outpost following, the rotate
+// command silently stops printing a recovery path — this test exists to make
+// that drift a compile-visible or a test-visible failure instead.
+func TestControlPlaneOut_CarriesWorkerRejoinHint(t *testing.T) {
+	const hint = "worker recovery — on this control-plane host, run once for each joined worker: `outpost cluster join --token-stdin`"
+	body := `{
+		"control_plane": true,
+		"bind_addr": "127.0.0.1",
+		"bind_port": 7000,
+		"has_token": true,
+		"tunnel_token": "NEW-TOKEN-abc",
+		"restart_pending": true,
+		"worker_rejoin_hint": ` + `"` + hint + `"` + `
+	}`
+	var out controlPlaneOut
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.WorkerRejoinHint != hint {
+		t.Errorf("worker rejoin hint = %q, want %q", out.WorkerRejoinHint, hint)
+	}
+	if strings.Contains(out.WorkerRejoinHint, out.TunnelToken) {
+		t.Errorf("hint embeds the literal token: %q", out.WorkerRejoinHint)
+	}
+}

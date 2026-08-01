@@ -10,15 +10,16 @@ import (
 
 // controlPlaneOut mirrors admincore.ControlPlaneResult over MCP.
 type controlPlaneOut struct {
-	ControlPlane   bool   `json:"control_plane"`
-	BindAddr       string `json:"bind_addr"`
-	BindPort       int    `json:"bind_port"`
-	HasToken       bool   `json:"has_token"`
-	TunnelToken    string `json:"tunnel_token,omitempty"`
-	STCPSecret     string `json:"stcp_secret,omitempty"`
-	APIAddr        string `json:"api_addr,omitempty"`
-	LANExposed     bool   `json:"lan_exposed"`
-	RestartPending bool   `json:"restart_pending"`
+	ControlPlane     bool   `json:"control_plane"`
+	BindAddr         string `json:"bind_addr"`
+	BindPort         int    `json:"bind_port"`
+	HasToken         bool   `json:"has_token"`
+	TunnelToken      string `json:"tunnel_token,omitempty"`
+	STCPSecret       string `json:"stcp_secret,omitempty"`
+	APIAddr          string `json:"api_addr,omitempty"`
+	LANExposed       bool   `json:"lan_exposed"`
+	RestartPending   bool   `json:"restart_pending"`
+	WorkerRejoinHint string `json:"worker_rejoin_hint,omitempty"`
 }
 
 // clusterControlPlaneCmd is the operator surface for control-plane PLACEMENT:
@@ -181,7 +182,12 @@ func clusterControlPlaneRotateCmd() *cobra.Command {
 			}
 			fmt.Printf("token:    %s\n", out.TunnelToken)
 			fmt.Printf("endpoint: %s\n", net.JoinHostPort(out.BindAddr, strconv.Itoa(out.BindPort)))
-			fmt.Println("\nReconfigure every worker with the new token.")
+			fmt.Println()
+			if out.WorkerRejoinHint != "" {
+				fmt.Println(out.WorkerRejoinHint)
+			} else {
+				fmt.Println("Reconfigure every worker with the new token.")
+			}
 			if out.RestartPending {
 				fmt.Println("Restarting outpost to apply.")
 			}
