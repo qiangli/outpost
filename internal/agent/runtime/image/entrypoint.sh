@@ -12,6 +12,20 @@ set -eu
 : "${OUTPOST_CLOUDBOX_HOST:?required: e.g. ai.dhnt.io}"
 : "${OUTPOST_CLOUDBOX_PORT:=443}"
 : "${OUTPOST_API_PORT:=6443}"
+# WHERE THE CONTROL PLANE LIVES is configuration, not a code path. frpc
+# always dials an frps and always binds 127.0.0.1:${OUTPOST_API_PORT} for
+# the agent; only the endpoint and transport differ:
+#
+#   cloudbox-managed   HOST=<cloudbox>  PROTOCOL=wss  USER=cloudbox
+#   peer / droplet     HOST=<addr of an frps reachable from this container>
+#                      PROTOCOL=tcp     USER=<that frps user>
+#
+# Defaults reproduce the cloudbox path exactly, so an unchanged deployment
+# behaves identically. wss exists because cloudbox is reached through
+# Cloudflare; a peer-hosted frps on an already-encrypted libp2p hop does
+# not need it, and tcp avoids paying for TLS twice.
+: "${OUTPOST_FRP_PROTOCOL:=wss}"
+: "${OUTPOST_FRP_SERVER_USER:=cloudbox}"
 : "${OUTPOST_KUBELET_PORT:=0}"
 : "${OUTPOST_STCP_SECRET:?required: STCP secret for cluster.k3s-apiserver}"
 : "${OUTPOST_MATRIX_TOKEN:=}"
@@ -153,7 +167,7 @@ method = "token"
 token = "${OUTPOST_MATRIX_TOKEN}"
 
 [transport]
-protocol = "wss"
+protocol = "${OUTPOST_FRP_PROTOCOL}"
 
 [transport.tls]
 enable = false
@@ -161,7 +175,7 @@ enable = false
 [[visitors]]
 name = "k3s-apiserver-visitor"
 type = "stcp"
-serverUser = "cloudbox"
+serverUser = "${OUTPOST_FRP_SERVER_USER}"
 serverName = "k3s-apiserver"
 secretKey = "${OUTPOST_STCP_SECRET}"
 bindAddr = "127.0.0.1"
