@@ -2257,9 +2257,32 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 			AgentName:   nodeName,
 		}
 		fetchCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-		err := applyPeerOverlayCredentials(fetchCtx, cl, &rtOpts)
+		proceed := preparePeerOverlay(fetchCtx, cl, &rtOpts, nodeName)
 		cancel()
-		logPeerOverlayFetch(nodeName, rtOpts.OverlayAuthKey != "", err)
+		if !proceed {
+			// Do NOT fall through to runtime.Up. Starting peer-flannel
+			// without a tailnet identity gives --flannel-iface=tailscale0
+			// no address: the node registers, goes Ready, and drops every
+			// pod packet — the dark node this slice exists to prevent.
+			// Logging the failure and continuing would produce exactly that.
+			//
+			// nil, not an error: this matches the ErrPodmanNotFound /
+			// "start failed" branches below — a runtime that cannot come up
+			// is never fatal to the outpost daemon, and the caller
+			// (startK3sAgentRunner's call site) only logs what it gets back.
+			// preparePeerOverlay has already emitted the ERROR line saying
+			// which failure it was and what the operator should do.
+			//
+			// Retry: nothing here is persisted or disabled, so the decision
+			// is re-made from scratch on the next pass — the daemon's
+			// self-restart (any config save via ScheduleRestart, or
+			// `outpost restart`), which re-runs startK3sAgentRunner and
+			// re-fetches a fresh single-use key. A transient cloudbox outage
+			// therefore costs one boot, not a wedged node.
+			slog.Warn("cluster agent runtime: not started — no tailnet identity for the peer-hosted "+
+				"plane; will retry on the next daemon start", "node", nodeName)
+			return nil
+		}
 	}
 
 	// Announce whether this node gets a real (per-node, routable) pod
@@ -2372,6 +2395,32 @@ func applyPeerOverlayCredentials(ctx context.Context, cl *overlaykey.Client, opt
 	opts.OverlayAuthKey = strings.TrimSpace(creds.AuthKey)
 	opts.PodCIDR = ""
 	return nil
+}
+
+// preparePeerOverlay fetches the peer-plane overlay credentials into opts,
+// logs the outcome, and reports whether the caller may proceed to start the
+// runtime container. It is the whole "may this node come up" decision in one
+// pure-ish function so a regression is a failing test rather than a dark node.
+//
+// A fetch failure means NO PROCEED, without exception. peer-flannel binds
+// --flannel-iface=tailscale0; with no tailnet identity that interface has no
+// address, so the node joins, reports Ready, and silently blackholes pod
+// traffic. Starting it is strictly worse than not starting it: a node that is
+// absent is diagnosable, a node that is present and broken is not.
+//
+// ErrOverlayDisabled is the case that could argue for continuing — cloudbox
+// is not running an overlay at all, so there is no key to be had and no
+// outage to wait out. We still refuse, deliberately: "no key exists" and "the
+// key fetch failed" put this node in the same place, holding a peer-flannel
+// config it cannot satisfy. The difference is operator action, not node
+// behavior, and logPeerOverlayFetch already says which one happened and what
+// to do about it (enable the overlay, or host this worker on the
+// cloudbox-managed plane). Nothing is persisted here, so flipping the overlay
+// on cloudbox and restarting is all it takes to come up.
+func preparePeerOverlay(ctx context.Context, cl *overlaykey.Client, opts *runtime.Options, node string) bool {
+	err := applyPeerOverlayCredentials(ctx, cl, opts)
+	logPeerOverlayFetch(node, opts.OverlayAuthKey != "", err)
+	return err == nil
 }
 
 // logPeerOverlayFetch reports the outcome. It logs PRESENCE, never the
