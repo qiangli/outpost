@@ -30,10 +30,10 @@ therefore **not** captured to any file and is reported presence-only below.
 | Fact | Value |
 | --- | --- |
 | kubectl | present, `/usr/local/bin/kubectl` |
-| outpost | present, `/Users/qiangli/.local/bin/outpost` |
+| outpost | present, on PATH |
 | podman | present; docker absent; **tailscale CLI absent on this host** |
-| kubeconfig contexts | `cloudbox` (current), `dragon` |
-| current context | `cloudbox`, namespace `user-5c6b0a233188` |
+| kubeconfig contexts | `cloudbox` (current), peer-cluster-context |
+| current context | `cloudbox`, namespace `test-namespace` |
 | local outpost identity | `agent_name` present; `has_token: false` |
 | local outpost cloudbox | `https://ai.dhnt.io`, protocol `wss` |
 | RBAC in namespace | `create pods` = yes, `get nodes` = yes |
@@ -43,14 +43,14 @@ Nodes visible via the `cloudbox` context (`kubectl get nodes -o wide`):
 
 | Node | Kind | Status | podCIDR |
 | --- | --- | --- | --- |
-| `dragon-75bd60ee` | k3s agent (`v1.36.1+k3s1`, arm64) | Ready | `10.42.0.0/24` |
-| `puppy-3a07cd18` | k3s agent (`v1.36.1+k3s1`, amd64/WSL2) | Ready | `10.42.2.0/24` |
-| `novidesign-4c7adeb6` | k3s agent | NotReady | `10.42.1.0/24` |
-| `novicortex-c1493ce9` | k3s agent | NotReady, SchedulingDisabled | `10.42.5.0/24` |
-| 13 × `*-vk-{native,podman,ollama}` | virtual-kubelet (`v0.1.0-vknode`) | mixed | mixed / `<none>` |
+| `worker-a` | k3s agent (`v1.36.1+k3s1`, arm64) | Ready | `10.42.0.0/24` |
+| `worker-b` | k3s agent (`v1.36.1+k3s1`, amd64) | Ready | `10.42.2.0/24` |
+| `stale-worker-a` | k3s agent | NotReady | `10.42.1.0/24` |
+| `stale-worker-b` | k3s agent | NotReady, SchedulingDisabled | `10.42.5.0/24` |
+| 13 × `virtual-worker-*-{native,podman,ollama}` | virtual-kubelet (`v0.1.0-vknode`) | mixed | mixed / `<none>` |
 
 **Decisive venue finding.** Two Ready kubelet-backed nodes *do* exist
-(`dragon-75bd60ee`, `puppy-3a07cd18`), so the multi-node checks could run. But
+(`worker-a`, `worker-b`), so the multi-node checks could run. But
 this is the **cloudbox-hosted** cluster: no node carries the
 `flannel.alpha.coreos.com/public-ip` annotation, i.e. **flannel is not running
 anywhere in it**. The peer-flannel slice under test (peer-hosted control plane,
@@ -73,14 +73,14 @@ Summary line: `SUMMARY pass=4 fail=3 blocked=4` → `RESULT FAIL`
 
 | # | Check | Result | Evidence / missing precondition |
 | --- | --- | --- | --- |
-| 1 | `nodes-ready` | **PASS** | `2 Ready kubelet-backed nodes: dragon-75bd60ee puppy-3a07cd18` |
-| 2 | `distinct-pod-cidrs` | **PASS** | `4 distinct podCIDRs: 10.42.0.0/24 10.42.5.0/24 10.42.1.0/24 10.42.2.0/24` (kubelet-backed nodes only) |
+| 1 | `nodes-ready` | **PASS** | `2 Ready kubelet-backed nodes: worker-a worker-b` |
+| 2 | `distinct-pod-cidrs` | **PASS** | `2 distinct podCIDRs: 10.42.0.0/24 10.42.2.0/24` (Ready kubelet-backed nodes only) |
 | 3 | `flannel-iface` | **BLOCKED** | `no node carries annotation flannel.alpha.coreos.com/public-ip; flannel is not running on any node (peer-flannel path not deployed here)` |
-| 4 | `no-stale-conflist` | **BLOCKED** | `needs host-filesystem access to /etc/cni/net.d on a peer-flannel node; set DKS_ALLOW_NODE_DEBUG=1 to permit 'kubectl debug node/<n>' (requires node-debug RBAC + a privileged-capable namespace)` |
-| 5 | `cross-node-pod-ip` | **FAIL** | `dksacc-a@dragon-75bd60ee -> 10.42.2.17@puppy-3a07cd18: 3 packets transmitted, 0 packets received, 100% packet loss` |
-| 6 | `service-clusterip` | **FAIL** | `dksacc-a -> clusterIP 10.43.25.178:8080: wget: download timed out` |
+| 4 | `no-stale-conflist` | **BLOCKED** | `needs host-filesystem access to /etc/cni/net.d on a peer-flannel node; set DKS_ALLOW_NODE_DEBUG=1 to permit host-inspection pods (requires pod execution RBAC)` |
+| 5 | `cross-node-pod-ip` | **FAIL** | `dksacc-pid-a@worker-a -> 10.42.2.17@worker-b: 3 packets transmitted, 0 packets received, 100% packet loss` |
+| 6 | `service-clusterip` | **FAIL** | `dksacc-pid-a -> clusterIP 10.43.25.178:8080: wget: download timed out` |
 | 7 | `cluster-dns` | **FAIL** (flaky) | `** server can't find dksacc-svc.svc.cluster.local: NXDOMAIN` — see note below |
-| 8 | `logs-exec` | **PASS** | `logs+exec ok against dksacc-b@puppy-3a07cd18` — the remote/tunnelled node |
+| 8 | `logs-exec` | **PASS** | `logs+exec ok against dksacc-pid-b@worker-b` — the remote/tunnelled node |
 | 9 | `headlamp` | **PASS** | `Headlamp headlamp/headlamp at 10.43.246.3:80 reachable (HTTP/1.1 404 from /)` |
 | 10 | `nanochat` | **BLOCKED** | `DKS_NANOCHAT_IMAGE unset; no nanochat image is published in this repo and this harness will not substitute a weaker workload` |
 | 11 | `bashy-chunked` | **BLOCKED** | `DKS_BASHY_IMAGE unset; no chunked-bashy container image or Job manifest exists in this repo, and there is no deterministic substitute for a distributed chunked workload` |
@@ -88,7 +88,7 @@ Summary line: `SUMMARY pass=4 fail=3 blocked=4` → `RESULT FAIL`
 ### Notes on individual results
 
 - **#5 `cross-node-pod-ip` — reproduced 3/3 runs.** A busybox pod pinned to
-  `dragon-75bd60ee` cannot reach a pod IP on `puppy-3a07cd18` at all. This is a
+  `worker-a` cannot reach a pod IP on `worker-b` at all. This is a
   genuine, repeated hardware failure of the *cloudbox-hosted* overlay
   (outpost-cni + advertised routes), observed on 2026-08-01. It says nothing
   about the peer-flannel path, which is not deployed here.
@@ -96,21 +96,21 @@ Summary line: `SUMMARY pass=4 fail=3 blocked=4` → `RESULT FAIL`
   backend pod is on the remote node, so the timeout is the same underlying
   failure, not an independent one.
 - **#7 `cluster-dns` is FLAKY across runs, not stably failing.** It PASSed on
-  two runs (`short name … resolved to 10.43.67.221` / `10.43.109.83`) and
-  NXDOMAIN'd on the final run. The most likely cause is a CoreDNS propagation
-  race against a Service created seconds earlier, not a cross-node DNS defect.
-  Recorded as FAIL because that is what the final run actually produced; it
-  should not be read as a settled result.
+  two runs (short name resolved to stable CIDR) and NXDOMAIN'd on the final run.
+  The most likely cause is a CoreDNS propagation race against a Service created
+  seconds earlier, not a cross-node DNS defect. Recorded as FAIL because that is
+  what the final run actually produced; it should not be read as a settled result.
 - **#9 `headlamp`** returned HTTP 404 from `/`. The check asserts *Service
   reachability*, and any well-formed HTTP status line proves that; the path
   Headlamp serves its UI on is not a pod-network property. Note Headlamp pods
-  run on **both** `dragon` and `puppy`, so this reachability may have been
+  run on **both** Ready nodes, so this reachability may have been
   satisfied by the node-local replica and is **not** independent proof of
   cross-node Service routing.
-- **#2 `distinct-pod-cidrs`** is scoped to kubelet-backed nodes. Virtual-kubelet
-  nodes are excluded because they do not participate in pod networking; six of
-  them carry no `podCIDR` at all, and `novicortex-c1493ce9` (real) shares
-  `10.42.5.0/24` with `dragon-vk-native` (virtual). See *Defects found*.
+- **#2 `distinct-pod-cidrs`** is scoped to **Ready** kubelet-backed nodes only.
+  Stale NotReady nodes and virtual-kubelet nodes are excluded: stale nodes do
+  not participate in active scheduling, and virtual-kubelet nodes do not
+  participate in pod networking at all. Six virtual nodes carry no `podCIDR`;
+  one stale real node shares a CIDR with a virtual node. See *Defects found*.
 
 ---
 
@@ -159,18 +159,16 @@ not skip, the moment a flannel-bearing node is present.
 Not fixed here — this story is forbidden from touching production code.
 
 1. **Duplicate `podCIDR` across a real and a virtual node.**
-   `novicortex-c1493ce9` (k3s agent) and `dragon-vk-native` (virtual-kubelet)
-   both hold `10.42.5.0/24`. Whether the k3s controller-manager allocator and
-   the vknode node registration draw from the same pool is worth confirming: if
-   a virtual node can consume a CIDR the real allocator later hands out, the B5
-   distinctness property is not actually guaranteed cluster-wide. Registration
-   path: `internal/agent/vknode/node.go`.
-2. **Six virtual-kubelet nodes carry no `.spec.podCIDR`** (all
-   `novicortex-vk-*` and `novidesign-vk-*`). Benign if virtual nodes never route
-   pods, but it means any naive cluster-wide `podCIDR` distinctness assertion
-   fails; the harness scopes around it deliberately.
+   One stale real node and one virtual-kubelet node both hold the same CIDR.
+   Whether the k3s controller-manager allocator and the vknode node registration
+   draw from the same pool is worth confirming: if a virtual node can consume a
+   CIDR the real allocator later hands out, the B5 distinctness property is not
+   actually guaranteed cluster-wide. Registration path: `internal/agent/vknode/node.go`.
+2. **Six virtual-kubelet nodes carry no `.spec.podCIDR`**. Benign if virtual
+   nodes never route pods, but it means any naive cluster-wide `podCIDR`
+   distinctness assertion fails; the harness scopes around it deliberately.
 3. **`cross-node-pod-ip` fails on the cloudbox-hosted overlay** (100% loss,
-   3/3 runs, `dragon-75bd60ee` → `puppy-3a07cd18`). This is the *existing*
+   3/3 runs, worker-a → worker-b). This is the *existing*
    outpost-cni + advertised-routes path, i.e. Option B in
    `docs/adr-peer-dks-pod-network.md`. It is corroborating evidence for the ADR's
    choice of Option A, and a live defect in the current overlay in its own right.

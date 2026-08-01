@@ -5,7 +5,15 @@
 #
 # Emits one machine-readable line per check:
 #     CHECK <name> PASS|FAIL|BLOCKED <detail>
-# and a final summary. Exit status is non-zero if ANY check FAILed.
+# and a final summary.
+#
+# Exit status (the contract a CI gate reads):
+#     0  OK           — at least one check PASSed and none FAILed
+#     1  FAIL         — at least one check FAILed
+#     2  INCONCLUSIVE — nothing was proven: no check PASSed (all BLOCKED, or
+#                       no check ran at all). Absence of evidence is NOT
+#                       success; see docs/fleet-evidence-invariant.md.
+#
 # BLOCKED is NOT a pass: a check whose precondition is absent reports BLOCKED
 # with the exact missing precondition named. A check is never silently skipped.
 #
@@ -68,7 +76,8 @@ dks_record() {
     echo "CHECK $name $status $detail"
 }
 
-# dks_summary — prints the tally; returns 1 if any check FAILed.
+# dks_summary — prints the tally; returns the harness exit code:
+#   0 OK (>=1 PASS, 0 FAIL) / 1 FAIL (>=1 FAIL) / 2 INCONCLUSIVE (0 PASS).
 dks_summary() {
     echo "SUMMARY pass=$DKS_PASS_COUNT fail=$DKS_FAIL_COUNT blocked=$DKS_BLOCKED_COUNT"
     if [ "$DKS_FAIL_COUNT" -gt 0 ]; then
@@ -76,9 +85,15 @@ dks_summary() {
         return 1
     fi
     if [ "$DKS_PASS_COUNT" -eq 0 ]; then
-        # Nothing was actually proven. Say so; do not present this as success.
-        echo "RESULT INCONCLUSIVE (no check passed)"
-        return 0
+        # Nothing was actually proven. Say so, and exit NON-ZERO (2) — a gate
+        # that reads only the exit code must never score "no evidence" as a
+        # pass. An all-BLOCKED run is inconclusive, not success.
+        if [ "$DKS_BLOCKED_COUNT" -eq 0 ]; then
+            echo "RESULT INCONCLUSIVE (no check ran)"
+        else
+            echo "RESULT INCONCLUSIVE (no check passed)"
+        fi
+        return 2
     fi
     echo "RESULT OK (no failures; $DKS_BLOCKED_COUNT blocked)"
     return 0
@@ -260,20 +275,22 @@ fi
 
 # ---------------------------------------------------------------------------
 # 2. distinct-pod-cidrs  (the B5 acceptance)
+# Scoped to Ready kubelet-backed nodes only (stale NotReady nodes excluded).
 # ---------------------------------------------------------------------------
 if dks_selected distinct-pod-cidrs; then
-    # Scoped to kubelet-backed nodes: virtual-kubelet nodes do not participate
-    # in pod networking at all, so their podCIDR (or absence of one) is not
-    # what B5 is about. Their state is reported separately as a NOTE.
-    # custom-columns, not jsonpath: jsonpath emits NOTHING for an absent
-    # .spec.podCIDR, which shifts the columns and would make a missing CIDR
-    # masquerade as the next field. custom-columns prints a literal <none>.
+    # Query only Ready kubelet-backed nodes (k3s/v1.*, exclude vknode).
+    # custom-columns (not jsonpath): jsonpath emits NOTHING for absent
+    # .spec.podCIDR, which shifts columns and makes missing CIDR masquerade as
+    # the next field; custom-columns prints literal <none>.
     CIDR_LINES="$(kubectl get nodes --no-headers -o \
-        'custom-columns=NAME:.metadata.name,PODCIDR:.spec.podCIDR,VER:.status.nodeInfo.kubeletVersion' 2>/dev/null \
-        | awk 'NF>=3 && $3 !~ /vknode/ {print $1, $2}')"
-    echo "NOTE virtual-kubelet nodes excluded from distinct-pod-cidrs: $(kubectl get nodes -o 'jsonpath={range .items[*]}{.metadata.name}{" "}{.status.nodeInfo.kubeletVersion}{"\n"}{end}' 2>/dev/null | awk '$2 ~ /vknode/ {printf "%s ", $1}')"
+        'custom-columns=NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,PODCIDR:.spec.podCIDR,VER:.status.nodeInfo.kubeletVersion' 2>/dev/null \
+        | awk '$2=="True" && $4 !~ /vknode/ && $4 ~ /k3s|^v1\./ {print $1, $3}')"
+    EXCLUDED_VIRTUAL="$(kubectl get nodes -o 'jsonpath={range .items[*]}{.metadata.name}{" "}{.status.nodeInfo.kubeletVersion}{"\n"}{end}' 2>/dev/null | awk '$2 ~ /vknode/ {printf "%s ", $1}')"
+    EXCLUDED_NOTREADY="$(kubectl get nodes -o 'jsonpath={range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | awk '$2!="True" && $2!="" {printf "%s ", $1}' | xargs -r kubectl get nodes -o 'jsonpath={range .items[*]}{.metadata.name}{" "}{.status.nodeInfo.kubeletVersion}{"\n"}{end}' 2>/dev/null | awk '$2!~/vknode/ {printf "%s ", $1}')"
+    [ -n "$EXCLUDED_VIRTUAL" ] && echo "NOTE excluded from distinct-pod-cidrs (virtual-kubelet): $EXCLUDED_VIRTUAL"
+    [ -n "$EXCLUDED_NOTREADY" ] && echo "NOTE excluded from distinct-pod-cidrs (NotReady): $EXCLUDED_NOTREADY"
     if [ -z "$CIDR_LINES" ]; then
-        dks_record distinct-pod-cidrs BLOCKED "no nodes returned a .spec.podCIDR field"
+        dks_record distinct-pod-cidrs BLOCKED "no Ready kubelet-backed nodes returned a .spec.podCIDR field"
     else
         REASON="$(echo "$CIDR_LINES" | dks_distinct_cidrs)"
         if [ $? -eq 0 ]; then
@@ -286,43 +303,63 @@ fi
 
 # ---------------------------------------------------------------------------
 # 3. flannel-iface — flannel pinned to tailscale0 on each worker.
-# From a kubeconfig vantage the load-bearing observable is flannel's own
-# published backend address: flannel writes the --flannel-iface address into
-# the node annotation flannel.alpha.coreos.com/public-ip. A tailnet (CGNAT
-# 100.64/10) value there IS the assertion that the iface is tailscale0.
+# Annotation alone never PASS: requires explicit host evidence on each
+# selected Ready worker that k3s agent argv contains --flannel-iface=tailscale0
+# AND tailscale0 has IPv4. BLOCKED otherwise (annotation only).
 # ---------------------------------------------------------------------------
 if dks_selected flannel-iface; then
-    ANN="$(kubectl get nodes -o 'jsonpath={range .items[*]}{.metadata.name}{" "}{.metadata.annotations.flannel\.alpha\.coreos\.com/public-ip}{"\n"}{end}' 2>/dev/null | awk 'NF>=2')"
-    if [ -z "$ANN" ]; then
-        dks_record flannel-iface BLOCKED "no node carries annotation flannel.alpha.coreos.com/public-ip; flannel is not running on any node (peer-flannel path not deployed here)"
+    if [ "${DKS_ALLOW_NODE_DEBUG:-0}" != "1" ]; then
+        dks_record flannel-iface BLOCKED "requires host-inspection for k3s agent argv; set DKS_ALLOW_NODE_DEBUG=1 to permit inspection pods (requires pod execution RBAC)"
+    elif [ "$TWO_NODES" != "1" ]; then
+        dks_record flannel-iface BLOCKED "$NO_TWO"
     else
-        bad=""; good=""
-        while read -r n ip; do
-            if dks_is_tailnet_ip "$ip"; then good="$good $n"; else bad="$bad $n=$ip"; fi
-        done <<<"$ANN"
-        if [ -n "$bad" ]; then
-            dks_record flannel-iface FAIL "flannel public-ip not on the tailnet (100.64/10) for:$bad"
+        ANN="$(kubectl get nodes "$NODE_A" "$NODE_B" -o 'jsonpath={range .items[*]}{.metadata.name}{" "}{.metadata.annotations.flannel\.alpha\.coreos\.com/public-ip}{"\n"}{end}' 2>/dev/null | awk 'NF>=2')"
+        if [ -z "$ANN" ]; then
+            dks_record flannel-iface BLOCKED "selected nodes carry no flannel.alpha.coreos.com/public-ip annotation; flannel not deployed"
         else
-            dks_record flannel-iface PASS "flannel public-ip is a tailnet address on:$good"
+            # Verify tailnet IPs first (annotation guard); requires host check after.
+            bad=""; good=""
+            while read -r n ip; do
+                if dks_is_tailnet_ip "$ip"; then good="$good $n"; else bad="$bad $n=$ip"; fi
+            done <<<"$ANN"
+            if [ -n "$bad" ]; then
+                dks_record flannel-iface FAIL "flannel public-ip annotation not on tailnet (100.64/10) for:$bad"
+            else
+                # Annotation green; now verify host evidence: --flannel-iface=tailscale0 in argv + IPv4 on tailscale0.
+                PASS_NODES=""
+                for node in $good; do
+                    FLANNEL_POD="dksacc-flannel-check-$$-$node"
+                    OUT="$(kubectl run "$FLANNEL_POD" --image="$DKS_TEST_IMAGE" --overrides='{"spec":{"nodeSelector":{"kubernetes.io/hostname":"'$node'"},"restartPolicy":"Never"}}' --rm -i --quiet -- sh -c 'ps aux | grep -F "k3s agent" | grep -v grep | grep -q "\-\-flannel-iface=tailscale0" && ip -4 addr show tailscale0 >/dev/null 2>&1 && echo PASS || echo FAIL' 2>&1 | head -1)"
+                    CREATED+=("pod/$FLANNEL_POD")  # Fallback: cleanup on exit (--rm is best effort)
+                    [ "$OUT" = "PASS" ] && PASS_NODES="$PASS_NODES $node"
+                done
+                if [ -z "$PASS_NODES" ]; then
+                    dks_record flannel-iface FAIL "host inspection found no nodes with --flannel-iface=tailscale0 + IPv4 on tailscale0"
+                else
+                    dks_record flannel-iface PASS "verified --flannel-iface=tailscale0 + tailscale0 IPv4 on:$PASS_NODES"
+                fi
+            fi
         fi
     fi
 fi
 
 # ---------------------------------------------------------------------------
 # 4. no-stale-conflist — needs host filesystem access on the node.
+# Uses a named scoped pod instead of kubectl debug to track and cleanup.
 # ---------------------------------------------------------------------------
 if dks_selected no-stale-conflist; then
     if [ "${DKS_ALLOW_NODE_DEBUG:-0}" != "1" ]; then
-        dks_record no-stale-conflist BLOCKED "needs host-filesystem access to /etc/cni/net.d on a peer-flannel node; set DKS_ALLOW_NODE_DEBUG=1 to permit 'kubectl debug node/<n>' (requires node-debug RBAC + a privileged-capable namespace)"
+        dks_record no-stale-conflist BLOCKED "requires host-inspection for CNI conflist state; set DKS_ALLOW_NODE_DEBUG=1 to permit inspection pods (requires pod execution RBAC)"
     elif [ "$TWO_NODES" != "1" ]; then
         dks_record no-stale-conflist BLOCKED "$NO_TWO"
     else
-        OUT="$(kubectl debug "node/$NODE_B" --image="$DKS_TEST_IMAGE" -q -- \
-              sh -c 'ls /host/etc/cni/net.d/ 2>&1' 2>&1 | head -20)"
+        INSPECT_POD="dksacc-conflist-$$"
+        OUT="$(kubectl run "$INSPECT_POD" --image="$DKS_TEST_IMAGE" --overrides='{"spec":{"nodeSelector":{"kubernetes.io/hostname":"'$NODE_B'"},"restartPolicy":"Never"}}' --rm -i --quiet -- sh -c 'ls /host/etc/cni/net.d/ 2>&1' 2>&1 | head -20)"
+        CREATED+=("pod/$INSPECT_POD")  # Fallback: cleanup on exit
         if echo "$OUT" | grep -qE '10-outpost\.conflist|10-bridge\.conflist'; then
             dks_record no-stale-conflist FAIL "stale conflist present on $NODE_B: $OUT"
         elif echo "$OUT" | grep -q 'conflist'; then
-            dks_record no-stale-conflist PASS "no 10-outpost/10-bridge conflist on $NODE_B: $OUT"
+            dks_record no-stale-conflist PASS "no 10-outpost/10-bridge conflist on $NODE_B"
         else
             dks_record no-stale-conflist BLOCKED "could not read /etc/cni/net.d on $NODE_B: $OUT"
         fi
