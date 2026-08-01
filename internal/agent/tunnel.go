@@ -140,7 +140,7 @@ func NewTunnel(tc TunnelConfig, proxies []TCPProxy, visitors []STCPVisitor, stcp
 		return nil, err
 	}
 	return &Tunnel{cfg: tc, proxies: proxies, visitors: visitors,
-		stcps:    stcps, svc: svc}, nil
+		stcps: stcps, svc: svc}, nil
 }
 
 // newTunnelService builds a fresh FRP Service from the same config — used
