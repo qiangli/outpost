@@ -72,30 +72,32 @@ type controlPlaneIn struct {
 }
 
 type controlPlaneOut struct {
-	OK             bool   `json:"ok"`
-	ControlPlane   bool   `json:"control_plane"`
-	BindAddr       string `json:"bind_addr"`
-	BindPort       int    `json:"bind_port"`
-	HasToken       bool   `json:"has_token"`
-	TunnelToken    string `json:"tunnel_token,omitempty"`
-	STCPSecret     string `json:"stcp_secret,omitempty"`
-	APIAddr        string `json:"api_addr,omitempty"`
-	LANExposed     bool   `json:"lan_exposed"`
-	RestartPending bool   `json:"restart_pending"`
+	OK               bool   `json:"ok"`
+	ControlPlane     bool   `json:"control_plane"`
+	BindAddr         string `json:"bind_addr"`
+	BindPort         int    `json:"bind_port"`
+	HasToken         bool   `json:"has_token"`
+	TunnelToken      string `json:"tunnel_token,omitempty"`
+	STCPSecret       string `json:"stcp_secret,omitempty"`
+	APIAddr          string `json:"api_addr,omitempty"`
+	LANExposed       bool   `json:"lan_exposed"`
+	RestartPending   bool   `json:"restart_pending"`
+	WorkerRejoinHint string `json:"worker_rejoin_hint,omitempty"`
 }
 
 func toControlPlaneOut(res admincore.ControlPlaneResult) controlPlaneOut {
 	return controlPlaneOut{
-		OK:             res.OK,
-		ControlPlane:   res.ControlPlane,
-		BindAddr:       res.BindAddr,
-		BindPort:       res.BindPort,
-		HasToken:       res.HasToken,
-		TunnelToken:    res.TunnelToken,
-		STCPSecret:     res.STCPSecret,
-		APIAddr:        res.APIAddr,
-		LANExposed:     res.LANExposed,
-		RestartPending: res.RestartPending,
+		OK:               res.OK,
+		ControlPlane:     res.ControlPlane,
+		BindAddr:         res.BindAddr,
+		BindPort:         res.BindPort,
+		HasToken:         res.HasToken,
+		TunnelToken:      res.TunnelToken,
+		STCPSecret:       res.STCPSecret,
+		APIAddr:          res.APIAddr,
+		LANExposed:       res.LANExposed,
+		RestartPending:   res.RestartPending,
+		WorkerRejoinHint: res.WorkerRejoinHint,
 	}
 }
 
@@ -143,7 +145,7 @@ func (s *Server) registerControlPlaneTools() {
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "outpost_rotate_control_plane_token",
-		Description: "Mint a new tunnel token, returning it. EVERY WORKER MUST BE RECONFIGURED — existing workers fail their next reconnect. Use to revoke a leaked token, not as routine hygiene.",
+		Description: "Mint a new tunnel token, returning it. EVERY WORKER MUST BE RECONFIGURED — existing workers fail their next reconnect. The response's worker_rejoin_hint carries the exact recovery command (only the token changed; stcp_secret and node_token stay valid). Use to revoke a leaked token, not as routine hygiene.",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, controlPlaneOut, error) {
 		res, err := s.core.RotateControlPlaneToken()
 		if err != nil {

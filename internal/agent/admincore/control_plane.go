@@ -2,7 +2,6 @@ package admincore
 
 import (
 	"net"
-	"strconv"
 	"strings"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
@@ -56,6 +55,12 @@ type ControlPlaneResult struct {
 	// one property of this config worth noticing at a glance.
 	LANExposed     bool `json:"lan_exposed"`
 	RestartPending bool `json:"restart_pending"`
+	// WorkerRejoinHint is the recovery instruction for a token rotation — set
+	// only by RotateControlPlaneToken. A rotate that just prints "reconfigure
+	// your workers" and stops is not a recovery path, it is a warning; this is
+	// the actual command, safe to display because it never embeds a literal
+	// secret (see ControlPlaneTokenRotationHint).
+	WorkerRejoinHint string `json:"worker_rejoin_hint,omitempty"`
 }
 
 // ControlPlaneView returns the current placement config. reveal=true includes
@@ -147,6 +152,14 @@ func (s *Server) SetControlPlane(p ControlPlaneParams) (ControlPlaneResult, erro
 // That is the point of a rotate verb (revoking a leaked credential), but it is
 // destructive enough that callers should say so in their own words; this
 // method will not do it implicitly as part of some other operation.
+//
+// Rotation touches ONLY the tunnel token. The STCP secret and the k3s node
+// token are separate credentials minted by separate owners (this method and
+// k3s respectively, see cluster_node_token.go) and are left alone — a worker
+// only has to re-supply the one value that actually changed. That is what
+// makes WorkerRejoinHint a single-field `outpost cluster join --token-stdin`
+// rather than the full three-credential join: this method never strands a
+// worker without a cheap, explicit way back in.
 func (s *Server) RotateControlPlaneToken() (ControlPlaneResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -163,6 +176,7 @@ func (s *Server) RotateControlPlaneToken() (ControlPlaneResult, error) {
 	}
 
 	out := controlPlaneResult(fc, true)
+	out.WorkerRejoinHint = ControlPlaneTokenRotationHint
 	// Only a running server needs restarting to pick the new token up.
 	out.RestartPending = fc.Cluster.ControlPlaneOn() && fc.AgentName != ""
 	if out.RestartPending {
@@ -203,9 +217,16 @@ func isLoopbackIP(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// ControlPlaneWorkerHint renders the one line an operator needs on a worker.
-// Kept next to the config it describes so the two cannot drift.
-func ControlPlaneWorkerHint(addr string, port int) string {
-	return "point the worker's tunnel at " + net.JoinHostPort(addr, strconv.Itoa(port)) +
-		" using this token"
-}
+// ControlPlaneTokenRotationHint is the recovery instruction handed back with
+// a rotated tunnel token. It deliberately never embeds the token itself —
+// piping it straight from the reveal command to the join command on the
+// worker keeps the value out of shell history and process args on both ends,
+// same discipline `outpost cluster token | ssh worker … --token-stdin`
+// already uses for the k3s node token (cmd/outpost/cluster_node_token.go).
+//
+// Only the token needs to move: JoinPeerPlane treats an omitted field as
+// "leave alone" (cluster_join.go), so a worker that already joined keeps its
+// endpoint, STCP secret, and node token untouched by this one-field update.
+const ControlPlaneTokenRotationHint = "worker recovery — on each joined worker, run: " +
+	"`outpost cluster control-plane token --quiet | ssh <worker> outpost cluster join --token-stdin` " +
+	"(only the tunnel token changed; endpoint, stcp secret, and node token stay as already configured)"
