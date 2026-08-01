@@ -106,7 +106,7 @@ func TestPrintControlPlaneStatus_StripsMalformedTokens(t *testing.T) {
 // command silently stops printing a recovery path — this test exists to make
 // that drift a compile-visible or a test-visible failure instead.
 func TestControlPlaneOut_CarriesWorkerRejoinHint(t *testing.T) {
-	const hint = "worker recovery — on each joined worker, run: `outpost cluster join --token-stdin`"
+	const hint = "worker recovery — on this control-plane host, run once for each joined worker: `outpost cluster join --token-stdin`"
 	body := `{
 		"control_plane": true,
 		"bind_addr": "127.0.0.1",

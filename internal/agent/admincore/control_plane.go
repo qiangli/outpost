@@ -227,6 +227,6 @@ func isLoopbackIP(addr string) bool {
 // Only the token needs to move: JoinPeerPlane treats an omitted field as
 // "leave alone" (cluster_join.go), so a worker that already joined keeps its
 // endpoint, STCP secret, and node token untouched by this one-field update.
-const ControlPlaneTokenRotationHint = "worker recovery — on each joined worker, run: " +
+const ControlPlaneTokenRotationHint = "worker recovery — on this control-plane host, run once for each joined worker: " +
 	"`outpost cluster control-plane token --quiet | ssh <worker> outpost cluster join --token-stdin` " +
 	"(only the tunnel token changed; endpoint, stcp secret, and node token stay as already configured)"
