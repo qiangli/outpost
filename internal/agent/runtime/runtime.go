@@ -135,6 +135,23 @@ type Options struct {
 	OverlayLoginServer string
 	OverlayAuthKey     string
 
+	// PeerFlannel selects the peer-hosted-DKS pod network: stock k3s
+	// flannel VXLAN pinned to the tailnet underlay
+	// (--flannel-iface=tailscale0), per
+	// docs/adr-peer-dks-pod-network.md. Set when this node joins a
+	// PEER-hosted control plane.
+	//
+	// It changes what the entrypoint does in three ways: no conflist is
+	// written (flannel writes its own 10-flannel.conflist), any conflist
+	// left behind by a previous mode is REMOVED (CNI picks the
+	// lexically-first file, so a stale 10-bridge.conflist would
+	// out-select flannel and silently misroute), and the agent refuses
+	// to start until tailscale0 actually has an IPv4.
+	//
+	// Never set for the cloudbox-hosted plane — that path keeps using
+	// outpost-cni + advertised routes, byte-for-byte as before.
+	PeerFlannel bool
+
 	// PodmanBin overrides the autodetected `podman`/`docker` binary.
 	// Empty triggers PATH lookup; tests set it.
 	PodmanBin string
@@ -328,6 +345,7 @@ func Up(ctx context.Context, opts Options) error {
 	if opts.OverlayAuthKey != "" {
 		args = append(args, "-e", "OUTPOST_OVERLAY_AUTHKEY="+opts.OverlayAuthKey)
 	}
+	args = append(args, podNetworkEnvArgs(opts)...)
 	for _, kv := range opts.ExtraEnv {
 		args = append(args, "-e", kv)
 	}
@@ -364,7 +382,11 @@ type fingerprintInput struct {
 	KubeletPort   int
 	PodCIDR       string
 	OverlayLogin  string
-	ExtraEnv      []string
+	// PeerFlannel is part of the fingerprint because it changes the
+	// container's CNI shape: flipping it without recreating would leave
+	// a container that still has the old mode's conflist on disk.
+	PeerFlannel bool
+	ExtraEnv    []string
 }
 
 func runtimeFingerprint(ctx context.Context, bin, image string, opts Options) (string, error) {
@@ -390,6 +412,7 @@ func runtimeFingerprint(ctx context.Context, bin, image string, opts Options) (s
 		KubeletPort:   opts.KubeletPort,
 		PodCIDR:       opts.PodCIDR,
 		OverlayLogin:  opts.OverlayLoginServer,
+		PeerFlannel:   opts.PeerFlannel,
 		ExtraEnv:      opts.ExtraEnv,
 	}
 	payload, err := json.Marshal(input)

@@ -2234,7 +2234,52 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 		PodCIDR:            cc.OverlayPodCIDR,
 		OverlayLoginServer: cc.OverlayLoginServer,
 		OverlayAuthKey:     cc.OverlayAuthKey,
+		PeerFlannel:        cc.JoinsPeerPlane(),
 	}
+
+	// A peer-joined worker needs a tailnet identity, and JoinPeerPlane
+	// deliberately CLEARS the cloudbox overlay trio at join time (they
+	// describe the cloud plane and would attach this node to the wrong
+	// overlay). So the credential has to be re-acquired here, at boot,
+	// from the party that can still mint one: cloudbox, over the access
+	// token, which is unaffected by anything that broke the tailnet.
+	//
+	// Fetched rather than configured on purpose — an auth key is a
+	// standing credential to join the tailnet, which is what reaches the
+	// pod network. Putting it on a CLI flag would put it in shell
+	// history, process listings and support pastes; every fetch here is a
+	// fresh single-use key that lives only in this process and the
+	// container's env.
+	//
+	// Every precondition fails CLOSED, before runtime.Up: an unpaired
+	// host has nothing to ask cloudbox with, and a failed fetch leaves
+	// this node without the tailnet identity flannel-over-tailscale
+	// needs. Both return a non-nil error rather than nil, so this
+	// function's caller — which already logs "cluster agent runtime:
+	// disabled" with that error attached — is what reports it; there is
+	// nothing left here to claim about automatic retry.
+	if err := requirePeerOverlayAccessToken(cc, fc.AccessToken); err != nil {
+		return err
+	}
+	if cc.JoinsPeerPlane() {
+		cl := &overlaykey.Client{
+			BaseURL:     cloudboxHTTPBase(fc),
+			AccessToken: fc.AccessToken,
+			AgentName:   nodeName,
+		}
+		fetchCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		err := preparePeerOverlay(fetchCtx, cl, &rtOpts, nodeName)
+		cancel()
+		if err != nil {
+			// Do NOT fall through to runtime.Up. Starting peer-flannel
+			// without a tailnet identity gives --flannel-iface=tailscale0
+			// no address: the node registers, goes Ready, and drops every
+			// pod packet — the dark node this slice exists to prevent.
+			// Logging the failure and continuing would produce exactly that.
+			return err
+		}
+	}
+
 	// Announce whether this node gets a real (per-node, routable) pod
 	// network or the shared-range single-node fallback. Both come up
 	// Ready and look identical from the cluster's side, so the WARN on
@@ -2288,14 +2333,18 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 	//
 	// Gated on having overlay credentials AND a cloudbox token: a host
 	// that never joined an overlay has nothing to refresh.
-	if strings.TrimSpace(cc.OverlayLoginServer) != "" && strings.TrimSpace(fc.AccessToken) != "" {
+	if overlayRefresherWanted(rtOpts, fc.AccessToken) {
 		refresher := &overlaykey.Refresher{
 			Client: &overlaykey.Client{
 				BaseURL:     cloudboxHTTPBase(fc),
 				AccessToken: fc.AccessToken,
 				AgentName:   nodeName,
 			},
-			PodCIDR: cc.OverlayPodCIDR,
+			PodCIDR: rtOpts.PodCIDR,
+			// Peer-flannel workers must never advertise cloudbox's
+			// cluster-carved PodCIDR fetched by a Heal call — see
+			// overlaykey.Refresher.IgnoreCredentialPodCIDR.
+			IgnoreCredentialPodCIDR: rtOpts.PeerFlannel,
 			// Heal runs `tailscale up` inside the runtime container, where
 			// the entrypoint's socat TLS terminator fronts the frp
 			// overlay-control visitor — the Cloudflare-free path to
@@ -2309,6 +2358,139 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 		g.Go(func() error { return refresher.Run(ctx) })
 	}
 	return nil
+}
+
+// overlayRefresherWanted reports whether this node should run the overlay
+// key refresher: it needs an effective login server AND a cloudbox access
+// token to fetch fresh keys with.
+//
+// Gating on rtOpts.OverlayLoginServer — the EFFECTIVE value the runtime
+// container was actually started with — rather than cc.OverlayLoginServer
+// is load-bearing for peer-hosted-plane workers. JoinPeerPlane clears
+// cc.OverlayLoginServer at join time (it described the cloud plane, and
+// would attach this node to the wrong overlay), but preparePeerOverlay
+// re-populates rtOpts.OverlayLoginServer from a freshly fetched peer-plane
+// credential before this check runs. Gating on the cleared config field
+// would leave every peer-flannel worker's overlay registration to rot
+// after the first cloudbox-side reset, silently, since nothing here would
+// have ever run. The cloudbox-hosted plane is unaffected either way:
+// rtOpts.OverlayLoginServer is seeded straight from cc.OverlayLoginServer
+// and nothing downstream mutates it.
+func overlayRefresherWanted(rtOpts runtime.Options, accessToken string) bool {
+	return strings.TrimSpace(rtOpts.OverlayLoginServer) != "" && strings.TrimSpace(accessToken) != ""
+}
+
+// requirePeerOverlayAccessToken fails closed when a peer-hosted plane join
+// cannot fetch tailnet credentials: cloudbox is the only party that can mint
+// one, and an unpaired host (no access token) has nothing to ask with. The
+// cloudbox-hosted plane never hits this precondition — it already carries
+// its own overlay trio through pairing, and re-fetching there would burn a
+// key it does not need.
+//
+// This is a precondition, not an optional skip: a peer-plane join with no
+// token used to fall straight through to runtime.Up with PeerFlannel set and
+// no tailnet identity to give it — the same dark-node failure a fetch error
+// produces, just reached by a different door. Returning an error here closes
+// that door before runtime.Up ever runs.
+func requirePeerOverlayAccessToken(cc *conf.ClusterConfig, accessToken string) error {
+	if cc == nil || !cc.JoinsPeerPlane() {
+		return nil
+	}
+	if strings.TrimSpace(accessToken) == "" {
+		return errors.New("cluster agent runtime: peer-hosted plane needs a cloudbox access token to " +
+			"fetch a tailnet identity for flannel-over-tailscale; none present (unpaired host?)")
+	}
+	return nil
+}
+
+// applyPeerOverlayCredentials fetches a fresh single-use overlay key and
+// writes it into opts. It reads ONLY LoginServer and AuthKey.
+//
+// Credentials.PodCIDR is IGNORED, deliberately. Under the peer-flannel
+// decision (docs/adr-peer-dks-pod-network.md, Option A) the pod CIDR comes
+// from flannel reading Node.spec.podCIDR, which the PEER's k3s
+// controller-manager allocates. Cloudbox's carve describes the
+// cloudbox-hosted cluster and has no authority over the peer's; honoring
+// it here would hand the entrypoint a CIDR to template a conflist from and
+// reintroduce exactly the allocator this ADR removed.
+//
+// opts is left untouched on error so a failed fetch cannot half-apply.
+func applyPeerOverlayCredentials(ctx context.Context, cl *overlaykey.Client, opts *runtime.Options) error {
+	creds, err := cl.Fetch(ctx)
+	if err != nil {
+		return err
+	}
+	opts.OverlayLoginServer = strings.TrimSpace(creds.LoginServer)
+	opts.OverlayAuthKey = strings.TrimSpace(creds.AuthKey)
+	opts.PodCIDR = ""
+	return nil
+}
+
+// preparePeerOverlay fetches the peer-plane overlay credentials into opts,
+// logs the outcome SAFELY (presence, never the key — see logPeerOverlayFetch),
+// and returns an error when the caller must NOT proceed to start the runtime
+// container. It is the whole "may this node come up" decision in one
+// pure-ish function so a regression is a failing test rather than a dark node.
+//
+// A fetch failure always returns a non-nil error, without exception.
+// peer-flannel binds --flannel-iface=tailscale0; with no tailnet identity
+// that interface has no address, so the node joins, reports Ready, and
+// silently blackholes pod traffic. Starting it is strictly worse than not
+// starting it: a node that is absent is diagnosable, a node that is present
+// and broken is not.
+//
+// The returned error wraps the underlying overlaykey error with %w, so
+// errors.Is(err, overlaykey.ErrOverlayDisabled) / ErrThrottled still resolve
+// at the call site.
+//
+// ErrOverlayDisabled is the case that could argue for continuing — cloudbox
+// is not running an overlay at all, so there is no key to be had and no
+// outage to wait out. We still refuse, deliberately: "no key exists" and "the
+// key fetch failed" put this node in the same place, holding a peer-flannel
+// config it cannot satisfy. The difference is operator action, not node
+// behavior, and logPeerOverlayFetch already says which one happened and what
+// to do about it (enable the overlay, or host this worker on the
+// cloudbox-managed plane). Nothing is persisted here, so flipping the overlay
+// on cloudbox and restarting is all it takes to come up.
+func preparePeerOverlay(ctx context.Context, cl *overlaykey.Client, opts *runtime.Options, node string) error {
+	err := applyPeerOverlayCredentials(ctx, cl, opts)
+	logPeerOverlayFetch(node, opts.OverlayAuthKey != "", err)
+	if err != nil {
+		return fmt.Errorf("cluster agent runtime: overlay credential fetch failed for peer-hosted plane: %w", err)
+	}
+	return nil
+}
+
+// logPeerOverlayFetch reports the outcome. It logs PRESENCE, never the
+// key: an auth key that reaches a log file is a standing tailnet
+// credential sitting in whatever ships those logs.
+//
+// A failure is ERROR, not WARN, and says what happens next, because the
+// container will refuse to start a dark node once it finds tailscale0
+// without an address — this line is the explanation for that exit.
+func logPeerOverlayFetch(node string, haveKey bool, err error) {
+	switch {
+	case err == nil:
+		slog.Info("cluster: fetched overlay credentials for peer-hosted plane",
+			"node", node, "has_auth_key", haveKey)
+	case errors.Is(err, overlaykey.ErrOverlayDisabled):
+		slog.Error("cluster: cloudbox overlay is DISABLED, so this peer-joined node cannot get a "+
+			"tailnet identity. flannel-over-tailscale needs one: the runtime container will refuse "+
+			"to start rather than join as a node that drops every pod packet. Enable the overlay on "+
+			"cloudbox, or host this worker on the cloudbox-managed plane instead.",
+			"node", node)
+	case errors.Is(err, overlaykey.ErrThrottled):
+		slog.Error("cluster: cloudbox throttled the overlay key request; this peer-joined node has no "+
+			"tailnet identity for this boot. The runtime container will refuse to start; retry shortly "+
+			"(`outpost restart`) rather than treating it as a network fault.",
+			"node", node)
+	default:
+		// err is an overlaykey error; the package never puts a key in one
+		// (see Fetch — it reports an empty key as a status, not a value).
+		slog.Error("cluster: overlay credential fetch failed for peer-hosted plane; the runtime "+
+			"container will refuse to start rather than join without a tailnet identity",
+			"node", node, "err", err)
+	}
 }
 
 // sandboxPrewarmImages resolves the image set the prewarmer keeps pulled.

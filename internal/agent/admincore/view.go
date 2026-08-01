@@ -69,9 +69,12 @@ type ClusterView struct {
 	JoinEndpoint string `json:"join_endpoint,omitempty"`
 	HasJoinToken bool   `json:"has_join_token,omitempty"`
 	// PodNetworkMode is "overlay" (cloudbox allocated a per-node pod
-	// CIDR — the only multi-node-correct mode) or "single-node-fallback"
-	// (no CIDR: a fixed range identical on every node, so pod IPs
-	// collide the moment a second node joins). Read-only derived state,
+	// CIDR), "peer-flannel" (a peer-hosted plane; stock flannel VXLAN
+	// over the tailnet allocates from Node.spec.podCIDR — also
+	// multi-node-correct, and PodCIDR is empty because this side does
+	// not know it), or "single-node-fallback" (no CIDR: a fixed range
+	// identical on every node, so pod IPs collide the moment a second
+	// node joins). Read-only derived state,
 	// not a config key — see runtime.ClassifyPodNetwork. PodCIDR is the
 	// range that mode actually allocates from.
 	PodNetworkMode string `json:"pod_network_mode,omitempty"`
@@ -163,7 +166,12 @@ func toClusterView(fc *conf.FileConfig) ClusterView {
 	if fc == nil || fc.Cluster == nil {
 		return ClusterView{}
 	}
-	podNet := runtime.ClassifyPodNetwork(fc.Cluster.OverlayPodCIDR)
+	// A peer-joined worker gets its pod network from stock flannel over
+	// the tailnet, so an empty OverlayPodCIDR does NOT mean the
+	// single-node fallback there — reporting it as such would tell an
+	// operator their multi-node peer cluster is about to collide pod IPs
+	// when it is in fact correctly configured.
+	podNet := runtime.ClassifyPodNetwork(fc.Cluster.OverlayPodCIDR, fc.Cluster.JoinsPeerPlane())
 	cpBindAddr, cpBindPort := fc.Cluster.TunnelBind()
 	return ClusterView{
 		// Report the EFFECTIVE state (nil defaults on), not the raw

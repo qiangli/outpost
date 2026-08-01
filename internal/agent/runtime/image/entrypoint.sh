@@ -33,6 +33,12 @@ set -eu
 : "${OUTPOST_OVERLAY_LOGIN:=}"
 : "${OUTPOST_OVERLAY_AUTHKEY:=}"
 : "${OUTPOST_RUNTIME_RECREATED:=0}"
+# Pod-network mode, classified by the outpost daemon (runtime.PodNetwork).
+# Empty = the historical behaviour: overlay when OUTPOST_POD_CIDR is set,
+# single-node bridge fallback otherwise. "peer-flannel" = this node joins a
+# PEER-hosted control plane and gets pod networking from stock k3s flannel
+# VXLAN pinned to the tailnet underlay. See docs/adr-peer-dks-pod-network.md.
+: "${OUTPOST_POD_NETWORK_MODE:=}"
 
 log() { printf '[runtime] %s\n' "$*" >&2; }
 
@@ -91,7 +97,20 @@ sysctl -w net.bridge.bridge-nf-call-ip6tables=1 2>/dev/null || true
 # node that takes this branch uses the same range, so pod IPs collide
 # across nodes and Services silently misroute. Multi-node REQUIRES the
 # overlay branch above (cloudbox CLUSTER_OVERLAY_ENABLED=true).
-if [ -n "${OUTPOST_POD_CIDR}" ]; then
+#
+# THIRD shape (peer-flannel): this node joins a peer-hosted control plane
+# and stock k3s flannel owns the pod network end to end — it reads
+# Node.spec.podCIDR (allocated by the peer's own controller-manager) and
+# writes its OWN /etc/cni/net.d/10-flannel.conflist. So we write NOTHING
+# here, and we DELETE anything a previous mode left behind: CNI selects the
+# lexically-first .conflist in the directory, and both 10-bridge and
+# 10-outpost sort ahead of 10-flannel. A leftover file would win, flannel
+# would never be selected, and the node would come up Ready while pod
+# traffic silently went nowhere.
+if [ "${OUTPOST_POD_NETWORK_MODE}" = "peer-flannel" ]; then
+    log "peer-flannel: flannel owns CNI; removing any stale conflist and writing none"
+    rm -f /etc/cni/net.d/10-outpost.conflist /etc/cni/net.d/10-bridge.conflist
+elif [ -n "${OUTPOST_POD_CIDR}" ]; then
     log "writing /etc/cni/net.d/10-outpost.conflist pod_cidr=${OUTPOST_POD_CIDR}"
     cat > /etc/cni/net.d/10-outpost.conflist <<EOF
 {
@@ -340,8 +359,20 @@ fi
 APISERVER_SVC_IP="${APISERVER_SVC_IP:-10.43.0.1}"
 APISERVER_SVC_PORT="${APISERVER_SVC_PORT:-443}"
 log "installing apiserver service DNAT: ${APISERVER_SVC_IP}:${APISERVER_SVC_PORT} -> 127.0.0.1:${OUTPOST_API_PORT}"
+# route_localnet arming for the CNI bridge is mode-aware: peer-flannel's
+# stock k3s flannel creates a bridge named "cni0" (flannel's own default,
+# unrelated to any name this entrypoint picks); every other mode —
+# cloudbox-managed overlay and the single-node fallback — uses the bridge
+# this entrypoint itself writes into the conflist above, "cbr0". Arming
+# the wrong name is a silent DNAT miss: pod → bridge → here never gets
+# route_localnet, so the apiserver DNAT above never matches forwarded
+# packets.
+POD_BRIDGE="cbr0"
+if [ "${OUTPOST_POD_NETWORK_MODE}" = "peer-flannel" ]; then
+    POD_BRIDGE="cni0"
+fi
 sysctl -w net.ipv4.conf.all.route_localnet=1 >/dev/null
-for iface in lo eth0 default cbr0; do
+for iface in lo eth0 default "${POD_BRIDGE}"; do
     sysctl -w net.ipv4.conf.${iface}.route_localnet=1 2>/dev/null >/dev/null || true
 done
 # Watchdog: kube-proxy reconciles iptables every ~30s and re-inserts its
@@ -363,12 +394,12 @@ done
 # OUTPUT chain isn't touched by kube-proxy, so one shot is enough.
 iptables -t nat -I OUTPUT 1 -d "${APISERVER_SVC_IP}/32" -p tcp --dport "${APISERVER_SVC_PORT}" \
     -j DNAT --to-destination "127.0.0.1:${OUTPOST_API_PORT}"
-# Arm cbr0.route_localnet=1 once the CNI bridge appears (kubelet creates
-# it lazily on first pod).
+# Arm ${POD_BRIDGE}.route_localnet=1 once the CNI bridge appears (kubelet
+# creates it lazily on first pod).
 (
-    while ! ip link show cbr0 >/dev/null 2>&1; do sleep 2; done
-    sysctl -w net.ipv4.conf.cbr0.route_localnet=1 >/dev/null 2>&1
-    log "armed cbr0.route_localnet=1 after bridge creation"
+    while ! ip link show "${POD_BRIDGE}" >/dev/null 2>&1; do sleep 2; done
+    sysctl -w net.ipv4.conf.${POD_BRIDGE}.route_localnet=1 >/dev/null 2>&1
+    log "armed ${POD_BRIDGE}.route_localnet=1 after bridge creation"
 ) &
 
 # Snapshotter selection: native `overlayfs` is preferred when the
@@ -430,7 +461,46 @@ fi
 K3S_RESOLV=/run/k3s-resolv.conf
 printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > "${K3S_RESOLV}"
 
-log "exec k3s agent --server=https://127.0.0.1:${OUTPOST_API_PORT} --node-name=${OUTPOST_AGENT_NAME} --with-node-id --disable-apiserver-lb ${SNAPSHOTTER_ARGS} ${KUBELET_ROUTING_ARGS}"
+# Peer-flannel: pin flannel's VXLAN to the tailnet underlay, and REFUSE to
+# start the agent until that interface actually has an IPv4.
+#
+# --flannel-iface=tailscale0 against an addressless interface does not
+# error: the agent joins, the node reports Ready, and pod traffic silently
+# has nowhere to go. That is the same shape as the frpc bug recorded above
+# — a component that gives up quietly leaves a DARK node that looks healthy
+# from `kubectl get nodes` and needs a human to notice. So poll for a real
+# address and, on timeout, log loudly and EXIT non-zero: a container that
+# dies is visible, a dark node is not.
+K3S_FLANNEL_ARGS=""
+if [ "${OUTPOST_POD_NETWORK_MODE}" = "peer-flannel" ]; then
+    TS_WAIT="${OUTPOST_TAILSCALE_IP_TIMEOUT:-120}"
+    TS_IP=""
+    i=0
+    while [ "${i}" -lt "${TS_WAIT}" ]; do
+        # tailscale's own view first (authoritative: it reports the address
+        # only once the node is registered and the tailnet accepted it),
+        # then the kernel's, so a healthy tun with a late-answering daemon
+        # still counts.
+        TS_IP="$(tailscale --socket=/var/run/tailscale/tailscaled.sock ip -4 2>/dev/null | head -1)" || TS_IP=""
+        if [ -z "${TS_IP}" ]; then
+            TS_IP="$(ip -4 -o addr show dev tailscale0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)" || TS_IP=""
+        fi
+        [ -n "${TS_IP}" ] && break
+        i=$((i + 1))
+        sleep 1
+    done
+    if [ -z "${TS_IP}" ]; then
+        log "FATAL peer-flannel: tailscale0 has no IPv4 after ${TS_WAIT}s."
+        log "FATAL flannel would be pinned to an addressless interface: the node would join,"
+        log "FATAL report Ready, and drop every pod packet. Refusing to start a dark node."
+        log "FATAL check /tmp/tailscaled.log and that an overlay auth key reached this container."
+        exit 1
+    fi
+    log "peer-flannel: tailscale0 IPv4=${TS_IP}; pinning flannel VXLAN to tailscale0"
+    K3S_FLANNEL_ARGS="--flannel-iface=tailscale0"
+fi
+
+log "exec k3s agent --server=https://127.0.0.1:${OUTPOST_API_PORT} --node-name=${OUTPOST_AGENT_NAME} --with-node-id --disable-apiserver-lb ${SNAPSHOTTER_ARGS} ${KUBELET_ROUTING_ARGS} ${K3S_FLANNEL_ARGS}"
 # --disable-apiserver-lb pins the agent to --server (the STCP visitor
 # at 127.0.0.1:${OUTPOST_API_PORT}). Without it k3s's client-side
 # load-balancer learns the apiserver's mesh-IP advertise address
@@ -455,6 +525,7 @@ exec /usr/local/bin/k3s agent \
     --resolv-conf="${K3S_RESOLV}" \
     ${SNAPSHOTTER_ARGS} \
     ${KUBELET_ROUTING_ARGS} \
+    ${K3S_FLANNEL_ARGS} \
     --kubelet-arg=address=127.0.0.1 \
     --kubelet-arg=feature-gates=KubeletInUserNamespace=true \
     --kubelet-arg=cgroups-per-qos=false \
