@@ -110,7 +110,10 @@ done
 # address unreachable from here; the node-address reconciler publishes a
 # reachable one as ExternalIP. Without ExternalIP FIRST the reconciler's
 # work is ignored and every logs/exec against a remote node 502s.
-set -- "$@" --kubelet-preferred-address-types=ExternalIP,InternalIP,Hostname
+# k3s WRAPS kube-apiserver rather than exposing its flags directly, so this
+# must be passed through. Spelled as a k3s flag it is rejected and k3s
+# prints its help and exits — which is how this was found.
+set -- "$@" --kube-apiserver-arg=kubelet-preferred-address-types=ExternalIP,InternalIP,Hostname
 
 [ -n "${OUTPOST_CLUSTER_CIDR:-}" ] && set -- "$@" --cluster-cidr="${OUTPOST_CLUSTER_CIDR}"
 [ -n "${OUTPOST_SERVICE_CIDR:-}" ] && set -- "$@" --service-cidr="${OUTPOST_SERVICE_CIDR}"

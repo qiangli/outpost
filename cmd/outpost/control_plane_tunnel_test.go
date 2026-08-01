@@ -15,6 +15,21 @@ import (
 
 func boolPtr(b bool) *bool { return &b }
 
+// isolateFromPodman hides any container engine from these tests.
+//
+// Without it they CREATE REAL CONTAINERS on the developer's machine — the
+// first run of this suite left a stray `cp-host-control-plane` behind. A unit
+// test that reaches the host's container engine is not a unit test, and the
+// side effect is invisible until someone lists their containers.
+//
+// UpServer then fails fast with ErrPodmanNotFound, which is exactly the path
+// these tests want: everything this function owns (credentials, persistence,
+// the recorded path, clean shutdown) happens around that call, not inside it.
+func isolateFromPodman(t *testing.T) {
+	t.Helper()
+	t.Setenv("PATH", t.TempDir())
+}
+
 // These tests deliberately do NOT assert that a port is listening. The control
 // plane is a CONTAINER now — frps runs beside the apiserver inside it, because
 // the apiserver reaches a worker's kubelet through a loopback port frps
@@ -24,6 +39,7 @@ func boolPtr(b bool) *bool { return &b }
 // credentials, persistence, where the kubeconfig will be, and clean shutdown.
 
 func TestStartControlPlaneTunnel_MintsAndPersistsBothCredentials(t *testing.T) {
+	isolateFromPodman(t)
 	dir := t.TempDir()
 	t.Setenv("OUTPOST_CONTROL_PLANE_KUBECONFIG_DIR", filepath.Join(dir, "kube"))
 	cfgPath := filepath.Join(dir, "agent.json")
@@ -75,6 +91,7 @@ func TestStartControlPlaneTunnel_MintsAndPersistsBothCredentials(t *testing.T) {
 
 // An operator who set the path explicitly owns it; boot must not overwrite.
 func TestStartControlPlaneTunnel_KeepsOperatorKubeconfigPath(t *testing.T) {
+	isolateFromPodman(t)
 	dir := t.TempDir()
 	t.Setenv("OUTPOST_CONTROL_PLANE_KUBECONFIG_DIR", filepath.Join(dir, "kube"))
 	cfgPath := filepath.Join(dir, "agent.json")
@@ -106,6 +123,7 @@ func TestStartControlPlaneTunnel_NoOpWhenNotControlPlane(t *testing.T) {
 	}
 	for name, cc := range cases {
 		t.Run(name, func(t *testing.T) {
+			isolateFromPodman(t)
 			dir := t.TempDir()
 			kubeDir := filepath.Join(dir, "kube")
 			t.Setenv("OUTPOST_CONTROL_PLANE_KUBECONFIG_DIR", kubeDir)
