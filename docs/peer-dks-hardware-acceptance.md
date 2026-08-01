@@ -118,14 +118,17 @@ Summary line: `SUMMARY pass=4 fail=3 blocked=4` → `RESULT FAIL`
 
 ### Proven offline (no cluster required)
 
-`bash script/dks-peer-acceptance_test.sh` → **67 pass, 0 fail** (pure unit tests;
+`bash script/dks-peer-acceptance_test.sh` → **71 pass, 0 fail** (pure unit tests;
 runner/integration tests execute end-to-end with a stub kubectl). It asserts the
 harness's own logic, including the mandatory invariants this story turns on:
 
 - a `BLOCKED` check never tallies as, or renders as, `PASS` — mandatory invariant;
-- any `FAIL` makes the runner exit non-zero (verified: real run exited 1);
-- all-blocked reports `INCONCLUSIVE`, never `OK` — mandatory that a skipped-only
-  run exits non-zero;
+- the three exit codes, asserted against the **real runner process** (not its
+  stdout): `0` only with ≥1 PASS and 0 FAIL, `1` on any FAIL, `2` when nothing
+  was proven — see *Exit codes* below;
+- all-blocked reports `INCONCLUSIVE`, never `OK`, and exits `2` — a skipped-only
+  run cannot read as green to a gate that reads only `$?`;
+- a `DKS_ONLY` naming no existing check runs nothing and exits `2`, not `0`;
 - distinct-CIDR comparison: duplicate, empty, missing-field, late-duplicate and
   zero-node inputs all return failure with the offending node named;
 - **NEW**: annotation-only (flannel-iface) never PASS — host inspection required
