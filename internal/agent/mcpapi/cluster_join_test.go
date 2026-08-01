@@ -4,10 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/qiangli/outpost/internal/agent"
+	"github.com/qiangli/outpost/internal/agent/admincore"
+	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
 // connectTestMCP opens an authenticated MCP session against a fresh server.
@@ -141,5 +147,106 @@ func TestNodeTokenTool_RefusesOnANonHostingHost(t *testing.T) {
 	}
 	if !strings.Contains(body, "control plane") {
 		t.Errorf("error does not say where the token lives: %s", body)
+	}
+}
+
+// TestControlPlaneStatusTool_NoCredentialValues verifies the status tool never
+// emits token values, only has_* booleans. The literal values are seeded into
+// both the config and the fake prober so their absence from the surface is meaningful.
+func TestControlPlaneStatusTool_NoCredentialValues(t *testing.T) {
+	const joinToken = "FAKE-JOIN-TOKEN-xyz"
+	const nodeToken = "FAKE-NODE-TOKEN-abc"
+	const stcpSecret = "FAKE-STCP-SECRET-def"
+
+	// Create an httptest server and mcpapi.Server manually so we can inject
+	// credentials into both the config and the prober.
+	const token = "secret-token-1234"
+	configPath := filepath.Join(t.TempDir(), "agent.json")
+	fc := &conf.FileConfig{
+		Cluster: &conf.ClusterConfig{
+			JoinToken:  joinToken,
+			NodeToken:  nodeToken,
+			STCPSecret: stcpSecret,
+		},
+	}
+	if err := conf.SaveFile(configPath, fc); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	// Build deps, inject the fake prober, then construct the core.
+	deps := admincore.Deps{
+		ConfigPath: configPath,
+		Apps:       agent.NewAppRegistry(),
+	}
+	deps.ControlPlaneStatusProber = &fakeControlPlaneStatusProber{
+		status: admincore.ControlPlaneStatus{
+			Hosted:              true,
+			ContainerExists:     true,
+			ContainerRunning:    true,
+			APIServerServing:    true,
+			APIServerStatusCode: 200,
+			Nodes:               []admincore.Node{{Name: "worker1", Ready: true}},
+			JoinEndpoint:        "https://127.0.0.1:6443",
+			HasJoinToken:        true,
+			HasNodeToken:        true,
+			HasSTCPSecret:       true,
+		},
+	}
+	core, err := admincore.New(deps)
+	if err != nil {
+		t.Fatalf("new core: %v", err)
+	}
+
+	mcpSrv, err := New(Deps{Core: core, Token: token, Version: "test"})
+	if err != nil {
+		t.Fatalf("new mcp server: %v", err)
+	}
+	httpSrv := httptest.NewServer(mcpSrv.Handler())
+	t.Cleanup(httpSrv.Close)
+
+	// Connect and call the status tool.
+	transport := &mcp.StreamableClientTransport{
+		Endpoint: httpSrv.URL,
+		HTTPClient: &http.Client{Transport: &bearerRT{
+			token: token,
+			base:  http.DefaultTransport,
+		}},
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "v0.0.0"}, nil)
+	session, err := client.Connect(context.Background(), transport, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	body, isErr := callJSON(t, session, "outpost_control_plane_status", map[string]any{})
+	if isErr {
+		t.Fatalf("status reported an error: %s", body)
+	}
+
+	var status controlPlaneStatusOut
+	if err := json.Unmarshal([]byte(body), &status); err != nil {
+		t.Fatalf("decode %q: %v", body, err)
+	}
+
+	// Verify the presence booleans are true (the prober has them set).
+	if !status.HasJoinToken || !status.HasNodeToken || !status.HasSTCPSecret {
+		t.Errorf("presence booleans not set: join=%v node=%v stcp=%v", status.HasJoinToken, status.HasNodeToken, status.HasSTCPSecret)
+	}
+
+	// Confirm no token VALUES in the JSON string (even though has_* are true).
+	if strings.Contains(body, joinToken) || strings.Contains(body, nodeToken) || strings.Contains(body, stcpSecret) {
+		t.Errorf("status output contains a credential value: %s", body)
+	}
+
+	// Also verify the config resource stays redacted.
+	res, err := session.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: "outpost://config"})
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	for _, c := range res.Contents {
+		if strings.Contains(c.Text, joinToken) || strings.Contains(c.Text, nodeToken) || strings.Contains(c.Text, stcpSecret) {
+			t.Errorf("outpost://config leaked a credential: %s", c.Text)
+		}
 	}
 }

@@ -25,7 +25,8 @@ type controlPlaneOut struct {
 // whether this host runs the apiserver other machines join, as opposed to
 // joining one itself (dhnt/docs/dks-control-plane-on-sphere.md).
 //
-//	outpost cluster control-plane                 # status
+//	outpost cluster control-plane                 # config
+//	outpost cluster control-plane status          # health + node readiness
 //	outpost cluster control-plane on              # host the apiserver here
 //	outpost cluster control-plane on --bind-addr 0.0.0.0
 //	outpost cluster control-plane off
@@ -36,7 +37,7 @@ func clusterControlPlaneCmd() *cobra.Command {
 	var bindPort int
 
 	cmd := &cobra.Command{
-		Use:   "control-plane [on|off]",
+		Use:   "control-plane [on|off|status]",
 		Short: "Host the DKS apiserver on this machine, or report whether it does",
 		Long: `Report or set whether this host runs the DKS control plane.
 
@@ -52,7 +53,7 @@ it is this cluster's equivalent of the k3s node-token.
 The tunnel binds 127.0.0.1 by default, on the assumption that workers reach
 it over the mesh. Pass --bind-addr 0.0.0.0 to accept joins directly from the
 network.`,
-		ValidArgs: []string{"on", "off"},
+		ValidArgs: []string{"on", "off", "status"},
 		Args:      cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			session, err := dialMCP(cmd.Context())
@@ -100,6 +101,7 @@ network.`,
 	cmd.Flags().StringVar(&bindAddr, "bind-addr", "", "IP the tunnel server binds (default 127.0.0.1)")
 	cmd.Flags().IntVar(&bindPort, "bind-port", 0, "Port the tunnel server binds (default 7000)")
 	cmd.AddCommand(clusterControlPlaneTokenCmd())
+	cmd.AddCommand(clusterControlPlaneStatusCmd())
 	return cmd
 }
 
@@ -204,6 +206,93 @@ func printControlPlane(out controlPlaneOut) {
 		// mesh" and "accepting cluster joins from the network".
 		fmt.Println("\nNOTE: bound to a non-loopback address — reachable from the network.")
 	}
+}
+
+func printControlPlaneStatus(status struct {
+	Hosted              bool `json:"hosted"`
+	ContainerExists     bool `json:"container_exists"`
+	ContainerRunning    bool `json:"container_running"`
+	APIServerServing    bool `json:"apiserver_serving"`
+	APIServerStatusCode int  `json:"apiserver_status_code"`
+	Nodes               []struct {
+		Name  string `json:"name"`
+		Ready bool   `json:"ready"`
+	} `json:"nodes"`
+	NodeCount     int    `json:"node_count"`
+	JoinEndpoint  string `json:"join_endpoint"`
+	HasJoinToken  bool   `json:"has_join_token"`
+	HasNodeToken  bool   `json:"has_node_token"`
+	HasSTCPSecret bool   `json:"has_stcp_secret"`
+	CheckedAt     int64  `json:"checked_at"`
+}) {
+	if !status.Hosted {
+		fmt.Println("hosted: no")
+		return
+	}
+	fmt.Println("hosted: yes")
+	fmt.Printf("container exists:    %v\n", status.ContainerExists)
+	fmt.Printf("container running:   %v\n", status.ContainerRunning)
+	fmt.Printf("apiserver serving:   %v\n", status.APIServerServing)
+	if status.APIServerStatusCode > 0 {
+		fmt.Printf("apiserver status:    %d\n", status.APIServerStatusCode)
+	}
+	if status.JoinEndpoint != "" {
+		fmt.Printf("join endpoint:       %s\n", status.JoinEndpoint)
+	}
+	fmt.Printf("credentials:         join_token=%v node_token=%v stcp_secret=%v\n",
+		status.HasJoinToken, status.HasNodeToken, status.HasSTCPSecret)
+	fmt.Printf("node count:          %d\n", status.NodeCount)
+	if len(status.Nodes) > 0 {
+		fmt.Println("nodes:")
+		for _, n := range status.Nodes {
+			readyStr := "ready"
+			if !n.Ready {
+				readyStr = "not ready"
+			}
+			fmt.Printf("  %s: %s\n", n.Name, readyStr)
+		}
+	}
+}
+
+func clusterControlPlaneStatusCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Report the health and readiness of the hosted control plane",
+		Long: `Show the hosted control plane's health: container state, apiserver serving,
+and cluster node list with readiness status.
+
+Does not reveal credential values.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			session, err := dialMCP(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer session.close()
+			var status struct {
+				Hosted              bool `json:"hosted"`
+				ContainerExists     bool `json:"container_exists"`
+				ContainerRunning    bool `json:"container_running"`
+				APIServerServing    bool `json:"apiserver_serving"`
+				APIServerStatusCode int  `json:"apiserver_status_code"`
+				Nodes               []struct {
+					Name  string `json:"name"`
+					Ready bool   `json:"ready"`
+				} `json:"nodes"`
+				NodeCount     int    `json:"node_count"`
+				JoinEndpoint  string `json:"join_endpoint"`
+				HasJoinToken  bool   `json:"has_join_token"`
+				HasNodeToken  bool   `json:"has_node_token"`
+				HasSTCPSecret bool   `json:"has_stcp_secret"`
+				CheckedAt     int64  `json:"checked_at"`
+			}
+			if err := session.callTool(cmd.Context(), "outpost_control_plane_status", map[string]any{}, &status); err != nil {
+				return err
+			}
+			printControlPlaneStatus(status)
+			return nil
+		},
+	}
+	return cmd
 }
 
 func tokenPresence(has bool) string {

@@ -151,4 +151,64 @@ func (s *Server) registerControlPlaneTools() {
 		}
 		return nil, toControlPlaneOut(res), nil
 	})
+
+	s.registerControlPlaneStatusTool()
+}
+
+type controlPlaneStatusOut struct {
+	Hosted              bool               `json:"hosted"`
+	ContainerExists     bool               `json:"container_exists"`
+	ContainerRunning    bool               `json:"container_running"`
+	APIServerServing    bool               `json:"apiserver_serving"`
+	APIServerStatusCode int                `json:"apiserver_status_code,omitempty"`
+	Nodes               []controlPlaneNode `json:"nodes"`
+	NodeCount           int                `json:"node_count"`
+	JoinEndpoint        string             `json:"join_endpoint,omitempty"`
+	HasJoinToken        bool               `json:"has_join_token"`
+	HasNodeToken        bool               `json:"has_node_token"`
+	HasSTCPSecret       bool               `json:"has_stcp_secret"`
+	CheckedAt           int64              `json:"checked_at,omitzero"`
+}
+
+type controlPlaneNode struct {
+	Name  string `json:"name"`
+	Ready bool   `json:"ready"`
+}
+
+func toControlPlaneStatusOut(s admincore.ControlPlaneStatus) controlPlaneStatusOut {
+	nodes := make([]controlPlaneNode, len(s.Nodes))
+	for i, n := range s.Nodes {
+		nodes[i] = controlPlaneNode{Name: n.Name, Ready: n.Ready}
+	}
+	checkedAt := s.CheckedAt.Unix()
+	if s.CheckedAt.IsZero() {
+		checkedAt = 0
+	}
+	return controlPlaneStatusOut{
+		Hosted:              s.Hosted,
+		ContainerExists:     s.ContainerExists,
+		ContainerRunning:    s.ContainerRunning,
+		APIServerServing:    s.APIServerServing,
+		APIServerStatusCode: s.APIServerStatusCode,
+		Nodes:               nodes,
+		NodeCount:           s.NodeCount,
+		JoinEndpoint:        s.JoinEndpoint,
+		HasJoinToken:        s.HasJoinToken,
+		HasNodeToken:        s.HasNodeToken,
+		HasSTCPSecret:       s.HasSTCPSecret,
+		CheckedAt:           checkedAt,
+	}
+}
+
+func (s *Server) registerControlPlaneStatusTool() {
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_control_plane_status",
+		Description: "Report the health and readiness of the hosted control plane: container state, apiserver serving, cluster node list with readiness. Credential presence reported as booleans only.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, controlPlaneStatusOut, error) {
+		status, err := s.core.ControlPlaneStatusView(ctx)
+		if err != nil {
+			return apiErrResult[controlPlaneStatusOut](err)
+		}
+		return nil, toControlPlaneStatusOut(status), nil
+	})
 }

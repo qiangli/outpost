@@ -2,6 +2,7 @@ package admincore
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -278,6 +279,7 @@ type SafeView struct {
 	AppHealth          []AppHealthView         `json:"app_health,omitempty"`
 	ClusterLLM         ClusterLLMView          `json:"cluster_llm"`
 	Cluster            ClusterView             `json:"cluster"`
+	ControlPlane       *ControlPlaneStatus     `json:"control_plane,omitempty"`
 	Outbound           []agent.OutboundView    `json:"outbound"`
 	Defaults           map[string]string       `json:"defaults"`
 }
@@ -313,7 +315,7 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 	if sshSockets == nil {
 		sshSockets = []string{}
 	}
-	return SafeView{
+	view := SafeView{
 		AgentName:   fc.AgentName,
 		ServerAddr:  fc.ServerAddr,
 		ServerPort:  fc.ServerPort,
@@ -404,6 +406,12 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 			"admin_addr": conf.DefaultAdminAddr,
 		},
 	}
+	// Populate control-plane status. This is populated separately because
+	// it's a read-only probe, not part of the config.
+	if cpStatus, err := s.ControlPlaneStatusView(context.Background()); err == nil {
+		view.ControlPlane = &cpStatus
+	}
+	return view
 }
 
 // llmPoolStatusView returns the live pool diagnostic for the admin UI.
@@ -487,13 +495,14 @@ func (s *Server) outboundList() []agent.OutboundView {
 // cloudbox's fleet view) can see the running daemon's provenance and
 // the path of the binary to swap on disk.
 type StatusView struct {
-	Configured    bool            `json:"configured"`
-	AgentName     string          `json:"agent_name,omitempty"`
-	ServerAddr    string          `json:"server_addr,omitempty"`
-	CloudboxURL   string          `json:"cloudbox_url,omitempty"`
-	CurrentOSUser string          `json:"current_os_user,omitempty"`
-	Build         agent.BuildInfo `json:"build"`
-	BinaryPath    string          `json:"binary_path,omitempty"`
+	Configured          bool            `json:"configured"`
+	AgentName           string          `json:"agent_name,omitempty"`
+	ServerAddr          string          `json:"server_addr,omitempty"`
+	CloudboxURL         string          `json:"cloudbox_url,omitempty"`
+	CurrentOSUser       string          `json:"current_os_user,omitempty"`
+	Build               agent.BuildInfo `json:"build"`
+	BinaryPath          string          `json:"binary_path,omitempty"`
+	ControlPlaneSummary string          `json:"control_plane_summary,omitempty"`
 }
 
 // Status returns the lightweight paired-yet payload.
@@ -504,7 +513,7 @@ func (s *Server) Status() (StatusView, error) {
 	}
 	osUser, _ := hostauth.CurrentUser()
 	exe, _ := os.Executable()
-	return StatusView{
+	view := StatusView{
 		Configured:    fc.AgentName != "",
 		AgentName:     fc.AgentName,
 		ServerAddr:    fc.ServerAddr,
@@ -512,5 +521,35 @@ func (s *Server) Status() (StatusView, error) {
 		CurrentOSUser: osUser,
 		Build:         agent.ReadBuildInfo(),
 		BinaryPath:    exe,
-	}, nil
+	}
+	// Add control-plane status summary if available.
+	if cpStatus, err := s.ControlPlaneStatusView(context.Background()); err == nil && cpStatus.Hosted {
+		view.ControlPlaneSummary = cpStatusSummary(&cpStatus)
+	}
+	return view, nil
+}
+
+// cpStatusSummary generates a one-line summary of control-plane status.
+func cpStatusSummary(status *ControlPlaneStatus) string {
+	if !status.Hosted {
+		return ""
+	}
+	parts := []string{}
+	if status.ContainerRunning {
+		parts = append(parts, "running")
+		if status.APIServerServing {
+			parts = append(parts, fmt.Sprintf("serving (%d nodes)", status.NodeCount))
+		}
+	} else if status.ContainerExists {
+		parts = append(parts, "stopped")
+	} else {
+		parts = append(parts, "not started")
+	}
+	if status.JoinEndpoint != "" {
+		parts = append(parts, "join enabled")
+	}
+	if len(parts) == 0 {
+		return "no status"
+	}
+	return strings.Join(parts, ", ")
 }
