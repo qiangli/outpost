@@ -156,8 +156,12 @@ plane's admin kubeconfig.
 
 ## 6. Limits
 
-- Multi-node pod networking is **not designed yet**. Cross-node pod traffic
-  does not work today; gaps B4/B5 remain open and the design is pending.
+- Multi-node pod networking is implemented as stock k3s flannel VXLAN on
+  workers over the Tailscale node underlay
+  (`--flannel-iface=tailscale0`). The peer k3s controller-manager is the
+  sole pod-CIDR allocator; no cloudbox-style peer allocator is required.
+  Cross-node pod, Service, and DNS traffic still needs the two-machine
+  hardware acceptance proof before this is considered production-ready.
 - `kubectl logs` and `kubectl exec` through a tunnelled worker are not yet
   proven (F19).
 - Peer-hosted DKS supports one control plane only. There is no HA control
