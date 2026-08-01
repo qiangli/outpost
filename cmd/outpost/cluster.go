@@ -126,10 +126,19 @@ out of argv and shell history, --token-stdin reads the join token from stdin
 and each credential also has an environment fallback (` +
 			envJoinToken + `, ` + envSTCPSecret + `, ` + envNodeToken + `).
 
+RUNTIME SELECTION. --cluster-agent / --cluster-virtual choose which Nodes this
+worker registers, spelling cluster.runtimes.agent and cluster.runtimes.virtual.
+A peer plane hosts virtual-kubelet nodes as-is (vk authenticates to k3s with
+client certificates), so vk-podman / vk-native workloads run on one. Naming
+neither keeps the historical default: the agent runtime, and only when no
+runtime is selected already — a join never overwrites a selection you made.
+
 Examples:
   outpost cluster join
   outpost cluster join 10.0.0.5:7000 --token T --stcp-secret S --node-token K10…
   outpost cluster token | ssh worker outpost cluster join 10.0.0.5 --token-stdin
+  outpost cluster join 10.0.0.5 --token T --cluster-virtual vk-podman,vk-native
+  outpost cluster join --cluster-agent=off --cluster-virtual vk-podman  # vk only
   outpost cluster join --show     # which plane this host joins (redacted)
   outpost cluster join --clear    # back to the cloudbox-hosted plane`,
 		Args: cobra.MaximumNArgs(1),
@@ -174,6 +183,14 @@ Examples:
 			return nil
 		},
 	}
+	addClusterJoinFlags(cmd, &f)
+	return cmd
+}
+
+// addClusterJoinFlags registers the join flag set against a command. Split out
+// so a test can parse a real argv into a real clusterJoinFlags without
+// restating the flag names the operator actually types.
+func addClusterJoinFlags(cmd *cobra.Command, f *clusterJoinFlags) {
 	cmd.Flags().StringVar(&f.token, "token", "", "Peer's tunnel token (env "+envJoinToken+")")
 	cmd.Flags().BoolVar(&f.tokenStdin, "token-stdin", false, "Read the tunnel token from stdin, keeping it out of argv")
 	cmd.Flags().StringVar(&f.stcpSecret, "stcp-secret", "", "Peer's STCP secret, which authorizes reaching its apiserver (env "+envSTCPSecret+")")
@@ -182,7 +199,8 @@ Examples:
 	cmd.Flags().BoolVar(&f.offline, "offline", false, "Mutate the FileConfig directly without contacting the daemon (installer-script mode)")
 	cmd.Flags().BoolVar(&f.show, "show", false, "Report which control plane this host joins (credentials redacted)")
 	cmd.Flags().BoolVar(&f.clear, "clear", false, "Stop joining a peer-hosted plane and revert to the cloudbox-hosted one")
-	return cmd
+	cmd.Flags().StringVar(&f.clusterAgent, "cluster-agent", "", "on|off — register one real k3s-agent Node on the joined plane (default: on, only when no runtime is selected yet)")
+	cmd.Flags().StringSliceVar(&f.clusterVirtual, "cluster-virtual", nil, "virtual-kubelet backends to register on the joined plane: vk-podman,vk-native,vk-ollama (replaces the complete set)")
 }
 
 // notifyLeave POSTs /api/v1/cluster/leave and returns cloudbox's teardown
