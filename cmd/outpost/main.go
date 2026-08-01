@@ -49,6 +49,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/mcpapi"
 	"github.com/qiangli/outpost/internal/agent/mesh"
 	agentmirror "github.com/qiangli/outpost/internal/agent/mirror"
+	"github.com/qiangli/outpost/internal/agent/nodecap"
 	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/otel"
 	"github.com/qiangli/outpost/internal/agent/overlaykey"
@@ -69,6 +70,9 @@ import (
 	"github.com/qiangli/outpost/internal/agent/warm"
 	"github.com/qiangli/outpost/internal/scheduler"
 	"github.com/qiangli/outpost/internal/telemetry"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 // defaultPortal is the public ai.dhnt.io address used when the user
@@ -2517,7 +2521,70 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 		g.Go(func() error { return accessRefresher.Run(ctx) })
 	}
 
+	startControlPlaneReconcilers(ctx, g, fc, kubeCfg)
+
 	return nil
+}
+
+// Node runtime labels, matching the cloud-hosted control plane's values
+// exactly (cloudbox internal/cluster/node_identity.go). A node's runtime
+// must read the same whichever placement runs its cluster — divergence
+// would make selectors and manifests non-portable between placements.
+const (
+	clusterRuntimeLabel   = "outpost.dhnt.io/runtime"
+	clusterRuntimeVirtual = "virtual"
+)
+
+// startControlPlaneReconcilers runs the controllers a PEER-HOSTED control
+// plane needs and cloudbox would otherwise provide
+// (dhnt/docs/dks-control-plane-on-sphere.md).
+//
+// Gated on this host actually hosting the apiserver. These are
+// cluster-wide controllers: running one copy per node would have every
+// node racing to patch every other node. Idempotent, so the race is not
+// corrupting — but it is pointless API load and makes logs unreadable.
+// When cloudbox hosts the plane it runs these itself and outpost must
+// stay out of the way entirely.
+func startControlPlaneReconcilers(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, kubeCfg *rest.Config) {
+	if fc == nil || fc.Cluster == nil || !fc.Cluster.ControlPlaneOn() {
+		return
+	}
+	cs, err := kubernetes.NewForConfig(kubeCfg)
+	if err != nil {
+		slog.Warn("control-plane reconcilers: build client", "err", err)
+		return
+	}
+
+	// Runtime capability. Node Ready is a kubelet heartbeat, not proof
+	// the runtime can create a sandbox; without this the scheduler places
+	// work on nodes that cannot run it.
+	//
+	// Virtual-kubelet backends have no container runtime of their own to
+	// probe, so they are excluded — by RUNTIME LABEL, never by node name.
+	cap := &nodecap.Reconciler{
+		Client: cs,
+		Log:    slog.Default(),
+		Include: func(n *corev1.Node) bool {
+			return n.Labels[clusterRuntimeLabel] != clusterRuntimeVirtual
+		},
+	}
+	g.Go(func() error { cap.Run(ctx); return nil })
+	slog.Info("control-plane reconcilers: runtime capability canary started")
+
+	// NOT STARTED YET: nodeaddr (apiserver→kubelet addressing).
+	//
+	// It needs a KubeletPortFunc — the loopback port on THIS host where
+	// each node's kubelet is reachable. Cloudbox allocates that per host
+	// at pairing time (ClusterConfig.KubeletProxyPort, "the per-host
+	// loopback port ON CLOUDBOX"); a peer-hosted frps has no equivalent
+	// allocator yet, so there is nothing truthful to return.
+	//
+	// Wiring it with a stub that always reports "no port" would look
+	// wired while being incapable of ever acting — the kind of silent
+	// no-op this codebase treats as worse than an absent feature. The
+	// package is built and tested (internal/agent/nodeaddr); it starts
+	// when the frps side publishes kubelets and can say which port each
+	// node landed on.
 }
 
 // shouldFetchKubeconfig reports whether the boot path should ask

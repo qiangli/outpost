@@ -722,6 +722,20 @@ type ClusterConfig struct {
 	// mode or hasn't materialized the token yet (re-pair to refresh).
 	NodeToken string `json:"node_token,omitempty"`
 
+	// ControlPlane marks this host as the one HOSTING the apiserver, as
+	// opposed to merely joining a cluster
+	// (dhnt/docs/dks-control-plane-on-sphere.md — placement is a user
+	// choice: cloudbox, a rented always-on box, or your own machine).
+	//
+	// It gates the cluster-wide reconcilers. They must run exactly once
+	// per cluster: a copy on every node would have each node racing to
+	// patch every other one. When cloudbox hosts the plane it runs them
+	// itself, and every outpost must leave them off.
+	//
+	// nil and false are both off, so an existing config keeps today's
+	// behaviour without migration.
+	ControlPlane *bool `json:"control_plane,omitempty"`
+
 	// STCPSecret authenticates the local frp STCP visitor that opens a
 	// 127.0.0.1:<K8sAPIPort> listener and tunnels each accepted conn to
 	// cloudbox's embedded apiserver. Cluster-wide; minted by cloudbox at
@@ -804,6 +818,11 @@ type ClusterConfig struct {
 	// peer cert signatures locally without per-handshake
 	// cloudbox roundtrips. Refreshed alongside HostCert.
 	CAPubkey string `json:"ca_pubkey,omitempty"`
+}
+
+// ControlPlaneOn reports whether this host hosts the apiserver.
+func (c *ClusterConfig) ControlPlaneOn() bool {
+	return c != nil && c.ControlPlane != nil && *c.ControlPlane
 }
 
 type ClusterRuntimes struct {
