@@ -68,6 +68,106 @@ func TestJoinsPeerPlane_GatesMembershipOverwrite(t *testing.T) {
 	}
 }
 
+// B6 — THE HALF THE NODE-TOKEN GUARD LEFT BEHIND. Skipping cloudbox's refresh
+// keeps a peer member's own credentials, but a host that MOVED from the
+// cloudbox plane to a peer plane still carries the cloud plane's overlay trio
+// on disk, and the runtime joins an overlay purely on overlay_login_server
+// being non-empty (runtime.Up). Verified on hardware: the k3s agent joined the
+// peer plane while tailscaled joined the CLOUD overlay. The reattach must
+// therefore clear the trio, not merely ignore cloudbox's refreshed copy.
+func TestReconcileClusterMembershipOnReattach(t *testing.T) {
+	cloudRefresh := func() *conf.FileConfig {
+		return &conf.FileConfig{Cluster: &conf.ClusterConfig{
+			NodeToken:          "K10cloud::node:new",
+			STCPSecret:         "cloud-secret",
+			K8sAPIPort:         16443,
+			OverlayLoginServer: "https://ai.example.io/overlay",
+			OverlayAuthKey:     "ts-authkey-cloud",
+			OverlayPodCIDR:     "10.42.7.0/24",
+		}}
+	}
+	tests := []struct {
+		name        string
+		cluster     *conf.ClusterConfig
+		wantChanged bool
+		check       func(t *testing.T, cc *conf.ClusterConfig)
+	}{
+		{
+			// Unchanged behavior: a plain cloudbox member takes the whole
+			// refresh, overlay trio included.
+			name: "cloudbox member takes the refresh",
+			cluster: &conf.ClusterConfig{
+				NodeToken:  "K10old::node:old",
+				STCPSecret: "old-secret",
+				// F16: host-authoritative, never sent by cloudbox — the boot
+				// reattach must leave it exactly as persisted.
+				ControlPlaneKubeconfig: "/persisted/kubeconfig.yaml",
+			},
+			wantChanged: true,
+			check: func(t *testing.T, cc *conf.ClusterConfig) {
+				if cc.NodeToken != "K10cloud::node:new" || cc.STCPSecret != "cloud-secret" {
+					t.Errorf("membership not refreshed: %+v", cc)
+				}
+				if cc.OverlayLoginServer != "https://ai.example.io/overlay" ||
+					cc.OverlayAuthKey != "ts-authkey-cloud" ||
+					cc.OverlayPodCIDR != "10.42.7.0/24" {
+					t.Errorf("overlay trio not refreshed: %+v", cc)
+				}
+				if cc.ControlPlaneKubeconfig != "/persisted/kubeconfig.yaml" {
+					t.Errorf("control_plane_kubeconfig clobbered by reattach: %q", cc.ControlPlaneKubeconfig)
+				}
+			},
+		},
+		{
+			// The B6 case: peer credentials kept, stale cloud overlay dropped.
+			name: "peer member keeps its credentials and drops the cloud overlay trio",
+			cluster: &conf.ClusterConfig{
+				JoinEndpoint:       "10.0.0.5:7000",
+				JoinToken:          "peer-tunnel-token",
+				NodeToken:          "K10peer::node:peer",
+				STCPSecret:         "peer-secret",
+				OverlayLoginServer: "https://ai.example.io/overlay", // stale cloud leftovers
+				OverlayAuthKey:     "ts-authkey-cloud",
+				OverlayPodCIDR:     "10.42.7.0/24",
+			},
+			wantChanged: true,
+			check: func(t *testing.T, cc *conf.ClusterConfig) {
+				if cc.NodeToken != "K10peer::node:peer" || cc.STCPSecret != "peer-secret" {
+					t.Errorf("peer credentials clobbered: %+v", cc)
+				}
+				if cc.OverlayLoginServer != "" || cc.OverlayAuthKey != "" || cc.OverlayPodCIDR != "" {
+					t.Errorf("cloud overlay trio survived: %+v", cc)
+				}
+			},
+		},
+		{
+			// Idempotence: a peer member with nothing to drop must not report
+			// a change, or every boot rewrites agent.json for nothing.
+			name: "peer member with no stale overlay is a no-op",
+			cluster: &conf.ClusterConfig{
+				JoinEndpoint: "10.0.0.5:7000",
+				NodeToken:    "K10peer::node:peer",
+				STCPSecret:   "peer-secret",
+			},
+			wantChanged: false,
+			check: func(t *testing.T, cc *conf.ClusterConfig) {
+				if cc.NodeToken != "K10peer::node:peer" || cc.STCPSecret != "peer-secret" {
+					t.Errorf("no-op mutated peer credentials: %+v", cc)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := &conf.FileConfig{Cluster: tt.cluster}
+			if got := reconcileClusterMembershipOnReattach(fc, cloudRefresh()); got != tt.wantChanged {
+				t.Errorf("changed = %v, want %v", got, tt.wantChanged)
+			}
+			tt.check(t, fc.Cluster)
+		})
+	}
+}
+
 // JoinTarget is what decouples "which cluster" from "which cloudbox". The
 // default must stay byte-identical to the pre-existing behaviour, or every
 // already-deployed host changes plane on upgrade.

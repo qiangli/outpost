@@ -149,6 +149,38 @@ func TestJoinPeerPlane_PersistsAndEnables(t *testing.T) {
 	}
 }
 
+// B6 at the switch itself: joining a peer plane drops the cloud plane's
+// overlay trio. The runtime joins an overlay purely on overlay_login_server
+// being non-empty, so a leftover trio would attach this node to the CLOUD
+// overlay while its k3s agent joins the peer plane. The boot reattach also
+// clears them, but that needs cloudbox reachable — the join must not depend
+// on the next boot being online.
+func TestJoinPeerPlane_DropsCloudOverlayCreds(t *testing.T) {
+	s := newTestServer(t)
+	if err := conf.SaveFile(s.deps.ConfigPath, &conf.FileConfig{
+		Cluster: &conf.ClusterConfig{
+			OverlayLoginServer: "https://ai.example.io/overlay",
+			OverlayAuthKey:     "ts-authkey-cloud",
+			OverlayPodCIDR:     "10.42.7.0/24",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.JoinPeerPlane(PeerPlaneParams{
+		Endpoint: strp("10.0.0.5:7000"), Token: strp("t"),
+	}); err != nil {
+		t.Fatalf("JoinPeerPlane: %v", err)
+	}
+	fc, err := conf.LoadFile(s.deps.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cc := fc.Cluster
+	if cc.OverlayLoginServer != "" || cc.OverlayAuthKey != "" || cc.OverlayPodCIDR != "" {
+		t.Errorf("cloud overlay trio survived the join: %+v", cc)
+	}
+}
+
 // An operator who selected virtual runtimes must not have a k3s agent started
 // for them as a side effect of naming a control plane.
 func TestJoinPeerPlane_KeepsAnExistingRuntimeSelection(t *testing.T) {
