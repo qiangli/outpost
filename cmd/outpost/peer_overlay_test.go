@@ -19,30 +19,39 @@ import (
 // string is unambiguous.
 const testAuthKey = "tskey-auth-LEAKCANARY-doNotLog"
 
-func TestPeerOverlayWanted(t *testing.T) {
+// requirePeerOverlayAccessToken is the precondition that fails CLOSED,
+// before runtime.Up, when a peer-hosted plane join has no cloudbox access
+// token to fetch tailnet credentials with. A skip-silently semantics here
+// (the old peerOverlayWanted) let that case fall straight through to
+// runtime.Up with PeerFlannel set and no identity to give it — the same
+// dark-node failure a fetch error produces, reached through a different
+// door.
+func TestRequirePeerOverlayAccessToken(t *testing.T) {
 	peer := &conf.ClusterConfig{JoinEndpoint: "peer.local:7000"}
 	cloud := &conf.ClusterConfig{}
 
 	tests := []struct {
-		name  string
-		cc    *conf.ClusterConfig
-		token string
-		want  bool
+		name    string
+		cc      *conf.ClusterConfig
+		token   string
+		wantErr bool
 	}{
-		{"peer plane and paired fetches", peer, "cb-token", true},
+		{"peer plane and paired proceeds", peer, "cb-token", false},
 		// Cloudbox is the only party that can mint a key, and an
-		// unpaired host has nothing to ask with.
-		{"peer plane but unpaired does not", peer, "", false},
-		{"peer plane with a blank token does not", peer, "   ", false},
+		// unpaired host has nothing to ask with — this must fail
+		// closed, not silently skip and let a dark node start.
+		{"peer plane but unpaired fails closed", peer, "", true},
+		{"peer plane with a blank token fails closed", peer, "   ", true},
 		// The cloudbox-hosted plane already carries its overlay trio
-		// through pairing; re-fetching would burn a key it does not need.
-		{"cloudbox plane never fetches here", cloud, "cb-token", false},
-		{"no cluster config", nil, "cb-token", false},
+		// through pairing; it never hits this precondition.
+		{"cloudbox plane has no precondition", cloud, "", false},
+		{"no cluster config", nil, "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := peerOverlayWanted(tt.cc, tt.token); got != tt.want {
-				t.Fatalf("peerOverlayWanted = %t, want %t", got, tt.want)
+			err := requirePeerOverlayAccessToken(tt.cc, tt.token)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("requirePeerOverlayAccessToken(%v, %q) err = %v, wantErr %t", tt.cc, tt.token, err, tt.wantErr)
 			}
 		})
 	}
@@ -153,8 +162,8 @@ func TestPreparePeerOverlayGatesRuntimeStart(t *testing.T) {
 		  "expires_in_seconds": 300
 		}`)
 		opts := runtime.Options{PeerFlannel: true}
-		if !preparePeerOverlay(context.Background(), cl, &opts, "node-a") {
-			t.Fatal("proceed = false on a successful fetch")
+		if err := preparePeerOverlay(context.Background(), cl, &opts, "node-a"); err != nil {
+			t.Fatalf("preparePeerOverlay: %v, want nil on a successful fetch", err)
 		}
 		if opts.OverlayAuthKey != testAuthKey {
 			t.Error("auth key not applied to the runtime options")
@@ -164,25 +173,32 @@ func TestPreparePeerOverlayGatesRuntimeStart(t *testing.T) {
 		}
 	})
 
-	// Every failure shape stops the start. ErrOverlayDisabled is the one
-	// that could argue for continuing (cloudbox runs no overlay, so there
-	// is no key to wait for) — decided explicitly against, because the node
-	// still cannot satisfy the peer-flannel config it is holding, and a
+	// Every failure shape stops the start, and the two named sentinels must
+	// survive the wrap so a caller can still tell "the feature is off" from
+	// "you asked too soon" via errors.Is. ErrOverlayDisabled is the one that
+	// could argue for continuing (cloudbox runs no overlay, so there is no
+	// key to wait for) — decided explicitly against, because the node still
+	// cannot satisfy the peer-flannel config it is holding, and a
 	// present-but-broken node is harder to diagnose than an absent one.
 	stops := []struct {
-		name   string
-		status int
+		name    string
+		status  int
+		wantErr error
 	}{
-		{"overlay disabled", http.StatusServiceUnavailable},
-		{"throttled", http.StatusTooManyRequests},
-		{"cloudbox 500", http.StatusInternalServerError},
+		{"overlay disabled", http.StatusServiceUnavailable, overlaykey.ErrOverlayDisabled},
+		{"throttled", http.StatusTooManyRequests, overlaykey.ErrThrottled},
+		{"cloudbox 500", http.StatusInternalServerError, nil},
 	}
 	for _, tt := range stops {
 		t.Run(tt.name+" does not proceed", func(t *testing.T) {
 			cl := overlayServer(t, tt.status, `{}`)
 			opts := runtime.Options{PeerFlannel: true}
-			if preparePeerOverlay(context.Background(), cl, &opts, "node-a") {
-				t.Fatal("proceed = true after a failed fetch — the daemon would start a peer-flannel node with no tailnet identity")
+			err := preparePeerOverlay(context.Background(), cl, &opts, "node-a")
+			if err == nil {
+				t.Fatal("err = nil after a failed fetch — the daemon would start a peer-flannel node with no tailnet identity")
+			}
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want errors.Is(_, %v)", err, tt.wantErr)
 			}
 			if opts.OverlayAuthKey != "" {
 				t.Error("auth key set despite a failed fetch")
@@ -195,13 +211,13 @@ func TestPreparePeerOverlayGatesRuntimeStart(t *testing.T) {
 	t.Run("recovers on a later attempt", func(t *testing.T) {
 		down := overlayServer(t, http.StatusInternalServerError, `{}`)
 		opts := runtime.Options{PeerFlannel: true}
-		if preparePeerOverlay(context.Background(), down, &opts, "node-a") {
-			t.Fatal("proceed = true while cloudbox was down")
+		if err := preparePeerOverlay(context.Background(), down, &opts, "node-a"); err == nil {
+			t.Fatal("err = nil while cloudbox was down")
 		}
 		up := overlayServer(t, http.StatusOK,
 			`{"overlay_login_server":"https://hs.example","overlay_auth_key":"`+testAuthKey+`"}`)
-		if !preparePeerOverlay(context.Background(), up, &opts, "node-a") {
-			t.Fatal("proceed = false after cloudbox recovered")
+		if err := preparePeerOverlay(context.Background(), up, &opts, "node-a"); err != nil {
+			t.Fatalf("preparePeerOverlay: %v, want nil after cloudbox recovered", err)
 		}
 	})
 }

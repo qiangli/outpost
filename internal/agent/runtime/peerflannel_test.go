@@ -178,6 +178,41 @@ func TestEntrypointManagedPathUnchanged(t *testing.T) {
 	}
 }
 
+// The route_localnet bridge-arming loop and its watchdog must track which
+// bridge actually exists in each mode: peer-flannel's stock k3s flannel
+// creates "cni0", while the managed/fallback conflist this entrypoint
+// writes uses "cbr0". Arming the wrong name is a silent DNAT miss — the
+// apiserver DNAT installed above never matches forwarded pod traffic.
+func TestEntrypointRouteLocalnetBridgeIsModeAware(t *testing.T) {
+	script := embeddedEntrypoint(t)
+
+	if !strings.Contains(script, `POD_BRIDGE="cbr0"`) {
+		t.Fatal(`entrypoint does not default POD_BRIDGE="cbr0"; the managed/fallback path lost its bridge name`)
+	}
+	if !strings.Contains(script, `if [ "${OUTPOST_POD_NETWORK_MODE}" = "peer-flannel" ]; then`+"\n    POD_BRIDGE=\"cni0\"") {
+		t.Fatal("entrypoint does not switch POD_BRIDGE to \"cni0\" in peer-flannel mode")
+	}
+	// Both the immediate loop and the background watchdog must arm the
+	// mode-selected bridge, not a hardcoded one.
+	if !strings.Contains(script, `for iface in lo eth0 default "${POD_BRIDGE}"; do`) {
+		t.Error("the route_localnet loop does not arm ${POD_BRIDGE}")
+	}
+	if !strings.Contains(script, `while ! ip link show "${POD_BRIDGE}" >/dev/null 2>&1; do sleep 2; done`) {
+		t.Error("the bridge-appearance watchdog does not wait on ${POD_BRIDGE}")
+	}
+	if !strings.Contains(script, `sysctl -w net.ipv4.conf.${POD_BRIDGE}.route_localnet=1 >/dev/null 2>&1`) {
+		t.Error("the watchdog does not arm net.ipv4.conf.${POD_BRIDGE}.route_localnet")
+	}
+	// No hardcoded cbr0 arming should remain in either the loop or the
+	// watchdog now that both are mode-aware.
+	if strings.Contains(script, `for iface in lo eth0 default cbr0; do`) {
+		t.Error("the route_localnet loop still hardcodes cbr0")
+	}
+	if strings.Contains(script, `while ! ip link show cbr0 >/dev/null 2>&1; do sleep 2; done`) {
+		t.Error("the bridge-appearance watchdog still hardcodes cbr0")
+	}
+}
+
 // Peer-flannel must not borrow the fallback's catastrophe warning.
 func TestPeerFlannelLogIsNotTheFallbackWarning(t *testing.T) {
 	var buf bytes.Buffer

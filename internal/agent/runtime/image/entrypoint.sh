@@ -359,8 +359,20 @@ fi
 APISERVER_SVC_IP="${APISERVER_SVC_IP:-10.43.0.1}"
 APISERVER_SVC_PORT="${APISERVER_SVC_PORT:-443}"
 log "installing apiserver service DNAT: ${APISERVER_SVC_IP}:${APISERVER_SVC_PORT} -> 127.0.0.1:${OUTPOST_API_PORT}"
+# route_localnet arming for the CNI bridge is mode-aware: peer-flannel's
+# stock k3s flannel creates a bridge named "cni0" (flannel's own default,
+# unrelated to any name this entrypoint picks); every other mode —
+# cloudbox-managed overlay and the single-node fallback — uses the bridge
+# this entrypoint itself writes into the conflist above, "cbr0". Arming
+# the wrong name is a silent DNAT miss: pod → bridge → here never gets
+# route_localnet, so the apiserver DNAT above never matches forwarded
+# packets.
+POD_BRIDGE="cbr0"
+if [ "${OUTPOST_POD_NETWORK_MODE}" = "peer-flannel" ]; then
+    POD_BRIDGE="cni0"
+fi
 sysctl -w net.ipv4.conf.all.route_localnet=1 >/dev/null
-for iface in lo eth0 default cbr0; do
+for iface in lo eth0 default "${POD_BRIDGE}"; do
     sysctl -w net.ipv4.conf.${iface}.route_localnet=1 2>/dev/null >/dev/null || true
 done
 # Watchdog: kube-proxy reconciles iptables every ~30s and re-inserts its
@@ -382,12 +394,12 @@ done
 # OUTPUT chain isn't touched by kube-proxy, so one shot is enough.
 iptables -t nat -I OUTPUT 1 -d "${APISERVER_SVC_IP}/32" -p tcp --dport "${APISERVER_SVC_PORT}" \
     -j DNAT --to-destination "127.0.0.1:${OUTPOST_API_PORT}"
-# Arm cbr0.route_localnet=1 once the CNI bridge appears (kubelet creates
-# it lazily on first pod).
+# Arm ${POD_BRIDGE}.route_localnet=1 once the CNI bridge appears (kubelet
+# creates it lazily on first pod).
 (
-    while ! ip link show cbr0 >/dev/null 2>&1; do sleep 2; done
-    sysctl -w net.ipv4.conf.cbr0.route_localnet=1 >/dev/null 2>&1
-    log "armed cbr0.route_localnet=1 after bridge creation"
+    while ! ip link show "${POD_BRIDGE}" >/dev/null 2>&1; do sleep 2; done
+    sysctl -w net.ipv4.conf.${POD_BRIDGE}.route_localnet=1 >/dev/null 2>&1
+    log "armed ${POD_BRIDGE}.route_localnet=1 after bridge creation"
 ) &
 
 # Snapshotter selection: native `overlayfs` is preferred when the
