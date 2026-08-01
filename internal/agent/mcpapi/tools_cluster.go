@@ -60,6 +60,7 @@ func (s *Server) registerClusterTools() {
 	})
 
 	s.registerControlPlaneTools()
+	s.registerPeerPlaneTools()
 }
 
 // controlPlaneIn is a partial update: an omitted field leaves the current

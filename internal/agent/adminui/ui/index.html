@@ -1372,6 +1372,125 @@ function buildClusterSubBlock(parent, cfg, status) {
   }
 
   buildControlPlaneBlock(parent, cv, paired);
+  buildPeerJoinBlock(parent, paired);
+}
+
+// buildPeerJoinBlock renders the WORKER side of control-plane placement:
+// which plane this host is a node OF, when that is not the cloudbox-hosted
+// one. The mirror image of buildControlPlaneBlock above.
+//
+// The three credentials are write-only here. Presence is shown, values never
+// are, and there is no Reveal button — unlike the hosting side's token, these
+// were minted elsewhere, so the machine that issued them is where you read
+// them. That also keeps this panel safe to have on screen.
+function buildPeerJoinBlock(parent, paired) {
+  parent.append(el('h4', {style: 'margin-top:1.2rem'},
+    'Join a peer\'s plane ', el('code', {class: 'key-hint'}, 'cluster.join_endpoint')));
+  parent.append(el('p', {class: 'hint', style: 'margin:0 0 0.5rem'},
+    'Become a node of a control plane hosted by another outpost instead of by cloudbox. ',
+    'This host stays paired with cloudbox for apps, shell and the LLM pool.'));
+
+  const box = el('div', {style: 'padding:0.6rem 0.8rem;border:1px solid #8884;border-radius:6px'});
+  parent.append(box);
+  const body = el('div', {});
+  box.append(body);
+
+  async function render() {
+    body.innerHTML = '';
+    let st;
+    try {
+      st = await api('GET', '/api/cluster/join');
+    } catch (e) {
+      body.append(el('p', {class: 'error'}, e.message || 'Failed to load join status.'));
+      return;
+    }
+
+    body.append(el('p', {style: 'margin:0 0 0.5rem'}, st.joined
+      ? `Joining the plane at ${st.endpoint}.`
+      : 'Joining the cloudbox-hosted plane (no peer endpoint configured).'));
+
+    const epIn = el('input', {type: 'text', name: 'join_endpoint',
+      value: st.endpoint || '', placeholder: 'peer-host:7000', style: 'width:14rem'});
+    // type=password so a screenshare of this panel never shows a credential
+    // being typed. Empty means "leave the persisted value alone".
+    const tokIn = el('input', {type: 'password', name: 'join_token',
+      placeholder: st.has_token ? '(set — leave blank to keep)' : 'from `cluster control-plane token`',
+      style: 'width:14rem'});
+    const stcpIn = el('input', {type: 'password', name: 'stcp_secret',
+      placeholder: st.has_stcp_secret ? '(set — leave blank to keep)' : 'from `cluster control-plane token`',
+      style: 'width:14rem'});
+    const nodeIn = el('input', {type: 'password', name: 'node_token',
+      placeholder: st.has_node_token ? '(set — leave blank to keep)' : 'from `cluster token` on the host',
+      style: 'width:14rem'});
+
+    body.append(el('div', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.4rem 0.8rem;align-items:center'},
+      el('label', {for: 'join_endpoint'}, el('code', {class: 'key-hint'}, 'cluster.join_endpoint')), epIn,
+      el('label', {for: 'join_token'}, el('code', {class: 'key-hint'}, 'cluster.join_token')), tokIn,
+      el('label', {for: 'stcp_secret'}, el('code', {class: 'key-hint'}, 'cluster.stcp_secret')), stcpIn,
+      el('label', {for: 'node_token'}, el('code', {class: 'key-hint'}, 'cluster.node_token')), nodeIn,
+    ));
+
+    const joinBtn = el('button', {type: 'button', disabled: !paired}, 'Join');
+    joinBtn.addEventListener('click', async () => {
+      joinBtn.disabled = true;
+      const payload = {endpoint: epIn.value.trim()};
+      if (tokIn.value) payload.token = tokIn.value;
+      if (stcpIn.value) payload.stcp_secret = stcpIn.value;
+      if (nodeIn.value) payload.node_token = nodeIn.value;
+      try {
+        const res = await api('POST', '/api/cluster/join', payload);
+        msg('ok', 'Joining the peer plane.');
+        noteRestartPending({restarting: res.restart_pending});
+        render();
+      } catch (e) {
+        msg('err', e.message || 'Join failed');
+      } finally {
+        joinBtn.disabled = !paired;
+      }
+    });
+
+    const btnRow = el('div', {style: 'margin-top:0.6rem'}, joinBtn);
+    if (st.joined) {
+      const clearBtn = el('button', {type: 'button', style: 'margin-left:0.4rem'}, 'Revert to cloudbox');
+      clearBtn.addEventListener('click', async () => {
+        const ok = await confirmDialog({
+          title: 'Stop joining the peer plane?',
+          description: 'This clears the endpoint and all three credentials, and this host ' +
+            'rejoins the cloudbox-hosted plane. Cluster mode stays on.',
+          confirmText: 'Revert',
+        });
+        if (!ok) return;
+        clearBtn.disabled = true;
+        try {
+          const res = await api('DELETE', '/api/cluster/join');
+          msg('ok', 'Reverted to the cloudbox-hosted plane.');
+          noteRestartPending({restarting: res.restart_pending});
+          render();
+        } catch (e) {
+          msg('err', e.message || 'Revert failed');
+        } finally {
+          clearBtn.disabled = false;
+        }
+      });
+      btnRow.append(clearBtn);
+    }
+    body.append(btnRow);
+    if (!paired) {
+      body.append(el('p', {class: 'hint', style: 'margin:0.4rem 0 0'}, 'Pair this host first.'));
+    }
+
+    // A worker missing any one of the three authenticates and then cannot
+    // reach the apiserver — worth stating before it looks like a network
+    // fault.
+    if (st.joined && !(st.has_token && st.has_stcp_secret && st.has_node_token)) {
+      body.append(el('p', {class: 'error', style: 'margin:0.4rem 0 0'},
+        'This join is incomplete — all three credentials are required. ',
+        'Read them on the hosting machine with `outpost cluster control-plane token` ',
+        'and `outpost cluster token`.'));
+    }
+  }
+
+  render();
 }
 
 // buildControlPlaneBlock renders control-plane PLACEMENT — whether this host

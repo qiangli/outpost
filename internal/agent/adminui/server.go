@@ -373,6 +373,14 @@ func (s *Server) registerRoutes() {
 	api.GET("/cluster/control-plane/token", s.handleRevealControlPlaneToken)
 	api.POST("/cluster/control-plane/token/rotate", s.handleRotateControlPlaneToken)
 
+	// Peer-plane JOIN — which control plane this host is a node OF, when that
+	// is not the cloudbox-hosted one. The mirror image of the block above:
+	// GET is redacted (has_* flags only), POST carries the credentials in,
+	// DELETE reverts to the cloudbox plane.
+	api.GET("/cluster/join", s.handleGetClusterJoin)
+	api.POST("/cluster/join", s.handleSetClusterJoin)
+	api.DELETE("/cluster/join", s.handleClearClusterJoin)
+
 	// Backup tab — folder-watcher scheduler. GET/POST config; manual
 	// fire; ledger tail. App-opaque: the cooperating app produces
 	// backup artifacts in one of the configured folders on its own
