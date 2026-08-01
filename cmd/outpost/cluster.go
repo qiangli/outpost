@@ -89,15 +89,71 @@ func clusterLeaveCmd() *cobra.Command {
 	return cmd
 }
 
-// clusterJoinCmd rejoins the DKS cluster by re-enabling cluster mode. The
-// daemon re-fetches its kubeconfig on the next boot and re-registers, so
-// cloudbox allocates a FRESH pod CIDR (and persists it), a new k8s Node, and a
-// new overlay node. The symmetric partner to `outpost cluster leave`.
+// clusterJoinCmd covers both levels of "join":
+//
+//	outpost cluster join                       # rejoin the plane already configured
+//	outpost cluster join <endpoint> --token …  # join a PEER-hosted plane
+//
+// The bare form re-enables cluster mode; the daemon re-fetches its kubeconfig
+// on the next boot and re-registers, so cloudbox allocates a FRESH pod CIDR
+// (and persists it), a new k8s Node, and a new overlay node. The symmetric
+// partner to `outpost cluster leave`.
+//
+// The endpoint form points this host at a control plane hosted by a peer
+// outpost instead of by cloudbox — see cluster_join.go for the credential
+// handling. One verb rather than two because the operator intent is the same;
+// the argument only says which plane.
 func clusterJoinCmd() *cobra.Command {
+	var f clusterJoinFlags
 	cmd := &cobra.Command{
-		Use:   "join",
-		Short: "Rejoin the DKS cluster (fresh pod CIDR + k8s node + overlay registration)",
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		Use:   "join [endpoint]",
+		Short: "Join the DKS cluster — the configured plane, or a peer-hosted one given its endpoint",
+		Long: `Join a DKS control plane.
+
+With no arguments this rejoins the plane already configured: cluster mode is
+re-enabled and the next boot re-registers this node (fresh pod CIDR, k8s node,
+overlay registration).
+
+Given an endpoint it joins a control plane hosted by a PEER outpost rather
+than by cloudbox. A peer join needs three credentials from the hosting
+machine, all of which it prints:
+
+    outpost cluster control-plane token   # endpoint + join token + stcp secret
+    outpost cluster token                 # k3s node token
+
+Supply them here as --token / --stcp-secret / --node-token. To keep secrets
+out of argv and shell history, --token-stdin reads the join token from stdin
+and each credential also has an environment fallback (` +
+			envJoinToken + `, ` + envSTCPSecret + `, ` + envNodeToken + `).
+
+Examples:
+  outpost cluster join
+  outpost cluster join 10.0.0.5:7000 --token T --stcp-secret S --node-token K10…
+  outpost cluster token | ssh worker outpost cluster join 10.0.0.5 --token-stdin
+  outpost cluster join --show     # which plane this host joins (redacted)
+  outpost cluster join --clear    # back to the cloudbox-hosted plane`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			endpoint := ""
+			if len(args) == 1 {
+				endpoint = args[0]
+			}
+			switch {
+			case f.show:
+				return runPeerPlaneShow(cmd.Context(), f.offline)
+			case f.clear:
+				return runPeerPlaneClear(cmd.Context(), f.offline)
+			case wantsPeerJoin(endpoint, &f):
+				p, err := resolveJoinParams(cmd, endpoint, &f)
+				if err != nil {
+					return err
+				}
+				return runPeerJoin(cmd.Context(), p, f.offline)
+			}
+
+			if f.offline {
+				return errors.New("--offline applies to a peer join; pass an endpoint (or use --show/--clear)")
+			}
 			session, err := dialMCP(cmd.Context())
 			if err != nil {
 				return err
@@ -118,6 +174,14 @@ func clusterJoinCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&f.token, "token", "", "Peer's tunnel token (env "+envJoinToken+")")
+	cmd.Flags().BoolVar(&f.tokenStdin, "token-stdin", false, "Read the tunnel token from stdin, keeping it out of argv")
+	cmd.Flags().StringVar(&f.stcpSecret, "stcp-secret", "", "Peer's STCP secret, which authorizes reaching its apiserver (env "+envSTCPSecret+")")
+	cmd.Flags().StringVar(&f.nodeToken, "node-token", "", "Peer's k3s node token, from `outpost cluster token` there (env "+envNodeToken+")")
+	cmd.Flags().IntVar(&f.apiPort, "api-port", 0, "Local port this worker binds the joined apiserver on (default 6443)")
+	cmd.Flags().BoolVar(&f.offline, "offline", false, "Mutate the FileConfig directly without contacting the daemon (installer-script mode)")
+	cmd.Flags().BoolVar(&f.show, "show", false, "Report which control plane this host joins (credentials redacted)")
+	cmd.Flags().BoolVar(&f.clear, "clear", false, "Stop joining a peer-hosted plane and revert to the cloudbox-hosted one")
 	return cmd
 }
 
@@ -172,7 +236,7 @@ func clusterCmd() *cobra.Command {
 	cmd.AddCommand(clusterKubeconfigCmd(), clusterUserKubeconfigCmd(),
 		clusterInitCmd(), clusterShardInitCmd(), clusterClearCmd(), clusterBuildRuntimeCmd(),
 		clusterLeaveCmd(), clusterJoinCmd(), clusterRecipeCmd(),
-		clusterControlPlaneCmd())
+		clusterControlPlaneCmd(), clusterNodeTokenCmd())
 	return cmd
 }
 

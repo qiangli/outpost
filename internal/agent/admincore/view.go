@@ -61,6 +61,12 @@ type ClusterView struct {
 	TunnelBindPort   int    `json:"tunnel_bind_port,omitempty"`
 	HasTunnelToken   bool   `json:"has_tunnel_token,omitempty"`
 	TunnelLANExposed bool   `json:"tunnel_lan_exposed,omitempty"`
+	// JoinEndpoint names the PEER-hosted control plane this host joins, empty
+	// when it joins the cloudbox-hosted one. The address is reportable; the
+	// credential that goes with it is not, so only its presence appears here —
+	// same treatment cluster.token and the tunnel token get.
+	JoinEndpoint string `json:"join_endpoint,omitempty"`
+	HasJoinToken bool   `json:"has_join_token,omitempty"`
 	// PodNetworkMode is "overlay" (cloudbox allocated a per-node pod
 	// CIDR — the only multi-node-correct mode) or "single-node-fallback"
 	// (no CIDR: a fixed range identical on every node, so pod IPs
@@ -179,6 +185,8 @@ func toClusterView(fc *conf.FileConfig) ClusterView {
 		TunnelBindPort:   cpBindPort,
 		HasTunnelToken:   fc.Cluster.TunnelToken != "",
 		TunnelLANExposed: !isLoopbackIP(cpBindAddr),
+		JoinEndpoint:     fc.Cluster.JoinEndpoint,
+		HasJoinToken:     fc.Cluster.JoinToken != "",
 		MetricsRemoteURL: fc.Cluster.MetricsRemoteURL,
 		LogsRemoteURL:    fc.Cluster.LogsRemoteURL,
 		TracesRemoteURL:  fc.Cluster.TracesRemoteURL,

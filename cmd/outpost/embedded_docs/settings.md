@@ -500,13 +500,24 @@ switching placement is a configuration change, not a migration.
 | Tunnel bind port | `cluster.tunnel_bind_port` | `cluster control-plane --bind-port` | Inbound > Cluster | `outpost_set_control_plane` |
 | Join token | `cluster.tunnel_token` | `cluster control-plane token` | `has_tunnel_token` flag only | `outpost_control_plane_token` |
 | Rotate the join token | `cluster.tunnel_token` | `cluster control-plane token rotate --yes` | — | `outpost_rotate_control_plane_token` |
+| k3s node token | (k3s state, not `agent.json`) | `cluster token` | — | `outpost_cluster_node_token` |
 | Hosted-plane kubeconfig | `cluster.control_plane_kubeconfig` | (edit agent.json) | — | — |
 | Hosted apiserver address | `cluster.control_plane_api_addr` | (edit agent.json) | — | — |
-| Join a peer's plane | `cluster.join_endpoint` / `cluster.join_token` | (edit agent.json) | — | — |
 
-The last three rows have **no CLI/MCP/UI surface yet** — they are set by
+The last two rows have **no CLI/MCP/UI surface yet** — they are set by
 editing `agent.json`. That is a known gap, called out here rather than left
 for someone to discover.
+
+`cluster token` is the odd one out: the k3s node token is not an outpost
+setting at all. k3s mints it inside the control-plane container and writes it
+to `/var/lib/rancher/k3s/server/node-token`, which lives in a container VOLUME
+— on macOS and Windows, inside podman's VM, so there is no host path to read.
+The command reads it through a container exec and prints it to **stdout only**,
+never to the daemon log, so it pipes cleanly:
+
+```bash
+outpost cluster token | ssh worker outpost cluster join 10.0.0.5 --token-stdin
+```
 
 `control_plane_kubeconfig` is what the cluster-wide reconcilers (node
 addressing, runtime capability) act through. It must be an admin kubeconfig
@@ -566,6 +577,68 @@ Two things to know before choosing a mode on macOS or Windows:
 owning cloudbox's cluster — the older paste-a-kubeconfig path
 (`outpost_set_kubeconfig`) was removed; cloudbox provides the kubeconfig
 automatically once `cluster.enabled` is set.
+
+### Joining a peer-hosted control plane
+
+The worker-side twin of control-plane placement. Empty means "join the
+cloudbox-hosted plane", which is the default and the historical behaviour.
+
+| Field | File key | CLI | UI | MCP |
+|---|---|---|---|---|
+| Peer's tunnel endpoint | `cluster.join_endpoint` | `cluster join <endpoint>` | Cluster > Join a peer's plane | `outpost_cluster_join_peer` |
+| Peer's tunnel token | `cluster.join_token` | `cluster join --token` / `--token-stdin` / `$OUTPOST_CLUSTER_JOIN_TOKEN` | `has_join_token` flag only | `outpost_cluster_join_peer` |
+| Peer's STCP secret | `cluster.stcp_secret` | `cluster join --stcp-secret` / `$OUTPOST_CLUSTER_STCP_SECRET` | `has_stcp_secret` flag only | `outpost_cluster_join_peer` |
+| Peer's k3s node token | `cluster.node_token` | `cluster join --node-token` / `$OUTPOST_CLUSTER_NODE_TOKEN` | `has_node_token` flag only | `outpost_cluster_join_peer` |
+| Local apiserver port | `cluster.k8s_api_port` | `cluster join --api-port` | — | `outpost_cluster_join_peer` |
+| Which plane this host joins | (read-only) | `cluster join --show` | Cluster > Join a peer's plane | `outpost_cluster_peer_plane` |
+| Revert to the cloudbox plane | (clears the four above) | `cluster join --clear` | Cluster > Join a peer's plane | `outpost_cluster_leave_peer` |
+
+Save = restart (cluster runtime config is read once at boot).
+
+Five behaviours worth knowing:
+
+- **A peer join needs FOUR values, not one.** The endpoint plus three
+  credentials, all printed by the hosting machine:
+
+  ```bash
+  # on the host running the plane
+  outpost cluster control-plane token   # endpoint + join token + stcp secret
+  outpost cluster token                 # k3s node token
+
+  # on the worker
+  outpost cluster join 10.0.0.5:7000 --token T --stcp-secret S --node-token K10…
+  ```
+
+  A worker given a subset authenticates and then fails to reach the apiserver
+  — a failure that reads like a broken network rather than a missing
+  credential, which is why `--show` reports all three presences and warns when
+  any is absent.
+- **Joining enables cluster mode**, selecting the `agent` runtime when no
+  runtime is configured. A join that persisted an endpoint and left the host
+  not joining anything would be a config editor wearing a verb's name. An
+  existing runtime selection is never overwritten.
+- **This is independent of cloudbox pairing.** The host stays paired for apps,
+  shell, the LLM pool and the fleet registry; only cluster membership moves.
+  While a peer endpoint is set, the boot reattach deliberately leaves cluster
+  credentials alone — cloudbox's node token describes a different cluster.
+- **The credentials are write-only.** `cluster.join_token`, `stcp_secret` and
+  `node_token` are reported as `has_*` presence flags in `GET /api/config`,
+  `outpost status` and every MCP status read, and there is no reveal verb on
+  this side: the machine that minted them is the place to read them.
+- **`--clear` reverts to the cloudbox-hosted plane** and clears all four
+  fields — including the peer-issued node token and STCP secret, which
+  describe the peer's cluster. It leaves cluster mode ON; use
+  `outpost cluster leave` to stop being a node at all.
+
+To keep secrets out of argv and shell history, every credential has an
+environment fallback and the join token can be read from stdin:
+
+```bash
+outpost cluster token | ssh worker outpost cluster join 10.0.0.5 --token-stdin
+```
+
+`--offline` writes `agent.json` directly for installer scripts that provision
+a host before the daemon first starts.
 
 ### Networking (boot-time-bound)
 
