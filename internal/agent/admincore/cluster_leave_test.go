@@ -10,9 +10,9 @@ import (
 
 // leaveTestServer builds an admincore.Server backed by a tempfile config and a
 // fake ClusterRuntimeDown so a leave's runtime teardown is observable without a
-// real podman. The returned pointers report whether the runtime dep ran and
-// with what purge flag.
-func leaveTestServer(t *testing.T) (s *Server, called *bool, purge *bool) {
+// real podman. The returned pointers report whether the runtime dep ran, with
+// what purge flag on its most recent invocation, and how many times total.
+func leaveTestServer(t *testing.T) (s *Server, called *bool, purge *bool, calls *int) {
 	t.Helper()
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
@@ -20,26 +20,30 @@ func leaveTestServer(t *testing.T) (s *Server, called *bool, purge *bool) {
 	t.Setenv("HOME", tmp)
 	called = new(bool)
 	purge = new(bool)
+	calls = new(int)
 	srv, err := New(Deps{
 		ConfigPath: filepath.Join(tmp, "agent.json"),
 		ClusterRuntimeDown: func(_ context.Context, p bool) error {
 			*called = true
 			*purge = p
+			*calls++
 			return nil
 		},
 	})
 	if err != nil {
 		t.Fatalf("admincore.New: %v", err)
 	}
-	return srv, called, purge
+	return srv, called, purge, calls
 }
 
-// A peer-joined worker leaving must: stop the runtime (purge), clear ONLY the
-// peer membership fields, disable cluster mode, and leave cloudbox pairing +
-// unrelated app/shell/LLM settings untouched. Result.Peer must be true so the
-// CLI knows to skip the cloudbox reclaim.
+// A peer-joined worker leaving must: stop the runtime WITHOUT purging its
+// overlay identity (no headscale/overlay deregistration ever happened on the
+// peer plane, so purging here would desync from a registration that still
+// exists there), clear ONLY the peer membership fields, disable cluster mode,
+// and leave cloudbox pairing + unrelated app/shell/LLM settings untouched.
+// Result.Peer must be true so the CLI knows to skip the cloudbox reclaim.
 func TestLeaveCluster_PeerWorker_ClearsPeerMembershipOnly(t *testing.T) {
-	s, called, purge := leaveTestServer(t)
+	s, called, purge, _ := leaveTestServer(t)
 
 	// A paired host that also joined a peer plane, plus unrelated settings we
 	// must not disturb.
@@ -76,8 +80,11 @@ func TestLeaveCluster_PeerWorker_ClearsPeerMembershipOnly(t *testing.T) {
 	if !out.RestartPending {
 		t.Errorf("RestartPending = false for a joined+named host: %+v", out)
 	}
-	if !*called || !*purge {
-		t.Errorf("runtime teardown: called=%v purge=%v, want both true", *called, *purge)
+	if !*called {
+		t.Error("runtime teardown not called for an active peer leave")
+	}
+	if *purge {
+		t.Error("purge=true for a peer leave; want false — peer leave preserves the overlay identity since no headscale/overlay deregistration occurred")
 	}
 
 	fc, err := conf.LoadFile(s.deps.ConfigPath)
@@ -112,10 +119,11 @@ func TestLeaveCluster_PeerWorker_ClearsPeerMembershipOnly(t *testing.T) {
 	}
 }
 
-// Leaving is idempotent and recoverable: a second leave is a no-op (no restart),
-// and a rejoin re-enables cluster mode retaining the preserved runtime set.
+// Leaving is idempotent and recoverable: a second leave is a no-op (no restart,
+// no re-invocation of the runtime teardown dep), and a rejoin re-enables
+// cluster mode retaining the preserved runtime set.
 func TestLeaveCluster_IdempotentAndRejoinable(t *testing.T) {
-	s, _, _ := leaveTestServer(t)
+	s, _, _, calls := leaveTestServer(t)
 	enabled := true
 	if err := conf.SaveFile(s.deps.ConfigPath, &conf.FileConfig{
 		AgentName: "worker-1",
@@ -134,10 +142,18 @@ func TestLeaveCluster_IdempotentAndRejoinable(t *testing.T) {
 	if _, err := s.LeaveCluster(context.Background()); err != nil {
 		t.Fatalf("first LeaveCluster: %v", err)
 	}
-	// Second leave: already off, so no restart requested.
+	if *calls != 1 {
+		t.Fatalf("runtime teardown called %d times on the first (active) leave, want 1", *calls)
+	}
+	// Second leave: already off (not active), so the runtime teardown dep must
+	// NOT be invoked again — the call count must stay unchanged — and no
+	// restart is requested.
 	again, err := s.LeaveCluster(context.Background())
 	if err != nil {
 		t.Fatalf("second LeaveCluster: %v", err)
+	}
+	if *calls != 1 {
+		t.Errorf("runtime teardown invoked again on an already-left node: calls=%d, want unchanged at 1", *calls)
 	}
 	if again.RestartPending {
 		t.Error("a no-op leave requested a restart")
@@ -161,9 +177,12 @@ func TestLeaveCluster_IdempotentAndRejoinable(t *testing.T) {
 }
 
 // A cloud-managed node (no peer endpoint) leaving reports Peer=false — the CLI
-// keeps its cloudbox-reclaim path — and clears the cloud-issued creds.
+// keeps its cloudbox-reclaim path — and clears the cloud-issued creds. It also
+// purges its local overlay identity (purge=true): cloudbox has already
+// deregistered it from Headscale, so keeping the stale machine key would
+// strand a rejoin.
 func TestLeaveCluster_CloudNode_ReportsNotPeer(t *testing.T) {
-	s, called, purge := leaveTestServer(t)
+	s, called, purge, _ := leaveTestServer(t)
 	enabled := true
 	if err := conf.SaveFile(s.deps.ConfigPath, &conf.FileConfig{
 		AgentName:   "cloud-node",
@@ -189,8 +208,11 @@ func TestLeaveCluster_CloudNode_ReportsNotPeer(t *testing.T) {
 	if out.Peer {
 		t.Errorf("cloud node reported Peer=true: %+v", out)
 	}
-	if !*called || !*purge {
-		t.Errorf("runtime teardown: called=%v purge=%v", *called, *purge)
+	if !*called {
+		t.Error("runtime teardown not called for an active cloud leave")
+	}
+	if !*purge {
+		t.Error("purge=false for a cloud leave; want true — cloudbox already deregistered this node from Headscale")
 	}
 	fc, _ := conf.LoadFile(s.deps.ConfigPath)
 	if fc.Cluster.APIURL != "" || fc.Cluster.Token != "" || fc.Cluster.CA != nil ||
@@ -204,7 +226,7 @@ func TestLeaveCluster_CloudNode_ReportsNotPeer(t *testing.T) {
 // HOSTS: a control-plane host keeps its tunnel_token, stcp_secret, control_plane
 // flag, and bind config so every worker joined to it still authenticates.
 func TestLeaveCluster_PreservesHostedControlPlane(t *testing.T) {
-	s, _, _ := leaveTestServer(t)
+	s, _, _, _ := leaveTestServer(t)
 	enabled, hosting := true, true
 	if err := conf.SaveFile(s.deps.ConfigPath, &conf.FileConfig{
 		AgentName: "plane-host",

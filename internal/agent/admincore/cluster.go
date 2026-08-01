@@ -154,6 +154,14 @@ func disableClusterMembership(fc *conf.FileConfig) {
 // holds only a k3s join token, not an admin credential for that plane, and
 // leave does not add one. That deletion is the control-plane host's
 // garbage-collection story.
+//
+// The runtime teardown itself is also plane-aware (see the purge comment
+// inline below): a cloud-managed leave purges the local overlay identity
+// because cloudbox has already deregistered it from Headscale, while a
+// peer-joined leave PRESERVES the overlay identity — no deregistration ever
+// happened (leave makes no call to the peer plane), so purging here would
+// desync the local machine key from a registration that still exists
+// wherever the peer plane's overlay is registered.
 func (s *Server) LeaveCluster(ctx context.Context) (KubeconfigResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -161,28 +169,46 @@ func (s *Server) LeaveCluster(ctx context.Context) (KubeconfigResult, error) {
 	if err != nil {
 		return KubeconfigResult{}, err
 	}
-	wasEnabled := fc.ClusterOn()
+	// Determine BEFORE clearing: disableClusterMembership wipes the fields
+	// both of these read.
+	wasActive := fc.ClusterOn()
 	wasPeer := fc.Cluster.JoinsPeerPlane()
 	disableClusterMembership(fc)
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		return KubeconfigResult{}, internalErr("%s", err.Error())
 	}
-	// Tear the runtime down NOW (not only via the deferred restart) and PURGE
-	// the node's identity volumes so a rejoin registers a FRESH overlay
-	// identity. cloudbox has already deleted this node's Headscale registration,
-	// so re-attaching the persisted machine key would strand the overlay (an IP
-	// but no peers, pod-CIDR route never approved). Best-effort: the desired
-	// state is already persisted and the boot-time cluster-off teardown is the
-	// fallback, so a purge failure must not fail the leave.
-	if s.deps.ClusterRuntimeDown != nil {
-		if derr := s.deps.ClusterRuntimeDown(ctx, true); derr != nil {
-			slog.Warn("LeaveCluster: runtime teardown/purge failed (boot-time fallback applies)", "err", derr)
+	// Tear the runtime down NOW (not only via the deferred restart), but only
+	// when the node was actually active — an already-left node (second `leave`
+	// call, or one that was never joined) has no runtime to stop and no
+	// identity to purge, so skip the call rather than re-invoking it as a
+	// no-op every time.
+	//
+	// purge differs by plane:
+	//   - cloud-managed (wasPeer=false): purge=true. cloudbox has already
+	//     deleted this node's Headscale registration (the cloudbox reclaim
+	//     call below/at the CLI layer), so re-attaching the persisted machine
+	//     key would strand the overlay (an IP but no peers, pod-CIDR route
+	//     never approved) — a fresh identity on rejoin is required.
+	//   - peer-joined (wasPeer=true): purge=false. Leave never contacts the
+	//     peer plane or any headscale/overlay registrar — the worker holds no
+	//     admin credential to deregister anything remotely. Purging the local
+	//     machine key here would orphan a registration that still exists on
+	//     the peer side, so the overlay identity is deliberately PRESERVED;
+	//     a later rejoin reuses it rather than presenting a peer/registrar
+	//     mismatch.
+	// Best-effort either way: the desired state is already persisted and the
+	// boot-time cluster-off teardown is the fallback, so a failure here must
+	// not fail the leave.
+	if wasActive && s.deps.ClusterRuntimeDown != nil {
+		purge := !wasPeer
+		if derr := s.deps.ClusterRuntimeDown(ctx, purge); derr != nil {
+			slog.Warn("LeaveCluster: runtime teardown/purge failed (boot-time fallback applies)", "err", derr, "purge", purge)
 		}
 	}
 	return KubeconfigResult{
 		OK:             true,
 		Peer:           wasPeer,
-		RestartPending: wasEnabled && fc.AgentName != "",
+		RestartPending: wasActive && fc.AgentName != "",
 	}, nil
 }
 

@@ -139,6 +139,14 @@ For a peer-joined worker this:
 - disables cluster mode and stops the local runtime container on the ensuing
   restart, preserving the selected runtime set so a rejoin returns as the same
   kind of node;
+- **preserves the local overlay (Tailscale) identity** rather than purging it.
+  Leave never contacts the peer plane or any overlay registrar — the worker
+  holds no admin credential to deregister anything remotely — so no overlay
+  deregistration ever occurred. Purging the machine key here would desync it
+  from a registration that still exists wherever the peer plane's overlay is
+  registered; a cloud-managed leave purges instead, because cloudbox has
+  already deregistered that node from Headscale itself (see the boundary note
+  below);
 - leaves cloudbox pairing and every unrelated app, shell, LLM, outbound, and
   mesh setting untouched. Leaving the cluster is not logging out of the portal.
 

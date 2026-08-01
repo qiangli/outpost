@@ -18,6 +18,42 @@ import (
 	"github.com/qiangli/outpost/internal/agent/vknode"
 )
 
+// clusterLeaveDeps abstracts the two network-touching calls `outpost cluster
+// leave --yes` makes: notifying cloudbox and disabling cluster mode on the
+// local daemon (plus the restart that applies it). Isolating them behind this
+// struct lets runClusterLeave's plane-dependent decision — whether cloudbox
+// gets notified at all — run under a unit test with no live cloudbox and no
+// running outpost daemon.
+type clusterLeaveDeps struct {
+	notifyLeave func(ctx context.Context, cloudboxBase, accessToken, agentName string) (string, error)
+	leaveLocal  func(ctx context.Context) (restartPending bool, err error)
+	restart     func(ctx context.Context) error
+}
+
+// defaultClusterLeaveDeps wires clusterLeaveDeps to the real cloudbox HTTP
+// call and the real MCP-backed daemon calls clusterLeaveCmd used inline
+// before this seam existed.
+func defaultClusterLeaveDeps() clusterLeaveDeps {
+	return clusterLeaveDeps{
+		notifyLeave: notifyLeave,
+		leaveLocal: func(ctx context.Context) (bool, error) {
+			session, err := dialMCP(ctx)
+			if err != nil {
+				return false, err
+			}
+			defer session.close()
+			var out struct {
+				RestartPending bool `json:"restart_pending"`
+			}
+			if err := session.callTool(ctx, "outpost_cluster_leave", map[string]any{}, &out); err != nil {
+				return false, err
+			}
+			return out.RestartPending, nil
+		},
+		restart: restartViaMCP,
+	}
+}
+
 // clusterLeaveCmd is the clean "leave DKS" lifecycle command. It disables
 // cluster mode and stops the local runtime; a subsequent `outpost cluster join`
 // rejoins from a clean slate (fresh membership) rather than reusing stale state.
@@ -53,79 +89,85 @@ func clusterLeaveCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load %s: %w", cfgPath, err)
 			}
-			if fc == nil {
-				return errors.New("no saved config")
-			}
-			peer := fc.Cluster.JoinsPeerPlane()
-
-			if !yes {
-				if peer {
-					fmt.Println("This host joined a PEER-hosted control plane. Leaving clears the local")
-					fmt.Println("peer membership (join endpoint + credentials) and stops the runtime.")
-					fmt.Println("It does NOT delete this node from the peer apiserver — the worker holds no")
-					fmt.Println("admin credential for that plane; the control-plane host garbage-collects it.")
-				} else {
-					fmt.Println("This removes this host's k8s node, overlay registration, and pod CIDR on cloudbox,")
-					fmt.Println("and disables cluster mode locally.")
-				}
-				fmt.Println("Cloudbox pairing and unrelated settings are preserved. Rejoin with `outpost cluster join`.")
-				fmt.Println("Re-run with --yes to confirm.")
-				return nil
-			}
-
-			// 1. Reclaim remote state — only for a cloud-managed node. A
-			//    peer-joined worker skips this entirely: cloudbox never issued
-			//    the node, so there is nothing there to reclaim, and the peer
-			//    plane's Node object is not the worker's to delete.
-			if peer {
-				fmt.Println("peer-joined worker: skipping cloudbox reclaim (this node belongs to the peer-hosted plane).")
-				fmt.Println("The Kubernetes Node object is removed by the control-plane host or its garbage collector.")
-			} else {
-				if fc.AccessToken == "" || fc.AgentName == "" {
-					return errors.New("not paired — no access_token/agent_name saved")
-				}
-				cloudboxBase := cloudboxHTTPBase(fc)
-				if cloudboxBase == "" {
-					return errors.New("no cloudbox URL in saved config")
-				}
-				// Best-effort: report failure but still do the local teardown so
-				// `leave` never strands a half-left node.
-				if summary, lerr := notifyLeave(cmd.Context(), cloudboxBase, fc.AccessToken, fc.AgentName); lerr != nil {
-					fmt.Printf("cloudbox teardown failed: %v (continuing local teardown)\n", lerr)
-				} else {
-					fmt.Printf("cloudbox: %s\n", summary)
-				}
-			}
-
-			// 2. local: disable cluster mode PRESERVING the node's mode + identity
-			//    (so a rejoin comes back as the same kind of node), clearing only
-			//    the membership fields, then trigger a real restart so the
-			//    cluster-off boot tears the runtime container down. Without the
-			//    explicit restart the stale k3s kubelet retry-loops forever on the
-			//    Node the plane just deleted — the leave tool only sets
-			//    RestartPending, it deliberately doesn't self-restart.
-			session, err := dialMCP(cmd.Context())
-			if err != nil {
-				return err
-			}
-			defer session.close()
-			var out struct {
-				RestartPending bool `json:"restart_pending"`
-			}
-			if err := session.callTool(cmd.Context(), "outpost_cluster_leave", map[string]any{}, &out); err != nil {
-				return err
-			}
-			if out.RestartPending {
-				if err := restartViaMCP(cmd.Context()); err != nil {
-					return fmt.Errorf("local disable done, but the restart that stops the runtime failed (run `outpost restart`): %w", err)
-				}
-			}
-			fmt.Println("local: cluster mode disabled (mode preserved); runtime stopping via restart. Rejoin with `outpost cluster join`.")
-			return nil
+			return runClusterLeave(cmd.Context(), fc, yes, os.Stdout, defaultClusterLeaveDeps())
 		},
 	}
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip the confirmation prompt")
 	return cmd
+}
+
+// runClusterLeave implements clusterLeaveCmd's confirmation + plane-dependent
+// decision logic against injected deps, printing operator-facing status to w.
+// Split out from the cobra RunE so a unit test can drive the --yes path and
+// assert the decision deterministically: a peer-joined worker must invoke
+// deps.notifyLeave zero times (cloudbox never issued the node, and the
+// worker holds no admin credential to delete it from the peer apiserver —
+// that's the control-plane host's garbage-collection story), while a
+// cloud-managed node must invoke it exactly once (cloudbox owns that node's
+// k8s Node, overlay registration, and pod-CIDR reservation).
+func runClusterLeave(ctx context.Context, fc *conf.FileConfig, yes bool, w io.Writer, deps clusterLeaveDeps) error {
+	if fc == nil {
+		return errors.New("no saved config")
+	}
+	peer := fc.Cluster.JoinsPeerPlane()
+
+	if !yes {
+		if peer {
+			fmt.Fprintln(w, "This host joined a PEER-hosted control plane. Leaving clears the local")
+			fmt.Fprintln(w, "peer membership (join endpoint + credentials) and stops the runtime.")
+			fmt.Fprintln(w, "It does NOT delete this node from the peer apiserver — the worker holds no")
+			fmt.Fprintln(w, "admin credential for that plane; the control-plane host garbage-collects it.")
+		} else {
+			fmt.Fprintln(w, "This removes this host's k8s node, overlay registration, and pod CIDR on cloudbox,")
+			fmt.Fprintln(w, "and disables cluster mode locally.")
+		}
+		fmt.Fprintln(w, "Cloudbox pairing and unrelated settings are preserved. Rejoin with `outpost cluster join`.")
+		fmt.Fprintln(w, "Re-run with --yes to confirm.")
+		return nil
+	}
+
+	// 1. Reclaim remote state — only for a cloud-managed node. A
+	//    peer-joined worker skips this entirely: cloudbox never issued
+	//    the node, so there is nothing there to reclaim, and the peer
+	//    plane's Node object is not the worker's to delete.
+	if peer {
+		fmt.Fprintln(w, "peer-joined worker: skipping cloudbox reclaim (this node belongs to the peer-hosted plane).")
+		fmt.Fprintln(w, "The Kubernetes Node object is removed by the control-plane host or its garbage collector.")
+	} else {
+		if fc.AccessToken == "" || fc.AgentName == "" {
+			return errors.New("not paired — no access_token/agent_name saved")
+		}
+		cloudboxBase := cloudboxHTTPBase(fc)
+		if cloudboxBase == "" {
+			return errors.New("no cloudbox URL in saved config")
+		}
+		// Best-effort: report failure but still do the local teardown so
+		// `leave` never strands a half-left node.
+		if summary, lerr := deps.notifyLeave(ctx, cloudboxBase, fc.AccessToken, fc.AgentName); lerr != nil {
+			fmt.Fprintf(w, "cloudbox teardown failed: %v (continuing local teardown)\n", lerr)
+		} else {
+			fmt.Fprintf(w, "cloudbox: %s\n", summary)
+		}
+	}
+
+	// 2. local: disable cluster mode PRESERVING the node's mode + identity
+	//    (so a rejoin comes back as the same kind of node), clearing only
+	//    the membership fields, then trigger a real restart so the
+	//    cluster-off boot tears the runtime container down. Without the
+	//    explicit restart the stale k3s kubelet retry-loops forever on the
+	//    Node the plane just deleted — the leave tool only sets
+	//    RestartPending, it deliberately doesn't self-restart.
+	restartPending, err := deps.leaveLocal(ctx)
+	if err != nil {
+		return err
+	}
+	if restartPending {
+		if err := deps.restart(ctx); err != nil {
+			return fmt.Errorf("local disable done, but the restart that stops the runtime failed (run `outpost restart`): %w", err)
+		}
+	}
+	fmt.Fprintln(w, "local: cluster mode disabled (mode preserved); runtime stopping via restart. Rejoin with `outpost cluster join`.")
+	return nil
 }
 
 // clusterJoinCmd covers both levels of "join":

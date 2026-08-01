@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -100,5 +101,65 @@ func TestClusterLeave_Confirmation_CloudNode(t *testing.T) {
 	}
 	if strings.Contains(out, "PEER-hosted control plane") {
 		t.Errorf("cloud node got the peer confirmation:\n%s", out)
+	}
+}
+
+// fakeClusterLeaveDeps builds clusterLeaveDeps whose notifyLeave counts its
+// own invocations, so the plane-dependent --yes decision (does cloudbox get
+// notified at all) is assertable without a live cloudbox or a running outpost
+// daemon (leaveLocal/restart are stubbed to no-ops).
+func fakeClusterLeaveDeps(notifyCalls *int) clusterLeaveDeps {
+	return clusterLeaveDeps{
+		notifyLeave: func(_ context.Context, _, _, _ string) (string, error) {
+			*notifyCalls++
+			return "left", nil
+		},
+		leaveLocal: func(_ context.Context) (bool, error) { return false, nil },
+		restart:    func(_ context.Context) error { return nil },
+	}
+}
+
+// A peer-joined worker's --yes leave must invoke notifyLeave exactly ZERO
+// times: cloudbox never issued the node, so there is nothing to reclaim, and
+// the worker holds no admin credential to delete it from the peer apiserver.
+// Confirmation-text-only coverage (TestClusterLeave_Confirmation_PeerWorker)
+// only exercises the !yes early-return branch — it cannot see this decision.
+func TestClusterLeave_Yes_PeerWorker_SkipsCloudboxNotify(t *testing.T) {
+	fc := &conf.FileConfig{
+		AgentName:   "worker-1",
+		AccessToken: "tok",
+		ServerAddr:  "ai.dhnt.io",
+		Cluster: &conf.ClusterConfig{
+			JoinEndpoint: "10.0.0.5:7000",
+			JoinToken:    "t",
+		},
+	}
+	var notifyCalls int
+	var buf bytes.Buffer
+	if err := runClusterLeave(context.Background(), fc, true, &buf, fakeClusterLeaveDeps(&notifyCalls)); err != nil {
+		t.Fatalf("runClusterLeave: %v", err)
+	}
+	if notifyCalls != 0 {
+		t.Errorf("notifyLeave invoked %d times for a peer-joined worker, want 0", notifyCalls)
+	}
+}
+
+// A cloud-managed node's --yes leave must invoke notifyLeave exactly ONCE —
+// cloudbox owns that node's k8s Node, overlay registration, and pod-CIDR
+// reservation, and leave's whole job is to tell it to reclaim them.
+func TestClusterLeave_Yes_CloudNode_NotifiesCloudboxOnce(t *testing.T) {
+	fc := &conf.FileConfig{
+		AgentName:   "cloud-node",
+		AccessToken: "tok",
+		ServerAddr:  "ai.dhnt.io",
+		Cluster:     &conf.ClusterConfig{Runtimes: conf.ClusterRuntimes{Agent: true}},
+	}
+	var notifyCalls int
+	var buf bytes.Buffer
+	if err := runClusterLeave(context.Background(), fc, true, &buf, fakeClusterLeaveDeps(&notifyCalls)); err != nil {
+		t.Fatalf("runClusterLeave: %v", err)
+	}
+	if notifyCalls != 1 {
+		t.Errorf("notifyLeave invoked %d times for a cloud-managed node, want 1", notifyCalls)
 	}
 }
