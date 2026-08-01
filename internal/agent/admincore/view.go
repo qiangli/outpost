@@ -52,6 +52,15 @@ type ClusterView struct {
 	HasNodeToken  bool     `json:"has_node_token,omitempty"`
 	HasSTCPSecret bool     `json:"has_stcp_secret,omitempty"`
 	K8sAPIPort    int      `json:"k8s_api_port,omitempty"`
+	// ControlPlane reports whether this host HOSTS the apiserver rather than
+	// merely joining a cluster. Surfaced because it changes what the host is:
+	// a control-plane host runs a tunnel server other machines depend on, so
+	// restarting it is a cluster-wide event rather than a local one.
+	ControlPlane     bool   `json:"control_plane,omitempty"`
+	TunnelBindAddr   string `json:"tunnel_bind_addr,omitempty"`
+	TunnelBindPort   int    `json:"tunnel_bind_port,omitempty"`
+	HasTunnelToken   bool   `json:"has_tunnel_token,omitempty"`
+	TunnelLANExposed bool   `json:"tunnel_lan_exposed,omitempty"`
 	// PodNetworkMode is "overlay" (cloudbox allocated a per-node pod
 	// CIDR — the only multi-node-correct mode) or "single-node-fallback"
 	// (no CIDR: a fixed range identical on every node, so pod IPs
@@ -148,6 +157,7 @@ func toClusterView(fc *conf.FileConfig) ClusterView {
 		return ClusterView{}
 	}
 	podNet := runtime.ClassifyPodNetwork(fc.Cluster.OverlayPodCIDR)
+	cpBindAddr, cpBindPort := fc.Cluster.TunnelBind()
 	return ClusterView{
 		// Report the EFFECTIVE state (nil defaults on), not the raw
 		// pointer — the status row / SPA badge should show what the
@@ -164,6 +174,11 @@ func toClusterView(fc *conf.FileConfig) ClusterView {
 		HasNodeToken:     fc.Cluster.NodeToken != "",
 		HasSTCPSecret:    fc.Cluster.STCPSecret != "",
 		K8sAPIPort:       fc.Cluster.K8sAPIPort,
+		ControlPlane:     fc.Cluster.ControlPlaneOn(),
+		TunnelBindAddr:   cpBindAddr,
+		TunnelBindPort:   cpBindPort,
+		HasTunnelToken:   fc.Cluster.TunnelToken != "",
+		TunnelLANExposed: !isLoopbackIP(cpBindAddr),
 		MetricsRemoteURL: fc.Cluster.MetricsRemoteURL,
 		LogsRemoteURL:    fc.Cluster.LogsRemoteURL,
 		TracesRemoteURL:  fc.Cluster.TracesRemoteURL,

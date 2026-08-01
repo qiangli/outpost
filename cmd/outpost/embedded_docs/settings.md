@@ -486,6 +486,40 @@ run one real k3s-agent Node and one Node for each selected virtual-kubelet
 backend concurrently. Virtual node names are `<node>-vk-native`,
 `<node>-vk-podman`, and `<node>-vk-ollama`.
 
+### Control-plane placement
+
+Whether this host **hosts** the apiserver rather than merely joining one.
+The apiserver can live on cloudbox, on a rented always-on box, or on this
+machine — workers dial a tunnel server the same way in every case, so
+switching placement is a configuration change, not a migration.
+
+| Field | File key | CLI | UI | MCP |
+|---|---|---|---|---|
+| Host the apiserver | `cluster.control_plane` | `cluster control-plane on\|off` | Inbound > Cluster | `outpost_set_control_plane` |
+| Tunnel bind address | `cluster.tunnel_bind_addr` | `cluster control-plane --bind-addr` | Inbound > Cluster | `outpost_set_control_plane` |
+| Tunnel bind port | `cluster.tunnel_bind_port` | `cluster control-plane --bind-port` | Inbound > Cluster | `outpost_set_control_plane` |
+| Join token | `cluster.tunnel_token` | `cluster control-plane token` | `has_tunnel_token` flag only | `outpost_control_plane_token` |
+| Rotate the join token | `cluster.tunnel_token` | `cluster control-plane token rotate --yes` | — | `outpost_rotate_control_plane_token` |
+
+Save = restart (the tunnel server is built once at boot, like every other
+listener outpost owns).
+
+Three behaviours worth knowing before you use this:
+
+- **Enabling mints the join token** if the host does not have one, so you
+  never end up with a control plane that is on but unjoinable. **Disabling
+  preserves it** — deleting it would invalidate every worker as a side
+  effect of an off/on toggle, and it is inert while nothing is listening.
+- **The bind defaults to `127.0.0.1`**, on the assumption that workers reach
+  it over the mesh. `--bind-addr 0.0.0.0` accepts joins directly from the
+  network; status output flags that case explicitly.
+- **The token is a credential** — this cluster's equivalent of the k3s
+  node-token. It is deliberately absent from `outpost status` and from
+  `cluster control-plane` status output, and is returned only by the
+  reveal/rotate verbs, so reading cluster state never puts it on screen.
+  **Rotating invalidates every worker's configuration**; they fail on their
+  next reconnect until reconfigured.
+
 Platform support per mode:
 
 | mode | linux | macOS | Windows |

@@ -1370,6 +1370,150 @@ function buildClusterSubBlock(parent, cfg, status) {
     // renders immediately.
     loadKubeStatus(true);
   }
+
+  buildControlPlaneBlock(parent, cv, paired);
+}
+
+// buildControlPlaneBlock renders control-plane PLACEMENT — whether this host
+// HOSTS the apiserver rather than merely joining one.
+//
+// Deliberately separate from the "Join cluster" toggle above: joining and
+// hosting are different decisions, and a host can do either, both, or
+// neither. Folding them into one control would make "host the plane here"
+// look like a variant of joining.
+//
+// The join token is never rendered until the operator clicks Reveal, so an
+// operator showing someone this screen does not put a credential on it.
+function buildControlPlaneBlock(parent, cv, paired) {
+  parent.append(el('h4', {style: 'margin-top:1.2rem'},
+    'Control plane ', el('code', {class: 'key-hint'}, 'cluster.control_plane')));
+  parent.append(el('p', {class: 'hint', style: 'margin:0 0 0.5rem'},
+    'Host the DKS apiserver on this machine so other hosts join it here, ',
+    'instead of joining a plane hosted elsewhere.'));
+
+  const box = el('div', {style: 'padding:0.6rem 0.8rem;border:1px solid #8884;border-radius:6px'});
+  parent.append(box);
+
+  const body = el('div', {});
+  box.append(body);
+
+  async function render() {
+    body.innerHTML = '';
+    let st;
+    try {
+      st = await api('GET', '/api/cluster/control-plane');
+    } catch (e) {
+      body.append(el('p', {class: 'error'}, e.message || 'Failed to load control-plane status.'));
+      return;
+    }
+
+    const row = el('div', {class: 'item-row'});
+    const sw = switchEl({checked: !!st.control_plane, disabled: !paired});
+    sw.input.addEventListener('change', async () => {
+      const newVal = sw.input.checked;
+      sw.input.disabled = true;
+      try {
+        const res = await api('POST', '/api/cluster/control-plane', {enabled: newVal});
+        msg('ok', `Control plane ${newVal ? 'on' : 'off'}.`);
+        noteRestartPending({restarting: res.restart_pending});
+        render();
+      } catch (e) {
+        sw.input.checked = !newVal;
+        sw.input.disabled = !paired;
+        msg('err', e.message || 'Save failed');
+      }
+    });
+    row.append(sw.wrap, el('span', {class: 'label'}, 'Host the apiserver here'));
+    if (!paired) row.append(el('span', {class: 'hint'}, '(pair this host first)'));
+    body.append(row);
+
+    // Bind address. Loopback is the default because workers are expected to
+    // arrive over the mesh; a non-loopback bind means this machine accepts
+    // cluster joins straight off the network, which is worth stating rather
+    // than leaving the operator to infer from an IP.
+    const addrIn = el('input', {type: 'text', name: 'tunnel_bind_addr',
+      value: st.bind_addr || '', placeholder: '127.0.0.1', style: 'width:12rem'});
+    const portIn = el('input', {type: 'number', name: 'tunnel_bind_port',
+      value: st.bind_port || '', placeholder: '7000', style: 'width:7rem'});
+    const bindBtn = el('button', {type: 'button'}, 'Save bind');
+    bindBtn.addEventListener('click', async () => {
+      bindBtn.disabled = true;
+      try {
+        const res = await api('POST', '/api/cluster/control-plane', {
+          bind_addr: addrIn.value.trim(),
+          bind_port: parseInt(portIn.value, 10) || 0,
+        });
+        msg('ok', 'Bind saved.');
+        noteRestartPending({restarting: res.restart_pending});
+        render();
+      } catch (e) {
+        msg('err', e.message || 'Save failed');
+      } finally {
+        bindBtn.disabled = false;
+      }
+    });
+    body.append(el('div', {style: 'margin-top:0.6rem;display:grid;grid-template-columns:max-content 1fr;gap:0.4rem 0.8rem;align-items:center'},
+      el('label', {for: 'tunnel_bind_addr'}, el('code', {class: 'key-hint'}, 'cluster.tunnel_bind_addr')), addrIn,
+      el('label', {for: 'tunnel_bind_port'}, el('code', {class: 'key-hint'}, 'cluster.tunnel_bind_port')), portIn,
+    ));
+    body.append(bindBtn);
+    if (st.lan_exposed) {
+      body.append(el('p', {class: 'error', style: 'margin:0.4rem 0 0'},
+        'Bound to a non-loopback address — this host accepts cluster joins from the network.'));
+    }
+
+    // Join token. Presence only until Reveal is clicked.
+    const tokBox = el('div', {style: 'margin-top:0.8rem'});
+    tokBox.append(el('div', {style: 'font-weight:600'},
+      'Join token ', el('code', {class: 'key-hint'}, 'cluster.tunnel_token')));
+    if (!st.has_token) {
+      tokBox.append(el('p', {class: 'hint', style: 'margin:0.2rem 0'},
+        'None yet — turning the control plane on mints one.'));
+    } else {
+      tokBox.append(el('p', {class: 'hint', style: 'margin:0.2rem 0'},
+        'Workers need this value to join. Treat it like the k3s node-token.'));
+      const tokOut = el('pre', {style: 'display:none;background:#0001;padding:0.4rem;border-radius:4px;font-size:0.85rem;overflow-x:auto;margin:0.3rem 0'});
+      const revealBtn = el('button', {type: 'button'}, 'Reveal');
+      revealBtn.addEventListener('click', async () => {
+        revealBtn.disabled = true;
+        try {
+          const t = await api('GET', '/api/cluster/control-plane/token');
+          tokOut.textContent = t.tunnel_token || '(empty)';
+          tokOut.style.display = '';
+        } catch (e) {
+          msg('err', e.message || 'Reveal failed');
+        } finally {
+          revealBtn.disabled = false;
+        }
+      });
+      const rotateBtn = el('button', {type: 'button', style: 'margin-left:0.4rem'}, 'Rotate');
+      rotateBtn.addEventListener('click', async () => {
+        const ok = await confirmDialog({
+          title: 'Rotate the join token?',
+          description: 'Every worker joined to this control plane must be reconfigured. ' +
+            'They will fail on their next reconnect until you do.',
+          confirmText: 'Rotate',
+        });
+        if (!ok) return;
+        rotateBtn.disabled = true;
+        try {
+          const t = await api('POST', '/api/cluster/control-plane/token/rotate', {});
+          tokOut.textContent = t.tunnel_token || '(empty)';
+          tokOut.style.display = '';
+          msg('ok', 'Token rotated — reconfigure every worker.');
+          noteRestartPending({restarting: t.restart_pending});
+        } catch (e) {
+          msg('err', e.message || 'Rotate failed');
+        } finally {
+          rotateBtn.disabled = false;
+        }
+      });
+      tokBox.append(revealBtn, rotateBtn, tokOut);
+    }
+    body.append(tokBox);
+  }
+
+  render();
 }
 
 // buildOllamaSubBlock populates the children behind the Ollama

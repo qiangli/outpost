@@ -129,6 +129,13 @@ func TestToolListAndStatusResource(t *testing.T) {
 		// outpost_set_kubeconfig (bring-your-own paste) was removed —
 		// outposts only join their owning cloudbox's cluster.
 		"outpost_clear_kubeconfig",
+		// Control-plane placement. Reveal is a separate tool from status so
+		// an agent reading cluster state never incidentally pulls the join
+		// credential into a transcript.
+		"outpost_control_plane",
+		"outpost_set_control_plane",
+		"outpost_control_plane_token",
+		"outpost_rotate_control_plane_token",
 		"outpost_restart",
 		"outpost_rotate_mcp_token",
 	}

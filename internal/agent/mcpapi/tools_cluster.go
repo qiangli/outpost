@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/qiangli/outpost/internal/agent/admincore"
 )
 
 type clearClusterOut struct {
@@ -55,5 +57,93 @@ func (s *Server) registerClusterTools() {
 			return apiErrResult[clearClusterOut](err)
 		}
 		return nil, clearClusterOut{OK: res.OK, RestartPending: res.RestartPending}, nil
+	})
+
+	s.registerControlPlaneTools()
+}
+
+// controlPlaneIn is a partial update: an omitted field leaves the current
+// value alone, so toggling the switch never silently resets a custom bind.
+type controlPlaneIn struct {
+	Enabled  *bool   `json:"enabled,omitempty" jsonschema:"host the apiserver on this machine"`
+	BindAddr *string `json:"bind_addr,omitempty" jsonschema:"IP the tunnel server binds; defaults to 127.0.0.1"`
+	BindPort *int    `json:"bind_port,omitempty" jsonschema:"port the tunnel server binds; defaults to 7000"`
+}
+
+type controlPlaneOut struct {
+	OK             bool   `json:"ok"`
+	ControlPlane   bool   `json:"control_plane"`
+	BindAddr       string `json:"bind_addr"`
+	BindPort       int    `json:"bind_port"`
+	HasToken       bool   `json:"has_token"`
+	TunnelToken    string `json:"tunnel_token,omitempty"`
+	LANExposed     bool   `json:"lan_exposed"`
+	RestartPending bool   `json:"restart_pending"`
+}
+
+func toControlPlaneOut(res admincore.ControlPlaneResult) controlPlaneOut {
+	return controlPlaneOut{
+		OK:             res.OK,
+		ControlPlane:   res.ControlPlane,
+		BindAddr:       res.BindAddr,
+		BindPort:       res.BindPort,
+		HasToken:       res.HasToken,
+		TunnelToken:    res.TunnelToken,
+		LANExposed:     res.LANExposed,
+		RestartPending: res.RestartPending,
+	}
+}
+
+// registerControlPlaneTools exposes control-plane PLACEMENT — whether this
+// host runs the apiserver other machines join, rather than merely joining one.
+//
+// Reveal is its own tool rather than a flag on the status tool so an agent
+// reading cluster state never incidentally pulls a joining credential into a
+// transcript.
+func (s *Server) registerControlPlaneTools() {
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_control_plane",
+		Description: "Report whether this host hosts the DKS apiserver, and where its tunnel server binds. Does NOT return the join token — use outpost_control_plane_token for that.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, controlPlaneOut, error) {
+		res, err := s.core.ControlPlaneView(false)
+		if err != nil {
+			return apiErrResult[controlPlaneOut](err)
+		}
+		return nil, toControlPlaneOut(res), nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_set_control_plane",
+		Description: "Host the DKS apiserver on this machine (or stop hosting it), and set where its tunnel server binds. Enabling mints the join token if absent. Bind defaults to 127.0.0.1 — set bind_addr to 0.0.0.0 only to accept joins from the network. Triggers a restart.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in controlPlaneIn) (*mcp.CallToolResult, controlPlaneOut, error) {
+		res, err := s.core.SetControlPlane(admincore.ControlPlaneParams{
+			Enabled: in.Enabled, BindAddr: in.BindAddr, BindPort: in.BindPort,
+		})
+		if err != nil {
+			return apiErrResult[controlPlaneOut](err)
+		}
+		return nil, toControlPlaneOut(res), nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_control_plane_token",
+		Description: "Reveal the tunnel token workers need to join the control plane hosted here. This is a credential — treat it like the k3s node-token.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, controlPlaneOut, error) {
+		res, err := s.core.ControlPlaneView(true)
+		if err != nil {
+			return apiErrResult[controlPlaneOut](err)
+		}
+		return nil, toControlPlaneOut(res), nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_rotate_control_plane_token",
+		Description: "Mint a new tunnel token, returning it. EVERY WORKER MUST BE RECONFIGURED — existing workers fail their next reconnect. Use to revoke a leaked token, not as routine hygiene.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, controlPlaneOut, error) {
+		res, err := s.core.RotateControlPlaneToken()
+		if err != nil {
+			return apiErrResult[controlPlaneOut](err)
+		}
+		return nil, toControlPlaneOut(res), nil
 	})
 }

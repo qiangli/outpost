@@ -365,6 +365,14 @@ func (s *Server) registerRoutes() {
 	api.GET("/cluster/user-kubeconfig", s.handleClusterKubeconfigStatus)
 	api.POST("/cluster/user-kubeconfig/refresh", s.handleClusterKubeconfigRefresh)
 
+	// Control-plane placement — whether this host HOSTS the apiserver
+	// (dhnt/docs/dks-control-plane-on-sphere.md). The token lives on its
+	// own path so a status read never puts a credential on screen.
+	api.GET("/cluster/control-plane", s.handleGetControlPlane)
+	api.POST("/cluster/control-plane", s.handleSetControlPlane)
+	api.GET("/cluster/control-plane/token", s.handleRevealControlPlaneToken)
+	api.POST("/cluster/control-plane/token/rotate", s.handleRotateControlPlaneToken)
+
 	// Backup tab — folder-watcher scheduler. GET/POST config; manual
 	// fire; ledger tail. App-opaque: the cooperating app produces
 	// backup artifacts in one of the configured folders on its own
