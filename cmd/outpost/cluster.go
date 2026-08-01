@@ -117,11 +117,18 @@ func runClusterLeave(ctx context.Context, fc *conf.FileConfig, yes bool, w io.Wr
 			fmt.Fprintln(w, "peer membership (join endpoint + credentials) and stops the runtime.")
 			fmt.Fprintln(w, "It does NOT delete this node from the peer apiserver — the worker holds no")
 			fmt.Fprintln(w, "admin credential for that plane; the control-plane host garbage-collects it.")
+			fmt.Fprintln(w, "Cloudbox pairing and unrelated settings are preserved. Leave clears the join")
+			fmt.Fprintln(w, "endpoint and credentials, so a bare `outpost cluster join` cannot rejoin this")
+			fmt.Fprintln(w, "peer plane — it falls back to the cloudbox-hosted plane instead. Rejoin with a")
+			fmt.Fprintln(w, "FULL `outpost cluster join <endpoint>` supplying the join token, STCP secret,")
+			fmt.Fprintln(w, "and node token again — read from the control-plane host with")
+			fmt.Fprintln(w, "`outpost cluster control-plane token` and `outpost cluster token`. Keep secrets")
+			fmt.Fprintln(w, "out of argv with --token-stdin.")
 		} else {
 			fmt.Fprintln(w, "This removes this host's k8s node, overlay registration, and pod CIDR on cloudbox,")
 			fmt.Fprintln(w, "and disables cluster mode locally.")
+			fmt.Fprintln(w, "Cloudbox pairing and unrelated settings are preserved. Rejoin with `outpost cluster join`.")
 		}
-		fmt.Fprintln(w, "Cloudbox pairing and unrelated settings are preserved. Rejoin with `outpost cluster join`.")
 		fmt.Fprintln(w, "Re-run with --yes to confirm.")
 		return nil
 	}
@@ -166,7 +173,17 @@ func runClusterLeave(ctx context.Context, fc *conf.FileConfig, yes bool, w io.Wr
 			return fmt.Errorf("local disable done, but the restart that stops the runtime failed (run `outpost restart`): %w", err)
 		}
 	}
-	fmt.Fprintln(w, "local: cluster mode disabled (mode preserved); runtime stopping via restart. Rejoin with `outpost cluster join`.")
+	if peer {
+		fmt.Fprintln(w, "local: cluster mode disabled (mode preserved); runtime stopping via restart.")
+		fmt.Fprintln(w, "Peer membership was cleared — a bare `outpost cluster join` cannot rejoin this")
+		fmt.Fprintln(w, "peer plane (it falls back to the cloudbox-hosted plane). Rejoin with a FULL")
+		fmt.Fprintln(w, "`outpost cluster join <endpoint>` supplying the join token, STCP secret, and node")
+		fmt.Fprintln(w, "token again — read from the control-plane host with")
+		fmt.Fprintln(w, "`outpost cluster control-plane token` and `outpost cluster token` (use")
+		fmt.Fprintln(w, "--token-stdin to keep secrets out of argv).")
+	} else {
+		fmt.Fprintln(w, "local: cluster mode disabled (mode preserved); runtime stopping via restart. Rejoin with `outpost cluster join`.")
+	}
 	return nil
 }
 

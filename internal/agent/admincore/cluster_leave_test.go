@@ -119,10 +119,19 @@ func TestLeaveCluster_PeerWorker_ClearsPeerMembershipOnly(t *testing.T) {
 	}
 }
 
-// Leaving is idempotent and recoverable: a second leave is a no-op (no restart,
-// no re-invocation of the runtime teardown dep), and a rejoin re-enables
-// cluster mode retaining the preserved runtime set.
-func TestLeaveCluster_IdempotentAndRejoinable(t *testing.T) {
+// Leaving is idempotent: a second leave is a no-op (no restart, no
+// re-invocation of the runtime teardown dep).
+//
+// Note what this does NOT cover: bare JoinCluster is not a valid recovery
+// path for a peer-joined worker. LeaveCluster clears join_endpoint,
+// join_token, stcp_secret, and node_token, and JoinCluster only flips
+// cluster.enabled back on — it does not restore any of the four peer
+// credentials. A worker that calls JoinCluster after leaving a peer plane
+// comes back with Runtimes.Agent still selected but JoinsPeerPlane() false,
+// so it silently falls back to the cloudbox-hosted plane instead of
+// rejoining the peer. See TestLeaveCluster_PeerWorker_RejoinNeedsFullCreds
+// for the actual peer-recovery path (JoinPeerPlane with all four fields).
+func TestLeaveCluster_Idempotent(t *testing.T) {
 	s, _, _, calls := leaveTestServer(t)
 	enabled := true
 	if err := conf.SaveFile(s.deps.ConfigPath, &conf.FileConfig{
@@ -161,18 +170,77 @@ func TestLeaveCluster_IdempotentAndRejoinable(t *testing.T) {
 	if again.Peer {
 		t.Error("Result.Peer true after peer membership was already cleared")
 	}
+}
 
-	// Rejoin re-enables, retaining the runtime LeaveCluster preserved.
-	rj, err := s.JoinCluster()
+// A peer-joined worker cannot recover with a bare JoinCluster — LeaveCluster
+// cleared join_endpoint, join_token, stcp_secret, and node_token, and only a
+// FULL JoinPeerPlane call (endpoint + all three credentials) restores peer
+// membership. This exercises that actual recovery path and asserts every
+// credential comes back, the runtime selection LeaveCluster preserved is
+// still intact, and cluster mode is enabled.
+func TestLeaveCluster_PeerWorker_RejoinNeedsFullCreds(t *testing.T) {
+	s, _, _, _ := leaveTestServer(t)
+	enabled := true
+	if err := conf.SaveFile(s.deps.ConfigPath, &conf.FileConfig{
+		AgentName: "worker-1",
+		Cluster: &conf.ClusterConfig{
+			Enabled:      &enabled,
+			JoinEndpoint: "10.0.0.5:7000",
+			JoinToken:    "t",
+			NodeToken:    "n",
+			STCPSecret:   "s",
+			Runtimes:     conf.ClusterRuntimes{Agent: true},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.LeaveCluster(context.Background()); err != nil {
+		t.Fatalf("LeaveCluster: %v", err)
+	}
+	fc, _ := conf.LoadFile(s.deps.ConfigPath)
+	if fc.Cluster.JoinsPeerPlane() {
+		t.Fatalf("still joins a peer plane right after leave: %+v", fc.Cluster)
+	}
+
+	endpoint, token, secret, node := "10.0.0.5:7000", "t2", "s2", "n2"
+	rj, err := s.JoinPeerPlane(PeerPlaneParams{
+		Endpoint:   &endpoint,
+		Token:      &token,
+		STCPSecret: &secret,
+		NodeToken:  &node,
+	})
 	if err != nil {
-		t.Fatalf("JoinCluster: %v", err)
+		t.Fatalf("JoinPeerPlane: %v", err)
+	}
+	if !rj.Joined {
+		t.Errorf("JoinPeerPlane result reports not joined: %+v", rj)
+	}
+	if !rj.HasToken || !rj.HasSTCPSecret || !rj.HasNodeToken {
+		t.Errorf("JoinPeerPlane result missing a restored credential: %+v", rj)
+	}
+	if !rj.ClusterEnabled {
+		t.Error("JoinPeerPlane did not enable cluster mode")
 	}
 	if !rj.RestartPending {
 		t.Error("rejoin of a named host did not request a restart")
 	}
-	fc, _ := conf.LoadFile(s.deps.ConfigPath)
-	if !fc.ClusterOn() || !fc.Cluster.Runtimes.Agent {
-		t.Errorf("rejoin did not restore an enabled agent node: %+v", fc.Cluster)
+
+	fc, _ = conf.LoadFile(s.deps.ConfigPath)
+	if !fc.Cluster.JoinsPeerPlane() {
+		t.Errorf("rejoin did not restore peer-plane membership: %+v", fc.Cluster)
+	}
+	if fc.Cluster.JoinEndpoint != endpoint || fc.Cluster.JoinToken != token ||
+		fc.Cluster.STCPSecret != secret || fc.Cluster.NodeToken != node {
+		t.Errorf("rejoin did not restore all four peer credentials: %+v", fc.Cluster)
+	}
+	if !fc.ClusterOn() {
+		t.Error("rejoin left cluster mode disabled")
+	}
+	// Runtime selection LeaveCluster preserved is still what a rejoin comes
+	// back as.
+	if !fc.Cluster.Runtimes.Agent {
+		t.Errorf("rejoin lost the preserved runtime selection: %+v", fc.Cluster)
 	}
 }
 
