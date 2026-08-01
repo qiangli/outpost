@@ -1888,6 +1888,9 @@ func startCmd() *cobra.Command {
 						CloudboxURL: cbBase,
 						AccessToken: fc.AccessToken,
 						AgentName:   fc.AgentName,
+						Cluster: func() *fleetreg.ClusterInfo {
+							return clusterReport(fc, cbBase)
+						},
 					})
 					if ferr != nil {
 						slog.Warn("fleet registry: watcher init failed", "err", ferr)
@@ -2546,6 +2549,48 @@ const (
 // corrupting — but it is pointless API load and makes logs unreadable.
 // When cloudbox hosts the plane it runs these itself and outpost must
 // stay out of the way entirely.
+// clusterReport renders this host's Kubernetes participation for the fleet
+// inventory, or nil when it joins no cluster.
+//
+// This is a REPORT, not a definition — the same report/author split the
+// *:registry scopes encode. It rides the fleet-registry push rather than
+// getting an endpoint of its own precisely so it cannot be mistaken for a way
+// to change cluster membership from the cloud.
+//
+// The value it carries: placement is now a user choice, so the same host can
+// be on a cloudbox-hosted plane today and a peer-hosted one tomorrow. Pushing
+// the cluster identity is what makes that move visible in one place instead of
+// requiring a walk through every host's config.
+func clusterReport(fc *conf.FileConfig, cloudboxBase string) *fleetreg.ClusterInfo {
+	if fc == nil || !fc.ClusterOn() {
+		return nil
+	}
+	cc := fc.Cluster
+	info := &fleetreg.ClusterInfo{
+		Placement:    fleetreg.ClassifyPlacement(cc.APIURL, cloudboxBase, cc.ControlPlaneOn()),
+		Endpoint:     cc.APIURL,
+		ControlPlane: cc.ControlPlaneOn(),
+		CA:           cc.CA,
+	}
+	base := fc.ClusterNodeName()
+	if cc.HasAgentRuntime() {
+		info.Runtimes = append(info.Runtimes, conf.ClusterRuntimeAgent)
+		if base != "" {
+			// The k3s agent registers as <base>-<node-id>. The base is what an
+			// operator matches on — cloudbox's node view already strips that
+			// suffix — so reporting the base keeps the two views consistent.
+			info.Nodes = append(info.Nodes, base)
+		}
+	}
+	for _, mode := range cc.VirtualRuntimes() {
+		info.Runtimes = append(info.Runtimes, mode)
+		if base != "" {
+			info.Nodes = append(info.Nodes, base+"-"+mode)
+		}
+	}
+	return info
+}
+
 func startControlPlaneReconcilers(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, kubeCfg *rest.Config) {
 	if fc == nil || fc.Cluster == nil || !fc.Cluster.ControlPlaneOn() {
 		return

@@ -79,6 +79,11 @@ type Config struct {
 	// mesh supervisor. A name is all the inventory needs — a peer asking
 	// "does host-a have the conductor skill" wants a yes, not the procedure.
 	Skills func() []string
+
+	// Cluster reports this host's Kubernetes participation, or nil when it
+	// joins none. Indirected like Catalog/Skills so the watcher stays free of
+	// conf coupling and testable without a config file.
+	Cluster func() *ClusterInfo
 }
 
 // Watcher polls the local fleet registry and pushes changes.
@@ -145,6 +150,15 @@ func (w *Watcher) Snapshot() []Asset {
 
 	for _, name := range w.cfg.Skills() {
 		out = append(out, Asset{Kind: "skill", Name: name})
+	}
+
+	// At most one cluster per host today (ClusterConfig holds a single
+	// apiserver), but the row is a list entry rather than a scalar field so a
+	// host joining two planes later needs no wire change.
+	if w.cfg.Cluster != nil {
+		if a, ok := clusterAsset(w.cfg.Cluster()); ok {
+			out = append(out, a)
+		}
 	}
 
 	sortAssets(out)
