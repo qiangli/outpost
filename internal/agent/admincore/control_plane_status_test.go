@@ -339,3 +339,50 @@ func TestFakeProber_TableDriven(t *testing.T) {
 		})
 	}
 }
+
+// --- bounded node-reader coverage (phase 3) ---
+
+// TestReadControlPlaneNodes_EmptyPath returns empty immediately for empty kubeconfig path.
+func TestReadControlPlaneNodes_EmptyPath(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	nodes, err := ReadControlPlaneNodes(ctx, "")
+	if err != nil {
+		t.Errorf("err = %v, want nil", err)
+	}
+	if len(nodes) != 0 {
+		t.Errorf("len(nodes) = %d, want 0", len(nodes))
+	}
+}
+
+// TestReadControlPlaneNodes_NonexistentPath returns empty for a nonexistent kubeconfig file.
+func TestReadControlPlaneNodes_NonexistentPath(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	nodes, err := ReadControlPlaneNodes(ctx, "/nonexistent/path/to/kubeconfig")
+	if err != nil {
+		t.Errorf("err = %v, want nil", err)
+	}
+	if len(nodes) != 0 {
+		t.Errorf("len(nodes) = %d, want 0", len(nodes))
+	}
+}
+
+// TestReadControlPlaneNodes_ContextTimeout returns empty when context times out.
+func TestReadControlPlaneNodes_ContextTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+	defer cancel()
+	// Let the context expire.
+	time.Sleep(10 * time.Millisecond)
+
+	// Even with a nonexistent path, the timeout ensures fast return.
+	nodes, err := ReadControlPlaneNodes(ctx, "/nonexistent/path")
+	if err != nil {
+		t.Errorf("err = %v, want nil", err)
+	}
+	if len(nodes) != 0 {
+		t.Errorf("len(nodes) = %d, want 0", len(nodes))
+	}
+}

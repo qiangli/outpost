@@ -179,6 +179,7 @@ func NewDefaultControlPlaneStatusProber(
 // ReadControlPlaneNodes queries the cluster nodes from a kubeconfig file.
 // Returns empty list if the kubeconfig is unavailable or the query fails;
 // an error is only for unexpected system failures.
+// The context timeout is honored; a timeout returns an empty list, not an error.
 func ReadControlPlaneNodes(ctx context.Context, kubeconfigPath string) ([]Node, error) {
 	if kubeconfigPath == "" {
 		return []Node{}, nil
@@ -191,6 +192,9 @@ func ReadControlPlaneNodes(ctx context.Context, kubeconfigPath string) ([]Node, 
 		return []Node{}, nil
 	}
 
+	// Set a 5-second timeout on the REST client to bound network operations.
+	config.Timeout = 5 * time.Second
+
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		// Failed to create client; return empty list, not an error.
@@ -200,7 +204,7 @@ func ReadControlPlaneNodes(ctx context.Context, kubeconfigPath string) ([]Node, 
 	// List nodes from the cluster.
 	nodeList, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
-		// Failed to list nodes; return empty list, not an error.
+		// Failed to list nodes or context cancelled; return empty list, not an error.
 		return []Node{}, nil
 	}
 

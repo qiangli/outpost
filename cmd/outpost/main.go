@@ -845,6 +845,27 @@ func startCmd() *cobra.Command {
 			// admincore.Server instance feeds adminui (human SPA) and
 			// — soon — mcpapi (agent tools), so the file-save mutex and
 			// restart-debounce timer are shared across the two surfaces.
+			// Bind the control-plane status probe. Read cluster config + join endpoint once
+			// so the probe closures see the CURRENT config snapshot, not a future mutation.
+			cc := fc.Cluster
+			controlPlaneEnabled := func() bool { return cc != nil && cc.ControlPlaneOn() }
+			joinEndpoint := func() string {
+				if cc == nil || !cc.ControlPlaneOn() {
+					return ""
+				}
+				cpAddr, cpPort := cc.TunnelBind()
+				return net.JoinHostPort(cpAddr, strconv.Itoa(cpPort))
+			}
+			nodes := func(ctx context.Context) ([]admincore.Node, error) {
+				if cc == nil {
+					return []admincore.Node{}, nil
+				}
+				return admincore.ReadControlPlaneNodes(ctx, cc.ControlPlaneKubeconfig)
+			}
+			hasJoinToken := func() bool { return cc != nil && strings.TrimSpace(cc.JoinToken) != "" }
+			hasNodeToken := func() bool { return cc != nil && strings.TrimSpace(cc.NodeToken) != "" }
+			hasSTCPSecret := func() bool { return cc != nil && strings.TrimSpace(cc.STCPSecret) != "" }
+
 			core, err := admincore.New(admincore.Deps{
 				ConfigPath:          cfgPath,
 				Apps:                apps,
@@ -862,6 +883,15 @@ func startCmd() *cobra.Command {
 				ShardTrigger:        shardTrigger,
 				ShardStatus:         shardStatus,
 				ShardLog:            shardLog,
+				ControlPlaneStatusProber: admincore.NewDefaultControlPlaneStatusProber(
+					fc.AgentName,
+					controlPlaneEnabled,
+					joinEndpoint,
+					nodes,
+					hasJoinToken,
+					hasNodeToken,
+					hasSTCPSecret,
+				),
 				ClusterRuntimeDown: func(ctx context.Context, purge bool) error {
 					// Resolve the node name from the CURRENT config (LeaveCluster
 					// just rewrote it, preserving Mode + NodeName). Stop the runtime

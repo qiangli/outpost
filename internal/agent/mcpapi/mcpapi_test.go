@@ -136,6 +136,7 @@ func TestToolListAndStatusResource(t *testing.T) {
 		"outpost_set_control_plane",
 		"outpost_control_plane_token",
 		"outpost_rotate_control_plane_token",
+		"outpost_control_plane_status",
 		// Peer-plane join — the worker-side twin. Named _peer because
 		// outpost_cluster_join / _leave already mean the node-lifecycle pair
 		// (whether this host is a node), not which plane it is a node of.
