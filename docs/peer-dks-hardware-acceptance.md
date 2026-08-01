@@ -76,7 +76,7 @@ Summary line: `SUMMARY pass=4 fail=3 blocked=4` → `RESULT FAIL`
 | 1 | `nodes-ready` | **PASS** | `2 Ready kubelet-backed nodes: worker-a worker-b` |
 | 2 | `distinct-pod-cidrs` | **PASS** | `2 distinct podCIDRs: 10.42.0.0/24 10.42.2.0/24` (Ready kubelet-backed nodes only) |
 | 3 | `flannel-iface` | **BLOCKED** | `no node carries annotation flannel.alpha.coreos.com/public-ip; flannel is not running on any node (peer-flannel path not deployed here)` |
-| 4 | `no-stale-conflist` | **BLOCKED** | `needs host-filesystem access to /etc/cni/net.d on a peer-flannel node; set DKS_ALLOW_NODE_DEBUG=1 to permit host-inspection pods (requires pod execution RBAC)` |
+| 4 | `no-stale-conflist` | **BLOCKED** | `missing host evidence on nodes; set DKS_ALLOW_NODE_DEBUG=1 to permit host-inspection pods (hostPID + hostNetwork + read-only /host mount; requires pod execution RBAC), or supply DKS_HOST_EVIDENCE=<file>` |
 | 5 | `cross-node-pod-ip` | **FAIL** | `dksacc-pid-a@worker-a -> 10.42.2.17@worker-b: 3 packets transmitted, 0 packets received, 100% packet loss` |
 | 6 | `service-clusterip` | **FAIL** | `dksacc-pid-a -> clusterIP 10.43.25.178:8080: wget: download timed out` |
 | 7 | `cluster-dns` | **FAIL** (flaky) | `** server can't find dksacc-svc.svc.cluster.local: NXDOMAIN` — see note below |
@@ -118,7 +118,7 @@ Summary line: `SUMMARY pass=4 fail=3 blocked=4` → `RESULT FAIL`
 
 ### Proven offline (no cluster required)
 
-`bash script/dks-peer-acceptance_test.sh` → **71 pass, 0 fail** (pure unit tests;
+`bash script/dks-peer-acceptance_test.sh` → **132 pass, 0 fail** (pure unit tests;
 runner/integration tests execute end-to-end with a stub kubectl). It asserts the
 harness's own logic, including the mandatory invariants this story turns on:
 
@@ -131,10 +131,15 @@ harness's own logic, including the mandatory invariants this story turns on:
 - a `DKS_ONLY` naming no existing check runs nothing and exits `2`, not `0`;
 - distinct-CIDR comparison: duplicate, empty, missing-field, late-duplicate and
   zero-node inputs all return failure with the offending node named;
-- **NEW**: annotation-only (flannel-iface) never PASS — host inspection required
-  (regression guard: checks missing host evidence return BLOCKED, not PASS);
-- **NEW**: cleanup pod tracking — inspection pods use dksacc-* naming convention
-  and are tracked in CREATED array for cleanup (no leaked debug pods);
+- **NEW**: annotation-only (flannel-iface) never PASS — host inspection (hostPID +
+  hostNetwork + read-only /host mount) or operator evidence required (regression
+  guard: checks missing host evidence return BLOCKED, not PASS);
+- **NEW**: cleanup pod tracking — inspection pods use deterministic `${RUN_ID}-insp-<slug>-<idx>`
+  naming convention and are tracked in CREATED array for cleanup (no leaked
+  inspection pods);
+- **NEW**: host-evidence vocabulary shared between inspection-pod output and
+  `DKS_HOST_EVIDENCE` file (k3s_argv, tailscale0, cni_confdir), fallback when
+  RBAC unavailable;
 - **NEW**: stale-node exclusion — distinct-pod-cidrs scoped to Ready nodes only;
   mixed input filters leave Ready-only result;
 - tailnet CGNAT range boundaries (`100.63` / `100.128` correctly rejected);
@@ -153,12 +158,13 @@ API server, so the runner itself is validated; only the *venue* is wrong.
 | Blocker | Blocks | What it needs |
 | --- | --- | --- |
 | No peer-hosted DKS cluster reachable | #3, #4, and the *meaning* of #5–#9 | Two machines joined to a **peer-hosted** control plane (`outpost cluster control-plane on` + `cluster join`), each with a Headscale-issued tailnet identity. Out of scope: provisioning/pairing was explicitly forbidden. |
-| No host-filesystem access to any node | #4 | `kubectl debug node/<n>` RBAC + a privileged-capable namespace, or shell access on the node. Re-run with `DKS_ALLOW_NODE_DEBUG=1`. |
+| No host-inspection RBAC or operator evidence | #4 | Run with `DKS_ALLOW_NODE_DEBUG=1` to permit host-inspection pods (hostPID + hostNetwork + read-only / mount at /host; requires pod execution RBAC), or collect host evidence manually and pass `DKS_HOST_EVIDENCE=<file>` (format: one node per line, `<node> <key>=<value> [<key>=<value> ...]`). |
 | No published nanochat image | #10 | A container image reference in `DKS_NANOCHAT_IMAGE`. None exists in this repo. |
 | No chunked-bashy image or Job manifest | #11 | A container image reference in `DKS_BASHY_IMAGE`. None exists in this repo. |
 
 **What would close this out:** run the same harness unchanged against a
-peer-hosted cluster with `DKS_ALLOW_NODE_DEBUG=1`, plus the two image env vars.
+peer-hosted cluster with `DKS_ALLOW_NODE_DEBUG=1` (host-inspection pods) or
+`DKS_HOST_EVIDENCE=<file>` (operator-collected evidence), plus the two image env vars.
 No harness change is required — checks 3 and 4 are implemented and will assert,
 not skip, the moment a flannel-bearing node is present.
 
@@ -191,9 +197,16 @@ Not fixed here — this story is forbidden from touching production code.
 # Offline — no cluster needed.
 bash script/dks-peer-acceptance_test.sh
 
-# Full acceptance against a peer-hosted cluster.
+# Full acceptance against a peer-hosted cluster (with host inspection).
 KUBECONFIG=~/.kube/peer.yaml \
 DKS_ALLOW_NODE_DEBUG=1 \
+DKS_NANOCHAT_IMAGE=<image> \
+DKS_BASHY_IMAGE=<image> \
+  bash script/dks-peer-acceptance.sh
+
+# Full acceptance with operator-collected host evidence (no pod RBAC needed).
+KUBECONFIG=~/.kube/peer.yaml \
+DKS_HOST_EVIDENCE=host-evidence.txt \
 DKS_NANOCHAT_IMAGE=<image> \
 DKS_BASHY_IMAGE=<image> \
   bash script/dks-peer-acceptance.sh

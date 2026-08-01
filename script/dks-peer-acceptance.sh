@@ -31,7 +31,18 @@
 #   DKS_TIMEOUT           seconds to wait for a pod to become Ready (default 120)
 #   DKS_TEST_IMAGE        image for the probe pods (default docker.io/library/busybox:1.36)
 #   DKS_KEEP=1            do not delete created test objects
-#   DKS_ALLOW_NODE_DEBUG=1  permit `kubectl debug node/<n>` for host-filesystem checks
+#   DKS_ALLOW_NODE_DEBUG=1  permit host-inspection pods (hostPID + hostNetwork +
+#                         read-only hostPath mount of / at /host) for the
+#                         flannel-iface and no-stale-conflist host-evidence checks
+#   DKS_HOST_EVIDENCE     file of operator-collected host evidence, consulted for
+#                         any item the inspection pods did not produce (or when
+#                         inspection is not permitted). One node per line:
+#                             <node> <key>=<value> [<key>=<value> ...]
+#                         with the same vocabulary the inspection pods emit (see
+#                         dks_ev). Without pod evidence or this file the
+#                         host-evidence checks stay BLOCKED — a missing tool or
+#                         missing evidence is never scored FAIL; only observed
+#                         contradictory values are.
 #   DKS_HEADLAMP_NS/DKS_HEADLAMP_SVC   an already-deployed Headlamp to assert against
 #   DKS_NANOCHAT_IMAGE    image for the nanochat cross-node workload
 #   DKS_BASHY_IMAGE       image for the chunked bashy distributed workload
@@ -158,6 +169,32 @@ dks_selected() {
     return 1
 }
 
+# dks_ev <blob> <key> — value of the first "EV <key>=<value>" line in <blob>.
+# The inspection pods and the DKS_HOST_EVIDENCE file share this one vocabulary:
+#   k3s_argv    = flannel-iface-tailscale0 | no-flannel-iface | absent
+#   tailscale0  = ipv4:<addr> | no-ipv4 | absent | tool-missing
+#   cni_confdir = listing:<comma-list> | empty | dir-absent | unreadable
+#                 | host-mount-missing
+# "absent"/"tool-missing"/"unreadable"/"host-mount-missing" (and a missing key)
+# are MISSING evidence -> BLOCKED; "no-flannel-iface"/"no-ipv4"/a stale listing
+# are OBSERVED contradictions -> eligible for FAIL.
+dks_ev() {
+    printf '%s\n' "${1:-}" | sed -n "s/^EV ${2}=//p" | head -1
+}
+
+# dks_file_ev <node> <key> — operator-supplied host evidence from the file named
+# by DKS_HOST_EVIDENCE (format documented in the header). Values are space-free.
+# Prints nothing when the file, node, or key is absent — callers treat that as
+# missing evidence (BLOCKED), never FAIL.
+dks_file_ev() {
+    [ -n "${DKS_HOST_EVIDENCE:-}" ] && [ -r "${DKS_HOST_EVIDENCE}" ] || return 1
+    awk -v node="$1" -v key="$2" '
+        $1 == node {
+            for (i = 2; i <= NF; i++)
+                if (index($i, key "=") == 1) { print substr($i, length(key) + 2); exit }
+        }' "$DKS_HOST_EVIDENCE"
+}
+
 # Guard: sourcing for tests stops here.
 if [ "${DKS_LIB_ONLY:-0}" = "1" ]; then
     return 0 2>/dev/null || true
@@ -200,6 +237,9 @@ wait_ready() {
 
 make_pod() {
     local name="$1" node="$2"
+    # Register for cleanup BEFORE creation: a create that half-succeeds, or a
+    # harness killed mid-apply, must still delete the pod on the EXIT trap.
+    CREATED+=("pod/$name")
     cat <<YAML | k apply -f - >/dev/null 2>&1
 apiVersion: v1
 kind: Pod
@@ -215,9 +255,121 @@ spec:
     image: $DKS_TEST_IMAGE
     command: ["sh","-c","while true; do echo dks-alive; sleep 5; done"]
 YAML
-    local rc=$?
+}
+
+# ---------------------------------------------------------------------------
+# Host-inspection pods
+# ---------------------------------------------------------------------------
+# The pod-side scripts print ONLY "EV key=value" lines (vocabulary at dks_ev).
+# They run with hostPID (host /proc visible), hostNetwork (host interfaces
+# visible), and / mounted read-only at /host — an ordinary pod sees none of
+# host k3s argv, host tailscale0, or /etc/cni/net.d, so its output would be
+# invalid evidence. A missing tool or invisible process is reported as its own
+# value (absent / tool-missing), never conflated with a contradiction.
+#
+# DKSMARK: with hostPID the /proc scan also sees this script's own sh
+# processes, whose cmdline contains these literal match patterns; every
+# process carrying the marker is skipped so the scan can never match itself.
+FLANNEL_INSPECT_SCRIPT='argv=""
+for f in /proc/[0-9]*/cmdline; do
+    c="$(tr "\000" " " < "$f" 2>/dev/null)" || continue
+    case "$c" in *DKSMARK*) continue ;; esac
+    case "$c" in *"k3s agent "*) argv="$c"; break ;; esac
+done
+if [ -z "$argv" ]; then
+    echo "EV k3s_argv=absent"
+else
+    case "$argv" in
+        *"--flannel-iface=tailscale0 "*) echo "EV k3s_argv=flannel-iface-tailscale0" ;;
+        *) echo "EV k3s_argv=no-flannel-iface" ;;
+    esac
+fi
+ipbin=""
+if command -v ip >/dev/null 2>&1; then
+    ipbin="ip"
+elif chroot /host ip -V >/dev/null 2>&1; then
+    ipbin="chroot /host ip"
+fi
+if [ -z "$ipbin" ]; then
+    echo "EV tailscale0=tool-missing"
+elif ! $ipbin link show dev tailscale0 >/dev/null 2>&1; then
+    echo "EV tailscale0=absent"
+else
+    a="$($ipbin -4 -o addr show dev tailscale0 2>/dev/null | sed -n "s/.*inet \([0-9.]*\).*/\1/p" | head -1)"
+    if [ -n "$a" ]; then echo "EV tailscale0=ipv4:$a"; else echo "EV tailscale0=no-ipv4"; fi
+fi'
+
+CONFLIST_INSPECT_SCRIPT='if [ ! -d /host/etc ]; then
+    echo "EV cni_confdir=host-mount-missing"
+elif [ ! -e /host/etc/cni/net.d ]; then
+    echo "EV cni_confdir=dir-absent"
+elif files="$(ls /host/etc/cni/net.d 2>/dev/null)"; then
+    if [ -z "$files" ]; then
+        echo "EV cni_confdir=empty"
+    else
+        echo "EV cni_confdir=listing:$(printf "%s" "$files" | tr "\n" ",")"
+    fi
+else
+    echo "EV cni_confdir=unreadable"
+fi'
+
+# dks_inspect <slug> <idx> <node> <script>
+# One-shot host-inspection pod pinned to <node>. The name is deterministic,
+# DNS-safe, and INDEXED — ${RUN_ID}-insp-<slug>-<idx> — never derived from the
+# node name (a prefixed node name can exceed or violate the RFC 1123 label
+# rules). Registers the pod for cleanup BEFORE kubectl is asked to create it,
+# waits (bounded by DKS_TIMEOUT) for it to run to completion, fetches logs,
+# and deletes it explicitly — no best-effort `--rm` attach semantics.
+#
+# Logs land in $DKS_INSPECT_OUT, a global, NOT on stdout: running this inside
+# $(...) would fork a subshell and silently lose the CREATED registration.
+# Returns non-zero when no logs were captured (caller treats as no evidence).
+DKS_INSPECT_OUT=""
+dks_inspect() {
+    local slug="$1" idx="$2" node="$3" script="$4"
+    local name="${RUN_ID}-insp-${slug}-${idx}"
+    DKS_INSPECT_OUT=""
     CREATED+=("pod/$name")
-    return $rc
+    if ! cat <<YAML | k apply -f - >/dev/null 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+  labels: {harness: "$RUN_ID"}
+spec:
+  nodeName: $node
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 1
+  hostPID: true
+  hostNetwork: true
+  containers:
+  - name: inspect
+    image: $DKS_TEST_IMAGE
+    command: ["sh","-c"]
+    args:
+    - |
+$(printf '%s\n' "$script" | sed 's/^/      /')
+    volumeMounts:
+    - {name: host, mountPath: /host, readOnly: true}
+  volumes:
+  - name: host
+    hostPath: {path: /, type: Directory}
+YAML
+    then
+        k delete pod "$name" --ignore-not-found --wait=false >/dev/null 2>&1
+        return 1
+    fi
+    local deadline=$((SECONDS + DKS_TIMEOUT)) phase=""
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        phase="$(k get pod "$name" -o jsonpath='{.status.phase}' 2>/dev/null)"
+        case "$phase" in Succeeded|Failed) break ;; esac
+        sleep 2
+    done
+    case "$phase" in
+        Succeeded|Failed) DKS_INSPECT_OUT="$(k logs "$name" 2>/dev/null)" ;;
+    esac
+    k delete pod "$name" --ignore-not-found --wait=false >/dev/null 2>&1
+    [ -n "$DKS_INSPECT_OUT" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -282,11 +434,14 @@ if dks_selected distinct-pod-cidrs; then
     # custom-columns (not jsonpath): jsonpath emits NOTHING for absent
     # .spec.podCIDR, which shifts columns and makes missing CIDR masquerade as
     # the next field; custom-columns prints literal <none>.
-    CIDR_LINES="$(kubectl get nodes --no-headers -o \
-        'custom-columns=NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,PODCIDR:.spec.podCIDR,VER:.status.nodeInfo.kubeletVersion' 2>/dev/null \
-        | awk '$2=="True" && $4 !~ /vknode/ && $4 ~ /k3s|^v1\./ {print $1, $3}')"
-    EXCLUDED_VIRTUAL="$(kubectl get nodes -o 'jsonpath={range .items[*]}{.metadata.name}{" "}{.status.nodeInfo.kubeletVersion}{"\n"}{end}' 2>/dev/null | awk '$2 ~ /vknode/ {printf "%s ", $1}')"
-    EXCLUDED_NOTREADY="$(kubectl get nodes -o 'jsonpath={range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | awk '$2!="True" && $2!="" {printf "%s ", $1}' | xargs -r kubectl get nodes -o 'jsonpath={range .items[*]}{.metadata.name}{" "}{.status.nodeInfo.kubeletVersion}{"\n"}{end}' 2>/dev/null | awk '$2!~/vknode/ {printf "%s ", $1}')"
+    NODE_TABLE="$(kubectl get nodes --no-headers -o \
+        'custom-columns=NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,PODCIDR:.spec.podCIDR,VER:.status.nodeInfo.kubeletVersion' 2>/dev/null)"
+    # One query, split three ways: the scope (Ready, kubelet-backed) and both
+    # exclusion NOTE lines all derive from the same snapshot, so they cannot
+    # disagree with each other.
+    CIDR_LINES="$(printf '%s\n' "$NODE_TABLE" | awk '$2=="True" && $4 !~ /vknode/ && $4 ~ /k3s|^v1\./ {print $1, $3}')"
+    EXCLUDED_VIRTUAL="$(printf '%s\n' "$NODE_TABLE" | awk '$4 ~ /vknode/ {printf "%s ", $1}')"
+    EXCLUDED_NOTREADY="$(printf '%s\n' "$NODE_TABLE" | awk 'NF>0 && $2!="True" && $4 !~ /vknode/ {printf "%s ", $1}')"
     [ -n "$EXCLUDED_VIRTUAL" ] && echo "NOTE excluded from distinct-pod-cidrs (virtual-kubelet): $EXCLUDED_VIRTUAL"
     [ -n "$EXCLUDED_NOTREADY" ] && echo "NOTE excluded from distinct-pod-cidrs (NotReady): $EXCLUDED_NOTREADY"
     if [ -z "$CIDR_LINES" ]; then
@@ -302,66 +457,106 @@ if dks_selected distinct-pod-cidrs; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. flannel-iface — flannel pinned to tailscale0 on each worker.
-# Annotation alone never PASS: requires explicit host evidence on each
-# selected Ready worker that k3s agent argv contains --flannel-iface=tailscale0
-# AND tailscale0 has IPv4. BLOCKED otherwise (annotation only).
+# 3. flannel-iface — flannel pinned to tailscale0 on BOTH selected workers.
+# PASS requires, for NODE_A AND NODE_B, all three evidence items:
+#   - flannel public-ip annotation present and inside 100.64/10;
+#   - host k3s agent argv contains --flannel-iface=tailscale0;
+#   - host tailscale0 carries an IPv4 address.
+# Host evidence comes from hostPID/hostNetwork inspection pods
+# (DKS_ALLOW_NODE_DEBUG=1) or an operator-supplied DKS_HOST_EVIDENCE file.
+# ANY missing item on EITHER node => BLOCKED, never PASS. Only observed
+# contradictory values (non-tailnet annotation, argv without the flag,
+# tailscale0 present without IPv4) => FAIL.
 # ---------------------------------------------------------------------------
 if dks_selected flannel-iface; then
-    if [ "${DKS_ALLOW_NODE_DEBUG:-0}" != "1" ]; then
-        dks_record flannel-iface BLOCKED "requires host-inspection for k3s agent argv; set DKS_ALLOW_NODE_DEBUG=1 to permit inspection pods (requires pod execution RBAC)"
-    elif [ "$TWO_NODES" != "1" ]; then
+    if [ "$TWO_NODES" != "1" ]; then
         dks_record flannel-iface BLOCKED "$NO_TWO"
     else
-        ANN="$(kubectl get nodes "$NODE_A" "$NODE_B" -o 'jsonpath={range .items[*]}{.metadata.name}{" "}{.metadata.annotations.flannel\.alpha\.coreos\.com/public-ip}{"\n"}{end}' 2>/dev/null | awk 'NF>=2')"
-        if [ -z "$ANN" ]; then
-            dks_record flannel-iface BLOCKED "selected nodes carry no flannel.alpha.coreos.com/public-ip annotation; flannel not deployed"
+        ANN="$(kubectl get nodes "$NODE_A" "$NODE_B" -o 'jsonpath={range .items[*]}{.metadata.name}{" "}{.metadata.annotations.flannel\.alpha\.coreos\.com/public-ip}{"\n"}{end}' 2>/dev/null)"
+        ANN_A="$(printf '%s\n' "$ANN" | awk -v n="$NODE_A" '$1==n {print $2; exit}')"
+        ANN_B="$(printf '%s\n' "$ANN" | awk -v n="$NODE_B" '$1==n {print $2; exit}')"
+        if [ -z "$ANN_A" ] && [ -z "$ANN_B" ]; then
+            dks_record flannel-iface BLOCKED "no flannel.alpha.coreos.com/public-ip annotation on $NODE_A or $NODE_B; flannel is not running on the selected nodes"
         else
-            # Verify tailnet IPs first (annotation guard); requires host check after.
-            bad=""; good=""
-            while read -r n ip; do
-                if dks_is_tailnet_ip "$ip"; then good="$good $n"; else bad="$bad $n=$ip"; fi
-            done <<<"$ANN"
-            if [ -n "$bad" ]; then
-                dks_record flannel-iface FAIL "flannel public-ip annotation not on tailnet (100.64/10) for:$bad"
-            else
-                # Annotation green; now verify host evidence: --flannel-iface=tailscale0 in argv + IPv4 on tailscale0.
-                PASS_NODES=""
-                for node in $good; do
-                    FLANNEL_POD="dksacc-flannel-check-$$-$node"
-                    OUT="$(kubectl run "$FLANNEL_POD" --image="$DKS_TEST_IMAGE" --overrides='{"spec":{"nodeSelector":{"kubernetes.io/hostname":"'$node'"},"restartPolicy":"Never"}}' --rm -i --quiet -- sh -c 'ps aux | grep -F "k3s agent" | grep -v grep | grep -q "\-\-flannel-iface=tailscale0" && ip -4 addr show tailscale0 >/dev/null 2>&1 && echo PASS || echo FAIL' 2>&1 | head -1)"
-                    CREATED+=("pod/$FLANNEL_POD")  # Fallback: cleanup on exit (--rm is best effort)
-                    [ "$OUT" = "PASS" ] && PASS_NODES="$PASS_NODES $node"
-                done
-                if [ -z "$PASS_NODES" ]; then
-                    dks_record flannel-iface FAIL "host inspection found no nodes with --flannel-iface=tailscale0 + IPv4 on tailscale0"
+            FI_FAIL=""; FI_MISSING=""; FI_OK=""
+            FI_IDX=0
+            for node in "$NODE_A" "$NODE_B"; do
+                ann="$ANN_A"; [ "$FI_IDX" = "1" ] && ann="$ANN_B"
+                if [ -z "$ann" ]; then
+                    FI_MISSING="$FI_MISSING $node:annotation-absent"
+                elif dks_is_tailnet_ip "$ann"; then
+                    FI_OK="$FI_OK $node:annotation=$ann"
                 else
-                    dks_record flannel-iface PASS "verified --flannel-iface=tailscale0 + tailscale0 IPv4 on:$PASS_NODES"
+                    FI_FAIL="$FI_FAIL $node:annotation-not-tailnet($ann)"
                 fi
+                # NOT $(dks_inspect ...): the CREATED registration must reach
+                # this shell, not die in a command-substitution subshell.
+                EV_ARGV=""; EV_TS0=""
+                if [ "${DKS_ALLOW_NODE_DEBUG:-0}" = "1" ]; then
+                    dks_inspect flannel "$FI_IDX" "$node" "$FLANNEL_INSPECT_SCRIPT" || true
+                    EV_ARGV="$(dks_ev "$DKS_INSPECT_OUT" k3s_argv)"
+                    EV_TS0="$(dks_ev "$DKS_INSPECT_OUT" tailscale0)"
+                fi
+                [ -z "$EV_ARGV" ] && EV_ARGV="$(dks_file_ev "$node" k3s_argv)"
+                [ -z "$EV_TS0" ] && EV_TS0="$(dks_file_ev "$node" tailscale0)"
+                case "$EV_ARGV" in
+                    flannel-iface-tailscale0) FI_OK="$FI_OK $node:argv-ok" ;;
+                    no-flannel-iface) FI_FAIL="$FI_FAIL $node:k3s-agent-argv-lacks-flannel-iface-tailscale0" ;;
+                    *) FI_MISSING="$FI_MISSING $node:k3s-argv-${EV_ARGV:-no-evidence}" ;;
+                esac
+                case "$EV_TS0" in
+                    ipv4:*) FI_OK="$FI_OK $node:tailscale0-$EV_TS0" ;;
+                    absent|no-ipv4) FI_FAIL="$FI_FAIL $node:tailscale0-$EV_TS0" ;;
+                    *) FI_MISSING="$FI_MISSING $node:tailscale0-${EV_TS0:-no-evidence}" ;;
+                esac
+                FI_IDX=$((FI_IDX + 1))
+            done
+            if [ -n "$FI_FAIL" ]; then
+                dks_record flannel-iface FAIL "observed contradictions:$FI_FAIL"
+            elif [ -n "$FI_MISSING" ]; then
+                dks_record flannel-iface BLOCKED "missing evidence:$FI_MISSING; set DKS_ALLOW_NODE_DEBUG=1 (hostPID/hostNetwork inspection pods) or supply DKS_HOST_EVIDENCE=<file>"
+            else
+                dks_record flannel-iface PASS "both $NODE_A and $NODE_B verified:$FI_OK"
             fi
         fi
     fi
 fi
 
 # ---------------------------------------------------------------------------
-# 4. no-stale-conflist — needs host filesystem access on the node.
-# Uses a named scoped pod instead of kubectl debug to track and cleanup.
+# 4. no-stale-conflist — /host/etc/cni/net.d on BOTH selected workers, read
+# through the inspection pod's read-only hostPath mount (an ordinary pod has
+# no /host and would report the container's own empty filesystem as truth).
+# Unreadable / no evidence => BLOCKED; an observed stale conflist => FAIL.
 # ---------------------------------------------------------------------------
 if dks_selected no-stale-conflist; then
-    if [ "${DKS_ALLOW_NODE_DEBUG:-0}" != "1" ]; then
-        dks_record no-stale-conflist BLOCKED "requires host-inspection for CNI conflist state; set DKS_ALLOW_NODE_DEBUG=1 to permit inspection pods (requires pod execution RBAC)"
-    elif [ "$TWO_NODES" != "1" ]; then
+    if [ "$TWO_NODES" != "1" ]; then
         dks_record no-stale-conflist BLOCKED "$NO_TWO"
     else
-        INSPECT_POD="dksacc-conflist-$$"
-        OUT="$(kubectl run "$INSPECT_POD" --image="$DKS_TEST_IMAGE" --overrides='{"spec":{"nodeSelector":{"kubernetes.io/hostname":"'$NODE_B'"},"restartPolicy":"Never"}}' --rm -i --quiet -- sh -c 'ls /host/etc/cni/net.d/ 2>&1' 2>&1 | head -20)"
-        CREATED+=("pod/$INSPECT_POD")  # Fallback: cleanup on exit
-        if echo "$OUT" | grep -qE '10-outpost\.conflist|10-bridge\.conflist'; then
-            dks_record no-stale-conflist FAIL "stale conflist present on $NODE_B: $OUT"
-        elif echo "$OUT" | grep -q 'conflist'; then
-            dks_record no-stale-conflist PASS "no 10-outpost/10-bridge conflist on $NODE_B"
+        CF_STALE=""; CF_MISSING=""; CF_CLEAN=""
+        CF_IDX=0
+        for node in "$NODE_A" "$NODE_B"; do
+            EV_CNI=""
+            if [ "${DKS_ALLOW_NODE_DEBUG:-0}" = "1" ]; then
+                dks_inspect conflist "$CF_IDX" "$node" "$CONFLIST_INSPECT_SCRIPT" || true
+                EV_CNI="$(dks_ev "$DKS_INSPECT_OUT" cni_confdir)"
+            fi
+            [ -z "$EV_CNI" ] && EV_CNI="$(dks_file_ev "$node" cni_confdir)"
+            case "$EV_CNI" in
+                listing:*10-outpost.conflist*|listing:*10-bridge.conflist*)
+                    CF_STALE="$CF_STALE $node(${EV_CNI#listing:})" ;;
+                listing:*|empty|dir-absent)
+                    CF_CLEAN="$CF_CLEAN $node" ;;
+                *)
+                    CF_MISSING="$CF_MISSING $node:${EV_CNI:-no-evidence}" ;;
+            esac
+            CF_IDX=$((CF_IDX + 1))
+        done
+        if [ -n "$CF_STALE" ]; then
+            dks_record no-stale-conflist FAIL "stale 10-outpost/10-bridge conflist on:$CF_STALE"
+        elif [ -n "$CF_MISSING" ]; then
+            dks_record no-stale-conflist BLOCKED "/host/etc/cni/net.d unreadable or no evidence on:$CF_MISSING; set DKS_ALLOW_NODE_DEBUG=1 (hostPath inspection pods) or supply DKS_HOST_EVIDENCE=<file>"
         else
-            dks_record no-stale-conflist BLOCKED "could not read /etc/cni/net.d on $NODE_B: $OUT"
+            dks_record no-stale-conflist PASS "no stale 10-outpost/10-bridge conflist on:$CF_CLEAN"
         fi
     fi
 fi
@@ -407,6 +602,7 @@ if dks_selected service-clusterip || dks_selected cluster-dns; then
     if [ "$TWO_NODES" != "1" ] || [ -n "${ERR_B:-}" ]; then
         SVC_IP=""
     else
+        CREATED+=("svc/$SVC")  # registered BEFORE creation, same rule as pods
         cat <<YAML | k apply -f - >/dev/null 2>&1
 apiVersion: v1
 kind: Service
@@ -415,7 +611,6 @@ spec:
   selector: {app: $POD_B}
   ports: [{port: 8080, targetPort: 8080}]
 YAML
-        CREATED+=("svc/$SVC")
         k exec "$POD_B" -- sh -c 'nohup httpd -f -p 8080 -h /etc >/dev/null 2>&1 &' >/dev/null 2>&1
         sleep 3
         SVC_IP="$(k get svc "$SVC" -o jsonpath='{.spec.clusterIP}' 2>/dev/null)"
@@ -518,6 +713,7 @@ if dks_selected nanochat; then
         dks_record nanochat BLOCKED "$NO_TWO"
     else
         NC="${RUN_ID}-nanochat"
+        CREATED+=("deploy/$NC")  # registered BEFORE creation
         cat <<YAML | k apply -f - >/dev/null 2>&1
 apiVersion: apps/v1
 kind: Deployment
@@ -535,7 +731,6 @@ spec:
         labelSelector: {matchLabels: {app: $NC}}
       containers: [{name: nanochat, image: $DKS_NANOCHAT_IMAGE}]
 YAML
-        CREATED+=("deploy/$NC")
         sleep 10
         PLACED="$(k get pods -l "app=$NC" -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' 2>/dev/null | sort -u | wc -l | tr -d ' ')"
         READYN="$(k get pods -l "app=$NC" --field-selector=status.phase=Running -o name 2>/dev/null | wc -l | tr -d ' ')"
@@ -557,6 +752,7 @@ if dks_selected bashy-chunked; then
         dks_record bashy-chunked BLOCKED "$NO_TWO"
     else
         BJ="${RUN_ID}-bashy"
+        CREATED+=("job/$BJ")  # registered BEFORE creation
         cat <<YAML | k apply -f - >/dev/null 2>&1
 apiVersion: batch/v1
 kind: Job
@@ -570,7 +766,6 @@ spec:
       restartPolicy: Never
       containers: [{name: bashy, image: $DKS_BASHY_IMAGE}]
 YAML
-        CREATED+=("job/$BJ")
         k wait --for=condition=complete "job/$BJ" --timeout="${DKS_TIMEOUT}s" >/dev/null 2>&1
         SUCC="$(k get job "$BJ" -o jsonpath='{.status.succeeded}' 2>/dev/null)"
         NODESN="$(k get pods -l "job-name=$BJ" -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' 2>/dev/null | sort -u | wc -l | tr -d ' ')"
