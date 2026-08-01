@@ -173,14 +173,42 @@ outpost cluster kubeconfig                 # cmd/outpost/cluster.go:372
 outpost kubectl -- get nodes               # cmd/outpost/kubectl.go
 ```
 
-**PROPOSED (does not exist today)** — needed to carry Option A's tailnet
-credentials through a peer join; not grep-able in `cmd/outpost/` or
-`cluster_join.go` today:
+**How Option A's tailnet credentials reach a peer-joined worker: they are
+FETCHED, not typed.** There are no new `outpost cluster join` flags, and
+the auth key is never a CLI argument, a log line, or a status field.
 
-```
-outpost cluster join <endpoint> --overlay-login-server <hs-url> \
-  --overlay-auth-key <ephemeral-authkey>    # PROPOSED — no such flags exist on cluster.go's join command
-```
+`JoinPeerPlane` still clears the cloudbox overlay trio (that is correct —
+those describe the cloud plane). Instead, at daemon boot, when the host
+is peer-joined **and** paired (`fc.AccessToken != ""`),
+`startK3sAgentRunner` asks cloudbox for a fresh single-use key with the
+existing `overlaykey.Client` — the same client the overlay refresher
+already constructs, against the already-existing
+`POST /api/v1/overlay/authkey`. No cloudbox change; no second HTTP
+client.
+
+Only `overlay_login_server` and `overlay_auth_key` are read from the
+response. **`overlay_pod_cidr` is ignored on purpose**: under this
+decision the pod CIDR comes from flannel reading `Node.spec.podCIDR`,
+allocated by the *peer's* controller-manager. Cloudbox's carve describes
+the cloudbox-hosted cluster and has no authority over a peer's, so
+honoring it would hand the entrypoint a CIDR to template a conflist from
+and reintroduce exactly the allocator this ADR removes.
+
+The key is a standing credential to join the tailnet, which is what
+reaches the pod network — hence fetch-per-boot rather than a persisted
+or operator-typed value. Presence is logged (`has_auth_key=true`), never
+the value; the same redaction the cluster view already applies to the
+join/node/STCP credentials. A fetch failure is reported at ERROR with
+the distinct cause (`ErrOverlayDisabled` vs `ErrThrottled`), and the
+container then refuses to start rather than joining as a node with no
+tailnet identity — see the tailscale-IPv4 gate below.
+
+**The control-plane server side is unchanged by this work.**
+`internal/agent/runtime/image/server-entrypoint.sh` is not touched:
+`--flannel-iface=tailscale0` is a k3s **agent** flag and everything here
+is worker-side. Likewise `internal/agent/runtime/image/cni/`
+(`outpost-cni`) is untouched and still serves the cloudbox-hosted
+overlay.
 
 Confirming pod-to-pod reachability across two peer-joined nodes (the actual
 flannel-over-tailscale VXLAN path) requires two physical or two VM machines
@@ -191,8 +219,17 @@ not claimed as verified here.
 
 - `internal/agent/runtime/podnet.go:16-30`'s `PodNetworkMode` enum (today: `PodNetworkOverlay`, `PodNetworkSingleNodeFallback`) gains a third value (e.g. `PodNetworkPeerFlannel`) so status/logging can distinguish flannel-over-tailscale from both existing modes.
 - The conflist-writing block in `entrypoint.sh:94-134` gains a guard: under peer-flannel mode, **neither** `10-outpost.conflist` **nor** `10-bridge.conflist` may be written — flannel writes its own `10-flannel.conflist` once started, and a leftover file from either existing branch would out-select it under CNI's lexical-order pick.
-- No cloudbox code changes accompany this decision; Option B was rejected specifically because it would have required one.
+- No cloudbox code changes accompany this decision; Option B was rejected specifically because it would have required one. The credential fetch reuses `POST /api/v1/overlay/authkey`, which already exists and is already consumed by the overlay refresher.
 - `outpost-cni` (`internal/agent/runtime/image/cni/`) is not deleted — it remains the CNI path for the existing cloudbox-hosted overlay, unaffected by this ADR.
+- The **control-plane server side is unchanged**. `server-entrypoint.sh` is not touched; `--flannel-iface` is an agent flag and all of Option A's work is worker-side.
+- A peer-flannel node **fails closed** on a missing tailnet address: the entrypoint polls for an IPv4 on `tailscale0` and exits non-zero on timeout instead of starting the agent. `--flannel-iface` against an addressless interface does not error — the node joins, reports Ready, and drops every pod packet, which is the failure mode this repo keeps hitting. A container that dies is visible; a dark node is not.
+
+### Unresolved, pending a two-machine live test
+
+Neither of these is guessed at in code; both need real hardware to settle.
+
+- **`--node-ip`.** No in-repo evidence says flannel-over-tailscale needs the Node's InternalIP to be the tailnet address. The k3s agent argv is therefore left alone (a test pins `--node-ip` *out* of it so it cannot be added on a hunch). If a two-machine test shows VXLAN peers being derived from the container's eth0 address rather than `tailscale0`, that is the finding that would justify adding it — not this document.
+- **How `tailscale up` reaches Headscale on a peer plane.** The entrypoint's boot-time overlay path speaks ts2021 through the `overlay-control` STCP visitor, which is published by *cloudbox's* frps under the `cloudbox` server user. A peer-joined worker's frpc dials the *peer's* frps instead, so that visitor is not in scope for it. The credential fetch above is a cloudbox HTTPS call from the daemon and is unaffected, but the in-container registration hop may need its own path. The IPv4 gate is what makes this surface as a loud container exit rather than a silent dark node; the fix belongs to whatever the live test shows.
 
 ## Citations
 
