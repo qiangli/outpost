@@ -121,10 +121,15 @@ type Deps struct {
 	// ClusterRuntimeDown, when set, SYNCHRONOUSLY stops this node's cluster
 	// runtime container and — when purge is true — removes its persistent-
 	// identity volumes (k3s node-id / tailscale machine key / CNI). LeaveCluster
-	// calls it with purge=true so a rejoin gets a fresh overlay identity: a stale
-	// machine key for a Headscale node cloudbox already deleted leaves the
-	// overlay unable to converge. Closure so admincore doesn't import the runtime
-	// package. Nil in tests / when the cluster runtime isn't wired.
+	// calls it only when the node was actually active, and with a plane-
+	// dependent purge: purge=true for a cloud-managed node, because cloudbox
+	// has already deleted its Headscale registration and a stale machine key
+	// would leave the overlay unable to converge on rejoin; purge=false for a
+	// peer-joined worker, because leave never deregisters anything on the peer
+	// plane and purging the local identity would desync it from a registration
+	// that still exists there — the overlay identity is preserved instead.
+	// Closure so admincore doesn't import the runtime package. Nil in tests /
+	// when the cluster runtime isn't wired.
 	ClusterRuntimeDown func(ctx context.Context, purge bool) error
 
 	// AppHealth, when set, returns the latest per-app reachability

@@ -33,13 +33,16 @@ func (s *Server) registerClusterTools() {
 	// outpost_cluster_leave / _join are the node-lifecycle pair, distinct from
 	// clear_kubeconfig (a full wipe). leave DISABLES cluster mode but PRESERVES
 	// this node's identity + mode so a rejoin comes back as the SAME kind of
-	// node (agent stays agent), clearing only cloud-issued membership; join
-	// re-enables it. The runtime container is reconciled on the ensuing restart:
+	// node (agent stays agent), clearing only MEMBERSHIP — the cloud-issued
+	// credentials AND, for a peer-joined worker, the peer join_endpoint/
+	// join_token — while preserving the hosting block when this host is itself a
+	// control plane; join re-enables it. cloudbox pairing and unrelated settings
+	// are untouched. The runtime container is reconciled on the ensuing restart:
 	// leave's cluster-off boot tears it down, join's cluster-on boot recreates it
 	// fresh (re-registering the kubelet). See docs/dks-node-model-and-venues.md.
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "outpost_cluster_leave",
-		Description: "Leave the DKS cluster as this node: disable cluster mode, PRESERVING the node's mode + identity (agent stays agent), and clear only cloud-issued membership so a rejoin re-fetches fresh credentials. Pair with a restart to tear the runtime down.",
+		Description: "Leave the DKS cluster as this node: disable cluster mode, PRESERVING the node's mode + identity (agent stays agent), and clear only membership (cloud-issued creds, plus a peer worker's join endpoint/token) so a rejoin starts clean. A peer worker's Node object is deleted by the control-plane host's GC, not here. Pair with a restart to tear the runtime down.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, clearClusterOut, error) {
 		res, err := s.core.LeaveCluster(ctx)
 		if err != nil {
