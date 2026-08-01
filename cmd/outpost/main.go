@@ -2333,14 +2333,18 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 	//
 	// Gated on having overlay credentials AND a cloudbox token: a host
 	// that never joined an overlay has nothing to refresh.
-	if strings.TrimSpace(cc.OverlayLoginServer) != "" && strings.TrimSpace(fc.AccessToken) != "" {
+	if overlayRefresherWanted(rtOpts, fc.AccessToken) {
 		refresher := &overlaykey.Refresher{
 			Client: &overlaykey.Client{
 				BaseURL:     cloudboxHTTPBase(fc),
 				AccessToken: fc.AccessToken,
 				AgentName:   nodeName,
 			},
-			PodCIDR: cc.OverlayPodCIDR,
+			PodCIDR: rtOpts.PodCIDR,
+			// Peer-flannel workers must never advertise cloudbox's
+			// cluster-carved PodCIDR fetched by a Heal call — see
+			// overlaykey.Refresher.IgnoreCredentialPodCIDR.
+			IgnoreCredentialPodCIDR: rtOpts.PeerFlannel,
 			// Heal runs `tailscale up` inside the runtime container, where
 			// the entrypoint's socat TLS terminator fronts the frp
 			// overlay-control visitor — the Cloudflare-free path to
@@ -2354,6 +2358,26 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 		g.Go(func() error { return refresher.Run(ctx) })
 	}
 	return nil
+}
+
+// overlayRefresherWanted reports whether this node should run the overlay
+// key refresher: it needs an effective login server AND a cloudbox access
+// token to fetch fresh keys with.
+//
+// Gating on rtOpts.OverlayLoginServer — the EFFECTIVE value the runtime
+// container was actually started with — rather than cc.OverlayLoginServer
+// is load-bearing for peer-hosted-plane workers. JoinPeerPlane clears
+// cc.OverlayLoginServer at join time (it described the cloud plane, and
+// would attach this node to the wrong overlay), but preparePeerOverlay
+// re-populates rtOpts.OverlayLoginServer from a freshly fetched peer-plane
+// credential before this check runs. Gating on the cleared config field
+// would leave every peer-flannel worker's overlay registration to rot
+// after the first cloudbox-side reset, silently, since nothing here would
+// have ever run. The cloudbox-hosted plane is unaffected either way:
+// rtOpts.OverlayLoginServer is seeded straight from cc.OverlayLoginServer
+// and nothing downstream mutates it.
+func overlayRefresherWanted(rtOpts runtime.Options, accessToken string) bool {
+	return strings.TrimSpace(rtOpts.OverlayLoginServer) != "" && strings.TrimSpace(accessToken) != ""
 }
 
 // requirePeerOverlayAccessToken fails closed when a peer-hosted plane join

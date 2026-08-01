@@ -296,6 +296,121 @@ func TestHealFallsBackToConfiguredPodCIDR(t *testing.T) {
 	}
 }
 
+// TestHealIgnoresCredentialPodCIDRForPeerFlannel pins the peer-flannel
+// safety rule: IgnoreCredentialPodCIDR=true must drop a fetched
+// Credentials.PodCIDR entirely, even though Heal just fetched one. Under
+// peer-flannel the pod CIDR comes from the peer's k3s controller-manager
+// via Node.spec.podCIDR — cloudbox's cluster carve has no authority there,
+// and advertising it would reintroduce the competing allocator
+// docs/adr-peer-dks-pod-network.md removed.
+func TestHealIgnoresCredentialPodCIDRForPeerFlannel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(Credentials{
+			LoginServer: "https://cb/overlay/headscale",
+			AuthKey:     "tskey-peer",
+			PodCIDR:     "10.99.0.0/24", // cloudbox's cloudbox-cluster carve
+		})
+	}))
+	defer srv.Close()
+
+	var got []string
+	r := &Refresher{
+		Client:                  testClient(srv.URL),
+		IgnoreCredentialPodCIDR: true,
+		Exec: func(ctx context.Context, args ...string) ([]byte, error) {
+			if len(args) > 1 && args[1] == "status" {
+				return []byte(`{"BackendState":"Running","Self":{"InNetworkMap":true}}`), nil
+			}
+			got = args
+			return nil, nil
+		},
+	}
+	if err := r.Heal(context.Background()); err != nil {
+		t.Fatalf("Heal: %v", err)
+	}
+	joined := strings.Join(got, " ")
+	if strings.Contains(joined, "--advertise-routes") {
+		t.Errorf("peer-flannel heal must never advertise routes, got: %q", joined)
+	}
+	if strings.Contains(joined, "10.99.0.0/24") {
+		t.Errorf("fetched cloudbox-cluster PodCIDR leaked into tailscale up args: %q", joined)
+	}
+}
+
+// TestHealIgnoreCredentialPodCIDRStillHonorsConfiguredPodCIDR: the option
+// only blocks the FETCHED credential's PodCIDR, not r.PodCIDR itself — a
+// caller that explicitly configures one (today: never, for peer-flannel)
+// must still see it advertised.
+func TestHealIgnoreCredentialPodCIDRStillHonorsConfiguredPodCIDR(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(Credentials{
+			LoginServer: "https://cb/overlay/headscale",
+			AuthKey:     "tskey-peer",
+			PodCIDR:     "10.99.0.0/24", // must be ignored
+		})
+	}))
+	defer srv.Close()
+
+	var got []string
+	r := &Refresher{
+		Client:                  testClient(srv.URL),
+		PodCIDR:                 "10.42.5.0/24",
+		IgnoreCredentialPodCIDR: true,
+		Exec: func(ctx context.Context, args ...string) ([]byte, error) {
+			if len(args) > 1 && args[1] == "status" {
+				return []byte(`{"BackendState":"Running","Self":{"InNetworkMap":true}}`), nil
+			}
+			got = args
+			return nil, nil
+		},
+	}
+	if err := r.Heal(context.Background()); err != nil {
+		t.Fatalf("Heal: %v", err)
+	}
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "--advertise-routes=10.42.5.0/24") {
+		t.Errorf("configured PodCIDR was not advertised: %q", joined)
+	}
+	if strings.Contains(joined, "10.99.0.0/24") {
+		t.Errorf("fetched cloudbox-cluster PodCIDR leaked into tailscale up args: %q", joined)
+	}
+}
+
+// TestHealManagedModeRetainsCredentialPodCIDR is the byte-for-byte control:
+// with IgnoreCredentialPodCIDR left at its zero value (false, the
+// cloudbox-managed default), Heal must still prefer a fetched
+// Credentials.PodCIDR exactly as before this option existed.
+func TestHealManagedModeRetainsCredentialPodCIDR(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(Credentials{
+			LoginServer: "https://cb/overlay/headscale",
+			AuthKey:     "tskey-managed",
+			PodCIDR:     "10.42.9.0/24",
+		})
+	}))
+	defer srv.Close()
+
+	var got []string
+	r := &Refresher{
+		Client:  testClient(srv.URL),
+		PodCIDR: "10.42.1.0/24", // stale local value; the fetched one must win
+		Exec: func(ctx context.Context, args ...string) ([]byte, error) {
+			if len(args) > 1 && args[1] == "status" {
+				return []byte(`{"BackendState":"Running","Self":{"InNetworkMap":true}}`), nil
+			}
+			got = args
+			return nil, nil
+		},
+	}
+	if err := r.Heal(context.Background()); err != nil {
+		t.Fatalf("Heal: %v", err)
+	}
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "--advertise-routes=10.42.9.0/24") {
+		t.Errorf("managed heal must retain the fetched PodCIDR, got: %q", joined)
+	}
+}
+
 // TestHealRejectsExitZeroWithoutRegistration is the invariant that cost a
 // live debugging session: `tailscale up` exits 0 while leaving the node
 // logged out. Trusting that exit code makes the refresher report a

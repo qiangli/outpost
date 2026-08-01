@@ -57,6 +57,63 @@ func TestRequirePeerOverlayAccessToken(t *testing.T) {
 	}
 }
 
+// TestOverlayRefresherWanted is the regression pin for the bug a reviewer
+// found: gating the refresher on cc.OverlayLoginServer (the persisted
+// config) instead of rtOpts.OverlayLoginServer (the effective value the
+// runtime container actually started with) meant the refresher NEVER ran
+// for a peer-hosted-plane worker, because JoinPeerPlane clears
+// cc.OverlayLoginServer at join time and preparePeerOverlay only
+// repopulates rtOpts, not cc, with the fetched peer-plane credential.
+func TestOverlayRefresherWanted(t *testing.T) {
+	tests := []struct {
+		name        string
+		loginServer string
+		accessToken string
+		want        bool
+	}{
+		{"managed plane with token wants a refresher", "https://cb/overlay/headscale", "cb-token", true},
+		{
+			"peer plane wants a refresher once rtOpts carries the fetched login server",
+			"https://hs.example", // what preparePeerOverlay would have set on rtOpts
+			"cb-token",
+			true,
+		},
+		{"no effective login server means nothing to refresh", "", "cb-token", false},
+		{"no access token means no way to fetch a fresh key", "https://cb/overlay/headscale", "", false},
+		{"blank fields are treated as empty", "   ", "   ", false},
+		{"both absent", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rtOpts := runtime.Options{OverlayLoginServer: tt.loginServer}
+			if got := overlayRefresherWanted(rtOpts, tt.accessToken); got != tt.want {
+				t.Errorf("overlayRefresherWanted(OverlayLoginServer=%q, token=%q) = %v, want %v",
+					tt.loginServer, tt.accessToken, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestOverlayRefresherWantedIgnoresStaleClusterConfig proves the fix end to
+// end against the exact shape that broke: a ClusterConfig whose
+// OverlayLoginServer was cleared by JoinPeerPlane, paired with an rtOpts
+// that preparePeerOverlay has already repopulated. The gate must key off
+// rtOpts, never cc, or a peer-hosted worker's overlay registration silently
+// stops self-healing after the first cloudbox-side reset.
+func TestOverlayRefresherWantedIgnoresStaleClusterConfig(t *testing.T) {
+	cc := &conf.ClusterConfig{OverlayLoginServer: ""} // cleared by JoinPeerPlane
+	if cc.OverlayLoginServer != "" {
+		t.Fatal("test setup: expected the persisted config field to be empty")
+	}
+	rtOpts := runtime.Options{
+		PeerFlannel:        true,
+		OverlayLoginServer: "https://hs.example", // set by preparePeerOverlay
+	}
+	if !overlayRefresherWanted(rtOpts, "cb-token") {
+		t.Error("refresher must still be wanted: rtOpts carries a live login server even though cc's was cleared")
+	}
+}
+
 func overlayServer(t *testing.T, status int, body string) *overlaykey.Client {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -41,6 +41,22 @@ type Refresher struct {
 	Interval time.Duration
 	Log      *slog.Logger
 
+	// IgnoreCredentialPodCIDR, when true, makes Heal ignore a fetched
+	// Credentials.PodCIDR entirely and advertise only r.PodCIDR (which may
+	// be empty, in which case Heal advertises nothing).
+	//
+	// Set this for a peer-hosted-plane worker (PeerFlannel). Under that
+	// mode the pod CIDR comes from flannel reading Node.spec.podCIDR, which
+	// the PEER's k3s controller-manager allocates
+	// (docs/adr-peer-dks-pod-network.md, Option A). The fetched
+	// Credentials.PodCIDR is cloudbox's cloudbox-cluster carve and has no
+	// authority over the peer's pod network — honoring it on every Heal
+	// would hand the container a CIDR to advertise routes for and
+	// reintroduce exactly the competing allocator that ADR removed. Left
+	// false (the default), Heal keeps its original behavior byte-for-byte:
+	// a fetched Credentials.PodCIDR wins, falling back to r.PodCIDR.
+	IgnoreCredentialPodCIDR bool
+
 	// ControlURL, when set, overrides the login server returned by
 	// cloudbox. It exists because the public overlay URL is fronted by
 	// Cloudflare, which strips the Upgrade header on the ts2021 control
@@ -131,9 +147,18 @@ func (r *Refresher) Heal(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	podCIDR := strings.TrimSpace(creds.PodCIDR)
-	if podCIDR == "" {
+	var podCIDR string
+	if r.IgnoreCredentialPodCIDR {
+		// See IgnoreCredentialPodCIDR: never honor cloudbox's cluster carve
+		// on a peer-hosted plane, even though this Heal call just fetched
+		// one — the peer's flannel controller-manager is the only allocator
+		// with authority here.
 		podCIDR = strings.TrimSpace(r.PodCIDR)
+	} else {
+		podCIDR = strings.TrimSpace(creds.PodCIDR)
+		if podCIDR == "" {
+			podCIDR = strings.TrimSpace(r.PodCIDR)
+		}
 	}
 
 	loginServer := strings.TrimSpace(creds.LoginServer)
