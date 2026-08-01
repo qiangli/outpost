@@ -197,9 +197,17 @@ func UpServer(ctx context.Context, opts ServerOptions) error {
 		// The admin kubeconfig is written HERE so the host can read it without
 		// `podman exec` — that path is what makes the cluster operable.
 		"-v", opts.KubeconfigDir + ":/etc/rancher/k3s",
-		// Workers reach frps through this; kubectl reaches the apiserver.
+		// Workers reach frps through this — honors the operator's
+		// TunnelBindAddr, so `--bind-addr 0.0.0.0` lets workers join
+		// directly from the network.
 		"-p", fmt.Sprintf("%s:%d:%d", opts.TunnelBindAddr, opts.TunnelBindPort, opts.TunnelBindPort),
-		"-p", fmt.Sprintf("%s:%d:%d", opts.TunnelBindAddr, opts.APIPort, opts.APIPort),
+		// Host-side kubectl reaches the apiserver through this loopback
+		// publish directly; workers reach it only through the STCP visitor
+		// over frps. This publish must never follow TunnelBindAddr, or
+		// widening the tunnel bind for worker joins also exposes the
+		// apiserver to the network, which contradicts the documented
+		// contract of --bind-addr.
+		"-p", fmt.Sprintf("127.0.0.1:%d:%d", opts.APIPort, opts.APIPort),
 		"-e", "OUTPOST_TUNNEL_TOKEN=" + opts.TunnelToken,
 		"-e", "OUTPOST_STCP_SECRET=" + opts.STCPSecret,
 		"-e", fmt.Sprintf("OUTPOST_TUNNEL_PORT=%d", opts.TunnelBindPort),
