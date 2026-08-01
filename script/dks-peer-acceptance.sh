@@ -48,7 +48,10 @@ dks_record() {
     local name="$1" status="$2"
     shift 2
     local detail="$*"
-    # Collapse newlines so one check is always exactly one line.
+    # Collapse newlines AND carriage returns so one check is always exactly one
+    # line. \r matters: wget -S / nslookup emit CRLF, and a bare \r makes a
+    # terminal overwrite the line, silently hiding a result.
+    detail="${detail//$'\r'/ }"
     detail="${detail//$'\n'/ | }"
     case "$status" in
         PASS)    DKS_PASS_COUNT=$((DKS_PASS_COUNT + 1)) ;;
@@ -226,26 +229,32 @@ echo "NOTE namespace=$DKS_NAMESPACE run_id=$RUN_ID image=$DKS_TEST_IMAGE"
 # Real (kubelet-backed) nodes only. virtual-kubelet nodes report a vknode
 # kubelet version and do not participate in pod networking at all, so
 # including them would make cross-node pod IP checks meaningless.
-mapfile -t REAL_READY < <(echo "$NODES_RAW" | kubectl get -f - -o \
-    'jsonpath={range .items[?(@.status.conditions[-1].type=="Ready")]}{.metadata.name}{" "}{.status.nodeInfo.kubeletVersion}{"\n"}{end}' 2>/dev/null \
-    | awk '$2 ~ /k3s|^v1\./ && $2 !~ /vknode/ {print $1}')
+# mapfile/readarray is not available in every bash-compatible runner, and a
+# nested ${arr[0]:-} default trips `set -u` in some of them; keep it to a
+# whitespace-separated string built by a plain pipeline.
+READY_LIST="$(kubectl get nodes -o \
+    'jsonpath={range .items[*]}{.metadata.name}{" "}{.status.nodeInfo.kubeletVersion}{" "}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}{end}' 2>/dev/null \
+    | awk '$3=="True" && $2 !~ /vknode/ && $2 ~ /k3s|^v1\./ {print $1}' | tr '\n' ' ')"
+READY_COUNT="$(echo "$READY_LIST" | wc -w | tr -d ' ')"
 
-NODE_A="${DKS_NODE_A:-${REAL_READY[0]:-}}"
-NODE_B="${DKS_NODE_B:-${REAL_READY[1]:-}}"
-echo "NOTE ready_real_nodes=${#REAL_READY[@]} node_a=${NODE_A:-none} node_b=${NODE_B:-none}"
+NODE_A="${DKS_NODE_A:-}"; NODE_B="${DKS_NODE_B:-}"
+[ -z "$NODE_A" ] && NODE_A="$(echo "$READY_LIST" | awk '{print $1}')"
+[ -z "$NODE_B" ] && NODE_B="$(echo "$READY_LIST" | awk '{print $2}')"
+echo "NOTE ready_real_nodes=$READY_COUNT node_a=${NODE_A:-none} node_b=${NODE_B:-none}"
+echo "NOTE ready_real_node_list=$READY_LIST"
 
 TWO_NODES=0
 [ -n "$NODE_A" ] && [ -n "$NODE_B" ] && [ "$NODE_A" != "$NODE_B" ] && TWO_NODES=1
-NO_TWO="requires two Ready kubelet-backed nodes in one cluster; found ${#REAL_READY[@]}"
+NO_TWO="requires two Ready kubelet-backed nodes in one cluster; found $READY_COUNT"
 
 # ---------------------------------------------------------------------------
 # 1. nodes-ready
 # ---------------------------------------------------------------------------
 if dks_selected nodes-ready; then
-    if [ "${#REAL_READY[@]}" -ge 2 ]; then
-        dks_record nodes-ready PASS "${#REAL_READY[@]} Ready kubelet-backed nodes: ${REAL_READY[*]}"
+    if [ "$READY_COUNT" -ge 2 ]; then
+        dks_record nodes-ready PASS "$READY_COUNT Ready kubelet-backed nodes: $READY_LIST"
     else
-        dks_record nodes-ready FAIL "only ${#REAL_READY[@]} Ready kubelet-backed node(s): ${REAL_READY[*]:-none}"
+        dks_record nodes-ready FAIL "only $READY_COUNT Ready kubelet-backed node(s): ${READY_LIST:-none}"
     fi
 fi
 
@@ -253,7 +262,16 @@ fi
 # 2. distinct-pod-cidrs  (the B5 acceptance)
 # ---------------------------------------------------------------------------
 if dks_selected distinct-pod-cidrs; then
-    CIDR_LINES="$(kubectl get nodes -o 'jsonpath={range .items[*]}{.metadata.name}{" "}{.spec.podCIDR}{"\n"}{end}' 2>/dev/null | awk 'NF')"
+    # Scoped to kubelet-backed nodes: virtual-kubelet nodes do not participate
+    # in pod networking at all, so their podCIDR (or absence of one) is not
+    # what B5 is about. Their state is reported separately as a NOTE.
+    # custom-columns, not jsonpath: jsonpath emits NOTHING for an absent
+    # .spec.podCIDR, which shifts the columns and would make a missing CIDR
+    # masquerade as the next field. custom-columns prints a literal <none>.
+    CIDR_LINES="$(kubectl get nodes --no-headers -o \
+        'custom-columns=NAME:.metadata.name,PODCIDR:.spec.podCIDR,VER:.status.nodeInfo.kubeletVersion' 2>/dev/null \
+        | awk 'NF>=3 && $3 !~ /vknode/ {print $1, $2}')"
+    echo "NOTE virtual-kubelet nodes excluded from distinct-pod-cidrs: $(kubectl get nodes -o 'jsonpath={range .items[*]}{.metadata.name}{" "}{.status.nodeInfo.kubeletVersion}{"\n"}{end}' 2>/dev/null | awk '$2 ~ /vknode/ {printf "%s ", $1}')"
     if [ -z "$CIDR_LINES" ]; then
         dks_record distinct-pod-cidrs BLOCKED "no nodes returned a .spec.podCIDR field"
     else
@@ -315,10 +333,16 @@ fi
 # 5. cross-node-pod-ip — THE headline check.
 # ---------------------------------------------------------------------------
 POD_A="${RUN_ID}-a"; POD_B="${RUN_ID}-b"; POD_B_IP=""
-if [ "$TWO_NODES" = "1" ] && { dks_selected cross-node-pod-ip || dks_selected service-clusterip || dks_selected cluster-dns || dks_selected logs-exec; }; then
+# PROBE_READY is the single source of truth for "a usable probe pod exists on
+# each node". Every check that needs one gates on it, so a check whose probe
+# was never created reports BLOCKED rather than FAIL.
+PROBE_READY=0
+if [ "$TWO_NODES" = "1" ] && { dks_selected cross-node-pod-ip || dks_selected service-clusterip \
+        || dks_selected cluster-dns || dks_selected logs-exec || dks_selected headlamp; }; then
     make_pod "$POD_A" "$NODE_A"; make_pod "$POD_B" "$NODE_B"
     ERR_A="$(wait_ready "$POD_A")"; ERR_B="$(wait_ready "$POD_B")"
     POD_B_IP="$(k get pod "$POD_B" -o jsonpath='{.status.podIP}' 2>/dev/null)"
+    [ -z "$ERR_A" ] && [ -z "$ERR_B" ] && PROBE_READY=1
 fi
 
 if dks_selected cross-node-pod-ip; then
@@ -429,12 +453,17 @@ if dks_selected headlamp; then
         HL_PORT="$(kubectl -n "$HL_NS" get svc "$HL_SVC" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null)"
         if [ "$HL_POD" != "Running" ]; then
             dks_record headlamp FAIL "Headlamp svc $HL_NS/$HL_SVC exists but no Running headlamp pod (phase=${HL_POD:-none})"
-        elif [ "$TWO_NODES" != "1" ] || [ -n "${ERR_A:-}" ]; then
-            dks_record headlamp BLOCKED "Headlamp scheduled ($HL_NS/$HL_SVC) but no probe pod available to reach its Service; $NO_TWO"
+        elif [ "$PROBE_READY" != "1" ]; then
+            dks_record headlamp BLOCKED "Headlamp scheduled ($HL_NS/$HL_SVC) but no in-cluster probe pod was available to reach its Service (probe pods not created or not Ready); $NO_TWO"
         else
             OUT="$(k exec "$POD_A" -- sh -c "wget -q -T 8 -S -O /dev/null http://$HL_IP:$HL_PORT/ 2>&1 | head -3" 2>&1)"
-            if echo "$OUT" | grep -qE 'HTTP/1\.[01] (200|30[0-9])'; then
-                dks_record headlamp PASS "Headlamp $HL_NS/$HL_SVC at $HL_IP:$HL_PORT reachable: $(echo "$OUT" | head -1)"
+            # ANY well-formed HTTP status line proves the Service is reachable
+            # across nodes, which is what this check asserts. The specific path
+            # Headlamp serves its UI on is not a pod-network property, so a 404
+            # from / must not be read as a connectivity failure.
+            CODE="$(echo "$OUT" | grep -oE 'HTTP/1\.[01] [0-9]{3}' | head -1)"
+            if [ -n "$CODE" ]; then
+                dks_record headlamp PASS "Headlamp $HL_NS/$HL_SVC at $HL_IP:$HL_PORT reachable ($CODE from /)"
             else
                 dks_record headlamp FAIL "Headlamp $HL_NS/$HL_SVC at $HL_IP:$HL_PORT unreachable: $OUT"
             fi
