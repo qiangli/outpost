@@ -77,7 +77,13 @@ users:
 	}
 }
 
-func TestParseKubeconfig_RejectsClientCertAuth(t *testing.T) {
+// SUPERSEDED: client-certificate auth is now SUPPORTED — it is what k3s
+// writes, so a peer-hosted control plane presents it
+// (dhnt/docs/dks-control-plane-on-sphere.md). This test asserted the v1
+// limitation; the behaviour it guarded was removed on purpose, so it is
+// inverted here rather than deleted, to keep the change visible in
+// history. Acceptance is covered in kubeconfig_clientcert_test.go.
+func TestParseKubeconfig_AcceptsClientCertAuth(t *testing.T) {
 	yaml := `apiVersion: v1
 kind: Config
 clusters:
@@ -96,9 +102,12 @@ users:
     client-certificate-data: ZmFrZQ==
     client-key-data: ZmFrZQ==
 `
-	_, err := ParseKubeconfig([]byte(yaml))
-	if err == nil || !strings.Contains(err.Error(), "client-certificate") {
-		t.Fatalf("expected rejection of client-cert auth; got %v", err)
+	got, err := ParseKubeconfig([]byte(yaml))
+	if err != nil {
+		t.Fatalf("client-cert auth should now be accepted; got %v", err)
+	}
+	if len(got.ClientCert) == 0 || len(got.ClientKey) == 0 {
+		t.Fatalf("cert/key not extracted: %+v", got)
 	}
 }
 

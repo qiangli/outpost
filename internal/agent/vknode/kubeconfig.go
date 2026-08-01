@@ -18,6 +18,24 @@ type ParsedKubeconfig struct {
 	APIURL string
 	Token  string
 	CA     []byte
+
+	// ClientCert / ClientKey carry client-certificate credentials, the
+	// form k3s writes at /etc/rancher/k3s/k3s.yaml. Exactly one of
+	// (Token) or (ClientCert+ClientKey) is populated.
+	//
+	// Both shapes exist because the control plane's LOCATION is a user
+	// choice (dhnt/docs/dks-control-plane-on-sphere.md): a cloudbox- or
+	// droplet-hosted plane hands out a minted bearer token, while a
+	// peer-hosted one is just k3s, which authenticates with certs. One
+	// parser handles both rather than a second credential path existing
+	// per placement.
+	ClientCert []byte
+	ClientKey  []byte
+}
+
+// HasCredential reports whether either supported credential is present.
+func (p *ParsedKubeconfig) HasCredential() bool {
+	return p.Token != "" || (len(p.ClientCert) > 0 && len(p.ClientKey) > 0)
 }
 
 // ParseKubeconfig pulls APIURL / Token / CA out of a kubeconfig (YAML
@@ -58,22 +76,55 @@ func ParseKubeconfig(raw []byte) (*ParsedKubeconfig, error) {
 	if err := rejectUnsupportedAuth(user, kctx.AuthInfo); err != nil {
 		return nil, err
 	}
+	ca, err := caFromCluster(cluster)
+	if err != nil {
+		return nil, err
+	}
+	out := &ParsedKubeconfig{APIURL: strings.TrimSpace(cluster.Server), CA: ca}
+
+	// Client certs first: a kubeconfig carrying both is unusual, and the
+	// cert is the stronger statement of intent.
+	cert, key, err := clientCertFromUser(user)
+	if err != nil {
+		return nil, err
+	}
+	if len(cert) > 0 && len(key) > 0 {
+		out.ClientCert, out.ClientKey = cert, key
+		return out, nil
+	}
+
 	token, err := tokenFromUser(user)
 	if err != nil {
 		return nil, err
 	}
 	if token == "" {
-		return nil, fmt.Errorf("vknode: kubeconfig user %q has no token", kctx.AuthInfo)
+		return nil, fmt.Errorf("vknode: kubeconfig user %q has no usable credential (no token, no client certificate)", kctx.AuthInfo)
 	}
-	ca, err := caFromCluster(cluster)
-	if err != nil {
-		return nil, err
+	out.Token = token
+	return out, nil
+}
+
+// clientCertFromUser reads inline or file-referenced client cert/key.
+// A half-pair is an error rather than a silent fall-through to the token
+// branch: a kubeconfig naming a cert but not a key is malformed, and
+// treating it as "no cert" would surface later as an opaque 401.
+func clientCertFromUser(user *clientcmdapi.AuthInfo) (cert, key []byte, err error) {
+	cert = append([]byte(nil), user.ClientCertificateData...)
+	if len(cert) == 0 && strings.TrimSpace(user.ClientCertificate) != "" {
+		if cert, err = os.ReadFile(user.ClientCertificate); err != nil {
+			return nil, nil, fmt.Errorf("vknode: read client certificate: %w", err)
+		}
 	}
-	return &ParsedKubeconfig{
-		APIURL: strings.TrimSpace(cluster.Server),
-		Token:  token,
-		CA:     ca,
-	}, nil
+	key = append([]byte(nil), user.ClientKeyData...)
+	if len(key) == 0 && strings.TrimSpace(user.ClientKey) != "" {
+		if key, err = os.ReadFile(user.ClientKey); err != nil {
+			return nil, nil, fmt.Errorf("vknode: read client key: %w", err)
+		}
+	}
+	if (len(cert) > 0) != (len(key) > 0) {
+		return nil, nil, fmt.Errorf("vknode: kubeconfig has a client certificate without its key (or vice versa)")
+	}
+	return cert, key, nil
 }
 
 func rejectUnsupportedAuth(user *clientcmdapi.AuthInfo, name string) error {
@@ -83,10 +134,8 @@ func rejectUnsupportedAuth(user *clientcmdapi.AuthInfo, name string) error {
 	if user.Exec != nil {
 		return fmt.Errorf("vknode: kubeconfig user %q uses exec-plugin auth — only bearer-token credentials are supported in v1", name)
 	}
-	if user.ClientCertificate != "" || len(user.ClientCertificateData) > 0 ||
-		user.ClientKey != "" || len(user.ClientKeyData) > 0 {
-		return fmt.Errorf("vknode: kubeconfig user %q uses client-certificate — only bearer-token credentials are supported in v1", name)
-	}
+	// client-certificate auth is SUPPORTED (see clientCertFromUser) —
+	// it is what k3s writes, so a peer-hosted control plane produces it.
 	return nil
 }
 

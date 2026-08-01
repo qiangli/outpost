@@ -280,6 +280,36 @@ func ConfigFromCluster(apiURL, tokenFile string, caPEM []byte) (*rest.Config, er
 	return cfg, nil
 }
 
+// ConfigFromClientCert builds a rest.Config for client-certificate
+// credentials — what k3s writes, and therefore what a PEER-HOSTED
+// control plane presents (dhnt/docs/dks-control-plane-on-sphere.md).
+//
+// Deliberately a sibling of ConfigFromCluster rather than a second
+// client stack: everything downstream (provider, backends, node
+// lifecycle) takes a *rest.Config and neither knows nor cares which
+// credential produced it. That is what keeps ONE vk implementation
+// serving every control-plane placement.
+//
+// Certs are passed as data, not file paths: unlike a bearer token they
+// are not rotated under the running process, so the BearerTokenFile
+// indirection (which exists so client-go re-reads a refreshed token)
+// buys nothing here.
+func ConfigFromClientCert(apiURL string, certPEM, keyPEM, caPEM []byte) (*rest.Config, error) {
+	if apiURL == "" {
+		return nil, errors.New("vknode: empty cluster APIURL")
+	}
+	if len(certPEM) == 0 || len(keyPEM) == 0 {
+		return nil, errors.New("vknode: client certificate and key are both required")
+	}
+	cfg := &rest.Config{Host: apiURL}
+	cfg.TLSClientConfig.CertData = append([]byte(nil), certPEM...)
+	cfg.TLSClientConfig.KeyData = append([]byte(nil), keyPEM...)
+	if len(caPEM) > 0 {
+		cfg.TLSClientConfig.CAData = append([]byte(nil), caPEM...)
+	}
+	return cfg, nil
+}
+
 // newEventRecorder wires a broadcaster that prints events to slog (so
 // they're visible in the agent's logs) and also surfaces them on the
 // apiserver via the core/v1 Events API. The recorder is required by
