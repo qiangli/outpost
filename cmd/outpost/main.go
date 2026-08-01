@@ -2920,6 +2920,53 @@ func tryReattach(ctx context.Context, fc *conf.FileConfig, cfgPath string) (*con
 		if fc.Cluster == nil {
 			fc.Cluster = &conf.ClusterConfig{}
 		}
+		// CLUSTER MEMBERSHIP BELONGS TO WHICHEVER PLANE THIS HOST JOINED.
+		// When that is a peer's, cloudbox's node token, STCP secret, ports
+		// and overlay keys describe a DIFFERENT cluster, and applying them
+		// swaps the node's credentials out from under the operator on the
+		// next boot.
+		//
+		// This is not hypothetical: it is what happened the first time a host
+		// was pointed at a peer plane. The tunnel connected and the agent
+		// reached the right apiserver, but the reattach had already replaced
+		// the peer's node token with cloudbox's, so k3s rejected the join
+		// with a CA-hash mismatch — an error that reads like a broken tunnel
+		// while the tunnel was in fact working.
+		//
+		// The cloudbox PAIRING fields above (Token, ServerAddr, Protocol, …)
+		// are deliberately still refreshed: staying paired with cloudbox for
+		// apps, shell and the LLM pool is independent of which cluster this
+		// host is a node of.
+		if fc.Cluster.JoinsPeerPlane() {
+			slog.Debug("reattach: host joins a peer control plane; leaving cluster credentials alone",
+				"join_endpoint", fc.Cluster.JoinEndpoint)
+		} else if applyCloudboxClusterMembership(fc, refreshed) {
+			changed = true
+		}
+	}
+
+	if changed && cfgPath != "" {
+		if err := conf.SaveFile(cfgPath, fc); err != nil {
+			slog.Warn("reattach: succeeded but SaveFile failed",
+				"err", err, "path", cfgPath)
+		} else {
+			slog.Info("reattach: refreshed cloudbox-side state",
+				"name", fc.AgentName, "cloudbox", base)
+		}
+	} else {
+		slog.Info("reattach: no-op (cloudbox-side state already in sync)",
+			"name", fc.AgentName, "cloudbox", base)
+	}
+	return fc, nil
+}
+
+// applyCloudboxClusterMembership copies the cluster-membership fields cloudbox
+// owns onto fc, reporting whether anything changed. Split out so the
+// peer-plane guard above is one readable branch rather than a condition
+// repeated on every field.
+func applyCloudboxClusterMembership(fc, refreshed *conf.FileConfig) bool {
+	changed := false
+	{
 		if refreshed.Cluster.NodeToken != "" {
 			if fc.Cluster.NodeToken != refreshed.Cluster.NodeToken {
 				changed = true
@@ -2961,20 +3008,7 @@ func tryReattach(ctx context.Context, fc *conf.FileConfig, cfgPath string) (*con
 			fc.Cluster.OverlayPodCIDR = refreshed.Cluster.OverlayPodCIDR
 		}
 	}
-
-	if changed && cfgPath != "" {
-		if err := conf.SaveFile(cfgPath, fc); err != nil {
-			slog.Warn("reattach: succeeded but SaveFile failed",
-				"err", err, "path", cfgPath)
-		} else {
-			slog.Info("reattach: refreshed cloudbox-side state",
-				"name", fc.AgentName, "cloudbox", base)
-		}
-	} else {
-		slog.Info("reattach: no-op (cloudbox-side state already in sync)",
-			"name", fc.AgentName, "cloudbox", base)
-	}
-	return fc, nil
+	return changed
 }
 
 // cloudboxHTTPBase derives the HTTP(S) base URL of cloudbox from the
