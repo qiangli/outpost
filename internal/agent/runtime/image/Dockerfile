@@ -82,7 +82,16 @@ RUN FRP_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo amd64) && \
         "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${FRP_ARCH}.tar.gz" && \
     tar -xzf /tmp/frp.tgz -C /tmp && \
     install /tmp/frp_${FRP_VERSION}_linux_${FRP_ARCH}/frpc /usr/local/bin/frpc && \
+    install /tmp/frp_${FRP_VERSION}_linux_${FRP_ARCH}/frps /usr/local/bin/frps && \
     rm -rf /tmp/frp.tgz /tmp/frp_*
+# frps ships alongside frpc and is what a SELF-HOSTED control plane runs.
+# It has to live in this image — not in the outpost process — because the
+# apiserver reaches a worker's kubelet through a port frps publishes on
+# LOOPBACK, and loopback is per network-namespace. With frps on the host and
+# the apiserver in a container the two 127.0.0.1s are different machines'
+# (literally so on macOS, where podman runs a VM), and every `kubectl logs`
+# against a tunnelled node fails with a 502 while everything else works.
+# Co-locating them is exactly what cloudbox does, and is why it works there.
 
 # Standard CNI reference plugins (bridge, host-local, loopback, portmap, …).
 # Single-node mode uses bridge+host-local for pod IPs; multi-outpost mode
@@ -107,6 +116,9 @@ RUN chmod +x /opt/cni/bin/outpost-cni && mkdir -p /etc/cni/net.d
 # tailscaled (if overlay creds are set), then exec's k3s agent.
 COPY frpc-supervisor.sh /usr/local/bin/frpc-supervisor.sh
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh /usr/local/bin/frpc-supervisor.sh
+# The control-plane half. One image, two roles: the supervisor picks the
+# entrypoint, so an operator never has to keep two images in step.
+COPY server-entrypoint.sh /server-entrypoint.sh
+RUN chmod +x /entrypoint.sh /server-entrypoint.sh /usr/local/bin/frpc-supervisor.sh
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -2574,137 +2574,100 @@ func startControlPlaneTunnel(ctx context.Context, g *errgroup.Group, fc *conf.Fi
 	if fc == nil || !fc.Cluster.ControlPlaneOn() {
 		return
 	}
+	// Both credentials, minted together: a worker needs the pair, and a plane
+	// with only one of them accepts logins and refuses every join.
 	token, err := conf.EnsureClusterTunnelToken(cfgPath, fc)
 	if err != nil {
 		// Non-fatal, like every other cluster boot failure here: a host that
 		// cannot mint a token should still serve its apps and shell.
-		slog.Warn("control plane: tunnel server disabled (no token)", "err", err)
+		slog.Warn("control plane: disabled (no tunnel token)", "err", err)
+		return
+	}
+	secret, err := conf.EnsureControlPlaneSTCPSecret(cfgPath, fc)
+	if err != nil {
+		slog.Warn("control plane: disabled (no stcp secret)", "err", err)
 		return
 	}
 	addr, port := fc.Cluster.TunnelBind()
 
-	srv, err := agent.NewTunnelServer(agent.TunnelServerConfig{
-		BindAddr: addr,
-		BindPort: port,
-		Token:    token,
-	}, slog.Default().With("svc", "control-plane-tunnel"))
-	if err != nil {
-		slog.Warn("control plane: tunnel server disabled", "err", err)
+	// THE CONTROL PLANE IS A CONTAINER, not an in-process tunnel server.
+	//
+	// frps used to run here in the outpost process while `k3s server` ran
+	// elsewhere. That splits the two across network namespaces, and the
+	// apiserver reaches a worker's kubelet through a port frps publishes on
+	// LOOPBACK — which is per-namespace. The result was a plane that
+	// scheduled pods correctly and failed every `kubectl logs` with a 502.
+	// Co-locating them in one container is what cloudbox does in one process,
+	// and it is the only arrangement that works identically on Linux and on
+	// macOS (where podman runs a VM, so "the host" is a different machine).
+	kubeDir := controlPlaneKubeconfigDir()
+	opts := runtime.ServerOptions{
+		AgentName:      fc.ClusterNodeName(),
+		TunnelToken:    token,
+		STCPSecret:     secret,
+		TunnelBindAddr: addr,
+		TunnelBindPort: port,
+		APIPort:        clusterAPIPort(fc.Cluster),
+		KubeconfigDir:  kubeDir,
+		TLSSANs:        fc.Cluster.TunnelSANs(),
+	}
+	if opts.AgentName == "" {
+		slog.Warn("control plane: disabled (no node name)")
 		return
 	}
 
-	slog.Info("control plane: tunnel server starting", "addr", addr, "port", port)
+	// Remember where the kubeconfig lands so the reconcilers below — and the
+	// operator — can find it without being told twice.
+	if err := rememberControlPlaneKubeconfig(fc, cfgPath, runtime.KubeconfigPath(kubeDir)); err != nil {
+		slog.Warn("control plane: could not record kubeconfig path", "err", err)
+	}
 
-	// DELIBERATELY NOT g.Go — see TunnelServer.Run. frp's Run never returns,
-	// so putting it in the errgroup would make g.Wait() block forever and
-	// hang every self-restart (pairing changes, builtin toggles, upgrades).
-	go srv.Run(ctx)
-
-	// The shutdown half DOES belong in the errgroup: it returns, and Close
-	// releases the listeners so the bind port is free for the re-exec. A
-	// worker's frpc reconnects on its own, so dropping sessions here costs a
-	// retry interval, not a rejoin.
+	if err := runtime.UpServer(ctx, opts); err != nil {
+		slog.Warn("control plane: container did not start", "err", err)
+		return
+	}
 	g.Go(func() error {
 		<-ctx.Done()
-		if err := srv.Close(); err != nil {
-			slog.Debug("control plane: tunnel server close", "err", err)
-		}
+		// Stop on shutdown so the published ports free for the re-exec. The
+		// DATA VOLUME IS KEPT — removing it would destroy the cluster's
+		// identity and invalidate every worker's join token, which a restart
+		// is not a request to do.
+		stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = runtime.DownServer(stopCtx, opts)
 		return nil
 	})
-
-	startAPIServerPublisher(ctx, g, fc, cfgPath, addr, port, token)
 
 	// The reconcilers act on the plane THIS host hosts, so they belong here
 	// beside the server rather than in the join path.
 	startControlPlaneReconcilers(ctx, g, fc)
 }
 
-// startAPIServerPublisher runs the frpc that PUBLISHES this host's apiserver
-// into the tunnel server started above.
-//
-// Without it the server accepts logins and carries nothing: a worker's visitor
-// resolves to a proxy that was never registered, which surfaces as a timeout
-// rather than a refusal — the confusing shape of failure. frps is the switch;
-// this is the thing plugged into it.
-//
-// It is a SECOND frpc, deliberately, alongside the one dialing cloudbox. They
-// serve different planes (cloudbox app traffic vs cluster membership) and have
-// different lifetimes, and a host may run this one while unpaired.
-func startAPIServerPublisher(
-	ctx context.Context, g *errgroup.Group, fc *conf.FileConfig,
-	cfgPath, bindAddr string, bindPort int, token string,
-) {
-	secret, err := conf.EnsureControlPlaneSTCPSecret(cfgPath, fc)
-	if err != nil {
-		slog.Warn("control plane: apiserver not published (no stcp secret)", "err", err)
-		return
+// controlPlaneKubeconfigDir is the host directory the control-plane container
+// writes its admin kubeconfig into.
+func controlPlaneKubeconfigDir() string {
+	if d := strings.TrimSpace(os.Getenv("OUTPOST_CONTROL_PLANE_KUBECONFIG_DIR")); d != "" {
+		return d
 	}
-	apiAddr := fc.Cluster.ControlPlaneAPI()
-	host, portStr, err := net.SplitHostPort(apiAddr)
-	if err != nil {
-		slog.Warn("control plane: apiserver not published (bad address)", "addr", apiAddr, "err", err)
-		return
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".kube", "outpost-control-plane")
 	}
-	apiPort, err := strconv.Atoi(portStr)
-	if err != nil {
-		slog.Warn("control plane: apiserver not published (bad port)", "addr", apiAddr, "err", err)
-		return
-	}
-
-	// Dial the loopback side of our own server regardless of what it binds:
-	// a plane bound to 0.0.0.0 for the LAN still reaches itself at 127.0.0.1,
-	// and routing our own publisher out over the network would be pointless.
-	dialAddr := bindAddr
-	if dialAddr == "0.0.0.0" || dialAddr == "::" || dialAddr == "" {
-		dialAddr = "127.0.0.1"
-	}
-
-	pub, err := agent.NewTunnel(agent.TunnelConfig{
-		ServerAddr: dialAddr,
-		ServerPort: bindPort,
-		Protocol:   "tcp",
-		Token:      token,
-		// A user distinct from any worker's. frp scopes STCP visibility by
-		// user, so the publisher must not collide with a visitor.
-		User: controlPlanePublisherUser,
-	}, nil, nil, []agent.STCPProxy{{
-		Name:      clusterAPIServerProxy,
-		LocalIP:   host,
-		LocalPort: apiPort,
-		Secret:    secret,
-		// Any authenticated client may visit. The gate that matters is the
-		// tunnel token: reaching this proxy already required a valid frps
-		// login, and every such client is by definition a member of this
-		// cluster. Enumerating workers here would add a second roster to keep
-		// in sync with no authority the token does not already confer.
-		AllowUsers: []string{"*"},
-	}})
-	if err != nil {
-		slog.Warn("control plane: apiserver publisher init failed", "err", err)
-		return
-	}
-
-	slog.Info("control plane: publishing apiserver", "api", apiAddr, "proxy", clusterAPIServerProxy)
-	g.Go(func() error {
-		// Unlike the server, the tunnel CLIENT does honour ctx cancellation,
-		// so this one can live in the errgroup.
-		if err := pub.Run(ctx); err != nil && ctx.Err() == nil {
-			slog.Warn("control plane: apiserver publisher stopped", "err", err)
-		}
-		return nil
-	})
+	return filepath.Join(os.TempDir(), "outpost-control-plane")
 }
 
-const (
-	// controlPlanePublisherUser is the frp user the control plane's own
-	// publisher logs in as. Distinct from any worker's so STCP user scoping
-	// cannot collide.
-	controlPlanePublisherUser = "control-plane"
-	// clusterAPIServerProxy is the published service name. Workers' visitors
-	// must use the SAME string — it is the rendezvous key, so it is a
-	// constant rather than anything derived per host.
-	clusterAPIServerProxy = "k3s-apiserver"
-)
+// rememberControlPlaneKubeconfig records the path so the reconcilers pick it
+// up without the operator having to configure what we already know. An
+// explicit operator value is never overwritten.
+func rememberControlPlaneKubeconfig(fc *conf.FileConfig, cfgPath, path string) error {
+	if fc == nil || fc.Cluster == nil || strings.TrimSpace(fc.Cluster.ControlPlaneKubeconfig) != "" {
+		return nil
+	}
+	fc.Cluster.ControlPlaneKubeconfig = path
+	if cfgPath == "" {
+		return nil
+	}
+	return conf.SaveFile(cfgPath, fc)
+}
 
 // Node runtime labels, matching the cloud-hosted control plane's values
 // exactly (cloudbox internal/cluster/node_identity.go). A node's runtime

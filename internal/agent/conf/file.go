@@ -964,6 +964,25 @@ func (c *ClusterConfig) ControlPlaneAPI() string {
 	return DefaultControlPlaneAPIAddr
 }
 
+// TunnelSANs returns extra apiserver certificate SANs for a hosted plane.
+//
+// Workers do NOT need one: their STCP visitor binds the apiserver on their own
+// loopback, so from a worker the address is always 127.0.0.1, which the
+// entrypoint always includes. This covers the OTHER caller — an operator
+// running kubectl against a LAN-exposed plane directly, whose connection would
+// otherwise fail certificate validation with no obvious cause.
+func (c *ClusterConfig) TunnelSANs() string {
+	addr, _ := c.TunnelBind()
+	ip := net.ParseIP(addr)
+	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+		// 0.0.0.0 names no reachable address, so it cannot be a SAN. An
+		// operator exposing a plane that way should set the address they
+		// actually reach it by.
+		return ""
+	}
+	return addr
+}
+
 // TunnelBind returns the address the control-plane tunnel server listens on.
 func (c *ClusterConfig) TunnelBind() (string, int) {
 	if c == nil {
