@@ -37,6 +37,7 @@ var docsManifest = []struct {
 	{"install", "Install guide", "Three install paths (curl-pipe sh, PowerShell, go install), uninstall steps, Windows Defender notes."},
 	{"building", "Build from source", "Per-platform build recipes (build.sh, build.ps1, `outpost build`), sibling bootstrap, cross-compile matrix."},
 	{"settings", "Settings reference", "Every persistable setting: file key, CLI flag, UI location, MCP tool, side-effects."},
+	{"cluster-peer", "Peer-hosted DKS runbook", "Host a DKS control plane on an outpost, join tunnelled workers, verify health, and recover common failures."},
 	{"mcp", "MCP server guide", "Setup, tool catalog, .mcp.json snippet, token rotation, security posture."},
 	{"dev-deploy", "Direct-local dev → deploy", "Makefile recipes for same-machine and LAN deploys (podman); apps stop/start; remote-cred caching."},
 	{"windows-service", "Windows host runbook", "Reboot-surviving Task Scheduler setup + sleep disable; and running commands over ssh/scp on Windows (minimal PATH — invoke .exe via $COMSPEC /c or full path; scp to deploy)."},
