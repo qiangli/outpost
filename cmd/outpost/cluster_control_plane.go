@@ -65,32 +65,6 @@ network.`,
 			addrChanged := cmd.Flags().Changed("bind-addr")
 			portChanged := cmd.Flags().Changed("bind-port")
 
-			// 'status' verb shows health + nodes
-			if len(args) == 1 && args[0] == "status" {
-				var status struct {
-					Hosted              bool `json:"hosted"`
-					ContainerExists     bool `json:"container_exists"`
-					ContainerRunning    bool `json:"container_running"`
-					APIServerServing    bool `json:"apiserver_serving"`
-					APIServerStatusCode int  `json:"apiserver_status_code"`
-					Nodes               []struct {
-						Name  string `json:"name"`
-						Ready bool   `json:"ready"`
-					} `json:"nodes"`
-					NodeCount     int    `json:"node_count"`
-					JoinEndpoint  string `json:"join_endpoint"`
-					HasJoinToken  bool   `json:"has_join_token"`
-					HasNodeToken  bool   `json:"has_node_token"`
-					HasSTCPSecret bool   `json:"has_stcp_secret"`
-					CheckedAt     int64  `json:"checked_at"`
-				}
-				if err := session.callTool(cmd.Context(), "outpost_control_plane_status", map[string]any{}, &status); err != nil {
-					return err
-				}
-				printControlPlaneStatus(status)
-				return nil
-			}
-
 			// No verb and no flags is a pure read — never a write, so
 			// running it to check state cannot change state.
 			if len(args) == 0 && !addrChanged && !portChanged {

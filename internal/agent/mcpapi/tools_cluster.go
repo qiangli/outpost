@@ -161,7 +161,7 @@ type controlPlaneStatusOut struct {
 	ContainerRunning    bool               `json:"container_running"`
 	APIServerServing    bool               `json:"apiserver_serving"`
 	APIServerStatusCode int                `json:"apiserver_status_code,omitempty"`
-	Nodes               []controlPlaneNode `json:"nodes,omitempty"`
+	Nodes               []controlPlaneNode `json:"nodes"`
 	NodeCount           int                `json:"node_count"`
 	JoinEndpoint        string             `json:"join_endpoint,omitempty"`
 	HasJoinToken        bool               `json:"has_join_token"`
@@ -180,6 +180,10 @@ func toControlPlaneStatusOut(s admincore.ControlPlaneStatus) controlPlaneStatusO
 	for i, n := range s.Nodes {
 		nodes[i] = controlPlaneNode{Name: n.Name, Ready: n.Ready}
 	}
+	checkedAt := s.CheckedAt.Unix()
+	if s.CheckedAt.IsZero() {
+		checkedAt = 0
+	}
 	return controlPlaneStatusOut{
 		Hosted:              s.Hosted,
 		ContainerExists:     s.ContainerExists,
@@ -192,7 +196,7 @@ func toControlPlaneStatusOut(s admincore.ControlPlaneStatus) controlPlaneStatusO
 		HasJoinToken:        s.HasJoinToken,
 		HasNodeToken:        s.HasNodeToken,
 		HasSTCPSecret:       s.HasSTCPSecret,
-		CheckedAt:           s.CheckedAt.Unix(),
+		CheckedAt:           checkedAt,
 	}
 }
 

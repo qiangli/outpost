@@ -860,7 +860,9 @@ func startCmd() *cobra.Command {
 				if cc == nil {
 					return []admincore.Node{}, nil
 				}
-				return admincore.ReadControlPlaneNodes(ctx, cc.ControlPlaneKubeconfig)
+				nodeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
+				return admincore.ReadControlPlaneNodes(nodeCtx, cc.ControlPlaneKubeconfig)
 			}
 			hasJoinToken := func() bool { return cc != nil && strings.TrimSpace(cc.JoinToken) != "" }
 			hasNodeToken := func() bool { return cc != nil && strings.TrimSpace(cc.NodeToken) != "" }

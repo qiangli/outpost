@@ -40,6 +40,15 @@ func newTestMCP(t *testing.T, token string) (*httptest.Server, *Server) {
 	return httpSrv, mcpSrv
 }
 
+// fakeControlPlaneStatusProber is a test double for verifying credential redaction.
+type fakeControlPlaneStatusProber struct {
+	status admincore.ControlPlaneStatus
+}
+
+func (f *fakeControlPlaneStatusProber) ProbeControlPlaneStatus(ctx context.Context) (admincore.ControlPlaneStatus, error) {
+	return f.status, nil
+}
+
 // TestBearerAuth — the gate rejects requests without the right token.
 func TestBearerAuth(t *testing.T) {
 	httpSrv, _ := newTestMCP(t, "deadbeef")
