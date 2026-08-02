@@ -9,15 +9,21 @@ import (
 )
 
 const validAppYAML = `
-schemaVersion: 1
-id: %s
-displayName: Demo
-license: Apache-2.0
-platforms: [linux/amd64, linux/arm64]
-chart:
-  repo: https://charts.example.com
-  name: demo
-  version: 1.2.3
+apiVersion: appstore.dhnt.io/v1
+kind: AppEntry
+metadata:
+  id: %s
+  name: Demo
+  version: "1.0"
+spec:
+  chart:
+    repo: https://charts.example.com
+    name: demo
+    version: 1.2.3
+  targetNamespace: "{{.UserNamespace}}"
+  rbac:
+    clusterScoped: false
+  defaultValuesFile: values.yaml
 `
 
 func catalogFixture(t *testing.T) string {

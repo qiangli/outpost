@@ -828,14 +828,17 @@ Behaviours worth knowing:
   `<namespace>-<release>` is the deterministic HelmChart object name (and
   therefore the Helm release name) install/status/uninstall all recompute
   identically, so the three operations can never target different objects.
-- **Fails closed on an unsupported schema version, license, or platform.**
-  `apps/<id>/app.yaml` must declare `schemaVersion: 1`, a license from an
-  allowlist of unambiguous OSS SPDX identifiers, and at least one
-  `linux/amd64` or `linux/arm64` platform (the only architectures a
-  peer-hosted k3s control plane schedules containers onto) — never a
-  best-effort partial install. `appstore show` runs the identical validation
-  read-only, so an operator can see why an app is unsupported before naming
-  a kubeconfig.
+- **Fails closed on an unsupported AppEntry envelope, id, or chart.**
+  `apps/<id>/app.yaml` is the real `appstore.dhnt.io/v1` `AppEntry` shape: it
+  must declare `apiVersion: appstore.dhnt.io/v1`, `kind: AppEntry`, a
+  `metadata.id` matching the catalog directory, and a `spec.chart` with an
+  `https://`/`oci://` `repo`, a `name`, and a safe pinned `version` (never a
+  floating `latest`) — any other value is refused, never a best-effort
+  partial install. There is no runtime license/platform field: license
+  compatibility is enforced by dhnt/appstore curation (an OSS-only, reviewed
+  catalog), not by a field the genuine entries do not carry. `appstore show`
+  runs the identical validation read-only, so an operator can see why an app
+  is unsupported before naming a kubeconfig.
 - **No Helm CLI, no template execution in this process.** `values.yaml` is
   embedded byte-for-byte as the HelmChart CR's `spec.valuesContent`; the
   k3s helm-controller already built into every peer-hosted DKS control plane

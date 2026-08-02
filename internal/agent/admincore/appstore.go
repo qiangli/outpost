@@ -77,21 +77,27 @@ func (s *Server) AppstoreCatalog(explicit string) (AppstoreCatalogView, error) {
 }
 
 // AppstoreShowResult previews a resolved, VALIDATED app manifest without
-// touching any cluster — schema version, license, and platform support
-// are checked here exactly as install would check them, so an operator
-// can see WHY an app is unsupported before ever naming a kubeconfig.
+// touching any cluster — the apiVersion/kind envelope, id match, and chart
+// shape are checked here exactly as install would check them, so an
+// operator can see WHY an app is unsupported before ever naming a
+// kubeconfig. The fields mirror the real dhnt/appstore AppEntry metadata.
 type AppstoreShowResult struct {
-	OK           bool     `json:"ok"`
-	ID           string   `json:"id"`
-	Catalog      string   `json:"catalog"`
-	Manifest     string   `json:"manifest"`
-	DisplayName  string   `json:"display_name,omitempty"`
-	License      string   `json:"license"`
-	Platforms    []string `json:"platforms"`
-	ChartRepo    string   `json:"chart_repo"`
-	ChartName    string   `json:"chart_name"`
-	ChartVersion string   `json:"chart_version"`
-	HasValues    bool     `json:"has_values"`
+	OK            bool     `json:"ok"`
+	ID            string   `json:"id"`
+	Catalog       string   `json:"catalog"`
+	Manifest      string   `json:"manifest"`
+	Name          string   `json:"name,omitempty"`
+	Version       string   `json:"version,omitempty"`
+	Description   string   `json:"description,omitempty"`
+	Homepage      string   `json:"homepage,omitempty"`
+	Categories    []string `json:"categories,omitempty"`
+	Tags          []string `json:"tags,omitempty"`
+	Featured      bool     `json:"featured,omitempty"`
+	ChartRepo     string   `json:"chart_repo"`
+	ChartName     string   `json:"chart_name"`
+	ChartVersion  string   `json:"chart_version"`
+	ClusterScoped bool     `json:"cluster_scoped,omitempty"`
+	HasValues     bool     `json:"has_values"`
 }
 
 // AppstoreShow resolves and validates apps/<id>/app.yaml the same way
@@ -112,9 +118,12 @@ func (s *Server) AppstoreShow(explicitCatalog, id string) (AppstoreShowResult, e
 	}
 	return AppstoreShowResult{
 		OK: true, ID: entry.ID, Catalog: entry.Catalog, Manifest: entry.AppFile,
-		DisplayName: m.DisplayName, License: m.License, Platforms: m.Platforms,
-		ChartRepo: m.Chart.Repo, ChartName: m.Chart.Name, ChartVersion: m.Chart.Version,
-		HasValues: strings.TrimSpace(values) != "",
+		Name: m.Metadata.Name, Version: m.Metadata.Version,
+		Description: strings.TrimSpace(m.Metadata.Description), Homepage: m.Metadata.Homepage,
+		Categories: m.Metadata.Categories, Tags: m.Metadata.Tags, Featured: m.Metadata.Featured,
+		ChartRepo: m.Spec.Chart.Repo, ChartName: m.Spec.Chart.Name, ChartVersion: m.Spec.Chart.Version,
+		ClusterScoped: m.Spec.RBAC.ClusterScoped,
+		HasValues:     strings.TrimSpace(values) != "",
 	}, nil
 }
 
@@ -155,7 +164,8 @@ type AppstoreInstallResult struct {
 }
 
 // AppstoreInstall resolves apps/<id>/app.yaml (+ optional values.yaml),
-// fails closed on an unsupported schema version, license, or platform,
+// fails closed on an unsupported apiVersion/kind envelope, a mismatched
+// metadata.id, or an unsafe chart reference (repo scheme / pinned version),
 // renders the single HelmChart object for the caller's namespace/release,
 // and applies it through the same peer venue guard, readiness wait, and
 // rollback accounting BundleApply gives the builtins path.
@@ -269,7 +279,7 @@ type AppstoreStatusResult struct {
 }
 
 // AppstoreStatus resolves apps/<id>/app.yaml exactly the way
-// AppstoreInstall does (same fail-closed schema/license/platform check)
+// AppstoreInstall does (same fail-closed apiVersion/kind/id/chart check)
 // and recomputes the identical deterministic HelmChart object name for
 // the given namespace/release, then reports its live state — reusing the
 // same readiness evidence (bundleapply.StatusBundle -> evalReadiness)

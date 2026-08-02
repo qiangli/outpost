@@ -19,8 +19,8 @@ import (
 // Helm CLI, no manifest templating, no shell interpolation of any
 // manifest/values field. Every invocation lands on the matching
 // admincore.Appstore* method the MCP tools (tools_appstore.go) reach, so
-// validation (schema/license/platform + the cloudbox venue guard) cannot
-// drift between surfaces.
+// validation (the appstore.dhnt.io/v1 AppEntry envelope/id/chart shape +
+// the cloudbox venue guard) cannot drift between surfaces.
 
 func appstoreCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -78,17 +78,22 @@ func appstoreListCmd() *cobra.Command {
 }
 
 type appstoreShowOut struct {
-	OK           bool     `json:"ok"`
-	ID           string   `json:"id"`
-	Catalog      string   `json:"catalog"`
-	Manifest     string   `json:"manifest"`
-	DisplayName  string   `json:"display_name"`
-	License      string   `json:"license"`
-	Platforms    []string `json:"platforms"`
-	ChartRepo    string   `json:"chart_repo"`
-	ChartName    string   `json:"chart_name"`
-	ChartVersion string   `json:"chart_version"`
-	HasValues    bool     `json:"has_values"`
+	OK            bool     `json:"ok"`
+	ID            string   `json:"id"`
+	Catalog       string   `json:"catalog"`
+	Manifest      string   `json:"manifest"`
+	Name          string   `json:"name"`
+	Version       string   `json:"version"`
+	Description   string   `json:"description"`
+	Homepage      string   `json:"homepage"`
+	Categories    []string `json:"categories"`
+	Tags          []string `json:"tags"`
+	Featured      bool     `json:"featured"`
+	ChartRepo     string   `json:"chart_repo"`
+	ChartName     string   `json:"chart_name"`
+	ChartVersion  string   `json:"chart_version"`
+	ClusterScoped bool     `json:"cluster_scoped"`
+	HasValues     bool     `json:"has_values"`
 }
 
 func appstoreShowCmd() *cobra.Command {
@@ -96,7 +101,7 @@ func appstoreShowCmd() *cobra.Command {
 	var catalog string
 	cmd := &cobra.Command{
 		Use:   "show <app-id>",
-		Short: "Show a resolved, validated OSS appstore app manifest (schema/license/platform) without touching any cluster",
+		Short: "Show a resolved, validated OSS appstore app manifest (appstore.dhnt.io/v1 AppEntry) without touching any cluster",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := args[0]
@@ -112,9 +117,10 @@ func appstoreShowCmd() *cobra.Command {
 				}
 				out = appstoreShowOut{
 					OK: view.OK, ID: view.ID, Catalog: view.Catalog, Manifest: view.Manifest,
-					DisplayName: view.DisplayName, License: view.License, Platforms: view.Platforms,
+					Name: view.Name, Version: view.Version, Description: view.Description, Homepage: view.Homepage,
+					Categories: view.Categories, Tags: view.Tags, Featured: view.Featured,
 					ChartRepo: view.ChartRepo, ChartName: view.ChartName, ChartVersion: view.ChartVersion,
-					HasValues: view.HasValues,
+					ClusterScoped: view.ClusterScoped, HasValues: view.HasValues,
 				}
 			} else {
 				session, err := dialMCP(cmd.Context())
@@ -131,10 +137,19 @@ func appstoreShowCmd() *cobra.Command {
 				}
 			}
 			w := cmd.OutOrStdout()
-			fmt.Fprintf(w, "%s: %s\n", out.ID, out.DisplayName)
+			fmt.Fprintf(w, "%s: %s\n", out.ID, out.Name)
+			if out.Version != "" {
+				fmt.Fprintf(w, "version:  %s\n", out.Version)
+			}
 			fmt.Fprintf(w, "catalog:  %s\nmanifest: %s\n", out.Catalog, out.Manifest)
-			fmt.Fprintf(w, "license:  %s\nplatforms: %s\n", out.License, strings.Join(out.Platforms, ", "))
+			if len(out.Categories) > 0 {
+				fmt.Fprintf(w, "categories: %s\n", strings.Join(out.Categories, ", "))
+			}
+			if out.Homepage != "" {
+				fmt.Fprintf(w, "homepage: %s\n", out.Homepage)
+			}
 			fmt.Fprintf(w, "chart:    %s (repo %s, version %s)\n", out.ChartName, out.ChartRepo, out.ChartVersion)
+			fmt.Fprintf(w, "cluster-scoped: %v\n", out.ClusterScoped)
 			fmt.Fprintf(w, "values:   %v\n", out.HasValues)
 			return nil
 		},
@@ -236,8 +251,9 @@ func appstoreInstallCmd() *cobra.Command {
 		Use:   "install <app-id>",
 		Short: "Install an OSS appstore app (a Helm chart) into your own namespace/release on a peer-hosted control plane",
 		Long: "Resolves only apps/<id>/app.yaml (+ optional values.yaml); fails closed on an\n" +
-			"unsupported schema version, license, or platform, or a name that is missing or\n" +
-			"escapes the catalog. Renders a single k3s helm.cattle.io/v1 HelmChart object —\n" +
+			"unsupported apiVersion/kind envelope, a mismatched id, an unsafe chart\n" +
+			"reference, or a name that is missing or escapes the catalog. Renders a single\n" +
+			"k3s helm.cattle.io/v1 HelmChart object —\n" +
 			"no Helm CLI, no manifest templating — and applies it through the same peer\n" +
 			"readiness, rollback, and cloudbox-kubeconfig venue guard `bundle install` uses.\n" +
 			"--namespace is required: per-user isolation has no default.",

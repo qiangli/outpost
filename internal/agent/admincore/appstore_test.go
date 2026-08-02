@@ -12,15 +12,21 @@ import (
 )
 
 const appstoreValidAppYAML = `
-schemaVersion: 1
-id: demo
-displayName: Demo Chart
-license: Apache-2.0
-platforms: [linux/amd64, linux/arm64]
-chart:
-  repo: https://charts.example.com
-  name: demo
-  version: 1.2.3
+apiVersion: appstore.dhnt.io/v1
+kind: AppEntry
+metadata:
+  id: demo
+  name: Demo Chart
+  version: "1.0"
+spec:
+  chart:
+    repo: https://charts.example.com
+    name: demo
+    version: 1.2.3
+  targetNamespace: "{{.UserNamespace}}"
+  rbac:
+    clusterScoped: false
+  defaultValuesFile: values.yaml
 `
 
 // appstoreCatalogFixture writes an "apps/demo" entry (with a values.yaml
@@ -138,31 +144,50 @@ func TestAppstoreInstall_FailsClosedOnUnknownAndEscapingIDs(t *testing.T) {
 	}
 }
 
-func TestAppstoreInstall_FailsClosedOnUnsupportedSchemaLicensePlatform(t *testing.T) {
+func TestAppstoreInstall_FailsClosedOnUnsupportedManifest(t *testing.T) {
 	fix := newBundleFixture(t)
 	catalog := filepath.Join(fix.home, "appstore")
 
+	// The real AppEntry envelope is validated exactly as install would
+	// check it: a wrong apiVersion/kind, a mismatched metadata.id, or an
+	// unsafe/incomplete chart reference are all hard 400s. (There is no
+	// runtime license/platform field — those invented dimensions were
+	// removed; catalog curation enforces license.)
 	cases := map[string]string{
-		"unsupported schema": `
-schemaVersion: 2
-id: bad
-license: MIT
-platforms: [linux/amd64]
-chart: {repo: https://x.example.com, name: bad, version: "1.0"}
+		"wrong apiVersion": `
+apiVersion: appstore.dhnt.io/v2
+kind: AppEntry
+metadata: {id: bad}
+spec:
+  chart: {repo: https://x.example.com, name: bad, version: "1.0"}
 `,
-		"unsupported license": `
-schemaVersion: 1
-id: bad
-license: Proprietary
-platforms: [linux/amd64]
-chart: {repo: https://x.example.com, name: bad, version: "1.0"}
+		"wrong kind": `
+apiVersion: appstore.dhnt.io/v1
+kind: Application
+metadata: {id: bad}
+spec:
+  chart: {repo: https://x.example.com, name: bad, version: "1.0"}
 `,
-		"unsupported platform": `
-schemaVersion: 1
-id: bad
-license: MIT
-platforms: [windows/amd64]
-chart: {repo: https://x.example.com, name: bad, version: "1.0"}
+		"id mismatch": `
+apiVersion: appstore.dhnt.io/v1
+kind: AppEntry
+metadata: {id: not-bad}
+spec:
+  chart: {repo: https://x.example.com, name: bad, version: "1.0"}
+`,
+		"non-https/oci repo": `
+apiVersion: appstore.dhnt.io/v1
+kind: AppEntry
+metadata: {id: bad}
+spec:
+  chart: {repo: "file:///etc/passwd", name: bad, version: "1.0"}
+`,
+		"floating latest version": `
+apiVersion: appstore.dhnt.io/v1
+kind: AppEntry
+metadata: {id: bad}
+spec:
+  chart: {repo: https://x.example.com, name: bad, version: latest}
 `,
 	}
 	for name, body := range cases {

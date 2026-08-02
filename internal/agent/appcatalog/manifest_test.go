@@ -23,14 +23,21 @@ func writeApp(t *testing.T, root, id, body string) {
 func TestLoadValidManifest(t *testing.T) {
 	root := t.TempDir()
 	writeApp(t, root, "demo", `
-schemaVersion: 1
-id: demo
-license: MIT
-platforms: [linux/amd64]
-chart:
-  repo: https://charts.example.com
-  name: demo
-  version: 1.0.0
+apiVersion: appstore.dhnt.io/v1
+kind: AppEntry
+metadata:
+  id: demo
+  name: Demo
+  version: "1.0"
+spec:
+  chart:
+    repo: https://charts.example.com
+    name: demo
+    version: 1.0.0
+  targetNamespace: "{{.UserNamespace}}"
+  rbac:
+    clusterScoped: false
+  defaultValuesFile: values.yaml
 `)
 	entry, err := Resolve(root, "demo")
 	if err != nil {
@@ -40,8 +47,11 @@ chart:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if m.Chart.Name != "demo" || m.Chart.Version != "1.0.0" {
-		t.Fatalf("unexpected chart: %+v", m.Chart)
+	if m.Spec.Chart.Name != "demo" || m.Spec.Chart.Version != "1.0.0" {
+		t.Fatalf("unexpected chart: %+v", m.Spec.Chart)
+	}
+	if m.Metadata.Name != "Demo" || m.Metadata.Version != "1.0" {
+		t.Fatalf("unexpected metadata: %+v", m.Metadata)
 	}
 	if values != "" {
 		t.Fatalf("expected no values, got %q", values)
@@ -50,66 +60,74 @@ chart:
 
 func TestLoadFailsClosed(t *testing.T) {
 	cases := map[string]string{
-		"missing schemaVersion": `
-id: demo
-license: MIT
-platforms: [linux/amd64]
-chart: {repo: https://x.example.com, name: demo, version: "1.0"}
+		"missing apiVersion": `
+kind: AppEntry
+metadata: {id: demo}
+spec:
+  chart: {repo: https://x.example.com, name: demo, version: "1.0"}
 `,
-		"unsupported schemaVersion": `
-schemaVersion: 2
-id: demo
-license: MIT
-platforms: [linux/amd64]
-chart: {repo: https://x.example.com, name: demo, version: "1.0"}
+		"wrong apiVersion": `
+apiVersion: appstore.dhnt.io/v2
+kind: AppEntry
+metadata: {id: demo}
+spec:
+  chart: {repo: https://x.example.com, name: demo, version: "1.0"}
+`,
+		"wrong kind": `
+apiVersion: appstore.dhnt.io/v1
+kind: Application
+metadata: {id: demo}
+spec:
+  chart: {repo: https://x.example.com, name: demo, version: "1.0"}
 `,
 		"id mismatch": `
-schemaVersion: 1
-id: not-demo
-license: MIT
-platforms: [linux/amd64]
-chart: {repo: https://x.example.com, name: demo, version: "1.0"}
+apiVersion: appstore.dhnt.io/v1
+kind: AppEntry
+metadata: {id: not-demo}
+spec:
+  chart: {repo: https://x.example.com, name: demo, version: "1.0"}
 `,
-		"missing license": `
-schemaVersion: 1
-id: demo
-platforms: [linux/amd64]
-chart: {repo: https://x.example.com, name: demo, version: "1.0"}
-`,
-		"proprietary license": `
-schemaVersion: 1
-id: demo
-license: Proprietary
-platforms: [linux/amd64]
-chart: {repo: https://x.example.com, name: demo, version: "1.0"}
-`,
-		"no platforms": `
-schemaVersion: 1
-id: demo
-license: MIT
-platforms: []
-chart: {repo: https://x.example.com, name: demo, version: "1.0"}
-`,
-		"windows-only platform": `
-schemaVersion: 1
-id: demo
-license: MIT
-platforms: [windows/amd64]
-chart: {repo: https://x.example.com, name: demo, version: "1.0"}
+		"missing id": `
+apiVersion: appstore.dhnt.io/v1
+kind: AppEntry
+metadata: {name: Demo}
+spec:
+  chart: {repo: https://x.example.com, name: demo, version: "1.0"}
 `,
 		"non-https/oci repo": `
-schemaVersion: 1
-id: demo
-license: MIT
-platforms: [linux/amd64]
-chart: {repo: "file:///etc/passwd", name: demo, version: "1.0"}
+apiVersion: appstore.dhnt.io/v1
+kind: AppEntry
+metadata: {id: demo}
+spec:
+  chart: {repo: "file:///etc/passwd", name: demo, version: "1.0"}
 `,
 		"missing chart version": `
-schemaVersion: 1
-id: demo
-license: MIT
-platforms: [linux/amd64]
-chart: {repo: https://x.example.com, name: demo}
+apiVersion: appstore.dhnt.io/v1
+kind: AppEntry
+metadata: {id: demo}
+spec:
+  chart: {repo: https://x.example.com, name: demo}
+`,
+		"floating latest version": `
+apiVersion: appstore.dhnt.io/v1
+kind: AppEntry
+metadata: {id: demo}
+spec:
+  chart: {repo: https://x.example.com, name: demo, version: latest}
+`,
+		"unsafe version": `
+apiVersion: appstore.dhnt.io/v1
+kind: AppEntry
+metadata: {id: demo}
+spec:
+  chart: {repo: https://x.example.com, name: demo, version: "1.0; rm -rf /"}
+`,
+		"missing chart name": `
+apiVersion: appstore.dhnt.io/v1
+kind: AppEntry
+metadata: {id: demo}
+spec:
+  chart: {repo: https://x.example.com, version: "1.0"}
 `,
 	}
 	for name, body := range cases {
@@ -130,11 +148,11 @@ chart: {repo: https://x.example.com, name: demo}
 func TestLoadCarriesValuesVerbatim(t *testing.T) {
 	root := t.TempDir()
 	writeApp(t, root, "demo", `
-schemaVersion: 1
-id: demo
-license: Apache-2.0
-platforms: [linux/amd64, linux/arm64]
-chart: {repo: https://x.example.com, name: demo, version: "1.0"}
+apiVersion: appstore.dhnt.io/v1
+kind: AppEntry
+metadata: {id: demo}
+spec:
+  chart: {repo: https://x.example.com, name: demo, version: "1.0"}
 `)
 	// Deliberately shell-metacharacter-laden to prove values are never
 	// interpolated into a command line — only ever carried as data.

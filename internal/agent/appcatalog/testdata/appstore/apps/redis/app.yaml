@@ -1,0 +1,34 @@
+# Structurally copied from a real dhnt/appstore apps/<id>/app.yaml entry.
+# The AppEntry envelope (apiVersion/kind), metadata, and spec.chart shape
+# mirror the genuine catalog exactly — there is no invented
+# schemaVersion/license/platforms top level.
+apiVersion: appstore.dhnt.io/v1
+kind: AppEntry
+metadata:
+  id: redis
+  name: Redis
+  version: "20.1.0"
+  categories:
+    - database
+    - cache
+  tags:
+    - key-value
+    - in-memory
+  maintainers:
+    - name: dhnt appstore
+      email: appstore@dhnt.io
+  description: >-
+    Redis is an open-source, in-memory key-value store used as a database,
+    cache, and message broker.
+  homepage: https://redis.io
+  featured: true
+  visibility: public
+spec:
+  chart:
+    repo: https://charts.bitnami.com/bitnami
+    name: redis
+    version: 20.1.0
+  targetNamespace: "{{.UserNamespace}}"
+  rbac:
+    clusterScoped: false
+  defaultValuesFile: values.yaml

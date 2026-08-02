@@ -1,0 +1,33 @@
+# Structurally copied from a real dhnt/appstore apps/<id>/app.yaml entry.
+# langfuse ships no values.yaml override here (a chart with sane defaults
+# needs none), exercising the optional-values path.
+apiVersion: appstore.dhnt.io/v1
+kind: AppEntry
+metadata:
+  id: langfuse
+  name: Langfuse
+  version: "1.2.13"
+  categories:
+    - observability
+    - llm
+  tags:
+    - tracing
+    - analytics
+  maintainers:
+    - name: dhnt appstore
+      email: appstore@dhnt.io
+  description: >-
+    Langfuse is an open-source LLM engineering platform for tracing,
+    evaluation, prompt management, and metrics.
+  homepage: https://langfuse.com
+  featured: false
+  visibility: public
+spec:
+  chart:
+    repo: https://langfuse.github.io/langfuse-k8s
+    name: langfuse
+    version: 1.2.13
+  targetNamespace: "{{.UserNamespace}}"
+  rbac:
+    clusterScoped: false
+  defaultValuesFile: values.yaml

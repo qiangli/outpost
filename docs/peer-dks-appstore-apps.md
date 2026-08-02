@@ -57,52 +57,77 @@ Helm, inside the cluster.
 
 ## The app.yaml / values.yaml schema
 
+This is the **real dhnt/appstore `AppEntry`** shape, decoded 1:1 — the same
+`apps/<id>/app.yaml` a genuine catalog checkout ships (see
+`internal/agent/appcatalog/testdata/appstore/apps/{redis,langfuse}` for
+structurally-real fixtures). There is deliberately **no** invented
+top-level `schemaVersion` / `license` / `platforms` block: earlier drafts
+parsed one and rejected every genuine catalog entry.
+
 ```yaml
 # apps/<id>/app.yaml
-schemaVersion: 1                 # the only version this package understands
-id: cert-manager                 # must match the catalog directory name
-displayName: cert-manager        # optional, operator-facing
-license: Apache-2.0              # required; must be an allowlisted OSS SPDX id
-platforms: [linux/amd64, linux/arm64]   # required; must include a k3s node platform
-chart:
-  repo: https://charts.jetstack.io      # required; https:// or oci:// only
-  name: cert-manager                    # required
-  version: v1.14.5                      # required — no floating "latest"
+apiVersion: appstore.dhnt.io/v1        # required; the only value understood
+kind: AppEntry                         # required; the only kind understood
+metadata:
+  id: redis                            # required; must match the catalog directory name
+  name: Redis                          # operator-facing catalog copy
+  version: "20.1.0"                    # catalog entry version (advisory)
+  categories: [database, cache]        # advisory; surfaced by `appstore show`
+  tags: [key-value, in-memory]         # advisory
+  maintainers:                         # advisory
+    - {name: dhnt appstore, email: appstore@dhnt.io}
+  description: In-memory key-value store.
+  homepage: https://redis.io
+  featured: true
+  visibility: public
+spec:
+  chart:
+    repo: https://charts.bitnami.com/bitnami   # required; https:// or oci:// only
+    name: redis                                # required
+    version: 20.1.0                            # required — no floating "latest"
+  targetNamespace: "{{.UserNamespace}}"        # cloudbox-side templating metadata (never expanded here)
+  rbac:
+    clusterScoped: false                       # surfaced; the peer path always installs into the caller's namespace
+  defaultValuesFile: values.yaml               # advisory — the sibling values.yaml is located directly
 ```
 
 ```yaml
 # apps/<id>/values.yaml (optional — a chart with sane defaults needs none)
-installCRDs: true
+architecture: standalone
+auth:
+  enabled: true
 ```
 
 `values.yaml`'s bytes are carried **verbatim** into the rendered object's
 `spec.valuesContent` — never parsed, templated, or otherwise interpreted by
 this package.
 
+**No runtime license field.** License compatibility is enforced by
+dhnt/appstore **curation** — a public, OSS-only, reviewed catalog (see
+`../appstore/README.md`), the same structural "no proprietary manifests"
+boundary `builtincatalog` enforces by only ever reading from an OSS
+checkout — **not** by a field the genuine catalog entries do not carry.
+`metadata.categories`/`tags`/`maintainers`/`homepage` are advisory catalog
+copy carried through to `appstore show`; only `metadata.id` and `spec.chart`
+are load-bearing.
+
 ### Fail-closed validation
 
 Per `docs/fleet-evidence-invariant.md`, every unsupported dimension is a
 hard failure, never a best-effort partial install:
 
-- `schemaVersion` other than `1` (including missing/zero) — refused.
-- `id` not present, or not equal to the catalog directory name — refused
-  (defense in depth against a copy-pasted manifest under the wrong id).
-- `license` missing or not on the allowlist (`internal/agent/appcatalog/
-  manifest.go`'s `supportedLicenses` — the common permissive and copyleft
-  OSS SPDX identifiers) — refused. This is the structural half of "no
-  proprietary manifests": the catalog itself is a public, open-source
-  checkout (same boundary `builtincatalog` enforces), and the license field
-  is a second, explicit gate on top of that.
-- `platforms` empty, or not containing at least one of `linux/amd64` /
-  `linux/arm64` — refused. These are the only architectures a peer-hosted
-  k3s control plane's compute half can ever be (a Linux container runtime,
-  regardless of what OS/arch the **outpost daemon** administering the
-  cluster happens to run on — a macOS outpost commonly administers a Linux
-  k3s-agent container; see `internal/agent/runtime`). The check is therefore
-  against this fixed set, never against the calling process's own
-  `runtime.GOOS`/`GOARCH`.
-- `chart.repo` not `https://` or `oci://`, or `chart.name`/`chart.version`
-  empty — refused.
+- `apiVersion` other than `appstore.dhnt.io/v1` (including missing) —
+  refused. There is no best-effort parse of an unknown envelope.
+- `kind` other than `AppEntry` (including missing) — refused.
+- `metadata.id` not present, or not equal to the catalog directory name —
+  refused (defense in depth against a copy-pasted manifest under the wrong
+  id).
+- `spec.chart.repo` not `https://` or `oci://` (or with no host),
+  `spec.chart.name` empty, or `spec.chart.version` empty / floating
+  `latest` / not a safe pinned token (`^[A-Za-z0-9][A-Za-z0-9._+-]*$`) —
+  refused. The version charset keeps a malformed catalog entry from ever
+  reaching the cluster even though it is only ever carried as structured
+  data into the HelmChart CR, never a command line.
 - A missing `apps/<id>/app.yaml`, or one that escapes the catalog root via
   symlink or traversal — refused, identically across install, status,
   *and* uninstall (no partial resolution, no cloudbox/private-manifest
@@ -162,9 +187,9 @@ bundle-apply surface documents, rather than a silent, hidden guess.
 ## Go API
 
 ```go
-entry, err := appcatalog.Resolve(catalog, "cert-manager")     // confined, symlink-safe
-manifest, valuesYAML, err := appcatalog.Load(entry)            // schema/license/platform validated
-target := appcatalog.Target{Namespace: "user-alice", Release: "cert-manager"}
+entry, err := appcatalog.Resolve(catalog, "redis")            // confined, symlink-safe
+manifest, valuesYAML, err := appcatalog.Load(entry)           // AppEntry envelope/id/chart validated
+target := appcatalog.Target{Namespace: "user-alice", Release: "redis"}
 obj, err := appcatalog.Render(manifest, valuesYAML, target)    // *unstructured.Unstructured, kind HelmChart
 
 client, err := bundleapply.NewDynamicClient(kubeconfigPath)    // same venue-guarded constructor
@@ -225,9 +250,12 @@ checkout normally ships both an `apps/` and a `builtin/` tree.
    `--offline` daemon-free path.
 
 Parity is tested on every layer: `appcatalog/*_test.go` (confinement,
-schema/license/platform fail-closed cases, structural rendering — including
+apiVersion/kind/id/chart fail-closed cases, structural rendering — including
 a test proving shell-metacharacter-laden values survive as inert data, not
-interpolated into anything), `bundleapply/readiness_test.go` (the
+interpolated into anything — plus real-shape `redis`/`langfuse` fixtures in
+`appcatalog/testdata/appstore` and an integration test that resolves+loads
+an actual sibling `../appstore` checkout when one is present),
+`bundleapply/readiness_test.go` (the
 `HelmChart` case), `admincore/appstore_test.go` (behaviour, the venue guard,
 and a two-user non-collision test using a fake `ResourceClient` that
 simulates the helm-controller's `JobCreated` condition), `mcpapi/

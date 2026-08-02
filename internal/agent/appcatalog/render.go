@@ -122,7 +122,8 @@ func Render(m *Manifest, valuesYAML string, t Target) (*unstructured.Unstructure
 	if err != nil {
 		return nil, err
 	}
-	obj.SetLabels(map[string]string{AppLabelKey: m.ID})
+	chart := m.Spec.Chart
+	obj.SetLabels(map[string]string{AppLabelKey: m.Metadata.ID})
 	obj.SetAnnotations(map[string]string{
 		NamespaceAnnotationKey: t.Namespace,
 		ReleaseAnnotationKey:   t.Release,
@@ -134,18 +135,18 @@ func Render(m *Manifest, valuesYAML string, t Target) (*unstructured.Unstructure
 	}{
 		{t.Namespace, []string{"spec", "targetNamespace"}},
 		{true, []string{"spec", "createNamespace"}},
-		{m.Chart.Name, []string{"spec", "chart"}},
-		{m.Chart.Version, []string{"spec", "version"}},
-		{m.Chart.Repo, []string{"spec", "repo"}},
+		{chart.Name, []string{"spec", "chart"}},
+		{chart.Version, []string{"spec", "version"}},
+		{chart.Repo, []string{"spec", "repo"}},
 	}
 	for _, f := range fields {
 		if err := unstructured.SetNestedField(obj.Object, f.val, f.path...); err != nil {
-			return nil, fmt.Errorf("render app %q: set %v: %w", m.ID, f.path, err)
+			return nil, fmt.Errorf("render app %q: set %v: %w", m.Metadata.ID, f.path, err)
 		}
 	}
 	if strings.TrimSpace(valuesYAML) != "" {
 		if err := unstructured.SetNestedField(obj.Object, valuesYAML, "spec", "valuesContent"); err != nil {
-			return nil, fmt.Errorf("render app %q: set values: %w", m.ID, err)
+			return nil, fmt.Errorf("render app %q: set values: %w", m.Metadata.ID, err)
 		}
 	}
 	return obj, nil

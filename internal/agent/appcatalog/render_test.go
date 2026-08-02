@@ -9,11 +9,12 @@ import (
 
 func validManifest() *Manifest {
 	return &Manifest{
-		SchemaVersion: SchemaVersion,
-		ID:            "demo",
-		License:       "Apache-2.0",
-		Platforms:     []string{"linux/amd64"},
-		Chart:         ChartRef{Repo: "https://charts.example.com", Name: "demo", Version: "1.2.3"},
+		APIVersion: APIVersion,
+		Kind:       Kind,
+		Metadata:   Metadata{ID: "demo", Name: "Demo"},
+		Spec: Spec{
+			Chart: ChartRef{Repo: "https://charts.example.com", Name: "demo", Version: "1.2.3"},
+		},
 	}
 }
 

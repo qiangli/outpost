@@ -91,7 +91,7 @@ func appstoreCatalogFixture(t *testing.T, root string) string {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	manifest := "schemaVersion: 1\nid: demo\nlicense: Apache-2.0\nplatforms: [linux/amd64, linux/arm64]\nchart:\n  repo: https://charts.example.com\n  name: demo\n  version: 1.2.3\n"
+	manifest := "apiVersion: appstore.dhnt.io/v1\nkind: AppEntry\nmetadata:\n  id: demo\n  name: Demo\n  version: \"1.0\"\nspec:\n  chart:\n    repo: https://charts.example.com\n    name: demo\n    version: 1.2.3\n  targetNamespace: \"{{.UserNamespace}}\"\n  rbac:\n    clusterScoped: false\n"
 	if err := os.WriteFile(filepath.Join(dir, "app.yaml"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}

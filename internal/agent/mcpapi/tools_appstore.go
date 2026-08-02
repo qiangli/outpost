@@ -15,8 +15,9 @@ import (
 // single k3s helm.cattle.io/v1 HelmChart custom resource — no Helm CLI,
 // no shell interpolation of any manifest/values field. Every tool is a
 // thin wrapper over the matching admincore.Appstore* method, so
-// validation (schema/license/platform + the cloudbox venue guard) cannot
-// drift between the MCP, CLI, and offline paths.
+// validation (the appstore.dhnt.io/v1 AppEntry envelope/id/chart shape +
+// the cloudbox venue guard) cannot drift between the MCP, CLI, and offline
+// paths.
 
 type appstoreCatalogIn struct {
 	Catalog string `json:"catalog,omitempty" jsonschema:"explicit OSS appstore root; omit to use cluster.bundle_catalog or umbrella-checkout discovery"`
@@ -34,17 +35,22 @@ type appstoreShowIn struct {
 }
 
 type appstoreShowOut struct {
-	OK           bool     `json:"ok"`
-	ID           string   `json:"id"`
-	Catalog      string   `json:"catalog"`
-	Manifest     string   `json:"manifest"`
-	DisplayName  string   `json:"display_name,omitempty"`
-	License      string   `json:"license"`
-	Platforms    []string `json:"platforms"`
-	ChartRepo    string   `json:"chart_repo"`
-	ChartName    string   `json:"chart_name"`
-	ChartVersion string   `json:"chart_version"`
-	HasValues    bool     `json:"has_values"`
+	OK            bool     `json:"ok"`
+	ID            string   `json:"id"`
+	Catalog       string   `json:"catalog"`
+	Manifest      string   `json:"manifest"`
+	Name          string   `json:"name,omitempty"`
+	Version       string   `json:"version,omitempty"`
+	Description   string   `json:"description,omitempty"`
+	Homepage      string   `json:"homepage,omitempty"`
+	Categories    []string `json:"categories,omitempty"`
+	Tags          []string `json:"tags,omitempty"`
+	Featured      bool     `json:"featured,omitempty"`
+	ChartRepo     string   `json:"chart_repo"`
+	ChartName     string   `json:"chart_name"`
+	ChartVersion  string   `json:"chart_version"`
+	ClusterScoped bool     `json:"cluster_scoped,omitempty"`
+	HasValues     bool     `json:"has_values"`
 }
 
 type installAppstoreAppIn struct {
@@ -140,8 +146,8 @@ func (s *Server) registerAppstoreTools() {
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "outpost_appstore_app",
-		Description: "Show a resolved, VALIDATED OSS appstore app manifest — schema version, license, and platform support checked exactly as " +
-			"install would check them — without touching any cluster or requiring a kubeconfig.",
+		Description: "Show a resolved, VALIDATED OSS appstore app manifest (appstore.dhnt.io/v1 AppEntry) — the apiVersion/kind envelope, " +
+			"id match, and chart shape checked exactly as install would check them — without touching any cluster or requiring a kubeconfig.",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in appstoreShowIn) (*mcp.CallToolResult, appstoreShowOut, error) {
 		view, err := s.core.AppstoreShow(in.Catalog, in.ID)
 		if err != nil {
@@ -149,17 +155,18 @@ func (s *Server) registerAppstoreTools() {
 		}
 		return nil, appstoreShowOut{
 			OK: view.OK, ID: view.ID, Catalog: view.Catalog, Manifest: view.Manifest,
-			DisplayName: view.DisplayName, License: view.License, Platforms: view.Platforms,
+			Name: view.Name, Version: view.Version, Description: view.Description, Homepage: view.Homepage,
+			Categories: view.Categories, Tags: view.Tags, Featured: view.Featured,
 			ChartRepo: view.ChartRepo, ChartName: view.ChartName, ChartVersion: view.ChartVersion,
-			HasValues: view.HasValues,
+			ClusterScoped: view.ClusterScoped, HasValues: view.HasValues,
 		}, nil
 	})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "outpost_install_appstore_app",
 		Description: "Install an operator-named OSS appstore app (a Helm chart) onto a peer-hosted DKS plane, into the caller's own " +
-			"namespace/release. Resolves only apps/<id>/app.yaml (+ optional values.yaml); fails closed on an unsupported schema version, " +
-			"license, or platform, or a name that is missing or escapes the catalog. Renders a single k3s helm.cattle.io/v1 HelmChart " +
+			"namespace/release. Resolves only apps/<id>/app.yaml (+ optional values.yaml); fails closed on an unsupported apiVersion/kind " +
+			"envelope, a mismatched id, an unsafe chart reference, or a name that is missing or escapes the catalog. Renders a single k3s helm.cattle.io/v1 HelmChart " +
 			"object — no Helm CLI, no manifest templating — and applies it through the same peer readiness, rollback, and " +
 			"cloudbox-kubeconfig venue guard the builtins path uses.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in installAppstoreAppIn) (*mcp.CallToolResult, installAppstoreAppOut, error) {
