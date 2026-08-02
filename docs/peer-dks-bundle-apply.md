@@ -132,6 +132,76 @@ absent signal:
 
 ---
 
+## Installer-style bundles — the lifecycle contract
+
+Some bundles bootstrap their product through an **installer Job** — often with
+`ttlSecondsAfterFinished`, so the completed Job is garbage-collected *by
+design* (the appstore `headlamp` built-in's `install-headlamp` Job is the
+canonical case). For such bundles, "is the Job present" is the wrong
+installed-ness question in both directions:
+
+- a completed-then-reaped Job is **not** evidence the bundle is absent
+  (the live regression: Headlamp Running 2/2, `bundle status headlamp`
+  reporting `installed=false`), and
+- a surviving Namespace/RBAC skeleton after a **failed** install is not
+  evidence the bundle is present.
+
+Two annotations on the installer object make the durable product explicit
+(`internal/agent/bundleapply/lifecycle.go`):
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: install-headlamp
+  namespace: headlamp
+  annotations:
+    outpost.io/lifecycle: installer
+    outpost.io/installs: >-
+      apps/v1:Deployment:headlamp:headlamp,
+      rbac.authorization.k8s.io/v1:ClusterRoleBinding::headlamp-admin
+spec:
+  ttlSecondsAfterFinished: 30
+```
+
+- `outpost.io/lifecycle: installer` marks a bootstrap object expected to
+  complete and possibly be garbage-collected afterwards. Any other lifecycle
+  value is a hard error.
+- `outpost.io/installs` is **required** with it: comma/whitespace-separated
+  entries `<apiVersion>:<Kind>:<namespace>:<name>` (empty namespace for
+  cluster-scoped) declaring the durable post-install resources. An installer
+  without a parseable declaration **refuses to load** — without declared
+  outputs an absent installer is indistinguishable from one that never ran,
+  so the manifest is rejected rather than guessed at (evidence invariant).
+
+Semantics across the three operations:
+
+- **Status** asserts the declared outputs, not the installer's presence.
+  Installer absent + all outputs present → completed-and-reaped, still
+  `installed=true`. Installer absent + any output missing → never completed,
+  `installed=false` — even when Namespace/RBAC survived a failed install.
+  Declared outputs are reported as extra rows (`declared_output: true`,
+  the installer row carries `installer: true`) and count toward both
+  `installed` (existence) and `all_ready` (the same rolled-out bar the
+  apply wait uses).
+- **Uninstall** deletes the bundle objects PLUS every declared output — the
+  actual installed product, not just the bootstrap manifest. Namespaced
+  outputs would fall with their Namespace anyway; **cluster-scoped outputs**
+  (a ClusterRoleBinding the installer created) survive a Namespace deletion
+  and are removed only because they are declared. Outputs are deduplicated
+  against the bundle, slotted into apply-rank order, and deleted in reverse;
+  deleting an already-gone object (the reaped Job included) is success, so
+  uninstall converges on re-run.
+- **Apply** is unchanged: the installer Job is applied and the readiness wait
+  holds for its completion like any Job.
+
+Public appstore built-ins that bootstrap via installer Jobs (e.g.
+`builtin/headlamp/install.yaml` in dhnt/appstore) must carry these
+annotations; a catalog manifest with an undeclared installer fails closed at
+load on install, status, and uninstall alike.
+
+---
+
 ## Go API
 
 ```go

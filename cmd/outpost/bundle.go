@@ -240,12 +240,14 @@ func builtinStatusArgs(p admincore.BuiltinStatusParams) map[string]any {
 }
 
 type bundleObjectStatusOut struct {
-	Kind      string `json:"kind"`
-	Namespace string `json:"namespace,omitempty"`
-	Name      string `json:"name"`
-	Exists    bool   `json:"exists"`
-	Ready     bool   `json:"ready"`
-	Reason    string `json:"reason,omitempty"`
+	Kind           string `json:"kind"`
+	Namespace      string `json:"namespace,omitempty"`
+	Name           string `json:"name"`
+	Exists         bool   `json:"exists"`
+	Ready          bool   `json:"ready"`
+	Reason         string `json:"reason,omitempty"`
+	Installer      bool   `json:"installer,omitempty"`
+	DeclaredOutput bool   `json:"declared_output,omitempty"`
 }
 
 type builtinStatusOut struct {
@@ -321,6 +323,7 @@ func builtinStatusOffline(ctx context.Context, core *admincore.Server, p adminco
 	for _, o := range res.Objects {
 		out.Objects = append(out.Objects, bundleObjectStatusOut{
 			Kind: o.Kind, Namespace: o.Namespace, Name: o.Name, Exists: o.Exists, Ready: o.Ready, Reason: o.Reason,
+			Installer: o.Installer, DeclaredOutput: o.DeclaredOutput,
 		})
 	}
 	printBuiltinStatus(w, out)
@@ -334,6 +337,12 @@ func printBuiltinStatus(w io.Writer, out builtinStatusOut) {
 		id := o.Kind + " " + o.Name
 		if o.Namespace != "" {
 			id = o.Kind + " " + o.Namespace + "/" + o.Name
+		}
+		if o.Installer {
+			id += " [installer]"
+		}
+		if o.DeclaredOutput {
+			id += " [declared output]"
 		}
 		fmt.Fprintf(w, "  %-40s exists=%-5v ready=%-5v %s\n", id, o.Exists, o.Ready, o.Reason)
 	}

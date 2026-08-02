@@ -249,6 +249,14 @@ type BundleObjectStatus struct {
 	Exists    bool   `json:"exists"`
 	Ready     bool   `json:"ready"`
 	Reason    string `json:"reason,omitempty"`
+	// Installer marks an outpost.io/lifecycle=installer object — judged
+	// by its declared durable outputs, not by its own presence (a
+	// ttlSecondsAfterFinished Job is reaped by design after success).
+	Installer bool `json:"installer,omitempty"`
+	// DeclaredOutput marks a row asserted from an installer's
+	// outpost.io/installs declaration rather than decoded from the
+	// manifest.
+	DeclaredOutput bool `json:"declared_output,omitempty"`
 }
 
 // BundleStatusResult is the bundle-wide status snapshot.
@@ -256,10 +264,14 @@ type BundleStatusResult struct {
 	OK bool `json:"ok"`
 	// Kubeconfig is the CANONICAL venue the check ran against.
 	Kubeconfig string `json:"kubeconfig"`
-	// Installed is true only when every object in the bundle exists.
+	// Installed is true only when every non-installer object exists AND
+	// every installer's declared durable outputs exist. An installer's own
+	// absence never decides it (see the bundleapply lifecycle contract).
 	Installed bool `json:"installed"`
-	// AllReady is true only when every object exists AND reports Ready —
-	// the exact bar BundleApply's readiness wait confirms.
+	// AllReady is true only when every asserted object (non-installer
+	// bundle objects plus declared installer outputs) exists AND reports
+	// Ready — the exact bar BundleApply's readiness wait confirms. A
+	// garbage-collected installer does not count against it.
 	AllReady bool                 `json:"all_ready"`
 	Objects  []BundleObjectStatus `json:"objects"`
 }
@@ -295,6 +307,7 @@ func (s *Server) BundleStatus(ctx context.Context, p BundleStatusParams) (Bundle
 	for _, o := range res.Objects {
 		out.Objects = append(out.Objects, BundleObjectStatus{
 			Kind: o.Kind, Namespace: o.Namespace, Name: o.Name, Exists: o.Exists, Ready: o.Ready, Reason: o.Reason,
+			Installer: o.Installer, DeclaredOutput: o.DeclaredOutput,
 		})
 	}
 	return out, nil

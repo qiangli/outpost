@@ -87,6 +87,15 @@ type DeleteResult struct {
 // to roll back a partial apply, so an operator-initiated uninstall and an
 // apply-triggered rollback can never drift in ordering or accounting
 // shape.
+//
+// Installer lifecycle (see lifecycle.go): the delete set is the bundle
+// objects PLUS every installer's declared outputs — the actual installed
+// product, not just the bootstrap manifest. Namespaced outputs would fall
+// with their Namespace anyway (the explicit delete just confirms it), but
+// cluster-scoped outputs (a ClusterRoleBinding an installer created)
+// survive a Namespace deletion and are only removed because they are
+// declared. Deleting an already-gone object is success, so re-running an
+// uninstall — or uninstalling after a TTL-reaped installer — converges.
 func DeleteBundle(ctx context.Context, b *Bundle, opts DeleteOptions) (DeleteResult, error) {
 	var res DeleteResult
 	if b == nil || len(b.Objects) == 0 {
@@ -100,13 +109,18 @@ func DeleteBundle(ctx context.Context, b *Bundle, opts DeleteOptions) (DeleteRes
 		log = func(string, ...any) {}
 	}
 
-	reversed := reverseOf(b.Objects)
+	objs, err := expandWithOutputs(b.Objects)
+	if err != nil {
+		// Contract violation — fail closed, never guess at the product.
+		return res, err
+	}
+	reversed := reverseOf(objs)
 	deleted, failed := deleteReverse(ctx, opts.Client, reversed, log, "deleted", "delete FAILED")
 	res.Deleted = deleted
 	res.Failed = failed
 	if len(failed) > 0 {
 		return res, fmt.Errorf("bundleapply: uninstall left %d of %d object(s) behind (remove by hand): %s",
-			len(failed), len(b.Objects), strings.Join(failed, ", "))
+			len(failed), len(objs), strings.Join(failed, ", "))
 	}
 
 	if opts.Timeout > 0 {

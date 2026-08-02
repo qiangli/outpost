@@ -82,6 +82,13 @@ func LoadBundle(path string) (*Bundle, error) {
 		return nil, ErrEmptyBundle
 	}
 
+	// Installer contract (lifecycle.go): enforce it at load time so
+	// apply, status, and uninstall all refuse a contract-violating
+	// manifest identically, before any cluster is touched.
+	if err := validateLifecycle(objs); err != nil {
+		return nil, err
+	}
+
 	sortByApplyRank(objs)
 	return &Bundle{Objects: objs}, nil
 }
