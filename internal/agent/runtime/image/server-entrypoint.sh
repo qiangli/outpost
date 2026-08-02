@@ -151,6 +151,15 @@ done
 # address; absence must fail closed instead of escaping the tunnel contract.
 set -- "$@" --kube-apiserver-arg=kubelet-preferred-address-types=ExternalIP
 
+# Kubelet serving certificates cover the worker's own 127.0.0.1 and container
+# IP, not the per-node 127.x.y loopback alias that frps exposes here. Clear the
+# pinned kubelet CA so the apiserver accepts that certificate on this hop. The
+# socket is not public: it is a token-authenticated FRP proxy in the same
+# control-plane namespace, and each node receives a distinct reconciled alias.
+# This is the same scoped tunnel trust model used by the colocated metrics
+# scraper; it must never be paired with a host/LAN-published kubelet port.
+set -- "$@" --kube-apiserver-arg=kubelet-certificate-authority=
+
 # The peer node-address reconciler, not k3s's embedded cloud controller, owns
 # each worker's ExternalIP. The embedded controller periodically rewrites the
 # Node status from the worker's container address and removes that loopback

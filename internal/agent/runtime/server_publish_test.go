@@ -132,6 +132,7 @@ func TestPeerMetricsServerIsColocatedWithoutEnablingAgent(t *testing.T) {
 		"--disable=traefik,servicelb,metrics-server",
 		"--egress-selector-mode=disabled",
 		"--kube-apiserver-arg=kubelet-preferred-address-types=ExternalIP",
+		"--kube-apiserver-arg=kubelet-certificate-authority=",
 		"OUTPOST_METRICS_ADDRESS=\"${ADVERTISE_ADDR}\"",
 		"/usr/local/bin/metrics-server-supervisor.sh",
 		`kill -0 "${METRICS_PID:-0}"`,
@@ -147,6 +148,9 @@ func TestPeerMetricsServerIsColocatedWithoutEnablingAgent(t *testing.T) {
 		strings.Contains(script, "--egress-selector-mode=cluster") ||
 		strings.Contains(script, "--egress-selector-mode=agent") {
 		t.Error("peer apiserver must dial colocated FRP and metrics endpoints directly")
+	}
+	if !strings.Contains(script, "token-authenticated FRP proxy") {
+		t.Error("kubelet CA relaxation must document the authenticated tunnel boundary")
 	}
 	if strings.Contains(script, "hostNetwork:true") || strings.Contains(script, "patch deployment metrics-server") {
 		t.Error("peer metrics must not resurrect the worker-hostNetwork patch disproved by the live gate")
