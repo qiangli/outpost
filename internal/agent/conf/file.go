@@ -801,6 +801,16 @@ type ClusterConfig struct {
 	// like a broken cluster.
 	ControlPlaneKubeconfig string `json:"control_plane_kubeconfig,omitempty"`
 
+	// BundleKubeconfig is the default kubeconfig VENUE for `outpost bundle
+	// apply` (admincore.BundleApply): the peer-hosted control plane an
+	// app/bundle manifest set is installed against when the operator
+	// doesn't pass an explicit path. Conventionally
+	// ~/.kube/outpost-control-plane/k3s.yaml. It may NEVER point at the
+	// cloudbox kubeconfig (~/.kube/outpost.yaml) — the bundleapply venue
+	// guard canonicalizes (symlinks resolved) and refuses it at apply
+	// time. Side-effect class: Live — read on each apply, no restart.
+	BundleKubeconfig string `json:"bundle_kubeconfig,omitempty"`
+
 	// JoinEndpoint / JoinToken point this host at a control plane that is
 	// NOT cloudbox's — the worker-side counterpart of ControlPlane above.
 	//

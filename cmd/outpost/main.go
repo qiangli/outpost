@@ -125,7 +125,7 @@ func main() {
 		clusterCmd(), departCmd(), poolCmd(), kubectlCmd(),
 		// MCP-client CLI parity (Phase 1.5):
 		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), unpairCmd(), restartCmd(), mcpCmd(), tokenCmd(),
-		remoteCmd(), meshCmd(), mirrorCmd(), shardCmd(),
+		remoteCmd(), meshCmd(), mirrorCmd(), shardCmd(), bundleCmd(),
 		docsCmd(), gitCmd(), shellCmd(), versionCmd(), upgradeCmd(), rollbackCmd(), buildCmd(), bashyCmd(),
 		supervisordCmd(), serviceCmd(), doctorCmd(),
 	)

@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/qiangli/outpost/internal/agent"
+	"github.com/qiangli/outpost/internal/agent/bundleapply"
 	"github.com/qiangli/outpost/internal/agent/clusterllm"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
@@ -159,6 +160,14 @@ type Deps struct {
 	// cached LastServerHealth) and threads them through an interface seam for
 	// testing. Closure-captured dependencies keep admincore focused.
 	ControlPlaneStatusProber ControlPlaneStatusProber
+
+	// BundleApplyClient, when set, builds the Kubernetes client
+	// BundleApply drives — tests inject a deterministic fake here. Nil
+	// means the production bundleapply.NewDynamicClient. The kubeconfig
+	// argument is ALREADY canonicalized and venue-checked: admincore runs
+	// bundleapply.ResolveVenue before calling the factory, so an injected
+	// client can never bypass the cloudbox-venue guard.
+	BundleApplyClient func(kubeconfig string) (bundleapply.ResourceClient, error)
 }
 
 // LLMPoolStatusView is the wire shape rendered into SafeView. Kept here
