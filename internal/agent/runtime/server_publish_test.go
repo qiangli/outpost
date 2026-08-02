@@ -118,3 +118,26 @@ func TestServerEntrypointDoesNotAdvertiseLoopback(t *testing.T) {
 		t.Fatal("k3s must advertise its non-loopback container address")
 	}
 }
+
+func TestServerEntrypointPatchesPackagedMetricsServer(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("image", "server-entrypoint.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(b)
+	for _, required := range []string{
+		"patch deployment metrics-server",
+		"hostNetwork:true",
+		"dnsPolicy:\"ClusterFirstWithHostNet\"",
+		"--kubelet-preferred-address-types=ExternalIP,InternalIP,Hostname",
+		"--kubelet-use-node-status-port",
+		"--kubelet-insecure-tls",
+	} {
+		if !strings.Contains(script, required) {
+			t.Errorf("server entrypoint missing metrics-server contract %q", required)
+		}
+	}
+	if strings.Contains(script, "kind: HelmChartConfig") {
+		t.Error("k3s 1.36 packages metrics-server as raw manifests; HelmChartConfig would be inert")
+	}
+}

@@ -105,27 +105,6 @@ allowUsers = ["*"]
 EOF
 
 # --------------------------------------------------------- k3s server ----
-# Configure k3s's packaged metrics-server addon so it scrapes nodes using
-# ExternalIP (127.0.x.y, patched by nodeaddr) and derived kubelet ports, with
-# hostNetwork enabled so it can reach loopback listeners across tunnels.
-log "writing /var/lib/rancher/k3s/server/manifests/metrics-server-config.yaml"
-mkdir -p /var/lib/rancher/k3s/server/manifests
-cat > /var/lib/rancher/k3s/server/manifests/metrics-server-config.yaml <<EOF
-apiVersion: helm.cattle.io/v1
-kind: HelmChartConfig
-metadata:
-  name: metrics-server
-  namespace: kube-system
-spec:
-  valuesContent: |-
-    hostNetwork:
-      enabled: true
-    args:
-      - --kubelet-preferred-address-types=ExternalIP,InternalIP,Hostname
-      - --kubelet-use-node-status-port
-      - --kubelet-insecure-tls
-EOF
-
 set -- server \
     --disable-agent \
     --disable=traefik,servicelb \
@@ -180,6 +159,43 @@ if listening "${OUTPOST_API_PORT}"; then
         /etc/rancher/k3s/k3s-internal.yaml > /etc/rancher/k3s/k3s.yaml.new
     chmod 0644 /etc/rancher/k3s/k3s.yaml.new
     mv -f /etc/rancher/k3s/k3s.yaml.new /etc/rancher/k3s/k3s.yaml
+
+    # k3s 1.36 ships metrics-server as raw packaged manifests, not a
+    # HelmChart, so HelmChartConfig is inert. Patch the generated Deployment
+    # after it appears. Preserve every packaged argument except the three
+    # tunnel-addressing flags we own.
+    i=0
+    while [ "$i" -lt 60 ]; do
+        if deployment="$(k3s kubectl -n kube-system get deployment metrics-server -o json 2>/dev/null)"; then
+            args="$(printf '%s' "$deployment" | jq -c '
+                [.spec.template.spec.containers[]
+                 | select(.name == "metrics-server")
+                 | .args[]
+                 | select(startswith("--kubelet-preferred-address-types=") | not)
+                 | select(. != "--kubelet-use-node-status-port")
+                 | select(. != "--kubelet-insecure-tls")]
+                + ["--kubelet-preferred-address-types=ExternalIP,InternalIP,Hostname",
+                   "--kubelet-use-node-status-port",
+                   "--kubelet-insecure-tls"]')"
+            patch="$(jq -cn --argjson args "$args" '
+                {spec:{template:{spec:{
+                    hostNetwork:true,
+                    dnsPolicy:"ClusterFirstWithHostNet",
+                    containers:[{name:"metrics-server",args:$args}]
+                }}}}')"
+            if k3s kubectl -n kube-system patch deployment metrics-server \
+                --type=strategic --patch "$patch" >/dev/null; then
+                log "configured metrics-server for tunnelled kubelets"
+                break
+            fi
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    if [ "$i" -ge 60 ]; then
+        log "WARNING: metrics-server Deployment did not become patchable"
+    fi
+
     log "publishing apiserver 127.0.0.1:${OUTPOST_API_PORT} as stcp k3s-apiserver"
     frpc -c /tmp/frpc-publish.toml &
 else
