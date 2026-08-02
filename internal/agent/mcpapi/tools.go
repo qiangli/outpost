@@ -37,6 +37,7 @@ func (s *Server) registerTools() {
 	s.registerMirrorTools()
 	s.registerShardTools()
 	s.registerBundleTools()
+	s.registerAppstoreTools()
 	s.registerPeerImageTools()
 }
 

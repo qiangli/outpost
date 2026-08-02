@@ -37,7 +37,16 @@ func (f *fakeBundleClient) key(o *unstructured.Unstructured) string {
 func (f *fakeBundleClient) Apply(_ context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.store[f.key(obj)] = obj.DeepCopy()
+	stored := obj.DeepCopy()
+	if stored.GetKind() == "HelmChart" {
+		// Simulate the k3s helm-controller reconciling a HelmChart CR
+		// far enough to stamp JobCreated=True — see the identical
+		// simulation in admincore/bundle_test.go for why.
+		_ = unstructured.SetNestedSlice(stored.Object, []any{
+			map[string]any{"type": "JobCreated", "status": "True"},
+		}, "status", "conditions")
+	}
+	f.store[f.key(obj)] = stored
 	return obj, nil
 }
 
@@ -103,6 +112,14 @@ func newBundleTestMCP(t *testing.T, token string) (*httptest.Server, peerPaths) 
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(builtinDir, "install.yaml"), []byte("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: headlamp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	appDir := filepath.Join(paths.catalog, "apps", "demo")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	appManifest := "schemaVersion: 1\nid: demo\nlicense: Apache-2.0\nplatforms: [linux/amd64, linux/arm64]\nchart:\n  repo: https://charts.example.com\n  name: demo\n  version: 1.2.3\n"
+	if err := os.WriteFile(filepath.Join(appDir, "app.yaml"), []byte(appManifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

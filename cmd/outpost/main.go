@@ -126,7 +126,7 @@ func main() {
 		clusterCmd(), departCmd(), poolCmd(), kubectlCmd(),
 		// MCP-client CLI parity (Phase 1.5):
 		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), unpairCmd(), restartCmd(), mcpCmd(), tokenCmd(),
-		remoteCmd(), meshCmd(), mirrorCmd(), shardCmd(), bundleCmd(),
+		remoteCmd(), meshCmd(), mirrorCmd(), shardCmd(), bundleCmd(), appstoreCmd(),
 		docsCmd(), gitCmd(), shellCmd(), versionCmd(), upgradeCmd(), rollbackCmd(), buildCmd(), bashyCmd(),
 		supervisordCmd(), serviceCmd(), doctorCmd(),
 		// peerimage: peer image distribution verbs (recipes, not blobs).

@@ -283,3 +283,34 @@ func TestReadinessJobFailedConditionIsTerminal(t *testing.T) {
 		t.Fatal("job with Failed=True condition must be a terminal failure, not pending")
 	}
 }
+
+func TestReadinessHelmChart(t *testing.T) {
+	o := newObj("helm.cattle.io/v1", "HelmChart", "kube-system", "user-alice-demo")
+
+	// No conditions yet -> not ready, not terminal.
+	st := evalReadiness(o, false)
+	if st.ready || st.terminal != nil {
+		t.Fatalf("HelmChart with no conditions must be pending, not ready/terminal: %+v", st)
+	}
+
+	// JobCreated=True -> ready (the strongest per-object evidence
+	// available; see evalHelmChart's doc comment).
+	setNested(o, []any{map[string]any{"type": "JobCreated", "status": "True"}}, "status", "conditions")
+	st = evalReadiness(o, false)
+	if !st.ready {
+		t.Fatalf("HelmChart with JobCreated=True must be ready: %q", st.reason)
+	}
+
+	// Failed=True -> terminal, regardless of JobCreated.
+	setNested(o, []any{
+		map[string]any{"type": "JobCreated", "status": "True"},
+		map[string]any{"type": "Failed", "status": "True"},
+	}, "status", "conditions")
+	st = evalReadiness(o, false)
+	if st.ready {
+		t.Fatal("HelmChart with Failed=True condition must not be ready")
+	}
+	if st.terminal == nil {
+		t.Fatal("HelmChart with Failed=True condition must be a terminal failure, not pending")
+	}
+}

@@ -131,7 +131,16 @@ func (f *cliFakeBundleClient) key(o *unstructured.Unstructured) string {
 func (f *cliFakeBundleClient) Apply(_ context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.store[f.key(obj)] = obj.DeepCopy()
+	stored := obj.DeepCopy()
+	if stored.GetKind() == "HelmChart" {
+		// Simulate the k3s helm-controller reconciling a HelmChart CR
+		// far enough to stamp JobCreated=True — see the identical
+		// simulation in admincore/bundle_test.go for why.
+		_ = unstructured.SetNestedSlice(stored.Object, []any{
+			map[string]any{"type": "JobCreated", "status": "True"},
+		}, "status", "conditions")
+	}
+	f.store[f.key(obj)] = stored
 	return obj, nil
 }
 

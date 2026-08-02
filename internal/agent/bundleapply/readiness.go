@@ -56,6 +56,8 @@ func evalReadiness(obj *unstructured.Unstructured, allowZero bool) readyState {
 		return evalJob(obj)
 	case "CustomResourceDefinition":
 		return evalCRD(obj)
+	case "HelmChart":
+		return evalHelmChart(obj)
 	default:
 		// Existence is the evidence for objects without a rollout.
 		return readyState{ready: true, reason: obj.GetKind() + " exists"}
@@ -265,6 +267,29 @@ func evalCRD(obj *unstructured.Unstructured) readyState {
 		return readyState{ready: true, reason: "CustomResourceDefinition: Established"}
 	}
 	return readyState{reason: "CustomResourceDefinition: not Established yet"}
+}
+
+// evalHelmChart handles a k3s helm.cattle.io/v1 HelmChart custom
+// resource (see internal/agent/appcatalog). The helm-controller reports
+// two condition types on the object itself: JobCreated (the
+// install/upgrade Job was established) and Failed (the job hit an
+// error under a FailurePolicy of "abort"). There is no third condition
+// confirming the underlying Job actually SUCCEEDED — that evidence lives
+// on the Job the controller creates (named in status.jobName), which is
+// outside this object and not tracked by this bundle. JobCreated+not
+// Failed is therefore the strongest per-object evidence available; it
+// proves the controller accepted and is driving the install, not that
+// the Helm run has completed. This mirrors the same "no cluster is
+// hardware-verified" caveat the rest of this package documents (see
+// docs/peer-dks-bundle-apply.md) rather than a silent hidden guess.
+func evalHelmChart(obj *unstructured.Unstructured) readyState {
+	if conditionTrue(obj, "Failed") {
+		return readyState{terminal: fmt.Errorf("HelmChart %s/%s reported condition Failed", obj.GetNamespace(), obj.GetName())}
+	}
+	if conditionTrue(obj, "JobCreated") {
+		return readyState{ready: true, reason: "HelmChart: helm-controller created the install/upgrade job (JobCreated)"}
+	}
+	return readyState{reason: "HelmChart: waiting for the helm-controller to create the install/upgrade job"}
 }
 
 // conditionTrue reports whether the object carries the named status

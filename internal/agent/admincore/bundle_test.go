@@ -36,7 +36,18 @@ func bkey(o *unstructured.Unstructured) string {
 func (f *fakeBundleClient) Apply(_ context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.store[bkey(obj)] = obj.DeepCopy()
+	stored := obj.DeepCopy()
+	if stored.GetKind() == "HelmChart" {
+		// Simulate the k3s helm-controller reconciling a HelmChart CR:
+		// it stamps JobCreated=True once it has accepted the object and
+		// created the install/upgrade Job. This fake never runs an
+		// actual Helm install — it only proves the appstore-apps path
+		// applies the right object and reads the right evidence.
+		_ = unstructured.SetNestedSlice(stored.Object, []any{
+			map[string]any{"type": "JobCreated", "status": "True"},
+		}, "status", "conditions")
+	}
+	f.store[bkey(obj)] = stored
 	return obj, nil
 }
 

@@ -775,6 +775,56 @@ Behaviours worth knowing:
 - `--offline` runs the apply/status/uninstall in the CLI process against the
   on-disk `agent.json` — no running daemon required.
 
+### Installing OSS appstore apps — Helm charts (live)
+
+The **apps** half of the peer-DKS appstore parity surface — bundles/builtins
+above are raw manifests; an appstore **app** names a Helm chart via
+`apps/<id>/app.yaml` (+ optional `apps/<id>/values.yaml`) and is rendered
+into one k3s `helm.cattle.io/v1` `HelmChart` custom resource, applied through
+the identical `ApplyBundle`/`StatusBundle`/`DeleteBundle` engine the bundles
+above use — no Helm CLI, no manifest templating, no shell interpolation of
+any manifest/values field. See `docs/peer-dks-appstore-apps.md` for the full
+semantics.
+
+| Field | File key | CLI | UI | MCP |
+|---|---|---|---|---|
+| Default OSS appstore catalog | `cluster.bundle_catalog` (shared with builtins) | `appstore install <id> --catalog … --save-catalog` | — | `outpost_install_appstore_app` (`catalog` + `save_catalog`) |
+| Default kubeconfig venue | `cluster.bundle_kubeconfig` (shared with builtins) | `appstore install <id> --kubeconfig … --save-kubeconfig` | — | `outpost_install_appstore_app` (`kubeconfig` + `save_kubeconfig`) |
+| List installable app ids | (read-only) | `appstore list` | — | `outpost_appstore_apps` |
+| Preview a validated app manifest | (read-only, no cluster) | `appstore show <id>` | — | `outpost_appstore_app` |
+| Install an app into a namespace/release | (operation, not persisted) | `appstore install <id> --namespace … [--release …]` | — | `outpost_install_appstore_app` |
+| Check an app's live state | (read-only) | `appstore status <id> --namespace …` | — | `outpost_appstore_app_status` |
+| Remove an app's release | (operation, not persisted) | `appstore uninstall <id> --namespace …` | — | `outpost_uninstall_appstore_app` |
+
+Behaviours worth knowing:
+
+- **Namespace is required, always.** `--namespace` names the per-user/tenant
+  namespace the chart installs into; there is no default — a caller cannot
+  silently land in a shared namespace. `--release` (default: the app id)
+  distinguishes multiple instances of one app within one namespace.
+  `<namespace>-<release>` is the deterministic HelmChart object name (and
+  therefore the Helm release name) install/status/uninstall all recompute
+  identically, so the three operations can never target different objects.
+- **Fails closed on an unsupported schema version, license, or platform.**
+  `apps/<id>/app.yaml` must declare `schemaVersion: 1`, a license from an
+  allowlist of unambiguous OSS SPDX identifiers, and at least one
+  `linux/amd64` or `linux/arm64` platform (the only architectures a
+  peer-hosted k3s control plane schedules containers onto) — never a
+  best-effort partial install. `appstore show` runs the identical validation
+  read-only, so an operator can see why an app is unsupported before naming
+  a kubeconfig.
+- **No Helm CLI, no template execution in this process.** `values.yaml` is
+  embedded byte-for-byte as the HelmChart CR's `spec.valuesContent`; the
+  k3s helm-controller already built into every peer-hosted DKS control plane
+  performs the actual `helm upgrade --install`, in-cluster, from the
+  object's structured spec fields.
+- **Uninstall never deletes the target namespace** — it may host other apps
+  for the same user; only the HelmChart CR is removed.
+- Reuses the identical catalog confinement (traversal/symlink-escape
+  refused) and cloudbox-kubeconfig venue guard the builtins path uses.
+- `--offline` runs install/status/uninstall/show/list in the CLI process
+  against the on-disk `agent.json` — no running daemon required.
+
 ### Networking (boot-time-bound)
 
 | Field | File key | CLI | UI | MCP |
