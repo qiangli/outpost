@@ -241,29 +241,61 @@ rather than guess:
   signature of the *observer* — this host's network, tunnel, or clock — being
   broken, not of the fleet dying. A single stale node always stays reapable,
   so a one-worker cluster still converges. This mirrors the upstream
-  node-lifecycle controller's unhealthy-zone threshold.
-- **Restart-safe delete rate.** The 3-per-hour budget is anchored to wall
-  clock in a persisted ledger, not to the process: outpost self-restarts on
-  every builtin toggle, and restarts must share one budget, not mint one
-  each. There is also no immediate pass at boot — the first pass waits out a
-  settle window (5 min).
-- **Clock-skew refusals.** Staleness is wall-clock arithmetic against
-  apiserver-recorded timestamps. If any in-scope node's readiness evidence is
-  timestamped in the collector's future (beyond a 5 min tolerance), the pass
-  is refused — the clocks provably disagree. Deletions additionally require
-  an hour of continuous collector uptime (measured monotonically), so a host
-  whose RTC was wrong at boot runs read-only passes until NTP has had time to
-  correct it.
+  node-lifecycle controller's unhealthy-zone threshold. The fraction's
+  denominator is the **eligible** population — the nodes that could actually
+  be deleted — so structurally-excluded nodes (the plane's own agent nodes,
+  control-plane-role nodes) do not dilute it; otherwise a handful of dead
+  self-host ghosts could let a 100%-of-workers partition compute a sub-half
+  fraction and drain the whole worker fleet. Note the breaker is an
+  *instantaneous* fraction, not a running drain limit: it fully protects a
+  fleet only while stale nodes are **above** the threshold at the same
+  instant. A partition of, say, 49% of a 100-node fleet stays below the line
+  and is still drained at 3/hour over roughly a day — defensible given the
+  24 h grace (a genuinely dead node has been gone a day), but the guarantee is
+  "no mass drain in one pass", not "no drain of a large minority ever".
+- **Restart-safe delete rate, fail-closed.** The 3-per-hour budget is anchored
+  to wall clock in a persisted ledger, not to the process: outpost
+  self-restarts on every builtin toggle, and restarts must share one budget,
+  not mint one each. If that durable ledger cannot be established at all (no
+  writable cache dir), a real pass **deletes nothing** — an absent rate limit
+  is treated as a reason to refuse, never as an unlimited budget. There is
+  also no immediate pass at boot — the first pass waits out a settle window
+  (5 min).
+- **Clock-skew refusals, both directions.** Staleness is wall-clock arithmetic
+  against apiserver-recorded timestamps. If any in-scope node's readiness
+  evidence is timestamped in the collector's future (beyond a 5 min
+  tolerance), the pass is refused — the clocks provably disagree. The
+  *forward* direction is guarded too: between passes the collector
+  cross-checks how much wall-clock time elapsed against its own monotonic
+  uptime, and refuses the pass when the wall clock raced ahead (a resumed VM,
+  a restored snapshot, a dual-boot RTC, a delayed NTP step) — a forward jump
+  leaves no future timestamps, it just makes every past transition look older,
+  which would otherwise reap a briefly-down node as long-dead. Deletions
+  additionally require an hour of continuous collector uptime (measured
+  monotonically), so a host whose RTC was wrong at boot runs read-only passes
+  until NTP has had time to correct it. Once the wall clock settles at its new
+  value the collector re-syncs its baseline and resumes.
 - **Structural exclusions.** A node whose host label claims the control-plane
   host's own identity, or that carries a
   `node-role.kubernetes.io/control-plane` / `master` role label, is never a
   candidate — reaping the plane's own node is strictly worse than reaping a
-  worker.
+  worker. The own-identity match is keyed on the host's **`agent_name`** (what
+  the k3s entrypoint stamps into `outpost.dhnt.io/host`), not on any
+  `cluster.node_name` override. One consequence of the host-label prefix rule
+  is that a worker registered under a `cluster.node_name` that diverges from
+  its `agent_name` does not match the `<host>-<id>` name pattern and so is
+  **invisible to GC** — its stale Node object must be reclaimed by hand. This
+  is a conservative bias (GC only ever acts on nodes whose name and labels
+  agree), accepted here rather than widened.
 
 Every deletion and every refusal is appended as one JSON line to
 `<UserCacheDir>/outpost/nodegc.log` (same JSONL-ledger pattern as
 `upgrade.log`), so "what did GC do and why" survives daemon restarts and log
-rotation.
+rotation. Deletion lines are inherently bounded (at most 3 per hour), and a
+**repeated identical refusal is not re-recorded** — a partition that persists
+for days refuses every pass but writes only one refusal line, so the ledger
+does not grow per-pass while the budget check re-reads it. (A restart re-writes
+one refusal line, bounded by the settle window.)
 
 **Ownership scope (recorded decision).** The candidate filter trusts node
 *labels*, which are self-asserted by the joining kubelet; the plane holds no
@@ -277,13 +309,26 @@ reaped), and a reaped Node object is cheap to re-mint by rejoining. What the
 filter must never do — delete the plane's own node or a control-plane node —
 is excluded structurally, per above, rather than by label trust.
 
-**Switches.** `OUTPOST_NODEGC=off` disables the collector entirely without
-touching the kubeconfig (the other reconcilers keep running);
-`OUTPOST_NODEGC=dry-run` computes, logs, and ledgers exactly what a real pass
-would delete — including budget and breaker decisions — without deleting
-anything. These are env-only for now; the four-surface toggle (file key +
-REST + MCP + CLI through `admincore.SetBuiltins`) is deferred until the
-cluster config surface settles.
+**Switches.** `OUTPOST_NODEGC` is read as two **allowlists**, never
+fail-open. Only `live` (or blank/unset, the default) authorizes real deletion;
+only `dry-run` (also `dryrun` / `dry_run`) enters dry run, which computes,
+logs, and ledgers exactly what a real pass would delete — including budget and
+breaker decisions — without deleting anything. **Anything else disables the
+collector entirely** — `off`, `false`, `0`, `no`, `disabled`, or a typo like
+`of` or `dryrunn`. This is deliberate: a mistyped disable must never leak into
+live deletions, and a mistyped dry-run must never delete for real. Disabling
+leaves the kubeconfig untouched and the other reconcilers running.
+
+These switches are **env-only for now**, which is a departure from the repo's
+four-surface convention (file key + REST + MCP + CLI). It is a conscious
+deferral, not an oversight: wiring the toggle through `admincore.SetBuiltins`
+touches the admincore / MCP / config packages, and the change that hardened
+this collector was scoped to the collector itself. It is tracked to land as a
+`cluster.node_gc` field routed through `admincore.SetBuiltins` like every other
+toggle once the cluster config surface settles. Until then, the off switch for
+unattended node deletion is this one environment variable — and because the
+unrecognized-value default is *disable*, the fail-safe direction is preserved
+even without the richer surface.
 
 A worker that left (or died) therefore disappears from `kubectl get nodes` on
 its own after the grace period. To reclaim it sooner, delete it explicitly on

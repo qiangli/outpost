@@ -29,14 +29,21 @@
 // not the fleet. So beyond the per-node predicate:
 //
 //   - a pass is refused outright when the stale fraction of the
-//     observed outpost-agent population crosses a threshold (a mass
-//     partition must never drain the cluster at MaxDeletes/tick);
+//     ELIGIBLE outpost-agent population crosses a threshold (a mass
+//     partition must never drain the cluster at MaxDeletes/tick). The
+//     denominator is the DELETABLE population — structurally-excluded
+//     nodes (own host, control-plane role) are left out, so they cannot
+//     dilute the fraction and let a full-worker partition slip under it;
 //   - the delete budget is a wall-clock rate persisted in a JSONL
 //     ledger, so outpost's frequent self-restarts (any builtin toggle)
-//     cannot mint a fresh budget per restart;
-//   - readiness evidence timestamped in our future refuses the pass
-//     (the observer's clock and the record provably disagree), and
-//     deletions additionally require the collector to have been up —
+//     cannot mint a fresh budget per restart. With NO ledger a real pass
+//     fails closed and deletes nothing — an absent durable rate limit is
+//     never a licence to delete;
+//   - readiness evidence timestamped in our future refuses the pass, and
+//     so does a wall clock that raced FORWARD of the collector's
+//     monotonic uptime between passes (VM resume, restored snapshot,
+//     delayed NTP step) — the direction the future-stamp check cannot
+//     see. Deletions additionally require the collector to have been up —
 //     measured monotonically — long enough for a boot-skewed RTC to
 //     have been NTP-corrected before we trust wall-clock arithmetic;
 //   - nodes claiming this host's own identity and nodes carrying a
@@ -159,6 +166,21 @@ const (
 	// apiserver's records disagree. Generous against ordinary NTP
 	// drift; tiny against a wrong RTC.
 	futureSkewTolerance = 5 * time.Minute
+
+	// clockJumpTolerance bounds how much MORE wall-clock time than
+	// monotonic time may elapse between two consecutive passes before we
+	// treat it as a forward clock jump (VM resume, restored snapshot,
+	// dual-boot RTC-in-localtime, a delayed NTP step) rather than
+	// ordinary scheduling jitter. This is the guard for the DANGEROUS
+	// direction the future-stamp check cannot see: a forward jump leaves
+	// no future timestamps — every past Ready transition merely looks
+	// older, so a briefly-down node reads as long-dead and is reaped.
+	// Only the forward direction is guarded: a backward or frozen wall
+	// clock makes nodes look YOUNGER and suppresses deletion (the safe
+	// direction), and a backward jump that surfaces as future-stamped
+	// evidence is caught separately. Ten minutes swamps NTP slew
+	// (~1.8 s/h) yet is tiny against a jump large enough to cross grace.
+	clockJumpTolerance = 10 * time.Minute
 )
 
 // Collector deletes stale agent Node objects from the hosted plane.
@@ -207,10 +229,31 @@ type Collector struct {
 	// wall-clock corrections (NTP fixing a bad RTC) cannot inflate it.
 	startedAt time.Time
 
+	// lastWall / lastUptime / haveClockBaseline record the wall clock and
+	// monotonic uptime observed at the previous pass. The forward-jump
+	// guard compares this pass's deltas against them: if wall time raced
+	// ahead of monotonic time between passes, the observer's clock stepped
+	// and every staleness verdict this pass is suspect. Reset each pass so
+	// the collector re-syncs after a jump instead of refusing forever.
+	lastWall          time.Time
+	lastUptime        time.Duration
+	haveClockBaseline bool
+
+	// lastRefusalSig deduplicates consecutive identical refusal ledger
+	// lines. A partition that persists across many passes must still
+	// REFUSE every pass (the behaviour), but appending an identical line
+	// each time would grow the ledger unbounded while remainingBudget
+	// re-reads the whole file — so a repeat of the same refusal is not
+	// re-recorded. In-memory: a restart re-records once, which is bounded
+	// by the settle window.
+	lastRefusalSig string
+
 	// recent holds this process's own delete times as a belt-and-braces
-	// second budget source: if the ledger is nil or lags, memory still
-	// bounds the current process. Never persisted; the ledger is the
-	// cross-restart half.
+	// second budget source alongside a present ledger: if the ledger lags
+	// its own writes, memory still bounds the current process. A real pass
+	// with NO ledger is refused upstream (fail closed), so this is never
+	// the sole budget. Never persisted; the ledger is the cross-restart
+	// half.
 	recent []time.Time
 }
 
@@ -307,25 +350,72 @@ func (c *Collector) uptime() time.Duration {
 	return time.Since(c.startedAt)
 }
 
-// candidateSince is the FULL per-node predicate: StaleSince's
-// self-consistent-identity + stale-readiness check, plus the
-// structural exclusions that are Collector policy rather than node
-// facts — this host's own identity and control-plane role labels.
-// Used identically on the list snapshot and on the pre-delete re-GET.
-func (c *Collector) candidateSince(n *corev1.Node, grace time.Duration, now time.Time) (time.Time, bool) {
-	if n == nil {
-		return time.Time{}, false
+// eligible reports whether node is even ELIGIBLE to be a GC candidate:
+// it self-consistently claims to be an outpost k3s agent node
+// (ownIdentity) AND clears the structural exclusions that are Collector
+// policy rather than node facts — this host's own identity and
+// control-plane role labels. An ineligible node can NEVER be deleted, so
+// it must not count toward the circuit breaker's denominator either
+// (counting it would dilute the stale fraction and let a full-worker
+// partition slip under the threshold — DEFECT 1).
+func (c *Collector) eligible(n *corev1.Node) bool {
+	if !ownIdentity(n) {
+		return false
 	}
 	if c.SelfHost != "" && n.Labels[HostLabel] == c.SelfHost {
-		return time.Time{}, false
+		return false
 	}
 	if _, ok := n.Labels[ControlPlaneRoleLabel]; ok {
-		return time.Time{}, false
+		return false
 	}
 	if _, ok := n.Labels[MasterRoleLabel]; ok {
+		return false
+	}
+	return true
+}
+
+// candidateSince is the FULL per-node predicate: structural eligibility
+// (eligible) plus StaleSince's stale-readiness check. Used identically on
+// the list snapshot and on the pre-delete re-GET.
+func (c *Collector) candidateSince(n *corev1.Node, grace time.Duration, now time.Time) (time.Time, bool) {
+	if !c.eligible(n) {
 		return time.Time{}, false
 	}
 	return StaleSince(n, grace, now)
+}
+
+// observeClock records this pass's wall clock and monotonic uptime and
+// reports whether wall time raced forward relative to monotonic time
+// since the previous pass by more than clockJumpTolerance — a forward
+// clock jump. The baseline is ALWAYS updated (even on a detected jump),
+// so once the wall clock settles at its new value the collector re-syncs
+// and resumes rather than refusing forever.
+func (c *Collector) observeClock(now time.Time, up time.Duration) bool {
+	jumped := false
+	if c.haveClockBaseline {
+		wallDelta := now.Sub(c.lastWall)
+		monoDelta := up - c.lastUptime
+		jumped = wallDelta-monoDelta > clockJumpTolerance
+	}
+	c.lastWall = now
+	c.lastUptime = up
+	c.haveClockBaseline = true
+	return jumped
+}
+
+// ledgerRefusal durably records a whole-pass refusal, skipping a write
+// that is identical to the immediately preceding refusal so a persistent
+// partition cannot grow the ledger one line per pass (DEFECT 7). Append
+// failures are logged, never fatal — a refusal already deleted nothing.
+func (c *Collector) ledgerRefusal(log *slog.Logger, entry LedgerEntry) {
+	sig := entry.Event + "|" + entry.Detail
+	if sig == c.lastRefusalSig {
+		return
+	}
+	c.lastRefusalSig = sig
+	if err := c.Ledger.Append(entry); err != nil {
+		log.Warn("nodegc: ledger append failed", "err", err)
+	}
 }
 
 // remainingBudget returns how many deletions are still allowed inside
@@ -369,6 +459,12 @@ func (c *Collector) Once(ctx context.Context) error {
 		maxDeletes = DefaultMaxDeletes
 	}
 
+	// One wall-clock reading for the whole pass, cross-checked against the
+	// monotonic uptime anchor. clockJumped is consumed below only if there
+	// is something this pass would otherwise delete.
+	now := c.now()
+	clockJumped := c.observeClock(now, c.uptime())
+
 	listCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	nodes, err := c.Client.CoreV1().Nodes().List(listCtx, metav1.ListOptions{})
 	cancel()
@@ -389,11 +485,14 @@ func (c *Collector) Once(ctx context.Context) error {
 	futureStamps := 0 // in-scope Ready transitions recorded in OUR future
 	for i := range nodes.Items {
 		n := &nodes.Items[i]
-		if !ownIdentity(n) {
+		// Only ELIGIBLE nodes (ownIdentity minus the structural
+		// exclusions) count toward scope — the breaker denominator — so a
+		// node that can never be deleted cannot dilute the stale fraction
+		// (DEFECT 1). candidateSince re-applies the same eligibility.
+		if !c.eligible(n) {
 			continue
 		}
 		scope++
-		now := c.now()
 		if t, ok := readyTransition(n); ok && t.After(now.Add(futureSkewTolerance)) {
 			futureStamps++
 			log.Warn("nodegc: node readiness evidence is from the future — observer clock suspect",
@@ -408,17 +507,30 @@ func (c *Collector) Once(ctx context.Context) error {
 		return nil
 	}
 
+	// Forward-clock-jump refusal: wall time raced ahead of monotonic
+	// uptime since the last pass, so every staleness verdict this pass was
+	// computed against a clock that just stepped forward — the same
+	// "observer is the suspect" logic the future-stamp check applies to a
+	// backward step. Checked first because a jumped clock invalidates the
+	// breaker's own timestamps too (DEFECT 2).
+	if clockJumped {
+		log.Error("nodegc: refusing pass — wall clock jumped forward relative to monotonic uptime",
+			"stale", len(stale), "scope", scope)
+		c.ledgerRefusal(log, LedgerEntry{At: now, Event: EventRefusedClockSkew,
+			Stale: len(stale), Scope: scope,
+			Detail: "wall clock advanced faster than monotonic uptime since last pass (forward jump)"})
+		return nil
+	}
+
 	// Clock-skew refusal: a future timestamp proves our clock and the
 	// apiserver's records disagree, and every staleness verdict this
 	// pass was computed with that same suspect clock. Refuse them all.
 	if futureStamps > 0 {
 		log.Error("nodegc: refusing pass — readiness evidence from the future",
 			"future_stamps", futureStamps, "stale", len(stale), "scope", scope)
-		if err := c.Ledger.Append(LedgerEntry{At: c.now(), Event: EventRefusedClockSkew,
+		c.ledgerRefusal(log, LedgerEntry{At: now, Event: EventRefusedClockSkew,
 			Stale: len(stale), Scope: scope,
-			Detail: fmt.Sprintf("%d in-scope node(s) with Ready transition in the future", futureStamps)}); err != nil {
-			log.Warn("nodegc: ledger append failed", "err", err)
-		}
+			Detail: fmt.Sprintf("%d in-scope node(s) with Ready transition in the future", futureStamps)})
 		return nil
 	}
 
@@ -429,11 +541,9 @@ func (c *Collector) Once(ctx context.Context) error {
 		float64(len(stale)) > c.maxStaleFraction()*float64(scope) {
 		log.Error("nodegc: refusing pass — stale fraction exceeds threshold (mass partition?)",
 			"stale", len(stale), "scope", scope, "max_fraction", c.maxStaleFraction())
-		if err := c.Ledger.Append(LedgerEntry{At: c.now(), Event: EventRefusedMassStale,
+		c.ledgerRefusal(log, LedgerEntry{At: now, Event: EventRefusedMassStale,
 			Stale: len(stale), Scope: scope,
-			Detail: fmt.Sprintf("stale %d/%d exceeds max fraction %.2f", len(stale), scope, c.maxStaleFraction())}); err != nil {
-			log.Warn("nodegc: ledger append failed", "err", err)
-		}
+			Detail: fmt.Sprintf("stale %d/%d exceeds max fraction %.2f", len(stale), scope, c.maxStaleFraction())})
 		return nil
 	}
 
@@ -447,10 +557,24 @@ func (c *Collector) Once(ctx context.Context) error {
 		return nil
 	}
 
+	// Fail closed on a missing durable ledger. The ledger is the
+	// cross-restart half of the rate budget; without it the only bound is
+	// this process's memory, which every self-restart (a builtin toggle)
+	// resets — reviving the pre-#38 "fresh budget per restart" defect and
+	// deleting with no durable rate limit at all (DEFECT 3). Destructive
+	// unattended code must not silently degrade its own rate limiter: no
+	// ledger, no deletions. Dry run needs no budget (it never deletes) and
+	// is allowed through to log/ledger what a real pass would do.
+	if !c.DryRun && c.Ledger == nil {
+		log.Error("nodegc: read-only pass — no durable delete ledger configured (fail closed)",
+			"candidates", len(stale))
+		return nil
+	}
+
 	// Restart-safe rate budget: MaxDeletes per Interval of WALL CLOCK,
 	// counted from the persisted ledger — not per pass, and not per
 	// process. Ten toggle-restarts in ten minutes share one budget.
-	remaining, err := c.remainingBudget(c.now(), c.interval(), maxDeletes)
+	remaining, err := c.remainingBudget(now, c.interval(), maxDeletes)
 	if err != nil {
 		return err
 	}

@@ -100,11 +100,17 @@ func readyFleet(host string, n int) []runtime.Object {
 // daemon would be: fixed test clock, and monotonic uptime well past
 // the deletion gate. Tests for the gates themselves construct their
 // own Collector with hostile values.
-func collector(cs *fake.Clientset) *Collector {
+func collector(t *testing.T, cs *fake.Clientset) *Collector {
+	t.Helper()
 	return &Collector{
 		Client: cs,
 		Now:    func() time.Time { return tickNow },
 		Uptime: func() time.Duration { return 2 * DefaultMinUptime },
+		// A durable ledger by default: a real pass now fails closed
+		// without one (the nil-ledger fail-closed guard). Tests that
+		// exercise the nil-ledger path or a shared cross-restart ledger
+		// override this field explicitly.
+		Ledger: NewLedger(filepath.Join(t.TempDir(), "nodegc.log")),
 	}
 }
 
@@ -208,7 +214,7 @@ func TestOnceDeletesOldestFirstBounded(t *testing.T) {
 		node("laptop-foreign", "u6", withReady(corev1.ConditionFalse, tickNow.Add(-100*time.Hour))),
 	)
 	cs := fake.NewSimpleClientset(objs...)
-	if err := collector(cs).Once(context.Background()); err != nil {
+	if err := collector(t, cs).Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
 	}
 	got := deletedNames(cs)
@@ -238,7 +244,7 @@ func TestOnceEqualTimestampsOrderByName(t *testing.T) {
 		staleAgentNode("pi-delta", "pi", "u4", ts),
 	)
 	cs := fake.NewSimpleClientset(objs...)
-	if err := collector(cs).Once(context.Background()); err != nil {
+	if err := collector(t, cs).Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
 	}
 	got := deletedNames(cs)
@@ -256,7 +262,7 @@ func TestOnceDeleteCarriesUIDPrecondition(t *testing.T) {
 		gotUID = del.DeleteOptions.Preconditions.UID
 		return false, nil, nil // fall through to the tracker
 	})
-	if err := collector(cs).Once(context.Background()); err != nil {
+	if err := collector(t, cs).Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
 	}
 	if gotUID == nil || *gotUID != types.UID("uid-original") {
@@ -272,7 +278,7 @@ func TestOnceSkipsNodeRecoveredSinceList(t *testing.T) {
 	cs.PrependReactor("get", "nodes", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		return true, recovered, nil
 	})
-	if err := collector(cs).Once(context.Background()); err != nil {
+	if err := collector(t, cs).Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
 	}
 	if got := deletedNames(cs); len(got) != 0 {
@@ -289,7 +295,7 @@ func TestOnceSkipsReplacementUID(t *testing.T) {
 	cs.PrependReactor("get", "nodes", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		return true, replacement, nil
 	})
-	if err := collector(cs).Once(context.Background()); err != nil {
+	if err := collector(t, cs).Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
 	}
 	if got := deletedNames(cs); len(got) != 0 {
@@ -303,7 +309,7 @@ func TestOnceStopsOnListError(t *testing.T) {
 	cs.PrependReactor("list", "nodes", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, boom
 	})
-	err := collector(cs).Once(context.Background())
+	err := collector(t, cs).Once(context.Background())
 	if err == nil || !errors.Is(err, boom) {
 		t.Fatalf("Once err = %v, want wrapped %v", err, boom)
 	}
@@ -322,7 +328,7 @@ func TestOnceStopsOnGetError(t *testing.T) {
 	cs.PrependReactor("get", "nodes", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, boom
 	})
-	err := collector(cs).Once(context.Background())
+	err := collector(t, cs).Once(context.Background())
 	if err == nil || !errors.Is(err, boom) {
 		t.Fatalf("Once err = %v, want wrapped %v", err, boom)
 	}
@@ -343,7 +349,7 @@ func TestOnceStopsOnDeleteError(t *testing.T) {
 	cs.PrependReactor("delete", "nodes", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, boom
 	})
-	err := collector(cs).Once(context.Background())
+	err := collector(t, cs).Once(context.Background())
 	if err == nil || !errors.Is(err, boom) {
 		t.Fatalf("Once err = %v, want wrapped %v", err, boom)
 	}
@@ -377,6 +383,7 @@ func TestOnceCustomGraceAndBudget(t *testing.T) {
 		MaxDeletes: 1,
 		Now:        func() time.Time { return tickNow },
 		Uptime:     func() time.Duration { return 2 * DefaultMinUptime },
+		Ledger:     tmpLedger(t),
 	}
 	if err := c.Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
@@ -401,7 +408,7 @@ func TestOnceMassPartitionRefusesPass(t *testing.T) {
 			withReady(corev1.ConditionUnknown, partitionAt)))
 	}
 	cs := fake.NewSimpleClientset(objs...)
-	c := collector(cs)
+	c := collector(t, cs)
 	c.Ledger = tmpLedger(t)
 	if err := c.Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
@@ -435,7 +442,7 @@ func TestOnceStaleFractionThreshold(t *testing.T) {
 	}
 
 	cs := mk(5, 5)
-	if err := collector(cs).Once(context.Background()); err != nil {
+	if err := collector(t, cs).Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
 	}
 	if got := deletedNames(cs); len(got) != DefaultMaxDeletes {
@@ -443,7 +450,7 @@ func TestOnceStaleFractionThreshold(t *testing.T) {
 	}
 
 	cs = mk(6, 4)
-	if err := collector(cs).Once(context.Background()); err != nil {
+	if err := collector(t, cs).Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
 	}
 	if got := deletedNames(cs); len(got) != 0 {
@@ -456,7 +463,7 @@ func TestOnceStaleFractionThreshold(t *testing.T) {
 // able to reap its single decommissioned ghost (1/1 is 100% stale).
 func TestOnceSingleStaleNodeBypassesBreaker(t *testing.T) {
 	cs := fake.NewSimpleClientset(staleAgentNode("pi-gone", "pi", "u1", 48*time.Hour))
-	if err := collector(cs).Once(context.Background()); err != nil {
+	if err := collector(t, cs).Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
 	}
 	if got := deletedNames(cs); len(got) != 1 || got[0] != "pi-gone" {
@@ -485,7 +492,7 @@ func TestOnceBudgetSurvivesRestart(t *testing.T) {
 	cs := fake.NewSimpleClientset(objs...)
 	ledger := tmpLedger(t)
 
-	c1 := collector(cs)
+	c1 := collector(t, cs)
 	c1.Ledger = ledger
 	if err := c1.Once(context.Background()); err != nil {
 		t.Fatalf("first pass: %v", err)
@@ -497,7 +504,7 @@ func TestOnceBudgetSurvivesRestart(t *testing.T) {
 	// "Restart": a brand-new Collector with empty memory but the same
 	// ledger, still inside the rate window. Before the fix this minted a
 	// fresh MaxDeletes budget per restart (~10 toggles ≈ 30 deletions).
-	c2 := collector(cs)
+	c2 := collector(t, cs)
 	c2.Ledger = ledger
 	if err := c2.Once(context.Background()); err != nil {
 		t.Fatalf("post-restart pass: %v", err)
@@ -508,7 +515,7 @@ func TestOnceBudgetSurvivesRestart(t *testing.T) {
 
 	// Once the wall-clock window has elapsed, deletion resumes.
 	later := tickNow.Add(2 * DefaultInterval)
-	c3 := collector(cs)
+	c3 := collector(t, cs)
 	c3.Ledger = ledger
 	c3.Now = func() time.Time { return later }
 	if err := c3.Once(context.Background()); err != nil {
@@ -521,7 +528,7 @@ func TestOnceBudgetSurvivesRestart(t *testing.T) {
 
 func TestOnceLedgerReadErrorRefusesDeletes(t *testing.T) {
 	cs := fake.NewSimpleClientset(staleAgentNode("pi-dead", "pi", "u1", 48*time.Hour))
-	c := collector(cs)
+	c := collector(t, cs)
 	// A ledger whose path is a DIRECTORY: Append and the budget read
 	// both fail. Destructive code must fail safe — no deletes.
 	c.Ledger = NewLedger(t.TempDir())
@@ -538,7 +545,7 @@ func TestOnceLedgerReadErrorRefusesDeletes(t *testing.T) {
 // restart is what made the old per-pass budget multiply.
 func TestRunWaitsSettleWindow(t *testing.T) {
 	cs := fake.NewSimpleClientset(staleAgentNode("pi-dead", "pi", "u1", 48*time.Hour))
-	c := collector(cs)
+	c := collector(t, cs)
 	c.Settle = 5 * time.Second
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -552,7 +559,7 @@ func TestRunWaitsSettleWindow(t *testing.T) {
 	}
 
 	// And after the settle window elapses, the first pass does run.
-	c2 := collector(cs)
+	c2 := collector(t, cs)
 	c2.Settle = 20 * time.Millisecond
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	done2 := make(chan struct{})
@@ -578,7 +585,7 @@ func TestOnceFutureTimestampRefusesPass(t *testing.T) {
 		node("pi-fromfuture", "u2", withLabels(agentLabels("pi")),
 			withReady(corev1.ConditionTrue, tickNow.Add(time.Hour))),
 	)
-	c := collector(cs)
+	c := collector(t, cs)
 	c.Ledger = tmpLedger(t)
 	if err := c.Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
@@ -599,7 +606,7 @@ func TestOnceFutureWithinToleranceProceeds(t *testing.T) {
 		node("pi-drift", "u2", withLabels(agentLabels("pi")),
 			withReady(corev1.ConditionTrue, tickNow.Add(2*time.Minute))),
 	)
-	if err := collector(cs).Once(context.Background()); err != nil {
+	if err := collector(t, cs).Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
 	}
 	if got := deletedNames(cs); len(got) != 1 || got[0] != "pi-dead" {
@@ -616,6 +623,7 @@ func TestOnceUptimeGateBlocksDeletes(t *testing.T) {
 		Client: cs,
 		Now:    func() time.Time { return tickNow },
 		Uptime: func() time.Duration { return 2 * time.Minute },
+		Ledger: tmpLedger(t),
 	}
 	if err := c.Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
@@ -643,7 +651,7 @@ func TestOnceDryRunDeletesNothing(t *testing.T) {
 	)
 	cs := fake.NewSimpleClientset(objs...)
 	ledger := tmpLedger(t)
-	c := collector(cs)
+	c := collector(t, cs)
 	c.DryRun = true
 	c.Ledger = ledger
 	if err := c.Once(context.Background()); err != nil {
@@ -658,7 +666,7 @@ func TestOnceDryRunDeletesNothing(t *testing.T) {
 	}
 	// Dry-run entries must not consume the REAL budget: a real pass over
 	// the same ledger still deletes.
-	real := collector(cs)
+	real := collector(t, cs)
 	real.Ledger = ledger
 	if err := real.Once(context.Background()); err != nil {
 		t.Fatalf("real pass: %v", err)
@@ -671,7 +679,7 @@ func TestOnceDryRunDeletesNothing(t *testing.T) {
 func TestOnceDeletionsAreLedgered(t *testing.T) {
 	cs := fake.NewSimpleClientset(staleAgentNode("pi-dead", "pi", "uid-1", 48*time.Hour))
 	ledger := tmpLedger(t)
-	c := collector(cs)
+	c := collector(t, cs)
 	c.Ledger = ledger
 	if err := c.Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
@@ -700,7 +708,7 @@ func TestOnceNeverReapsOwnHost(t *testing.T) {
 		staleAgentNode("plane-abc123", "plane", "u1", 200*time.Hour),
 		staleAgentNode("worker-def456", "worker", "u2", 48*time.Hour),
 	)
-	c := collector(cs)
+	c := collector(t, cs)
 	c.SelfHost = "plane"
 	if err := c.Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
@@ -720,7 +728,7 @@ func TestOnceNeverReapsControlPlaneRole(t *testing.T) {
 				withReady(corev1.ConditionUnknown, tickNow.Add(-200*time.Hour))),
 			staleAgentNode("pi-worker", "pi", "u2", 48*time.Hour),
 		)
-		if err := collector(cs).Once(context.Background()); err != nil {
+		if err := collector(t, cs).Once(context.Background()); err != nil {
 			t.Fatalf("Once (%s): %v", role, err)
 		}
 		if got := deletedNames(cs); len(got) != 1 || got[0] != "pi-worker" {
@@ -739,7 +747,7 @@ func TestOnceReGetReappliesStructuralExclusions(t *testing.T) {
 	cs.PrependReactor("get", "nodes", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		return true, promoted, nil
 	})
-	if err := collector(cs).Once(context.Background()); err != nil {
+	if err := collector(t, cs).Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
 	}
 	if got := deletedNames(cs); len(got) != 0 {
