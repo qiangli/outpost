@@ -202,7 +202,10 @@ func evalDaemonSet(obj *unstructured.Unstructured, allowZero bool) readyState {
 	if !observedCurrent(obj) {
 		return readyState{reason: "DaemonSet: controller has not observed the latest spec yet"}
 	}
-	desired, _, _ := unstructured.NestedInt64(obj.Object, "status", "desiredNumberScheduled")
+	desired, found, _ := unstructured.NestedInt64(obj.Object, "status", "desiredNumberScheduled")
+	if !found {
+		return readyState{reason: "DaemonSet: status.desiredNumberScheduled not reported yet"}
+	}
 	if desired == 0 {
 		if allowZero {
 			return readyState{ready: true, reason: "DaemonSet: 0 nodes scheduled (explicit opt-in)"}
@@ -237,7 +240,11 @@ func evalPod(obj *unstructured.Unstructured) readyState {
 }
 
 // evalJob handles a Job: succeeded >= completions (default 1) is ready.
+// Job status condition Failed=True is a terminal failure.
 func evalJob(obj *unstructured.Unstructured) readyState {
+	if conditionTrue(obj, "Failed") {
+		return readyState{terminal: fmt.Errorf("job %s/%s entered condition Failed", obj.GetNamespace(), obj.GetName())}
+	}
 	completions := int64(1)
 	if c, found, _ := unstructured.NestedInt64(obj.Object, "spec", "completions"); found {
 		completions = c

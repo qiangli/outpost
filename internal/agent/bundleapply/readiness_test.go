@@ -245,3 +245,41 @@ func TestReadinessCRDRequiresEstablished(t *testing.T) {
 		t.Fatalf("CRD with Established=True must be ready: %q", st.reason)
 	}
 }
+
+func TestReadinessDaemonSetAbsentDesiredNumberScheduled(t *testing.T) {
+	o := newObj("apps/v1", "DaemonSet", "demo", "ds")
+	setNested(o, int64(1), "metadata", "generation")
+	setNested(o, int64(1), "status", "observedGeneration")
+
+	// status.desiredNumberScheduled is ABSENT
+	if st := evalReadiness(o, false); st.ready {
+		t.Fatal("daemonset with absent desiredNumberScheduled must not be ready when allowZero=false")
+	}
+	if st := evalReadiness(o, true); st.ready {
+		t.Fatal("daemonset with absent desiredNumberScheduled must not be ready even when allowZero=true")
+	}
+
+	// Explicit present zero desired
+	setNested(o, int64(0), "status", "desiredNumberScheduled")
+	if st := evalReadiness(o, false); st.ready {
+		t.Fatal("daemonset with explicit desired=0 must not be ready when allowZero=false")
+	}
+	if st := evalReadiness(o, true); !st.ready {
+		t.Fatalf("daemonset with explicit desired=0 and allowZero=true should be ready: %q", st.reason)
+	}
+}
+
+func TestReadinessJobFailedConditionIsTerminal(t *testing.T) {
+	o := newObj("batch/v1", "Job", "demo", "job")
+	setNested(o, int64(1), "spec", "completions")
+	setNested(o, int64(0), "status", "succeeded")
+	setNested(o, []any{map[string]any{"type": "Failed", "status": "True"}}, "status", "conditions")
+
+	st := evalReadiness(o, false)
+	if st.ready {
+		t.Fatal("job with Failed=True condition must not be ready")
+	}
+	if st.terminal == nil {
+		t.Fatal("job with Failed=True condition must be a terminal failure, not pending")
+	}
+}
