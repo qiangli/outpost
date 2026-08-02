@@ -93,6 +93,27 @@ allowUsers = ["*"]
 EOF
 
 # --------------------------------------------------------- k3s server ----
+# Configure k3s's packaged metrics-server addon so it scrapes nodes using
+# ExternalIP (127.0.x.y, patched by nodeaddr) and derived kubelet ports, with
+# hostNetwork enabled so it can reach loopback listeners across tunnels.
+log "writing /var/lib/rancher/k3s/server/manifests/metrics-server-config.yaml"
+mkdir -p /var/lib/rancher/k3s/server/manifests
+cat > /var/lib/rancher/k3s/server/manifests/metrics-server-config.yaml <<EOF
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: metrics-server
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    hostNetwork:
+      enabled: true
+    args:
+      - --kubelet-preferred-address-types=ExternalIP,InternalIP,Hostname
+      - --kubelet-use-node-status-port
+      - --kubelet-insecure-tls
+EOF
+
 set -- server \
     --disable-agent \
     --disable=traefik,servicelb \

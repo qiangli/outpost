@@ -188,3 +188,36 @@ func TestDerivedKubeletPort(t *testing.T) {
 		t.Error("an empty node name must not yield a port")
 	}
 }
+
+func TestReconciler_Diagnostics(t *testing.T) {
+	taken := map[string]string{}
+	extIP := LoopbackForNode("settled", taken)
+	port := KubeletPortForNode("settled")
+
+	cs := fake.NewSimpleClientset(
+		node("settled", extIP, int32(port)),
+		node("unpatched", "", 0),
+	)
+
+	r := &Reconciler{
+		Client:  cs,
+		PortFor: DerivedKubeletPort,
+	}
+
+	diags, err := r.Diagnostics(context.Background())
+	if err != nil {
+		t.Fatalf("Diagnostics: %v", err)
+	}
+
+	if len(diags) != 2 {
+		t.Fatalf("expected 2 diagnostics items, got %d", len(diags))
+	}
+
+	// Sorted by node name: settled, unpatched
+	if diags[0].NodeName != "settled" || !diags[0].Patched {
+		t.Errorf("expected settled to be patched, got %+v", diags[0])
+	}
+	if diags[1].NodeName != "unpatched" || diags[1].Patched {
+		t.Errorf("expected unpatched to not be patched, got %+v", diags[1])
+	}
+}
