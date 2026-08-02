@@ -3075,10 +3075,58 @@ func startControlPlaneReconcilers(ctx context.Context, g *errgroup.Group, fc *co
 	// join token), and every k3s rejoin registers under a new node-id —
 	// so NotReady ghosts accumulate on the hosted plane unless the
 	// control-plane host reaps them. Bounded, oldest-first, 24 h grace,
-	// UID-preconditioned; see internal/agent/nodegc.
-	gc := &nodegc.Collector{Client: cs, Log: slog.Default()}
-	g.Go(func() error { gc.Run(ctx); return nil })
-	slog.Info("control-plane reconcilers: stale-node garbage collection started")
+	// UID-preconditioned, mass-partition/clock-skew refusals, persisted
+	// delete ledger; see internal/agent/nodegc.
+	//
+	// OUTPOST_NODEGC gates the whole subsystem. Both switches are
+	// ALLOWLISTS, never fail-open: only "live" (or a blank/unset default,
+	// treated as live) authorizes real deletion, and only "dry-run"/
+	// "dryrun"/"dry_run" enters dry run. ANYTHING ELSE — "off", "false",
+	// "0", "no", "disabled", or a typo like "of" or "dryrunn" — disables
+	// the collector entirely. A mistyped disable must never leak into live
+	// deletions, and a mistyped dry-run must never delete for real
+	// (DEFECT 4). Env-only for now: adding a four-surface toggle (file key
+	// + REST + MCP + CLI) would mean editing admincore/mcpapi/conf, which
+	// this change is scoped out of; it is tracked to land as a
+	// cluster.node_gc field routed through admincore.SetBuiltins like
+	// every other toggle. Until then the off switch for unattended node
+	// deletion lives only here — documented in docs/cluster-peer.md.
+	gcMode := strings.ToLower(strings.TrimSpace(os.Getenv("OUTPOST_NODEGC")))
+	gcLive := gcMode == "" || gcMode == "live" || gcMode == "on" || gcMode == "enabled"
+	gcDryRun := gcMode == "dry-run" || gcMode == "dryrun" || gcMode == "dry_run"
+	switch {
+	case !gcLive && !gcDryRun:
+		slog.Info("control-plane reconcilers: stale-node garbage collection disabled",
+			"OUTPOST_NODEGC", gcMode)
+	default:
+		// Fail closed on a missing cache dir: without it there is no
+		// durable ledger, and the collector refuses to delete without one
+		// (DEFECT 3). Surface the resolve error rather than discarding it
+		// and running with a nil ledger.
+		cacheDir, cacheErr := conf.ResolveCacheDir()
+		var gcLedger *nodegc.Ledger
+		if cacheErr != nil || cacheDir == "" {
+			slog.Warn("control-plane reconcilers: no cache dir for nodegc ledger — "+
+				"collector will run READ-ONLY (fail closed, no deletions)",
+				"err", cacheErr)
+		} else {
+			gcLedger = nodegc.NewLedger(filepath.Join(cacheDir, "nodegc.log"))
+		}
+		gc := &nodegc.Collector{
+			Client: cs,
+			Log:    slog.Default(),
+			DryRun: gcDryRun,
+			// SelfHost must match the node HostLabel, which the k3s
+			// entrypoint stamps from fc.AgentName — NOT ClusterNodeName(),
+			// whose cluster.node_name override diverges from HostLabel and
+			// would leave the plane's own agent node unexcluded (DEFECT 5).
+			SelfHost: fc.AgentName,
+			Ledger:   gcLedger,
+		}
+		g.Go(func() error { gc.Run(ctx); return nil })
+		slog.Info("control-plane reconcilers: stale-node garbage collection started",
+			"dry_run", gc.DryRun, "ledger", gcLedger.Path())
+	}
 }
 
 // shouldFetchKubeconfig reports whether the boot path should ask
