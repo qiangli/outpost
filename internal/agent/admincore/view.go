@@ -68,6 +68,13 @@ type ClusterView struct {
 	// same treatment cluster.token and the tunnel token get.
 	JoinEndpoint string `json:"join_endpoint,omitempty"`
 	HasJoinToken bool   `json:"has_join_token,omitempty"`
+	// HasCloudSTCPSecret reports whether cloudbox's own cluster STCP secret
+	// is retained (cluster.cloud_stcp_secret) — the credential a
+	// peer-joined worker's overlay-control relay needs to register on the
+	// tailnet. Its absence is why a peer-flannel runtime refuses to start,
+	// so the presence flag is what makes that refusal diagnosable from the
+	// UI/MCP without reading daemon logs.
+	HasCloudSTCPSecret bool `json:"has_cloud_stcp_secret,omitempty"`
 	// PodNetworkMode is "overlay" (cloudbox allocated a per-node pod
 	// CIDR), "peer-flannel" (a peer-hosted plane; stock flannel VXLAN
 	// over the tailnet allocates from Node.spec.podCIDR — also
@@ -177,28 +184,29 @@ func toClusterView(fc *conf.FileConfig) ClusterView {
 		// Report the EFFECTIVE state (nil defaults on), not the raw
 		// pointer — the status row / SPA badge should show what the
 		// boot path will actually do.
-		Enabled:          fc.ClusterOn(),
-		PodNetworkMode:   string(podNet.Mode),
-		PodCIDR:          podNet.PodCIDR,
-		Agent:            fc.Cluster.Runtimes.Agent,
-		Virtual:          fc.Cluster.VirtualRuntimes(),
-		APIURL:           fc.Cluster.APIURL,
-		NodeName:         fc.ClusterNodeName(),
-		HasToken:         fc.Cluster.Token != "",
-		HasCA:            len(fc.Cluster.CA) > 0,
-		HasNodeToken:     fc.Cluster.NodeToken != "",
-		HasSTCPSecret:    fc.Cluster.STCPSecret != "",
-		K8sAPIPort:       fc.Cluster.K8sAPIPort,
-		ControlPlane:     fc.Cluster.ControlPlaneOn(),
-		TunnelBindAddr:   cpBindAddr,
-		TunnelBindPort:   cpBindPort,
-		HasTunnelToken:   fc.Cluster.TunnelToken != "",
-		TunnelLANExposed: !isLoopbackIP(cpBindAddr),
-		JoinEndpoint:     fc.Cluster.JoinEndpoint,
-		HasJoinToken:     fc.Cluster.JoinToken != "",
-		MetricsRemoteURL: fc.Cluster.MetricsRemoteURL,
-		LogsRemoteURL:    fc.Cluster.LogsRemoteURL,
-		TracesRemoteURL:  fc.Cluster.TracesRemoteURL,
+		Enabled:            fc.ClusterOn(),
+		PodNetworkMode:     string(podNet.Mode),
+		PodCIDR:            podNet.PodCIDR,
+		Agent:              fc.Cluster.Runtimes.Agent,
+		Virtual:            fc.Cluster.VirtualRuntimes(),
+		APIURL:             fc.Cluster.APIURL,
+		NodeName:           fc.ClusterNodeName(),
+		HasToken:           fc.Cluster.Token != "",
+		HasCA:              len(fc.Cluster.CA) > 0,
+		HasNodeToken:       fc.Cluster.NodeToken != "",
+		HasSTCPSecret:      fc.Cluster.STCPSecret != "",
+		K8sAPIPort:         fc.Cluster.K8sAPIPort,
+		ControlPlane:       fc.Cluster.ControlPlaneOn(),
+		TunnelBindAddr:     cpBindAddr,
+		TunnelBindPort:     cpBindPort,
+		HasTunnelToken:     fc.Cluster.TunnelToken != "",
+		TunnelLANExposed:   !isLoopbackIP(cpBindAddr),
+		JoinEndpoint:       fc.Cluster.JoinEndpoint,
+		HasJoinToken:       fc.Cluster.JoinToken != "",
+		HasCloudSTCPSecret: fc.Cluster.CloudSTCPSecret != "",
+		MetricsRemoteURL:   fc.Cluster.MetricsRemoteURL,
+		LogsRemoteURL:      fc.Cluster.LogsRemoteURL,
+		TracesRemoteURL:    fc.Cluster.TracesRemoteURL,
 	}
 }
 

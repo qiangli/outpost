@@ -766,6 +766,27 @@ type ClusterConfig struct {
 	// register time. Consumed only by the agent runtime.
 	STCPSecret string `json:"stcp_secret,omitempty"`
 
+	// CloudSTCPSecret is CLOUDBOX's cluster STCP secret, retained
+	// separately from STCPSecret because that field is overwritten the
+	// moment this host stops being a plain cloudbox-plane member: a peer
+	// join stores the PEER's secret there, and hosting a plane mints a
+	// local one there (EnsureControlPlaneSTCPSecret).
+	//
+	// Why a peer-joined worker still needs cloudbox's secret at all: its
+	// tailnet identity comes from cloudbox's Headscale, and the ts2021
+	// registration cannot ride the public HTTPS URL (Cloudflare strips the
+	// Upgrade header) — it has to go through the `overlay-control` STCP
+	// publisher on cloudbox's frps, which this secret authorizes. The
+	// runtime container opens a second frpc session directly to cloudbox
+	// for exactly that one visitor (the overlay relay); without this value
+	// a peer-flannel worker has no path to register on the tailnet and
+	// refuses to start rather than joining as a dark node.
+	//
+	// Captured from the Exchange/reattach response's cluster_stcp_secret
+	// (cloudbox already sends it; the peer-plane guard used to discard it).
+	// Never applied to STCPSecret on a peer-joined or control-plane host.
+	CloudSTCPSecret string `json:"cloud_stcp_secret,omitempty"`
+
 	// TunnelToken gates frpc logins to the tunnel server THIS host runs
 	// when it is the control plane. It is the peer-hosted counterpart of
 	// cloudbox's MATRIX_TOKEN and is used the same way: it authenticates
@@ -955,6 +976,12 @@ const DefaultControlPlaneAPIAddr = "127.0.0.1:6443"
 // must name. Both ends must agree, so it lives here rather than being spelled
 // twice.
 const ControlPlanePublisherUser = "control-plane"
+
+// CloudboxPublisherUser is the frp user cloudbox's own publishers
+// (k3s-apiserver, overlay-control) register under. A visitor of a
+// cloudbox-published STCP proxy must name it — frp scopes STCP visibility
+// by user, so the wrong name is refused rather than misrouted.
+const CloudboxPublisherUser = "cloudbox"
 
 // JoinsPeerPlane reports whether this host joins a control plane other than
 // the cloudbox-hosted one.

@@ -2343,6 +2343,12 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 		return err
 	}
 	if cc.JoinsPeerPlane() {
+		// Relay preconditions FIRST, before the auth-key fetch: a fetch
+		// mints a single-use key, and failing on a missing relay afterwards
+		// would burn one per boot for nothing.
+		if err := applyPeerOverlayRelay(fc, &rtOpts); err != nil {
+			return err
+		}
 		cl := &overlaykey.Client{
 			BaseURL:     cloudboxHTTPBase(fc),
 			AccessToken: fc.AccessToken,
@@ -2394,11 +2400,10 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 		return nil
 	}
 	g.Go(func() error {
-		// Tail the container's logs into outpost's slog stream.
-		// runtime.TailLogs returns when the container exits OR ctx
-		// fires; either way the supervisor loop on the next
-		// Runtime selection changes restart via Up().
-		_ = runtime.TailLogs(ctx, rtOpts)
+		// Tail logs AND keep the container alive: runtime.TailLogs
+		// returns when the container exits (or the stream breaks), and
+		// the loop re-Ups it with backoff. See superviseAgentRuntime.
+		superviseAgentRuntime(ctx, rtOpts)
 		return nil
 	})
 
@@ -2482,6 +2487,84 @@ func requirePeerOverlayAccessToken(cc *conf.ClusterConfig, accessToken string) e
 			"fetch a tailnet identity for flannel-over-tailscale; none present (unpaired host?)")
 	}
 	return nil
+}
+
+// applyPeerOverlayRelay threads the overlay-relay session into opts: the
+// second in-container frpc session, dialed DIRECTLY at cloudbox, that
+// carries the overlay-control STCP visitor a peer-joined worker's ts2021
+// tailnet registration rides (docs/adr-peer-dks-pod-network.md — the
+// registration hop the ADR left unresolved). The endpoint is the cloudbox
+// PAIRING (ServerAddr/Port/Protocol/Token — unaffected by the peer join);
+// the visitor secret is cloudbox's cluster STCP secret retained in
+// cluster.cloud_stcp_secret, because the peer join overwrote STCPSecret
+// with the peer's credential.
+//
+// Fails CLOSED on a missing secret, same doctrine as the auth-key fetch: a
+// peer-flannel container without a path to Headscale cannot get a tailnet
+// IPv4, so its entrypoint gate would exit anyway — this just says WHY
+// before a container ever starts, and without consuming a single-use key.
+func applyPeerOverlayRelay(fc *conf.FileConfig, opts *runtime.Options) error {
+	secret := strings.TrimSpace(fc.Cluster.CloudSTCPSecret)
+	if secret == "" {
+		return errors.New("cluster agent runtime: peer-hosted plane has no cloudbox overlay-relay secret " +
+			"(cluster.cloud_stcp_secret) — without it the tailnet registration cannot reach cloudbox's " +
+			"Headscale and flannel-over-tailscale has no underlay. The secret is captured automatically " +
+			"from cloudbox at pairing, boot reattach, or peer join; ensure this host is paired and cloudbox " +
+			"reachable, then restart the daemon")
+	}
+	if strings.TrimSpace(fc.ServerAddr) == "" {
+		return errors.New("cluster agent runtime: peer-hosted plane needs the cloudbox pairing " +
+			"(server_addr) to relay the tailnet registration; none present")
+	}
+	opts.OverlayRelayHost = fc.ServerAddr
+	opts.OverlayRelayPort = fc.ServerPort
+	opts.OverlayRelayProtocol = fc.Protocol
+	opts.OverlayRelayToken = fc.Token
+	opts.OverlayRelaySecret = secret
+	opts.OverlayRelayUser = conf.CloudboxPublisherUser
+	return nil
+}
+
+// superviseAgentRuntime keeps the agent-runtime container alive for the
+// daemon's life. runtime.Up is idempotent — a running container is reused
+// and a stopped one is started — so the loop is: tail logs until the
+// container exits (or the log stream breaks), then re-Up with backoff.
+//
+// Before this loop, a container exit was terminal until a human restarted
+// the daemon. That mattered most for peer-flannel workers: the entrypoint's
+// tailscale-IPv4 gate deliberately exits non-zero rather than starting a
+// dark node, so a cloudbox outage spanning a container boot killed the
+// node until someone noticed. The control-plane container has had the same
+// treatment (SuperviseServer) since A1/A3; this is the worker-side half.
+func superviseAgentRuntime(ctx context.Context, rtOpts runtime.Options) {
+	const initialBackoff = 15 * time.Second
+	const maxBackoff = 5 * time.Minute
+	backoff := initialBackoff
+	// A rebuilt image already forced one recreate in startK3sAgentRunner;
+	// respawns must reuse, not recreate on every lap.
+	rtOpts.ForceRecreate = false
+	for {
+		_ = runtime.TailLogs(ctx, rtOpts)
+		if ctx.Err() != nil {
+			return
+		}
+		slog.Warn("cluster agent runtime: container log stream ended; re-ensuring container",
+			"node", rtOpts.AgentName, "retry_in", backoff.String())
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if err := runtime.Up(ctx, rtOpts); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			slog.Warn("cluster agent runtime: restart failed; will retry", "err", err)
+			backoff = min(backoff*2, maxBackoff)
+			continue
+		}
+		backoff = initialBackoff
+	}
 }
 
 // applyPeerOverlayCredentials fetches a fresh single-use overlay key and
@@ -3363,7 +3446,7 @@ func tryReattach(ctx context.Context, fc *conf.FileConfig, cfgPath string) (*con
 // peer-plane guard above is one readable branch rather than a condition
 // repeated on every field.
 func applyCloudboxClusterMembership(fc, refreshed *conf.FileConfig) bool {
-	changed := false
+	changed := captureCloudSTCPSecret(fc.Cluster, refreshed.Cluster)
 	{
 		if refreshed.Cluster.NodeToken != "" {
 			if fc.Cluster.NodeToken != refreshed.Cluster.NodeToken {
@@ -3432,11 +3515,37 @@ func applyCloudboxClusterMembership(fc, refreshed *conf.FileConfig) bool {
 func reconcileClusterMembershipOnReattach(fc, refreshed *conf.FileConfig) bool {
 	if fc.Cluster.JoinsPeerPlane() {
 		cleared := clearCloudOverlayCreds(fc.Cluster)
+		// The one cloudbox-plane value a peer-joined worker still needs:
+		// cloudbox's own STCP secret, which authorizes the overlay-control
+		// visitor its runtime container opens DIRECTLY against cloudbox to
+		// register on the tailnet (the ts2021 hop cannot ride the public
+		// HTTPS URL). Captured into its own field — never onto STCPSecret,
+		// which holds the PEER's credential here.
+		captured := captureCloudSTCPSecret(fc.Cluster, refreshed.Cluster)
 		slog.Debug("reattach: host joins a peer control plane; keeping its cluster credentials and dropping any stale cloud overlay creds",
-			"join_endpoint", fc.Cluster.JoinEndpoint, "cleared_cloud_overlay", cleared)
-		return cleared
+			"join_endpoint", fc.Cluster.JoinEndpoint, "cleared_cloud_overlay", cleared,
+			"captured_cloud_stcp_secret", captured)
+		return cleared || captured
 	}
 	return applyCloudboxClusterMembership(fc, refreshed)
+}
+
+// captureCloudSTCPSecret records cloudbox's cluster STCP secret in its
+// dedicated field, reporting whether it changed. Safe on every plane:
+// on a plain cloudbox-plane member it simply mirrors STCPSecret; on a
+// peer-joined worker or a control-plane host it is the ONLY place the
+// cloudbox secret survives, because those overwrite STCPSecret with
+// their own credential. See conf.ClusterConfig.CloudSTCPSecret.
+func captureCloudSTCPSecret(cc, refreshed *conf.ClusterConfig) bool {
+	if cc == nil || refreshed == nil {
+		return false
+	}
+	secret := strings.TrimSpace(refreshed.STCPSecret)
+	if secret == "" || cc.CloudSTCPSecret == secret {
+		return false
+	}
+	cc.CloudSTCPSecret = secret
+	return true
 }
 
 // clearCloudOverlayCreds drops the cloudbox overlay credentials from cc,
@@ -4125,6 +4234,15 @@ func mergePairing(path string, exchanged *conf.FileConfig) *conf.FileConfig {
 				// member never keeps the cloud plane's overlay trio past a
 				// cloudbox sync point. See reconcileClusterMembershipOnReattach.
 				clearCloudOverlayCreds(cc)
+				// …but DO keep cloudbox's own STCP secret (dedicated field):
+				// it authorizes the overlay-control relay the peer-flannel
+				// runtime needs to register on cloudbox's tailnet.
+				captureCloudSTCPSecret(cc, exchanged.Cluster)
+			} else {
+				// Control-plane host: cloudbox membership is skipped, but the
+				// relay secret is still captured for the day this host also
+				// joins a plane (its own or a peer's) as a worker.
+				captureCloudSTCPSecret(cc, exchanged.Cluster)
 			}
 		}
 	}

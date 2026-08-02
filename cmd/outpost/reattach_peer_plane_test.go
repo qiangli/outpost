@@ -35,15 +35,35 @@ func TestApplyCloudboxClusterMembership_OverwritesWhenJoiningCloudbox(t *testing
 }
 
 // Idempotence: an unchanged refresh must not report a change, or every boot
-// rewrites the config file for nothing.
+// rewrites the config file for nothing. The steady state includes the
+// mirrored CloudSTCPSecret — its first capture IS a change (asserted
+// separately below), after which refreshes go quiet again.
 func TestApplyCloudboxClusterMembership_NoChangeWhenIdentical(t *testing.T) {
 	same := func() *conf.FileConfig {
 		return &conf.FileConfig{Cluster: &conf.ClusterConfig{
 			NodeToken: "K10same::node:same", STCPSecret: "same", K8sAPIPort: 6443,
+			CloudSTCPSecret: "same",
 		}}
 	}
 	if applyCloudboxClusterMembership(same(), same()) {
 		t.Error("reported a change for an identical refresh")
+	}
+}
+
+// The relay secret's capture semantics on a plain cloudbox member: the
+// dedicated field mirrors STCPSecret, reports a change exactly once, and
+// goes quiet on the next identical refresh.
+func TestApplyCloudboxClusterMembership_CapturesCloudSTCPSecretOnce(t *testing.T) {
+	fc := &conf.FileConfig{Cluster: &conf.ClusterConfig{}}
+	refreshed := &conf.FileConfig{Cluster: &conf.ClusterConfig{STCPSecret: "cloud-secret"}}
+	if !applyCloudboxClusterMembership(fc, refreshed) {
+		t.Fatal("first capture must report a change so it persists")
+	}
+	if fc.Cluster.CloudSTCPSecret != "cloud-secret" {
+		t.Fatalf("cloud_stcp_secret = %q, want mirrored", fc.Cluster.CloudSTCPSecret)
+	}
+	if applyCloudboxClusterMembership(fc, refreshed) {
+		t.Error("second identical refresh reported a change")
 	}
 }
 
@@ -142,17 +162,43 @@ func TestReconcileClusterMembershipOnReattach(t *testing.T) {
 		},
 		{
 			// Idempotence: a peer member with nothing to drop must not report
-			// a change, or every boot rewrites agent.json for nothing.
+			// a change, or every boot rewrites agent.json for nothing. The
+			// steady state includes the already-captured relay secret.
 			name: "peer member with no stale overlay is a no-op",
 			cluster: &conf.ClusterConfig{
-				JoinEndpoint: "10.0.0.5:7000",
-				NodeToken:    "K10peer::node:peer",
-				STCPSecret:   "peer-secret",
+				JoinEndpoint:    "10.0.0.5:7000",
+				NodeToken:       "K10peer::node:peer",
+				STCPSecret:      "peer-secret",
+				CloudSTCPSecret: "cloud-secret",
 			},
 			wantChanged: false,
 			check: func(t *testing.T, cc *conf.ClusterConfig) {
 				if cc.NodeToken != "K10peer::node:peer" || cc.STCPSecret != "peer-secret" {
 					t.Errorf("no-op mutated peer credentials: %+v", cc)
+				}
+			},
+		},
+		{
+			// THE RELAY CAPTURE — the one cloudbox-plane value a peer member
+			// takes from a reattach. cloudbox's STCP secret lands in its
+			// DEDICATED field (the runtime's overlay-control relay needs it to
+			// reach Headscale); the peer's own STCPSecret must not be touched.
+			name: "peer member captures cloudbox's stcp secret into the relay field",
+			cluster: &conf.ClusterConfig{
+				JoinEndpoint: "10.0.0.5:7000",
+				NodeToken:    "K10peer::node:peer",
+				STCPSecret:   "peer-secret",
+			},
+			wantChanged: true,
+			check: func(t *testing.T, cc *conf.ClusterConfig) {
+				if cc.CloudSTCPSecret != "cloud-secret" {
+					t.Errorf("cloud_stcp_secret = %q, want cloudbox's", cc.CloudSTCPSecret)
+				}
+				if cc.STCPSecret != "peer-secret" {
+					t.Errorf("peer stcp secret clobbered: %q", cc.STCPSecret)
+				}
+				if cc.NodeToken != "K10peer::node:peer" {
+					t.Errorf("peer node token clobbered: %q", cc.NodeToken)
 				}
 			},
 		},

@@ -115,6 +115,21 @@ join. The tunnel visitor binds the joined apiserver locally on port `6443` by
 default. `outpost cluster join --show` reports the selected plane and
 credential presence without revealing values, plus the runtimes selected.
 
+A worker joining with the `agent` runtime must also be **paired with
+cloudbox**: its pod network is stock flannel VXLAN over the Tailscale
+underlay, and the tailnet coordinator (Headscale) lives on cloudbox. At boot
+the daemon fetches a fresh single-use tailnet auth key over the pairing's
+access token, and the runtime container registers through a dedicated
+overlay-relay tunnel session to cloudbox authorized by the automatically
+captured `cluster.cloud_stcp_secret`. Nothing is typed for any of this; if
+the daemon logs that the relay secret is missing (`has_cloud_stcp_secret`
+false in `outpost status`), pair the host — or restart it once while
+cloudbox is reachable — and the secret is captured on the next boot
+reattach. The agent refuses to start rather than joining as a node with no
+tailnet identity, and the runtime container is supervised, so a worker that
+failed to come up during a cloudbox outage recovers on its own once the
+outage ends.
+
 ### Selecting runtimes on the joined plane
 
 By default the join registers one real k3s-agent Node. Pass `--cluster-agent`

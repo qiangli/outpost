@@ -226,10 +226,33 @@ not claimed as verified here.
 
 ### Unresolved, pending a two-machine live test
 
-Neither of these is guessed at in code; both need real hardware to settle.
-
 - **`--node-ip`.** No in-repo evidence says flannel-over-tailscale needs the Node's InternalIP to be the tailnet address. The k3s agent argv is therefore left alone (a test pins `--node-ip` *out* of it so it cannot be added on a hunch). If a two-machine test shows VXLAN peers being derived from the container's eth0 address rather than `tailscale0`, that is the finding that would justify adding it — not this document.
-- **How `tailscale up` reaches Headscale on a peer plane.** The entrypoint's boot-time overlay path speaks ts2021 through the `overlay-control` STCP visitor, which is published by *cloudbox's* frps under the `cloudbox` server user. A peer-joined worker's frpc dials the *peer's* frps instead, so that visitor is not in scope for it. The credential fetch above is a cloudbox HTTPS call from the daemon and is unaffected, but the in-container registration hop may need its own path. The IPv4 gate is what makes this surface as a loud container exit rather than a silent dark node; the fix belongs to whatever the live test shows.
+
+### Resolved since the original record
+
+- **How `tailscale up` reaches Headscale on a peer plane** (originally
+  unresolved above). The structural finding needed no hardware: the
+  `overlay-control` STCP publisher exists only on *cloudbox's* frps under the
+  `cloudbox` server user, and a peer-joined worker's frpc is logged into the
+  *peer's* frps — whose `frpc-publish.toml` publishes exactly one proxy,
+  `k3s-apiserver` (`server-entrypoint.sh`). No overlay-control publisher can
+  ever exist there, because the endpoint it fronts (cloudbox's Headscale HTTP
+  tree) lives on cloudbox. So the registration hop got its own path: the
+  worker container opens a SECOND frpc session, dialed directly at cloudbox
+  over the pairing transport (wss — the frp stream is what carries ts2021
+  through Cloudflare untouched), carrying only the overlay-control visitor.
+  The visitor's secret is cloudbox's cluster STCP secret, retained in the new
+  `cluster.cloud_stcp_secret` field (the peer join overwrites `stcp_secret`
+  with the peer's credential; the cloudbox value is captured at pairing, boot
+  reattach, and at the join itself). The daemon fails CLOSED before starting
+  the container when the relay secret is absent — same doctrine as the
+  auth-key fetch, and it spares the single-use key. Each frpc session has its
+  own supervisor with its own required-port probe, so a cloudbox outage
+  cannot restart a healthy apiserver tunnel and a peer outage cannot restart
+  the tailnet relay. Pinned by `TestEntrypointOverlayRelayBranch` /
+  `TestEntrypointCloudboxOverlayPathUnchangedByRelay` (runtime) and
+  `TestApplyPeerOverlayRelay*` (cmd/outpost). Cross-node packet flow on real
+  hardware remains covered by the acceptance gate above.
 
 ## Citations
 

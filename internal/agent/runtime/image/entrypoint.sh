@@ -33,6 +33,20 @@ set -eu
 : "${OUTPOST_OVERLAY_LOGIN:=}"
 : "${OUTPOST_OVERLAY_AUTHKEY:=}"
 : "${OUTPOST_RUNTIME_RECREATED:=0}"
+# Overlay relay — the ts2021 path for a PEER-joined worker. The main frpc
+# session below dials the peer's frps, which publishes only the apiserver;
+# the tailnet registration still has to reach CLOUDBOX's overlay-control
+# STCP publisher (Cloudflare strips the ts2021 Upgrade on the public HTTPS
+# URL, so a direct call cannot carry it). When HOST+SECRET are set, a
+# second, dedicated frpc session dials cloudbox and carries exactly that
+# one visitor. On the cloudbox-hosted plane these stay unset and the main
+# session carries the visitor, byte-for-byte as it always has.
+: "${OUTPOST_OVERLAY_RELAY_HOST:=}"
+: "${OUTPOST_OVERLAY_RELAY_PORT:=443}"
+: "${OUTPOST_OVERLAY_RELAY_PROTOCOL:=wss}"
+: "${OUTPOST_OVERLAY_RELAY_TOKEN:=}"
+: "${OUTPOST_OVERLAY_RELAY_SECRET:=}"
+: "${OUTPOST_OVERLAY_RELAY_USER:=cloudbox}"
 # Pod-network mode, classified by the outpost daemon (runtime.PodNetwork).
 # Empty = the historical behaviour: overlay when OUTPOST_POD_CIDR is set,
 # single-node bridge fallback otherwise. "peer-flannel" = this node joins a
@@ -214,7 +228,49 @@ EOF
 # plain HTTP.
 OVERLAY_CONTROL_PORT="${OVERLAY_CONTROL_PORT:-8091}"
 OVERLAY_CONTROL_BACKEND_PORT="${OVERLAY_CONTROL_BACKEND_PORT:-8092}"
-if [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ]; then
+# The relay is active only when both its endpoint and the visitor secret
+# arrived — matching runtime.Options.OverlayRelayActive on the Go side.
+OVERLAY_RELAY_ACTIVE=0
+if [ -n "${OUTPOST_OVERLAY_RELAY_HOST}" ] && [ -n "${OUTPOST_OVERLAY_RELAY_SECRET}" ]; then
+    OVERLAY_RELAY_ACTIVE=1
+fi
+if [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ] && [ "${OVERLAY_RELAY_ACTIVE}" = "1" ]; then
+    # Peer plane: the overlay-control visitor rides its OWN frpc session to
+    # cloudbox. It must NOT be appended to the main config — the main
+    # session is logged into the PEER's frps, where no overlay-control
+    # publisher exists (and never can: the publisher fronts cloudbox's
+    # Headscale, which lives on cloudbox). A visitor there would bind its
+    # port and then refuse every connection, which reads like a network
+    # fault instead of a topology mistake.
+    log "writing /tmp/frpc-overlay.toml: relay=${OUTPOST_OVERLAY_RELAY_HOST}:${OUTPOST_OVERLAY_RELAY_PORT} visitor=overlay-control -> 127.0.0.1:${OVERLAY_CONTROL_BACKEND_PORT}"
+    cat > /tmp/frpc-overlay.toml <<EOF
+serverAddr = "${OUTPOST_OVERLAY_RELAY_HOST}"
+serverPort = ${OUTPOST_OVERLAY_RELAY_PORT}
+user = "${OUTPOST_AGENT_NAME}"
+# Same rationale as the main session: a cloudbox deploy is exactly when
+# every outpost reconnects, so never exit on a failed login.
+loginFailExit = false
+
+[auth]
+method = "token"
+token = "${OUTPOST_OVERLAY_RELAY_TOKEN}"
+
+[transport]
+protocol = "${OUTPOST_OVERLAY_RELAY_PROTOCOL}"
+
+[transport.tls]
+enable = false
+
+[[visitors]]
+name = "overlay-control-visitor"
+type = "stcp"
+serverUser = "${OUTPOST_OVERLAY_RELAY_USER}"
+serverName = "overlay-control"
+secretKey = "${OUTPOST_OVERLAY_RELAY_SECRET}"
+bindAddr = "127.0.0.1"
+bindPort = ${OVERLAY_CONTROL_BACKEND_PORT}
+EOF
+elif [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ]; then
     log "adding overlay-control STCP visitor -> 127.0.0.1:${OVERLAY_CONTROL_BACKEND_PORT}"
     cat >> /tmp/frpc.toml <<EOF
 
@@ -255,7 +311,11 @@ EOF
 fi
 
 FRPC_REQUIRED_PORTS="${OUTPOST_API_PORT}"
-if [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ]; then
+if [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ] && [ "${OVERLAY_RELAY_ACTIVE}" != "1" ]; then
+    # Only when the MAIN session carries the overlay-control visitor. Under
+    # the relay, port ${OVERLAY_CONTROL_BACKEND_PORT} belongs to the relay
+    # session's supervisor below — probing it here would restart a healthy
+    # main frpc whenever the relay (or cloudbox) is down.
     FRPC_REQUIRED_PORTS="${FRPC_REQUIRED_PORTS},${OVERLAY_CONTROL_BACKEND_PORT}"
 fi
 export FRPC_REQUIRED_PORTS
@@ -267,6 +327,23 @@ FRPC_PROBE_INTERVAL="${FRPC_PROBE_INTERVAL:-2}" \
 FRPC_RESTART_BACKOFF="${FRPC_RESTART_BACKOFF:-2}" \
 FRPC_RESTART_BACKOFF_MAX="${FRPC_RESTART_BACKOFF_MAX:-30}" \
     /usr/local/bin/frpc-supervisor.sh &
+
+if [ "${OVERLAY_RELAY_ACTIVE}" = "1" ] && [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ]; then
+    # The relay session gets its OWN supervisor so cloudbox and the peer
+    # plane fail independently: the peer frps going away must not restart
+    # the tailnet relay, and a cloudbox outage must not restart the
+    # apiserver tunnel. Same restart/backoff policy as the main session.
+    log "starting overlay-relay frpc supervisor (cloudbox ${OUTPOST_OVERLAY_RELAY_HOST}:${OUTPOST_OVERLAY_RELAY_PORT})"
+    FRPC_REQUIRED_PORTS="${OVERLAY_CONTROL_BACKEND_PORT}" \
+    FRPC_CONFIG=/tmp/frpc-overlay.toml \
+    FRPC_LOG=/tmp/frpc-overlay.log \
+    FRPC_STARTUP_GRACE_TICKS="${FRPC_STARTUP_GRACE_TICKS:-20}" \
+    FRPC_MISS_THRESHOLD="${FRPC_MISS_THRESHOLD:-3}" \
+    FRPC_PROBE_INTERVAL="${FRPC_PROBE_INTERVAL:-2}" \
+    FRPC_RESTART_BACKOFF="${FRPC_RESTART_BACKOFF:-2}" \
+    FRPC_RESTART_BACKOFF_MAX="${FRPC_RESTART_BACKOFF_MAX:-30}" \
+        /usr/local/bin/frpc-supervisor.sh &
+fi
 
 # Wait for the STCP visitor to bind locally. The visitor LISTENS even
 # before the publisher accepts a stream, so a successful connect to

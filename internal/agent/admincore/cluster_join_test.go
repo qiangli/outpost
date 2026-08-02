@@ -181,6 +181,52 @@ func TestJoinPeerPlane_DropsCloudOverlayCreds(t *testing.T) {
 	}
 }
 
+// Joining a peer plane overwrites STCPSecret with the PEER's credential —
+// and when the outgoing value was CLOUDBOX's (a plain cloudbox-plane member
+// until this call), that value must be preserved in cloud_stcp_secret
+// first: it authorizes the overlay-control relay the peer-flannel runtime
+// needs to register on cloudbox's tailnet, and this join may be the last
+// moment it exists locally (the boot reattach also captures it, but that
+// needs cloudbox reachable).
+func TestJoinPeerPlane_PreservesCloudboxSTCPSecretForTheRelay(t *testing.T) {
+	s := newTestServer(t)
+	if err := conf.SaveFile(s.deps.ConfigPath, &conf.FileConfig{
+		Cluster: &conf.ClusterConfig{
+			STCPSecret: "cloudbox-secret", // pre-join: the cloudbox plane's
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.JoinPeerPlane(PeerPlaneParams{
+		Endpoint:   strp("10.0.0.5:7000"),
+		Token:      strp("t"),
+		STCPSecret: strp("peer-secret"),
+	}); err != nil {
+		t.Fatalf("JoinPeerPlane: %v", err)
+	}
+	fc, err := conf.LoadFile(s.deps.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fc.Cluster.STCPSecret != "peer-secret" {
+		t.Errorf("stcp_secret = %q, want the peer's", fc.Cluster.STCPSecret)
+	}
+	if fc.Cluster.CloudSTCPSecret != "cloudbox-secret" {
+		t.Errorf("cloud_stcp_secret = %q, want cloudbox's preserved", fc.Cluster.CloudSTCPSecret)
+	}
+
+	// A REJOIN (already on a peer plane) must not capture the PEER's secret
+	// as if it were cloudbox's — the pre-join value is no longer cloudbox's.
+	if _, err := s.JoinPeerPlane(PeerPlaneParams{STCPSecret: strp("rotated-peer-secret")}); err != nil {
+		t.Fatalf("rejoin: %v", err)
+	}
+	fc, _ = conf.LoadFile(s.deps.ConfigPath)
+	if fc.Cluster.CloudSTCPSecret != "cloudbox-secret" {
+		t.Errorf("rejoin overwrote cloud_stcp_secret with %q — the peer's secret is not cloudbox's",
+			fc.Cluster.CloudSTCPSecret)
+	}
+}
+
 // An operator who selected virtual runtimes must not have a k3s agent started
 // for them as a side effect of naming a control plane.
 func TestJoinPeerPlane_KeepsAnExistingRuntimeSelection(t *testing.T) {

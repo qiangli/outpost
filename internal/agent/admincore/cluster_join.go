@@ -126,6 +126,19 @@ func (s *Server) JoinPeerPlane(p PeerPlaneParams) (PeerPlaneResult, error) {
 		fc.Cluster = &conf.ClusterConfig{}
 	}
 
+	// About to overwrite STCPSecret with the PEER's credential. When this
+	// host was a plain cloudbox-plane member until now, the outgoing value
+	// is CLOUDBOX's cluster secret — the one credential the peer-flannel
+	// runtime still needs (it authorizes the overlay-control relay that
+	// registers the node on cloudbox's tailnet). Preserve it in its
+	// dedicated field before it is lost; the boot reattach refreshes it
+	// too, but that needs cloudbox reachable, and this join may be the
+	// last moment the value exists locally.
+	if !fc.Cluster.JoinsPeerPlane() && !fc.Cluster.ControlPlaneOn() &&
+		strings.TrimSpace(fc.Cluster.STCPSecret) != "" {
+		fc.Cluster.CloudSTCPSecret = strings.TrimSpace(fc.Cluster.STCPSecret)
+	}
+
 	if p.Endpoint != nil {
 		ep, err := normalizeJoinEndpoint(*p.Endpoint)
 		if err != nil {

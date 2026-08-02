@@ -617,6 +617,7 @@ cloudbox-hosted plane", which is the default and the historical behaviour.
 | Virtual Nodes on the joined plane | `cluster.runtimes.virtual` | `cluster join --cluster-virtual vk-podman,vk-native` | Inbound > Cluster (same field) | `outpost_cluster_join_peer` (`cluster_virtual`) |
 | Which plane this host joins | (read-only) | `cluster join --show` | Cluster > Join a peer's plane | `outpost_cluster_peer_plane` |
 | Revert to the cloudbox plane | (clears the four above) | `cluster join --clear` | Cluster > Join a peer's plane | `outpost_cluster_leave_peer` |
+| Cloudbox's STCP secret (overlay relay) | `cluster.cloud_stcp_secret` | (captured automatically) | `has_cloud_stcp_secret` flag only | — |
 
 Save = restart (cluster runtime config is read once at boot).
 
@@ -668,6 +669,17 @@ Five behaviours worth knowing:
   shell, the LLM pool and the fleet registry; only cluster membership moves.
   While a peer endpoint is set, the boot reattach deliberately leaves cluster
   credentials alone — cloudbox's node token describes a different cluster.
+  The one exception is `cluster.cloud_stcp_secret`: cloudbox's own STCP
+  secret, captured automatically (at pairing, boot reattach, and at the join
+  itself before the peer's secret overwrites `stcp_secret`) and never typed by
+  an operator. The peer-flannel worker's runtime container uses it to open a
+  second frpc session directly to cloudbox carrying the `overlay-control`
+  visitor — the only path a Tailscale (ts2021) registration can take to
+  cloudbox's Headscale, since the public HTTPS URL cannot carry it. Without
+  it the agent runtime refuses to start (a node whose flannel is pinned to an
+  addressless `tailscale0` would join Ready and silently drop every pod
+  packet); `has_cloud_stcp_secret` in the cluster status is the flag to check
+  when that refusal appears in the logs.
 - **The credentials are write-only.** `cluster.join_token`, `stcp_secret` and
   `node_token` are reported as `has_*` presence flags in `GET /api/config`,
   `outpost status` and every MCP status read, and there is no reveal verb on

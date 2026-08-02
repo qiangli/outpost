@@ -184,7 +184,16 @@ func TestVPTY_InteractiveSession(t *testing.T) {
 	// ("windows-vpty-ok") does not — so finding it proves the editor echoed
 	// the keystrokes rather than silently swallowing them (the readline
 	// fallback behavior on a console-less daemon).
-	if !strings.Contains(out.snapshot(), "echo windows-vpty-ok") {
+	//
+	// The echo is matched with line breaks collapsed: the prompt embeds the
+	// checkout path, and in a deep checkout prompt+command exceeds the
+	// vpty's default width, so readline hard-wraps the echo mid-word
+	// ("echo window\r\ns-vpty-ok"). The wrap position is a property of
+	// where the repo happens to live, not of the echo behavior under test —
+	// a plain Contains made this test fail in some checkouts and pass in
+	// others.
+	echoed := strings.NewReplacer("\r", "", "\n", "").Replace(out.snapshot())
+	if !strings.Contains(echoed, "echo windows-vpty-ok") {
 		t.Fatalf("typed command was not echoed back; output:\n%s", out.snapshot())
 	}
 

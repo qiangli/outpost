@@ -152,6 +152,30 @@ type Options struct {
 	// outpost-cni + advertised routes, byte-for-byte as before.
 	PeerFlannel bool
 
+	// OverlayRelay* describe the SECOND frpc session a peer-joined worker's
+	// container opens — directly to CLOUDBOX — for exactly one visitor: the
+	// `overlay-control` STCP publisher that carries the ts2021 tailnet
+	// registration (Cloudflare strips the Upgrade header on the public
+	// HTTPS URL, so this tunnelled hop is the only path to Headscale).
+	//
+	// On the cloudbox-hosted plane these stay empty: there the MAIN frpc
+	// session already dials cloudbox and carries the overlay-control
+	// visitor, byte-for-byte as before. On a peer plane the main session
+	// dials the PEER's frps, which publishes no overlay-control — hence
+	// this dedicated relay session.
+	//
+	// Host/Port/Protocol/Token are the cloudbox PAIRING values
+	// (fc.ServerAddr/ServerPort/Protocol/Token); Secret is cloudbox's
+	// cluster STCP secret (conf.ClusterConfig.CloudSTCPSecret); User is
+	// the publisher's frp user (conf.CloudboxPublisherUser). All-empty
+	// disables the relay.
+	OverlayRelayHost     string
+	OverlayRelayPort     int
+	OverlayRelayProtocol string
+	OverlayRelayToken    string
+	OverlayRelaySecret   string
+	OverlayRelayUser     string
+
 	// PodmanBin overrides the autodetected `podman`/`docker` binary.
 	// Empty triggers PATH lookup; tests set it.
 	PodmanBin string
@@ -345,6 +369,7 @@ func Up(ctx context.Context, opts Options) error {
 	if opts.OverlayAuthKey != "" {
 		args = append(args, "-e", "OUTPOST_OVERLAY_AUTHKEY="+opts.OverlayAuthKey)
 	}
+	args = append(args, overlayRelayEnvArgs(opts)...)
 	args = append(args, podNetworkEnvArgs(opts)...)
 	for _, kv := range opts.ExtraEnv {
 		args = append(args, "-e", kv)
@@ -386,7 +411,17 @@ type fingerprintInput struct {
 	// container's CNI shape: flipping it without recreating would leave
 	// a container that still has the old mode's conflist on disk.
 	PeerFlannel bool
-	ExtraEnv    []string
+	// The overlay relay changes the container's frpc topology (a second
+	// session to cloudbox), so every field participates: a rotated relay
+	// secret or a moved cloudbox must recreate the container, or the old
+	// session keeps dialing with dead credentials.
+	OverlayRelayHost     string
+	OverlayRelayPort     int
+	OverlayRelayProtocol string
+	OverlayRelayToken    string
+	OverlayRelaySecret   string
+	OverlayRelayUser     string
+	ExtraEnv             []string
 }
 
 func runtimeFingerprint(ctx context.Context, bin, image string, opts Options) (string, error) {
@@ -397,23 +432,29 @@ func runtimeFingerprint(ctx context.Context, bin, image string, opts Options) (s
 		}
 	}
 	input := fingerprintInput{
-		AgentName:     opts.AgentName,
-		HostName:      opts.HostName,
-		ImageIdentity: identity,
-		NodeToken:     opts.NodeToken,
-		APIServer:     opts.APIServer,
-		CloudboxHost:  opts.CloudboxHost,
-		CloudboxPort:  opts.CloudboxPort,
-		STCPSecret:    opts.STCPSecret,
-		MatrixToken:   opts.MatrixToken,
-		FRPProtocol:   opts.FRPProtocol,
-		FRPServerUser: opts.FRPServerUser,
-		APIPort:       opts.APIPort,
-		KubeletPort:   opts.KubeletPort,
-		PodCIDR:       opts.PodCIDR,
-		OverlayLogin:  opts.OverlayLoginServer,
-		PeerFlannel:   opts.PeerFlannel,
-		ExtraEnv:      opts.ExtraEnv,
+		AgentName:            opts.AgentName,
+		HostName:             opts.HostName,
+		ImageIdentity:        identity,
+		NodeToken:            opts.NodeToken,
+		APIServer:            opts.APIServer,
+		CloudboxHost:         opts.CloudboxHost,
+		CloudboxPort:         opts.CloudboxPort,
+		STCPSecret:           opts.STCPSecret,
+		MatrixToken:          opts.MatrixToken,
+		FRPProtocol:          opts.FRPProtocol,
+		FRPServerUser:        opts.FRPServerUser,
+		APIPort:              opts.APIPort,
+		KubeletPort:          opts.KubeletPort,
+		PodCIDR:              opts.PodCIDR,
+		OverlayLogin:         opts.OverlayLoginServer,
+		PeerFlannel:          opts.PeerFlannel,
+		OverlayRelayHost:     opts.OverlayRelayHost,
+		OverlayRelayPort:     opts.OverlayRelayPort,
+		OverlayRelayProtocol: opts.OverlayRelayProtocol,
+		OverlayRelayToken:    opts.OverlayRelayToken,
+		OverlayRelaySecret:   opts.OverlayRelaySecret,
+		OverlayRelayUser:     opts.OverlayRelayUser,
+		ExtraEnv:             opts.ExtraEnv,
 	}
 	payload, err := json.Marshal(input)
 	if err != nil {

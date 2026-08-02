@@ -12,6 +12,7 @@ Audit and closure tracking for peer-hosted DKS control-plane functionality.
 | 4 | Stale node garbage collection | Closed | Pending |
 | 5 | Peer join runtime selection | Closed | Pending |
 | 6 | Pod networking and PodCIDR allocation | Closed: stock k3s flannel VXLAN over `tailscale0`; Kubernetes allocates `Node.spec.podCIDR` | Pending |
+| 6b | Worker tailnet registration (ts2021 → Headscale) | Closed in code: dedicated overlay-relay frpc session to cloudbox (see below) | Pending |
 | 7 | Kubelet metrics and `kubectl top` | Closed in code | Pending corrected live gate |
 | 8 | Runtime capability probe | Closed in code | Pending |
 
@@ -25,6 +26,35 @@ The peer control plane starts stock k3s flannel VXLAN on the Tailscale underlay
 with `--flannel-iface=tailscale0`. Kubernetes assigns each node its
 `Node.spec.podCIDR`. Acceptance checks require distinct PodCIDRs and
 cross-node pod reachability; they do not replace Kubernetes allocation.
+
+## Item 6b: worker tailnet registration
+
+Until this closure, a peer-joined worker could fetch a fresh Headscale auth
+key (a cloudbox HTTPS call from the daemon) but had no path to *use* it: the
+ts2021 control connection must ride the `overlay-control` STCP publisher on
+cloudbox's frps (the public HTTPS URL cannot carry ts2021 through
+Cloudflare), and the worker's only frpc session was logged into the peer's
+frps, which publishes no such proxy. The entrypoint's tailscale-IPv4 gate
+then correctly killed the container — loud, but no fresh physical agent
+could actually join through Tailscale.
+
+The closure: the runtime container opens a second frpc session directly to
+cloudbox (the pairing endpoint/protocol/token, which a peer join leaves
+intact), carrying only the overlay-control visitor, authorized by cloudbox's
+cluster STCP secret retained in `cluster.cloud_stcp_secret` (captured at
+pairing, boot reattach, and at the join itself — the join overwrites
+`stcp_secret` with the peer's credential). Each session has its own
+supervisor and required-port probe so cloudbox and the peer plane fail
+independently. The daemon fails closed (before burning a single-use auth
+key) when the relay secret is missing; `has_cloud_stcp_secret` in the
+cluster view makes that diagnosable. The agent-runtime container is now also
+supervised (`superviseAgentRuntime`): an IPv4-gate exit during a cloudbox
+outage is retried with backoff instead of staying down until a daemon
+restart.
+
+Deterministic coverage: entrypoint pins for the relay config, visitor
+placement and independent supervisors; runtime env/fingerprint tests;
+fail-closed and capture tests in `cmd/outpost` and `admincore`.
 
 ## Item 7: kubelet metrics
 
