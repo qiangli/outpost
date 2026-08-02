@@ -268,6 +268,8 @@ type SafeView struct {
 	ActrunnerSandbox        bool                `json:"actrunner_sandbox"`
 	ActrunnerSandboxImage   string              `json:"actrunner_sandbox_image,omitempty"`
 	ActrunnerDockerHost     string              `json:"actrunner_docker_host,omitempty"`
+	HeadlampEnabled         bool                `json:"headlamp_enabled"`
+	HeadlampPort            int                 `json:"headlamp_port,omitempty"`
 	CloudDOEnabled          bool                `json:"cloud_do_enabled"`
 	HasCloudDOToken         bool                `json:"has_cloud_do_token"`
 	OtelEnabled             bool                `json:"otel_enabled"`
@@ -388,6 +390,8 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		ActrunnerSandbox:       fc.ActrunnerSandboxOn(),
 		ActrunnerSandboxImage:  fc.ActrunnerSandboxImage,
 		ActrunnerDockerHost:    fc.ActrunnerDockerHost,
+		HeadlampEnabled:        fc.HeadlampOn(),
+		HeadlampPort:           fc.HeadlampPort,
 		CloudDOEnabled:         fc.CloudDOOn(),
 		HasCloudDOToken:        fc.CloudDOToken != "",
 		MeshPort:               fc.MeshPort,

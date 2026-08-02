@@ -123,6 +123,8 @@ func builtinsSetCmd() *cobra.Command {
 		actrunnerSandbox                                                                                                                                                               string
 		actrunnerSandboxImage                                                                                                                                                          string
 		actrunnerDockerHost                                                                                                                                                            string
+		headlamp                                                                                                                                                                       string
+		headlampPort                                                                                                                                                                   int
 		sshForwardSockets                                                                                                                                                              []string
 		clearSSHForwardSockets                                                                                                                                                         bool
 		ycodeShareSurfaces                                                                                                                                                             map[string]string
@@ -337,6 +339,12 @@ func builtinsSetCmd() *cobra.Command {
 			if cmd.Flags().Changed("actrunner-docker-host") {
 				params.ActrunnerDockerHost = &actrunnerDockerHost
 			}
+			if params.Headlamp, err = parseToggle("headlamp", headlamp); err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("headlamp-port") {
+				params.HeadlampPort = &headlampPort
+			}
 			if clearSSHForwardSockets {
 				params.SSHForwardSockets = []string{}
 			} else if cmd.Flags().Changed("ssh-forward-socket") {
@@ -403,6 +411,8 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().IntVar(&seaweedfsPort, "seaweedfs-port", 0, "SeaweedFS's loopback S3-gateway port (0 = default 8333)")
 	cmd.Flags().StringVar(&kopia, "kopia", "", "on|off - run the Kopia snapshot-backup repo server (managed external binary) on loopback, auto-exposed over the mesh as 'backup'")
 	cmd.Flags().IntVar(&kopiaPort, "kopia-port", 0, "Kopia's loopback server port (0 = default 51515)")
+	cmd.Flags().StringVar(&headlamp, "headlamp", "", "on|off - deploy Headlamp (the operating UI) on the peer DKS plane (default OFF; requires cluster.control_plane)")
+	cmd.Flags().IntVar(&headlampPort, "headlamp-port", 0, "headlamp's supervised loopback forward port (0 = default 18466; loopback only)")
 	cmd.Flags().StringVar(&actrunner, "actrunner", "", "on|off - run Gitea act_runner (CI executor, managed external binary); registers against a Gitea instance and dials out")
 	cmd.Flags().StringVar(&actrunnerInstance, "actrunner-instance", "", "Gitea base URL the runner registers against (empty = local loom forge)")
 	cmd.Flags().StringVar(&actrunnerToken, "actrunner-token", "", "act_runner registration token (minted in Gitea)")
