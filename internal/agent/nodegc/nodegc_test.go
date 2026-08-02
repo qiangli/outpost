@@ -3,6 +3,8 @@ package nodegc
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +25,15 @@ type nodeOpt func(*corev1.Node)
 
 func withLabels(l map[string]string) nodeOpt {
 	return func(n *corev1.Node) { n.Labels = l }
+}
+
+func withLabel(k, v string) nodeOpt {
+	return func(n *corev1.Node) {
+		if n.Labels == nil {
+			n.Labels = map[string]string{}
+		}
+		n.Labels[k] = v
+	}
 }
 
 func agentLabels(host string) map[string]string {
@@ -66,8 +77,35 @@ func staleAgentNode(name, host string, uid types.UID, notReadyFor time.Duration)
 	)
 }
 
+// readyAgentNode is an in-scope, healthy fleet member. Tests add these
+// so the mass-stale circuit breaker sees a mostly-healthy population —
+// exactly the state the per-node deletion logic is licensed to act in.
+func readyAgentNode(name, host string, uid types.UID) *corev1.Node {
+	return node(name, uid,
+		withLabels(agentLabels(host)),
+		withReady(corev1.ConditionTrue, tickNow.Add(-time.Hour)),
+	)
+}
+
+func readyFleet(host string, n int) []runtime.Object {
+	var out []runtime.Object
+	for i := 0; i < n; i++ {
+		name := host + "-ok" + string(rune('a'+i))
+		out = append(out, readyAgentNode(name, host, types.UID("ready-"+name)))
+	}
+	return out
+}
+
+// collector returns a Collector primed the way a long-settled healthy
+// daemon would be: fixed test clock, and monotonic uptime well past
+// the deletion gate. Tests for the gates themselves construct their
+// own Collector with hostile values.
 func collector(cs *fake.Clientset) *Collector {
-	return &Collector{Client: cs, Now: func() time.Time { return tickNow }}
+	return &Collector{
+		Client: cs,
+		Now:    func() time.Time { return tickNow },
+		Uptime: func() time.Duration { return 2 * DefaultMinUptime },
+	}
 }
 
 func deletedNames(cs *fake.Clientset) []string {
@@ -78,6 +116,34 @@ func deletedNames(cs *fake.Clientset) []string {
 		}
 	}
 	return names
+}
+
+func actionCount(cs *fake.Clientset, verb string) int {
+	n := 0
+	for _, a := range cs.Actions() {
+		if a.GetVerb() == verb && a.GetResource().Resource == "nodes" {
+			n++
+		}
+	}
+	return n
+}
+
+func tmpLedger(t *testing.T) *Ledger {
+	t.Helper()
+	return NewLedger(filepath.Join(t.TempDir(), "nodegc.log"))
+}
+
+func ledgerEvents(t *testing.T, l *Ledger) []string {
+	t.Helper()
+	entries, err := l.Tail(1000)
+	if err != nil {
+		t.Fatalf("ledger tail: %v", err)
+	}
+	var events []string
+	for _, e := range entries {
+		events = append(events, e.Event)
+	}
+	return events
 }
 
 func TestStaleSince(t *testing.T) {
@@ -132,7 +198,7 @@ func TestStaleSince(t *testing.T) {
 }
 
 func TestOnceDeletesOldestFirstBounded(t *testing.T) {
-	cs := fake.NewSimpleClientset(
+	objs := append(readyFleet("pi", 5),
 		staleAgentNode("pi-newest", "pi", "u1", 25*time.Hour),
 		staleAgentNode("pi-oldest", "pi", "u2", 100*time.Hour),
 		staleAgentNode("pi-mid", "pi", "u3", 50*time.Hour),
@@ -141,6 +207,7 @@ func TestOnceDeletesOldestFirstBounded(t *testing.T) {
 		node("pi-ready", "u5", withLabels(agentLabels("pi")), withReady(corev1.ConditionTrue, tickNow.Add(-100*time.Hour))),
 		node("laptop-foreign", "u6", withReady(corev1.ConditionFalse, tickNow.Add(-100*time.Hour))),
 	)
+	cs := fake.NewSimpleClientset(objs...)
 	if err := collector(cs).Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
 	}
@@ -164,12 +231,13 @@ func TestOnceDeletesOldestFirstBounded(t *testing.T) {
 
 func TestOnceEqualTimestampsOrderByName(t *testing.T) {
 	ts := 48 * time.Hour
-	cs := fake.NewSimpleClientset(
+	objs := append(readyFleet("pi", 5),
 		staleAgentNode("pi-charlie", "pi", "u1", ts),
 		staleAgentNode("pi-alpha", "pi", "u2", ts),
 		staleAgentNode("pi-bravo", "pi", "u3", ts),
 		staleAgentNode("pi-delta", "pi", "u4", ts),
 	)
+	cs := fake.NewSimpleClientset(objs...)
 	if err := collector(cs).Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
 	}
@@ -245,10 +313,11 @@ func TestOnceStopsOnListError(t *testing.T) {
 }
 
 func TestOnceStopsOnGetError(t *testing.T) {
-	cs := fake.NewSimpleClientset(
+	objs := append(readyFleet("pi", 3),
 		staleAgentNode("pi-a", "pi", "u1", 100*time.Hour),
 		staleAgentNode("pi-b", "pi", "u2", 50*time.Hour),
 	)
+	cs := fake.NewSimpleClientset(objs...)
 	boom := errors.New("get exploded")
 	cs.PrependReactor("get", "nodes", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, boom
@@ -265,10 +334,11 @@ func TestOnceStopsOnGetError(t *testing.T) {
 }
 
 func TestOnceStopsOnDeleteError(t *testing.T) {
-	cs := fake.NewSimpleClientset(
+	objs := append(readyFleet("pi", 3),
 		staleAgentNode("pi-a", "pi", "u1", 100*time.Hour),
 		staleAgentNode("pi-b", "pi", "u2", 50*time.Hour),
 	)
+	cs := fake.NewSimpleClientset(objs...)
 	boom := errors.New("delete refused")
 	cs.PrependReactor("delete", "nodes", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, boom
@@ -295,21 +365,445 @@ func TestOnceRequiresClient(t *testing.T) {
 }
 
 func TestOnceCustomGraceAndBudget(t *testing.T) {
-	cs := fake.NewSimpleClientset(
+	objs := append(readyFleet("pi", 4),
 		staleAgentNode("pi-a", "pi", "u1", 3*time.Hour),
 		staleAgentNode("pi-b", "pi", "u2", 2*time.Hour),
 		staleAgentNode("pi-c", "pi", "u3", 90*time.Minute),
 	)
+	cs := fake.NewSimpleClientset(objs...)
 	c := &Collector{
 		Client:     cs,
 		Grace:      time.Hour,
 		MaxDeletes: 1,
 		Now:        func() time.Time { return tickNow },
+		Uptime:     func() time.Duration { return 2 * DefaultMinUptime },
 	}
 	if err := c.Once(context.Background()); err != nil {
 		t.Fatalf("Once: %v", err)
 	}
 	if got := deletedNames(cs); len(got) != 1 || got[0] != "pi-a" {
 		t.Fatalf("deleted %v, want [pi-a] (custom budget 1, oldest first)", got)
+	}
+}
+
+// --- Fix 1: cluster-wide unhealthy circuit breaker ---------------------
+
+// TestOnceMassPartitionRefusesPass is the mandatory mass-stale test: a
+// >grace partition flips EVERY worker to Unknown with the same
+// LastTransitionTime. The pass must refuse outright — not drain the
+// cluster MaxDeletes at a time — and leave durable evidence.
+func TestOnceMassPartitionRefusesPass(t *testing.T) {
+	partitionAt := tickNow.Add(-30 * time.Hour) // one instant, fleet-wide
+	var objs []runtime.Object
+	for _, s := range []string{"a", "b", "c", "d", "e", "f", "g", "h"} {
+		objs = append(objs, node("pi-"+s, types.UID("u-"+s),
+			withLabels(agentLabels("pi")),
+			withReady(corev1.ConditionUnknown, partitionAt)))
+	}
+	cs := fake.NewSimpleClientset(objs...)
+	c := collector(cs)
+	c.Ledger = tmpLedger(t)
+	if err := c.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if got := deletedNames(cs); len(got) != 0 {
+		t.Fatalf("deleted %v under mass partition, want NONE — the observer is the suspect", got)
+	}
+	events := ledgerEvents(t, c.Ledger)
+	if len(events) != 1 || events[0] != EventRefusedMassStale {
+		t.Fatalf("ledger events = %v, want [%s]", events, EventRefusedMassStale)
+	}
+	// The refusal must repeat, not decay into deletion on later ticks.
+	if err := c.Once(context.Background()); err != nil {
+		t.Fatalf("second Once: %v", err)
+	}
+	if got := deletedNames(cs); len(got) != 0 {
+		t.Fatalf("second pass deleted %v, want none", got)
+	}
+}
+
+func TestOnceStaleFractionThreshold(t *testing.T) {
+	// 5 stale of 10 in scope is exactly the default 0.5 — NOT refused
+	// (strictly-greater trips the breaker); 6 of 10 is.
+	mk := func(staleN, readyN int) *fake.Clientset {
+		objs := readyFleet("pi", readyN)
+		for i := 0; i < staleN; i++ {
+			name := "pi-dead" + string(rune('a'+i))
+			objs = append(objs, staleAgentNode(name, "pi", types.UID(name), 48*time.Hour))
+		}
+		return fake.NewSimpleClientset(objs...)
+	}
+
+	cs := mk(5, 5)
+	if err := collector(cs).Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if got := deletedNames(cs); len(got) != DefaultMaxDeletes {
+		t.Fatalf("at-threshold pass deleted %v, want %d deletions", got, DefaultMaxDeletes)
+	}
+
+	cs = mk(6, 4)
+	if err := collector(cs).Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if got := deletedNames(cs); len(got) != 0 {
+		t.Fatalf("above-threshold pass deleted %v, want none", got)
+	}
+}
+
+// TestOnceSingleStaleNodeBypassesBreaker: one stale node is bounded
+// blast radius by definition — a one-worker home cluster must still be
+// able to reap its single decommissioned ghost (1/1 is 100% stale).
+func TestOnceSingleStaleNodeBypassesBreaker(t *testing.T) {
+	cs := fake.NewSimpleClientset(staleAgentNode("pi-gone", "pi", "u1", 48*time.Hour))
+	if err := collector(cs).Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if got := deletedNames(cs); len(got) != 1 || got[0] != "pi-gone" {
+		t.Fatalf("deleted %v, want [pi-gone]", got)
+	}
+}
+
+// --- Fix 2: settle window + restart-safe rate budget --------------------
+
+// TestOnceBudgetSurvivesRestart: the delete budget is anchored to wall
+// clock via the ledger, so a restarted collector (fresh memory, same
+// ledger) gets NO fresh budget inside the window — and gets it back
+// once the window has actually elapsed.
+func TestOnceBudgetSurvivesRestart(t *testing.T) {
+	objs := readyFleet("pi", 6)
+	stales := []struct {
+		name string
+		age  time.Duration
+	}{
+		{"pi-s1", 100 * time.Hour}, {"pi-s2", 90 * time.Hour}, {"pi-s3", 80 * time.Hour},
+		{"pi-s4", 70 * time.Hour}, {"pi-s5", 60 * time.Hour},
+	}
+	for _, s := range stales {
+		objs = append(objs, staleAgentNode(s.name, "pi", types.UID(s.name), s.age))
+	}
+	cs := fake.NewSimpleClientset(objs...)
+	ledger := tmpLedger(t)
+
+	c1 := collector(cs)
+	c1.Ledger = ledger
+	if err := c1.Once(context.Background()); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	if got := deletedNames(cs); len(got) != DefaultMaxDeletes {
+		t.Fatalf("first pass deleted %v, want %d", got, DefaultMaxDeletes)
+	}
+
+	// "Restart": a brand-new Collector with empty memory but the same
+	// ledger, still inside the rate window. Before the fix this minted a
+	// fresh MaxDeletes budget per restart (~10 toggles ≈ 30 deletions).
+	c2 := collector(cs)
+	c2.Ledger = ledger
+	if err := c2.Once(context.Background()); err != nil {
+		t.Fatalf("post-restart pass: %v", err)
+	}
+	if got := deletedNames(cs); len(got) != DefaultMaxDeletes {
+		t.Fatalf("post-restart pass deleted more: %v — budget must survive restarts", got)
+	}
+
+	// Once the wall-clock window has elapsed, deletion resumes.
+	later := tickNow.Add(2 * DefaultInterval)
+	c3 := collector(cs)
+	c3.Ledger = ledger
+	c3.Now = func() time.Time { return later }
+	if err := c3.Once(context.Background()); err != nil {
+		t.Fatalf("post-window pass: %v", err)
+	}
+	if got := deletedNames(cs); len(got) != 5 {
+		t.Fatalf("post-window total deletions = %v, want all 5 stale nodes reaped", got)
+	}
+}
+
+func TestOnceLedgerReadErrorRefusesDeletes(t *testing.T) {
+	cs := fake.NewSimpleClientset(staleAgentNode("pi-dead", "pi", "u1", 48*time.Hour))
+	c := collector(cs)
+	// A ledger whose path is a DIRECTORY: Append and the budget read
+	// both fail. Destructive code must fail safe — no deletes.
+	c.Ledger = NewLedger(t.TempDir())
+	if err := c.Once(context.Background()); err == nil {
+		t.Fatal("Once with unreadable ledger should surface an error")
+	}
+	if got := deletedNames(cs); len(got) != 0 {
+		t.Fatalf("deleted %v with unreadable ledger, want none (refuse to delete blind)", got)
+	}
+}
+
+// TestRunWaitsSettleWindow: Run must NOT pass immediately on start —
+// outpost restarts on every builtin toggle, and an immediate pass per
+// restart is what made the old per-pass budget multiply.
+func TestRunWaitsSettleWindow(t *testing.T) {
+	cs := fake.NewSimpleClientset(staleAgentNode("pi-dead", "pi", "u1", 48*time.Hour))
+	c := collector(cs)
+	c.Settle = 5 * time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { c.Run(ctx); close(done) }()
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	<-done
+	if n := actionCount(cs, "list"); n != 0 {
+		t.Fatalf("Run performed %d list(s) inside the settle window, want 0", n)
+	}
+
+	// And after the settle window elapses, the first pass does run.
+	c2 := collector(cs)
+	c2.Settle = 20 * time.Millisecond
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	done2 := make(chan struct{})
+	go func() { c2.Run(ctx2); close(done2) }()
+	deadline := time.Now().Add(3 * time.Second)
+	for actionCount(cs, "list") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel2()
+	<-done2
+	if n := actionCount(cs, "list"); n == 0 {
+		t.Fatal("Run never passed after the settle window elapsed")
+	}
+}
+
+// --- Fix 3: clock-skew guards -------------------------------------------
+
+func TestOnceFutureTimestampRefusesPass(t *testing.T) {
+	cs := fake.NewSimpleClientset(
+		staleAgentNode("pi-dead", "pi", "u1", 48*time.Hour),
+		// Evidence recorded in OUR future, beyond tolerance: the clocks
+		// provably disagree, so no verdict this pass can be trusted.
+		node("pi-fromfuture", "u2", withLabels(agentLabels("pi")),
+			withReady(corev1.ConditionTrue, tickNow.Add(time.Hour))),
+	)
+	c := collector(cs)
+	c.Ledger = tmpLedger(t)
+	if err := c.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if got := deletedNames(cs); len(got) != 0 {
+		t.Fatalf("deleted %v with future-stamped evidence in scope, want none", got)
+	}
+	events := ledgerEvents(t, c.Ledger)
+	if len(events) != 1 || events[0] != EventRefusedClockSkew {
+		t.Fatalf("ledger events = %v, want [%s]", events, EventRefusedClockSkew)
+	}
+}
+
+func TestOnceFutureWithinToleranceProceeds(t *testing.T) {
+	cs := fake.NewSimpleClientset(
+		staleAgentNode("pi-dead", "pi", "u1", 48*time.Hour),
+		// Two minutes ahead is ordinary NTP drift, not a broken RTC.
+		node("pi-drift", "u2", withLabels(agentLabels("pi")),
+			withReady(corev1.ConditionTrue, tickNow.Add(2*time.Minute))),
+	)
+	if err := collector(cs).Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if got := deletedNames(cs); len(got) != 1 || got[0] != "pi-dead" {
+		t.Fatalf("deleted %v, want [pi-dead]", got)
+	}
+}
+
+// TestOnceUptimeGateBlocksDeletes: a freshly-booted collector — exactly
+// when a wrong RTC is likeliest — must run read-only until its own
+// monotonic uptime covers a meaningful part of the grace window.
+func TestOnceUptimeGateBlocksDeletes(t *testing.T) {
+	cs := fake.NewSimpleClientset(staleAgentNode("pi-dead", "pi", "u1", 48*time.Hour))
+	c := &Collector{
+		Client: cs,
+		Now:    func() time.Time { return tickNow },
+		Uptime: func() time.Duration { return 2 * time.Minute },
+	}
+	if err := c.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if got := deletedNames(cs); len(got) != 0 {
+		t.Fatalf("deleted %v at 2m uptime, want none (min uptime %s)", got, DefaultMinUptime)
+	}
+
+	// Same collector, uptime now past the gate: deletion proceeds.
+	c.Uptime = func() time.Duration { return DefaultMinUptime + time.Minute }
+	if err := c.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if got := deletedNames(cs); len(got) != 1 || got[0] != "pi-dead" {
+		t.Fatalf("deleted %v after uptime gate cleared, want [pi-dead]", got)
+	}
+}
+
+// --- Fix 4: dry run + durable record -------------------------------------
+
+func TestOnceDryRunDeletesNothing(t *testing.T) {
+	objs := append(readyFleet("pi", 5),
+		staleAgentNode("pi-s1", "pi", "u1", 100*time.Hour),
+		staleAgentNode("pi-s2", "pi", "u2", 50*time.Hour),
+	)
+	cs := fake.NewSimpleClientset(objs...)
+	ledger := tmpLedger(t)
+	c := collector(cs)
+	c.DryRun = true
+	c.Ledger = ledger
+	if err := c.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if got := deletedNames(cs); len(got) != 0 {
+		t.Fatalf("dry run deleted %v, want none", got)
+	}
+	events := ledgerEvents(t, ledger)
+	if len(events) != 2 || events[0] != EventDryRunDeleted || events[1] != EventDryRunDeleted {
+		t.Fatalf("ledger events = %v, want two %s entries", events, EventDryRunDeleted)
+	}
+	// Dry-run entries must not consume the REAL budget: a real pass over
+	// the same ledger still deletes.
+	real := collector(cs)
+	real.Ledger = ledger
+	if err := real.Once(context.Background()); err != nil {
+		t.Fatalf("real pass: %v", err)
+	}
+	if got := deletedNames(cs); len(got) != 2 {
+		t.Fatalf("real pass after dry run deleted %v, want both stale nodes", got)
+	}
+}
+
+func TestOnceDeletionsAreLedgered(t *testing.T) {
+	cs := fake.NewSimpleClientset(staleAgentNode("pi-dead", "pi", "uid-1", 48*time.Hour))
+	ledger := tmpLedger(t)
+	c := collector(cs)
+	c.Ledger = ledger
+	if err := c.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	entries, err := ledger.Tail(10)
+	if err != nil {
+		t.Fatalf("tail: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("ledger entries = %d, want 1", len(entries))
+	}
+	e := entries[0]
+	if e.Event != EventDeleted || e.Node != "pi-dead" || e.UID != "uid-1" || e.NotReadySince == "" {
+		t.Fatalf("ledger entry = %+v, want deleted pi-dead uid-1 with not_ready_since", e)
+	}
+	if !e.At.Equal(tickNow) {
+		t.Fatalf("ledger At = %v, want injected clock %v", e.At, tickNow)
+	}
+}
+
+// --- Fix 5: ownership / structural scope ---------------------------------
+
+func TestOnceNeverReapsOwnHost(t *testing.T) {
+	cs := fake.NewSimpleClientset(
+		// The control-plane host's OWN agent node, however stale it looks.
+		staleAgentNode("plane-abc123", "plane", "u1", 200*time.Hour),
+		staleAgentNode("worker-def456", "worker", "u2", 48*time.Hour),
+	)
+	c := collector(cs)
+	c.SelfHost = "plane"
+	if err := c.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if got := deletedNames(cs); len(got) != 1 || got[0] != "worker-def456" {
+		t.Fatalf("deleted %v, want [worker-def456] only — never our own node", got)
+	}
+	if _, err := cs.CoreV1().Nodes().Get(context.Background(), "plane-abc123", metav1.GetOptions{}); err != nil {
+		t.Fatalf("own node reaped: %v", err)
+	}
+}
+
+func TestOnceNeverReapsControlPlaneRole(t *testing.T) {
+	for _, role := range []string{ControlPlaneRoleLabel, MasterRoleLabel} {
+		cs := fake.NewSimpleClientset(
+			node("pi-plane", "u1", withLabels(agentLabels("pi")), withLabel(role, "true"),
+				withReady(corev1.ConditionUnknown, tickNow.Add(-200*time.Hour))),
+			staleAgentNode("pi-worker", "pi", "u2", 48*time.Hour),
+		)
+		if err := collector(cs).Once(context.Background()); err != nil {
+			t.Fatalf("Once (%s): %v", role, err)
+		}
+		if got := deletedNames(cs); len(got) != 1 || got[0] != "pi-worker" {
+			t.Fatalf("deleted %v with %s in play, want [pi-worker] only", got, role)
+		}
+	}
+}
+
+// TestOnceReGetReappliesStructuralExclusions: the pre-delete re-GET
+// must re-run the FULL predicate — a node that acquired a control-plane
+// role between list and delete survives.
+func TestOnceReGetReappliesStructuralExclusions(t *testing.T) {
+	cs := fake.NewSimpleClientset(staleAgentNode("pi-promoted", "pi", "u1", 48*time.Hour))
+	promoted := staleAgentNode("pi-promoted", "pi", "u1", 48*time.Hour)
+	withLabel(ControlPlaneRoleLabel, "true")(promoted)
+	cs.PrependReactor("get", "nodes", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		return true, promoted, nil
+	})
+	if err := collector(cs).Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if got := deletedNames(cs); len(got) != 0 {
+		t.Fatalf("deleted %v, want none — re-GET must re-apply exclusions", got)
+	}
+}
+
+// --- Ledger unit coverage -------------------------------------------------
+
+func TestLedgerRoundTrip(t *testing.T) {
+	l := tmpLedger(t)
+	if err := l.Append(LedgerEntry{At: tickNow, Event: EventDeleted, Node: "pi-a"}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := l.Append(LedgerEntry{At: tickNow.Add(time.Minute), Event: EventDryRunDeleted, Node: "pi-b"}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	n, err := l.CountDeletesSince(tickNow.Add(-time.Hour))
+	if err != nil || n != 1 {
+		t.Fatalf("CountDeletesSince = %d, %v; want 1 (dry-run never counts)", n, err)
+	}
+	n, err = l.CountDeletesSince(tickNow) // strictly-after cutoff
+	if err != nil || n != 0 {
+		t.Fatalf("CountDeletesSince(at) = %d, %v; want 0", n, err)
+	}
+	entries, err := l.Tail(1)
+	if err != nil || len(entries) != 1 || entries[0].Node != "pi-b" {
+		t.Fatalf("Tail(1) = %+v, %v; want newest entry pi-b", entries, err)
+	}
+}
+
+func TestLedgerMissingFileAndNil(t *testing.T) {
+	l := NewLedger(filepath.Join(t.TempDir(), "never-written.log"))
+	if n, err := l.CountDeletesSince(time.Time{}); err != nil || n != 0 {
+		t.Fatalf("missing file: %d, %v; want 0, nil", n, err)
+	}
+	var nilLedger *Ledger
+	if err := nilLedger.Append(LedgerEntry{Event: EventDeleted}); err != nil {
+		t.Fatalf("nil Append: %v", err)
+	}
+	if n, err := nilLedger.CountDeletesSince(time.Time{}); err != nil || n != 0 {
+		t.Fatalf("nil count: %d, %v", n, err)
+	}
+}
+
+func TestLedgerSkipsMalformedLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nodegc.log")
+	l := NewLedger(path)
+	if err := l.Append(LedgerEntry{At: tickNow, Event: EventDeleted, Node: "pi-a"}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := f.WriteString("not json at all\n"); err != nil {
+		t.Fatalf("write garbage: %v", err)
+	}
+	f.Close()
+	if err := l.Append(LedgerEntry{At: tickNow, Event: EventDeleted, Node: "pi-b"}); err != nil {
+		t.Fatalf("append after garbage: %v", err)
+	}
+	n, err := l.CountDeletesSince(tickNow.Add(-time.Hour))
+	if err != nil || n != 2 {
+		t.Fatalf("count with garbage line = %d, %v; want 2", n, err)
 	}
 }

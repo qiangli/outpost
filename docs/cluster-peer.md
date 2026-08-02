@@ -224,12 +224,66 @@ that are all of:
 Everything else is out of scope by construction: Ready nodes,
 virtual-kubelet nodes (`runtime=virtual`), foreign or unlabelled nodes, nodes
 whose name does not match their host label, and nodes missing readiness
-evidence are never touched. Deletes are capped at 3 per pass (oldest first),
-each node is re-checked with a fresh read immediately before its delete, the
-delete carries a UID precondition so a same-name rejoin registered in between
-survives, and any apiserver error aborts the whole pass. A machine that comes
-back inside the 24 h window simply reconnects and goes Ready again — nothing
-is lost by waiting a day.
+evidence are never touched. Deletes are capped at 3 per **hour of wall clock**
+(oldest first), each node is re-checked with a fresh read immediately before
+its delete, the delete carries a UID precondition so a same-name rejoin
+registered in between survives, and any apiserver error aborts the whole pass.
+A machine that comes back inside the 24 h window simply reconnects and goes
+Ready again — nothing is lost by waiting a day.
+
+The same "absence of evidence is not staleness" rule is enforced at fleet
+level — this code deletes cluster state unattended, so it is built to refuse
+rather than guess:
+
+- **Mass-partition circuit breaker.** When more than half of the observed
+  outpost-agent population is stale at once (and at least two nodes are), the
+  whole pass is refused: everything looking dead at the same instant is the
+  signature of the *observer* — this host's network, tunnel, or clock — being
+  broken, not of the fleet dying. A single stale node always stays reapable,
+  so a one-worker cluster still converges. This mirrors the upstream
+  node-lifecycle controller's unhealthy-zone threshold.
+- **Restart-safe delete rate.** The 3-per-hour budget is anchored to wall
+  clock in a persisted ledger, not to the process: outpost self-restarts on
+  every builtin toggle, and restarts must share one budget, not mint one
+  each. There is also no immediate pass at boot — the first pass waits out a
+  settle window (5 min).
+- **Clock-skew refusals.** Staleness is wall-clock arithmetic against
+  apiserver-recorded timestamps. If any in-scope node's readiness evidence is
+  timestamped in the collector's future (beyond a 5 min tolerance), the pass
+  is refused — the clocks provably disagree. Deletions additionally require
+  an hour of continuous collector uptime (measured monotonically), so a host
+  whose RTC was wrong at boot runs read-only passes until NTP has had time to
+  correct it.
+- **Structural exclusions.** A node whose host label claims the control-plane
+  host's own identity, or that carries a
+  `node-role.kubernetes.io/control-plane` / `master` role label, is never a
+  candidate — reaping the plane's own node is strictly worse than reaping a
+  worker.
+
+Every deletion and every refusal is appended as one JSON line to
+`<UserCacheDir>/outpost/nodegc.log` (same JSONL-ledger pattern as
+`upgrade.log`), so "what did GC do and why" survives daemon restarts and log
+rotation.
+
+**Ownership scope (recorded decision).** The candidate filter trusts node
+*labels*, which are self-asserted by the joining kubelet; the plane holds no
+per-node owner record, and the collector's charter is to work fully offline.
+Under multi-tenancy (dhnt/docs/dks-tenancy-model.md) a plane may admit
+workers joined by other owners, and a dead node they labelled as an outpost
+k3s agent will eventually be reaped here. That is accepted: the plane host is
+the tenancy authority for the plane it hosts, deletion additionally requires
+more than the 24 h grace of NotReady (labels alone can never get a live node
+reaped), and a reaped Node object is cheap to re-mint by rejoining. What the
+filter must never do — delete the plane's own node or a control-plane node —
+is excluded structurally, per above, rather than by label trust.
+
+**Switches.** `OUTPOST_NODEGC=off` disables the collector entirely without
+touching the kubeconfig (the other reconcilers keep running);
+`OUTPOST_NODEGC=dry-run` computes, logs, and ledgers exactly what a real pass
+would delete — including budget and breaker decisions — without deleting
+anything. These are env-only for now; the four-surface toggle (file key +
+REST + MCP + CLI through `admincore.SetBuiltins`) is deferred until the
+cluster config surface settles.
 
 A worker that left (or died) therefore disappears from `kubectl get nodes` on
 its own after the grace period. To reclaim it sooner, delete it explicitly on

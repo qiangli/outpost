@@ -3075,10 +3075,34 @@ func startControlPlaneReconcilers(ctx context.Context, g *errgroup.Group, fc *co
 	// join token), and every k3s rejoin registers under a new node-id —
 	// so NotReady ghosts accumulate on the hosted plane unless the
 	// control-plane host reaps them. Bounded, oldest-first, 24 h grace,
-	// UID-preconditioned; see internal/agent/nodegc.
-	gc := &nodegc.Collector{Client: cs, Log: slog.Default()}
-	g.Go(func() error { gc.Run(ctx); return nil })
-	slog.Info("control-plane reconcilers: stale-node garbage collection started")
+	// UID-preconditioned, mass-partition/clock-skew refusals, persisted
+	// delete ledger; see internal/agent/nodegc.
+	//
+	// OUTPOST_NODEGC=off disables it; =dry-run logs/ledgers what it
+	// WOULD delete. Env-only for now: the four-surface toggle (file key
+	// + REST + MCP + CLI) is deferred until the cluster config surface
+	// settles — it would land as a cluster.node_gc field routed through
+	// admincore.SetBuiltins like every other toggle.
+	switch gcMode := strings.ToLower(strings.TrimSpace(os.Getenv("OUTPOST_NODEGC"))); gcMode {
+	case "off":
+		slog.Info("control-plane reconcilers: stale-node garbage collection disabled (OUTPOST_NODEGC=off)")
+	default:
+		cacheDir, _ := conf.ResolveCacheDir()
+		var gcLedger *nodegc.Ledger
+		if cacheDir != "" {
+			gcLedger = nodegc.NewLedger(filepath.Join(cacheDir, "nodegc.log"))
+		}
+		gc := &nodegc.Collector{
+			Client:   cs,
+			Log:      slog.Default(),
+			DryRun:   gcMode == "dry-run" || gcMode == "dryrun",
+			SelfHost: fc.ClusterNodeName(),
+			Ledger:   gcLedger,
+		}
+		g.Go(func() error { gc.Run(ctx); return nil })
+		slog.Info("control-plane reconcilers: stale-node garbage collection started",
+			"dry_run", gc.DryRun, "ledger", gcLedger.Path())
+	}
 }
 
 // shouldFetchKubeconfig reports whether the boot path should ask
