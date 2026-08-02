@@ -316,7 +316,16 @@ func ensureClusterRole(ctx context.Context, client kubernetes.Interface) error {
 	_, err := client.RbacV1().ClusterRoles().Create(ctx, role, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
 		// Converge, don't preserve: the rule set is code, the object is cache.
-		_, err = client.RbacV1().ClusterRoles().Update(ctx, role, metav1.UpdateOptions{})
+		// Kubernetes requires resourceVersion on Update; fake clients often do
+		// not, so constructing a fresh object here would pass unit tests and fail
+		// against the real peer apiserver on the first drift repair.
+		live, getErr := client.RbacV1().ClusterRoles().Get(ctx, ClusterRoleName, metav1.GetOptions{})
+		if getErr != nil {
+			return fmt.Errorf("vkcred: read existing cluster role: %w", getErr)
+		}
+		live.Labels = managedLabels
+		live.Rules = vkClusterRoleRules
+		_, err = client.RbacV1().ClusterRoles().Update(ctx, live, metav1.UpdateOptions{})
 	}
 	if err != nil {
 		return fmt.Errorf("vkcred: ensure cluster role: %w", err)

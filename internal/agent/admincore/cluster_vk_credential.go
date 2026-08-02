@@ -98,6 +98,12 @@ func (s *Server) ControlPlaneVKCredential(ctx context.Context, namespaces []stri
 		return VKCredentialResult{}, internalErr("%s", err.Error())
 	}
 	addr, port := fc.Cluster.TunnelBind()
+	if ip := net.ParseIP(addr); ip != nil && ip.IsUnspecified() {
+		// A wildcard is a bind address, not a destination a worker can dial.
+		// Keep the otherwise-useful rendered join command honest by making the
+		// operator substitute the hosting machine's reachable name/address.
+		addr = "<control-plane-host>"
+	}
 	return VKCredentialResult{
 		OK:         true,
 		Bundle:     encoded,
