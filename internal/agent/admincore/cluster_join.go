@@ -44,6 +44,24 @@ type PeerPlaneParams struct {
 	// APIPort is the LOCAL port this worker's visitor binds the joined
 	// apiserver on (cluster.k8s_api_port). Optional; 0 means the 6443 default.
 	APIPort *int `json:"api_port,omitempty"`
+
+	// Agent / Virtual select which Nodes this worker registers on the joined
+	// plane — cluster.runtimes.agent and cluster.runtimes.virtual, the same
+	// two fields SetBuiltins writes and with the same partial-update rules
+	// (nil leaves the persisted value alone; a non-nil Virtual REPLACES the
+	// complete set, so a non-nil empty slice deselects every virtual backend).
+	//
+	// A peer plane can host virtual-kubelet nodes as-is: vknode's kubeconfig
+	// loader already accepts the client-certificate credentials k3s issues, as
+	// distinct from a cloudbox-minted bearer token (see vknode/kubeconfig.go).
+	// So this is selection, not new runtime support — before it existed a
+	// worker could only reach a vk node by hand-editing agent.json.
+	//
+	// Leaving BOTH nil preserves the historical behaviour exactly: the join
+	// falls through to selecting the agent runtime, and only when nothing is
+	// selected already.
+	Agent   *bool    `json:"cluster_agent,omitempty"`
+	Virtual []string `json:"cluster_virtual,omitempty"`
 }
 
 // PeerPlaneResult is the redacted join status. It never carries a credential —
@@ -65,6 +83,13 @@ type PeerPlaneResult struct {
 	// looks successful and does nothing.
 	ClusterEnabled bool `json:"cluster_enabled"`
 	RestartPending bool `json:"restart_pending"`
+
+	// RuntimeAgent / RuntimeVirtual report the runtime selection AFTER the
+	// operation — which Nodes this worker will register. Reported because the
+	// join's default is implicit (agent when nothing was selected), so without
+	// this an operator cannot tell a defaulted selection from one they made.
+	RuntimeAgent   bool     `json:"runtime_agent"`
+	RuntimeVirtual []string `json:"runtime_virtual,omitempty"`
 }
 
 // PeerPlaneView reports which control plane this host joins. Redacted — there
@@ -137,10 +162,30 @@ func (s *Server) JoinPeerPlane(p PeerPlaneParams) (PeerPlaneResult, error) {
 			"join token required — read it on the hosting machine with `outpost cluster control-plane token`")
 	}
 
+	// An EXPLICIT runtime selection is applied first, with the same
+	// partial-update rules SetBuiltins uses. This is the only way a join can
+	// change an existing selection — and it is not a clobber, because the
+	// operator named the field.
+	if p.Agent != nil {
+		fc.Cluster.Runtimes.Agent = *p.Agent
+	}
+	if p.Virtual != nil {
+		virtual, err := conf.NormalizeVirtualRuntimes(p.Virtual)
+		if err != nil {
+			return PeerPlaneResult{}, badRequest("cluster_virtual: %s", err.Error())
+		}
+		fc.Cluster.Runtimes.Virtual = virtual
+	}
+
 	// Selecting a runtime is what turns membership into a node. Only fill it
 	// in when the operator has not chosen: overwriting a virtual-only
-	// selection would silently start a k3s agent they did not ask for.
-	if !fc.Cluster.Runtimes.Agent && len(fc.Cluster.Runtimes.Virtual) == 0 {
+	// selection would silently start a k3s agent they did not ask for. This
+	// runs only for a join that named no runtime at all — the historical
+	// default, unchanged. An operator who deselected everything explicitly
+	// falls through to ValidateRuntimes and gets told so, rather than having
+	// an agent runtime quietly reinstated under the selection they just made.
+	explicitRuntimes := p.Agent != nil || p.Virtual != nil
+	if !explicitRuntimes && !fc.Cluster.Runtimes.Agent && len(fc.Cluster.Runtimes.Virtual) == 0 {
 		fc.Cluster.Runtimes.Agent = true
 	}
 	if err := fc.Cluster.ValidateRuntimes(); err != nil {
@@ -266,5 +311,7 @@ func peerPlaneResult(fc *conf.FileConfig) PeerPlaneResult {
 	out.HasSTCPSecret = cc.STCPSecret != ""
 	out.HasNodeToken = cc.NodeToken != ""
 	out.ClusterEnabled = fc.ClusterOn()
+	out.RuntimeAgent = cc.HasAgentRuntime()
+	out.RuntimeVirtual = cc.VirtualRuntimes()
 	return out
 }

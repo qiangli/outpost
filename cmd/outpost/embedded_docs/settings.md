@@ -590,6 +590,8 @@ cloudbox-hosted plane", which is the default and the historical behaviour.
 | Peer's STCP secret | `cluster.stcp_secret` | `cluster join --stcp-secret` / `$OUTPOST_CLUSTER_STCP_SECRET` | `has_stcp_secret` flag only | `outpost_cluster_join_peer` |
 | Peer's k3s node token | `cluster.node_token` | `cluster join --node-token` / `$OUTPOST_CLUSTER_NODE_TOKEN` | `has_node_token` flag only | `outpost_cluster_join_peer` |
 | Local apiserver port | `cluster.k8s_api_port` | `cluster join --api-port` | — | `outpost_cluster_join_peer` |
+| Agent Node on the joined plane | `cluster.runtimes.agent` | `cluster join --cluster-agent=on/off` | Inbound > Cluster (same field) | `outpost_cluster_join_peer` (`cluster_agent`) |
+| Virtual Nodes on the joined plane | `cluster.runtimes.virtual` | `cluster join --cluster-virtual vk-podman,vk-native` | Inbound > Cluster (same field) | `outpost_cluster_join_peer` (`cluster_virtual`) |
 | Which plane this host joins | (read-only) | `cluster join --show` | Cluster > Join a peer's plane | `outpost_cluster_peer_plane` |
 | Revert to the cloudbox plane | (clears the four above) | `cluster join --clear` | Cluster > Join a peer's plane | `outpost_cluster_leave_peer` |
 
@@ -617,6 +619,28 @@ Five behaviours worth knowing:
   runtime is configured. A join that persisted an endpoint and left the host
   not joining anything would be a config editor wearing a verb's name. An
   existing runtime selection is never overwritten.
+- **A peer join can select virtual-kubelet runtimes.** `--cluster-agent` /
+  `--cluster-virtual` write the same `cluster.runtimes.agent` and
+  `cluster.runtimes.virtual` fields `builtins set` writes, with the same
+  partial-update rules: an omitted flag leaves the persisted value alone, and
+  `--cluster-virtual` replaces the complete set. A peer-hosted plane supports
+  vk nodes as-is — vk authenticates to k3s with client certificates rather
+  than a cloudbox-minted bearer token — so `vk-podman` and `vk-native`
+  workloads run on one.
+
+  ```bash
+  # agent + a vk-podman node on the joined plane
+  outpost cluster join 10.0.0.5:7000 --token T --cluster-virtual vk-podman
+
+  # vk only, no k3s agent
+  outpost cluster join --cluster-agent=off --cluster-virtual vk-podman,vk-native
+  ```
+
+  Naming NEITHER flag is the default and is unchanged: the `agent` runtime,
+  and only when nothing is selected yet. Naming either one is an explicit
+  choice, so it does change an existing selection — that is the only way a
+  join ever rewrites one. Deselecting everything at once is refused rather
+  than silently reinstating the agent runtime.
 - **This is independent of cloudbox pairing.** The host stays paired for apps,
   shell, the LLM pool and the fleet registry; only cluster membership moves.
   While a peer endpoint is set, the boot reattach deliberately leaves cluster

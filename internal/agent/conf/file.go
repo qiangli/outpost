@@ -1020,6 +1020,38 @@ func ValidVirtualRuntime(mode string) bool {
 	}
 }
 
+// NormalizeVirtualRuntimes lower-cases and trims an operator-supplied virtual
+// runtime selection, rejecting unknown or duplicated backends.
+//
+// It exists so every surface that accepts a runtime selection — SetBuiltins and
+// JoinPeerPlane today — validates identically. A join that accepted a backend
+// SetBuiltins rejects would persist a selection the boot path then refuses,
+// turning a typo into a node that never appears.
+//
+// A non-nil empty input returns a non-nil empty slice: "select no virtual
+// runtime" has to stay distinguishable from "leave the selection alone", which
+// callers signal with nil.
+func NormalizeVirtualRuntimes(modes []string) ([]string, error) {
+	if modes == nil {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(modes))
+	out := make([]string, 0, len(modes))
+	for _, raw := range modes {
+		mode := strings.ToLower(strings.TrimSpace(raw))
+		if !ValidVirtualRuntime(mode) {
+			return nil, fmt.Errorf("virtual runtime entries must be %s, %s, or %s; got %q",
+				ClusterRuntimeVKPodman, ClusterRuntimeVKNative, ClusterRuntimeVKOllama, raw)
+		}
+		if _, duplicate := seen[mode]; duplicate {
+			return nil, fmt.Errorf("duplicate virtual runtime %q", mode)
+		}
+		seen[mode] = struct{}{}
+		out = append(out, mode)
+	}
+	return out, nil
+}
+
 func (c *ClusterConfig) HasAgentRuntime() bool {
 	return c != nil && c.Runtimes.Agent
 }

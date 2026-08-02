@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/qiangli/outpost/internal/agent/admincore"
+	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
 // `outpost cluster join <endpoint> --token …` — the worker half of
@@ -46,6 +47,9 @@ type peerPlaneOut struct {
 	HasNodeToken   bool   `json:"has_node_token"`
 	ClusterEnabled bool   `json:"cluster_enabled"`
 	RestartPending bool   `json:"restart_pending"`
+
+	RuntimeAgent   bool     `json:"runtime_agent"`
+	RuntimeVirtual []string `json:"runtime_virtual,omitempty"`
 }
 
 // clusterJoinFlags is the flag set shared by the MCP and --offline paths.
@@ -58,6 +62,11 @@ type clusterJoinFlags struct {
 	offline    bool
 	show       bool
 	clear      bool
+
+	// clusterAgent is on|off|"" — the tri-state parseToggle wants, so an
+	// unspecified flag stays distinguishable from --cluster-agent=off.
+	clusterAgent   string
+	clusterVirtual []string
 }
 
 // resolveJoinParams turns flags + env + stdin into the partial update. Only
@@ -101,6 +110,28 @@ func resolveJoinParams(cmd *cobra.Command, endpoint string, f *clusterJoinFlags)
 		port := f.apiPort
 		p.APIPort = &port
 	}
+
+	// Runtime selection. Both stay nil unless the operator named them, which
+	// is what keeps a plain `outpost cluster join <endpoint>` on the
+	// agent-only default it has always produced.
+	agent, err := parseToggle("cluster-agent", f.clusterAgent)
+	if err != nil {
+		return p, err
+	}
+	p.Agent = agent
+	if cmd.Flags().Changed("cluster-virtual") {
+		// Validate here too so a typo fails before a daemon round-trip, and
+		// with the same rule admincore applies.
+		if _, err := conf.NormalizeVirtualRuntimes(f.clusterVirtual); err != nil {
+			return p, fmt.Errorf("--cluster-virtual: %w", err)
+		}
+		// A non-nil empty slice is meaningful (deselect every backend), so
+		// normalize the nil that StringSliceVar hands back for `--cluster-virtual=`.
+		p.Virtual = f.clusterVirtual
+		if p.Virtual == nil {
+			p.Virtual = []string{}
+		}
+	}
 	return p, nil
 }
 
@@ -118,6 +149,7 @@ func firstNonEmpty(vals ...string) string {
 func wantsPeerJoin(endpoint string, f *clusterJoinFlags) bool {
 	return endpoint != "" || f.token != "" || f.tokenStdin ||
 		f.stcpSecret != "" || f.nodeToken != "" ||
+		f.clusterAgent != "" || f.clusterVirtual != nil ||
 		os.Getenv(envJoinToken) != ""
 }
 
@@ -135,6 +167,7 @@ func runPeerJoin(ctx context.Context, p admincore.PeerPlaneParams, offline bool)
 			OK: res.OK, Joined: res.Joined, Endpoint: res.Endpoint, APIPort: res.APIPort,
 			HasToken: res.HasToken, HasSTCPSecret: res.HasSTCPSecret, HasNodeToken: res.HasNodeToken,
 			ClusterEnabled: res.ClusterEnabled,
+			RuntimeAgent:   res.RuntimeAgent, RuntimeVirtual: res.RuntimeVirtual,
 		})
 		fmt.Println("\nWritten to agent.json. Start (or restart) outpost to join.")
 		return nil
@@ -178,6 +211,12 @@ func peerJoinArgs(p admincore.PeerPlaneParams) map[string]any {
 	if p.APIPort != nil {
 		args["api_port"] = *p.APIPort
 	}
+	if p.Agent != nil {
+		args["cluster_agent"] = *p.Agent
+	}
+	if p.Virtual != nil {
+		args["cluster_virtual"] = p.Virtual
+	}
 	return args
 }
 
@@ -195,6 +234,7 @@ func runPeerPlaneShow(ctx context.Context, offline bool) error {
 			OK: res.OK, Joined: res.Joined, Endpoint: res.Endpoint, APIPort: res.APIPort,
 			HasToken: res.HasToken, HasSTCPSecret: res.HasSTCPSecret, HasNodeToken: res.HasNodeToken,
 			ClusterEnabled: res.ClusterEnabled,
+			RuntimeAgent:   res.RuntimeAgent, RuntimeVirtual: res.RuntimeVirtual,
 		})
 		return nil
 	}
@@ -257,6 +297,7 @@ func printPeerPlane(out peerPlaneOut) {
 		fmt.Printf("apiserver:     127.0.0.1:%d (bound locally by this worker)\n", out.APIPort)
 	}
 	fmt.Printf("cluster mode:  %s\n", onOff(out.ClusterEnabled))
+	fmt.Printf("runtimes:      %s\n", runtimeSummary(out.RuntimeAgent, out.RuntimeVirtual))
 	if out.Joined && !(out.HasToken && out.HasSTCPSecret && out.HasNodeToken) {
 		// A worker missing one of the three authenticates and then fails to
 		// reach the apiserver — a failure that reads like a broken network.
@@ -264,6 +305,21 @@ func printPeerPlane(out peerPlaneOut) {
 		fmt.Println("  outpost cluster control-plane token   # endpoint + join token + stcp secret")
 		fmt.Println("  outpost cluster token                 # node token")
 	}
+}
+
+// runtimeSummary renders which Nodes this worker registers, naming the
+// agent runtime explicitly rather than leaving it implied — the whole point of
+// the selection is that "agent" is now one choice among several.
+func runtimeSummary(agent bool, virtual []string) string {
+	modes := make([]string, 0, 1+len(virtual))
+	if agent {
+		modes = append(modes, conf.ClusterRuntimeAgent)
+	}
+	modes = append(modes, virtual...)
+	if len(modes) == 0 {
+		return "none selected"
+	}
+	return strings.Join(modes, ", ")
 }
 
 func presence(has bool) string {

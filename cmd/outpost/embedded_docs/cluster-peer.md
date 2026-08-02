@@ -113,7 +113,47 @@ The endpoint is a `host[:port]`, not an `https://` URL. The command persists
 cloudbox overlay credentials, and restarts a running outpost to apply the
 join. The tunnel visitor binds the joined apiserver locally on port `6443` by
 default. `outpost cluster join --show` reports the selected plane and
-credential presence without revealing values.
+credential presence without revealing values, plus the runtimes selected.
+
+### Selecting runtimes on the joined plane
+
+By default the join registers one real k3s-agent Node. Pass `--cluster-agent`
+/ `--cluster-virtual` to register virtual-kubelet Nodes instead of, or
+alongside, it:
+
+```bash
+# agent + a vk-podman Node
+outpost cluster join <control-plane-host>:7000 --token '<tunnel-token>' \
+  --cluster-virtual vk-podman
+
+# vk only — no k3s agent on this worker
+outpost cluster join --cluster-agent=off --cluster-virtual vk-podman,vk-native
+```
+
+A peer-hosted plane supports vk Nodes as-is: the vk kubeconfig loader accepts
+the client-certificate credentials k3s issues, as distinct from a
+cloudbox-minted bearer token. So this is runtime *selection*, not new runtime
+support — before these flags existed, reaching a vk Node on a peer plane meant
+hand-editing `agent.json`. It is what lets `VENUE=vk-podman` and vk-native
+workloads run on a peer plane.
+
+The two flags spell `cluster.runtimes.agent` and `cluster.runtimes.virtual`,
+the same fields `outpost builtins set --cluster-agent/--cluster-virtual`
+writes, and follow the same rules:
+
+- an omitted flag leaves the persisted value alone, so a re-join with a
+  rotated credential never disturbs the selection;
+- `--cluster-virtual` replaces the complete set (`vk-podman`, `vk-native`,
+  `vk-ollama`);
+- naming **neither** flag keeps the historical default — the `agent` runtime,
+  and only when no runtime was already selected, so a join never overwrites a
+  selection you made;
+- deselecting every runtime at once is refused, rather than quietly
+  reinstating the agent runtime under the selection you just made.
+
+The same two arguments are `cluster_agent` / `cluster_virtual` on the
+`outpost_cluster_join_peer` MCP tool; every surface routes through
+`admincore.JoinPeerPlane`.
 
 After the worker restarts, verify membership from the **control-plane host**:
 
