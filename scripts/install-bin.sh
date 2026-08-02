@@ -14,6 +14,13 @@ cd "$ROOT"
 "$ROOT/scripts/build.sh"
 
 mkdir -p "$INSTALL_DIR"
-cp -f "$OUT_DIR/$BIN" "$INSTALL_DIR/$BIN"
-chmod 0755 "$INSTALL_DIR/$BIN"
+install_tmp="$INSTALL_DIR/.$BIN.new.$$"
+trap 'rm -f "$install_tmp"' EXIT
+cp "$OUT_DIR/$BIN" "$install_tmp"
+chmod 0755 "$install_tmp"
+# Replace the directory entry atomically. Overwriting an executable in place
+# can invalidate the code-signing pages of a currently running macOS daemon
+# and make the newly installed binary die with SIGKILL.
+mv -f "$install_tmp" "$INSTALL_DIR/$BIN"
+trap - EXIT
 echo "installed $INSTALL_DIR/$BIN"

@@ -120,22 +120,16 @@ set -- server \
     --write-kubeconfig-mode=644 \
     --https-listen-port="${OUTPOST_API_PORT}" \
     --tls-san=127.0.0.1 \
-    --tls-san=localhost \
-    --advertise-address=127.0.0.1
+    --tls-san=localhost
 [ -n "${OUTPOST_TLS_SAN:-}" ] && for s in $(echo "${OUTPOST_TLS_SAN}" | tr ',' ' '); do
     set -- "$@" --tls-san="$s"
 done
 
-# WHY --advertise-address IS LOOPBACK. After a worker authenticates, k3s
-# hands it the apiserver address to hold its remotedialer session open. Left
-# to itself the server advertises THIS CONTAINER's IP on the host's container
-# network — an address no worker can route to, so every agent joined and then
-# looped on "no route to host" while the join itself had plainly succeeded.
-# Through the tunnel every worker reaches the apiserver at its OWN
-# 127.0.0.1:<api-port> (its STCP visitor), so loopback is the one address that
-# is correct from every member's point of view. In-cluster access does not
-# regress: the agent entrypoint DNATs the kubernetes Service ClusterIP to the
-# same local visitor, so pods never consult this value.
+# Do NOT set --advertise-address=127.0.0.1. Kubernetes uses the advertise
+# address for the default kubernetes Service endpoint and rejects loopback
+# addresses there, causing controller-manager to exit during bootstrap.
+# Workers keep using the K3S_URL configured on their own local STCP visitor;
+# the server's internal, non-loopback advertise address is not their join URL.
 
 # THE FLAG THE WHOLE TUNNELLED-KUBELET PATH DEPENDS ON. The apiserver dials
 # a node using the first address type it finds in this list. Kubelet reports

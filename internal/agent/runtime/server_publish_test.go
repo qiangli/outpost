@@ -97,3 +97,21 @@ exit 0
 		t.Errorf("apiserver published on all interfaces — --bind-addr 0.0.0.0 is documented as widening only the tunnel listener, got:\n%s", runLine)
 	}
 }
+
+func TestServerEntrypointDoesNotAdvertiseLoopback(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("image", "server-entrypoint.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(b)
+	for _, line := range strings.Split(script, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "#") &&
+			strings.Contains(line, "--advertise-address=127.0.0.1") {
+			t.Fatal("kubernetes rejects a loopback advertise address for the default Service endpoint")
+		}
+	}
+	if !strings.Contains(script, "--tls-san=127.0.0.1") {
+		t.Fatal("the host-published loopback apiserver still needs a loopback TLS SAN")
+	}
+}
