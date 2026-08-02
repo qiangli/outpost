@@ -38,14 +38,28 @@ func (f *fakeBundleClient) Apply(_ context.Context, obj *unstructured.Unstructur
 	defer f.mu.Unlock()
 	stored := obj.DeepCopy()
 	if stored.GetKind() == "HelmChart" {
-		// Simulate the k3s helm-controller reconciling a HelmChart CR:
-		// it stamps JobCreated=True once it has accepted the object and
-		// created the install/upgrade Job. This fake never runs an
+		// Simulate the k3s helm-controller reconciling a HelmChart CR: it
+		// stamps JobCreated=True and status.jobName once it has accepted
+		// the object, AND creates the install/upgrade Job itself, marked
+		// Succeeded — evalHelmChart resolves that Job via Get and requires
+		// it to succeed before the HelmChart counts as Ready (JobCreated
+		// alone only means the job was CREATED). This fake never runs an
 		// actual Helm install — it only proves the appstore-apps path
 		// applies the right object and reads the right evidence.
+		jobName := stored.GetName() + "-install"
 		_ = unstructured.SetNestedSlice(stored.Object, []any{
 			map[string]any{"type": "JobCreated", "status": "True"},
 		}, "status", "conditions")
+		_ = unstructured.SetNestedField(stored.Object, jobName, "status", "jobName")
+
+		job := &unstructured.Unstructured{Object: map[string]any{}}
+		job.SetAPIVersion("batch/v1")
+		job.SetKind("Job")
+		job.SetNamespace(stored.GetNamespace())
+		job.SetName(jobName)
+		_ = unstructured.SetNestedField(job.Object, int64(1), "spec", "completions")
+		_ = unstructured.SetNestedField(job.Object, int64(1), "status", "succeeded")
+		f.store[bkey(job)] = job
 	}
 	f.store[bkey(obj)] = stored
 	return obj, nil

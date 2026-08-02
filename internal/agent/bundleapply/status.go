@@ -168,7 +168,7 @@ func liveStatus(ctx context.Context, opts StatusOptions, obj *unstructured.Unstr
 	switch {
 	case err == nil:
 		st.Exists = true
-		rs := evalReadiness(live, opts.AllowScaleToZero)
+		rs := evalReadiness(ctx, opts.Client, live, opts.AllowScaleToZero)
 		if rs.terminal != nil {
 			st.Reason = rs.terminal.Error()
 		} else {

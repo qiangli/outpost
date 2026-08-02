@@ -311,7 +311,7 @@ func WaitForReady(ctx context.Context, client ResourceClient, objs []*unstructur
 				// Absence/unreachability is a failure, not readiness.
 				return confirmed, fmt.Errorf("bundleapply: readiness check for %s %s: %w", obj.GetKind(), nsName(obj), err)
 			}
-			st := evalReadiness(live, opts.AllowScaleToZero)
+			st := evalReadiness(ctx, client, live, opts.AllowScaleToZero)
 			if st.terminal != nil {
 				return confirmed, fmt.Errorf("bundleapply: %s %s failed: %w", obj.GetKind(), nsName(obj), st.terminal)
 			}
