@@ -55,6 +55,14 @@ type KubeconfigResult struct {
 	OK             bool        `json:"ok"`
 	Cluster        ClusterView `json:"cluster"`
 	RestartPending bool        `json:"restart_pending"`
+	// Peer is true when LeaveCluster acted on a node that had joined a
+	// PEER-hosted control plane rather than the cloudbox-hosted one. Surfaced
+	// so a caller (the CLI) knows to SKIP the cloudbox reclaim: cloudbox never
+	// issued this node, the peer plane did, and the worker holds no admin
+	// credential to delete the Node object from that plane's apiserver — that
+	// deletion is the control-plane host's garbage-collection story, not the
+	// worker's. omitempty so the cloud path's result is unchanged.
+	Peer bool `json:"peer,omitempty"`
 }
 
 // ClearKubeconfig disables DKS and removes cloud-issued membership while
@@ -85,8 +93,11 @@ func disableClusterMembership(fc *conf.FileConfig) {
 	}
 	disabled := false
 	fc.Cluster.Enabled = &disabled
+
+	// Cloud-issued membership. A rejoin's boot reattach re-fetches all of it,
+	// so clearing it is what lets a rejoin start from a clean slate rather than
+	// presenting stale credentials to an apiserver that has moved on.
 	fc.Cluster.NodeToken = ""
-	fc.Cluster.STCPSecret = ""
 	fc.Cluster.APIURL = ""
 	fc.Cluster.Token = ""
 	fc.Cluster.CA = nil
@@ -95,18 +106,62 @@ func disableClusterMembership(fc *conf.FileConfig) {
 	fc.Cluster.OverlayLoginServer = ""
 	fc.Cluster.OverlayAuthKey = ""
 	fc.Cluster.OverlayPodCIDR = ""
+
+	// Peer-plane membership (the worker-side twin of the hosting fields). A
+	// peer-joined node keeps join_endpoint/join_token pointing at its plane;
+	// leaving must drop them too, or the node stays half-attached — JoinsPeerPlane
+	// still true, the next boot's frpc still dialing a plane the operator left.
+	// A rejoin re-supplies these from the hosting machine.
+	fc.Cluster.JoinEndpoint = ""
+	fc.Cluster.JoinToken = ""
+
+	// STCPSecret is dual-purpose: a WORKER's visitor secret AND a hosting
+	// control plane's PUBLISHED secret. Clearing it is correct for a worker but
+	// would corrupt a plane this host HOSTS — every worker joined to it would
+	// fail to reach the apiserver. So preserve it (and, implicitly, the rest of
+	// the hosting block — control_plane / tunnel_token / tunnel bind /
+	// control_plane_api_addr / control_plane_kubeconfig are never touched here)
+	// when this host is itself a control plane.
+	if !fc.Cluster.ControlPlaneOn() {
+		fc.Cluster.STCPSecret = ""
+	}
 }
 
 // LeaveCluster is the per-node "leave DKS" state change — distinct from
 // ClearKubeconfig's full wipe. It DISABLES cluster mode but PRESERVES the
-// node identities + runtime set, clearing only
-// the cloud-ISSUED membership so a rejoin's boot reattach re-fetches fresh
-// values (new pod CIDR, overlay key, kubelet port, apiserver creds).
+// node identities + runtime set, clearing only the MEMBERSHIP fields so a
+// rejoin's boot reattach (cloud plane) or a fresh `outpost cluster join`
+// (peer plane) re-supplies them.
+//
+// It is membership-only by construction: it never touches cloudbox pairing
+// (access_token) or any app / shell / LLM / outbound / mesh setting, so
+// leaving the cluster does not log the host out of the portal or drop unrelated
+// services. It works for BOTH a cloud-managed node and a peer-joined worker —
+// disableClusterMembership clears the cloud-issued creds AND the peer
+// join_endpoint/join_token, while preserving the hosting block when this host
+// is itself a control plane (see disableClusterMembership).
 //
 // Disabling (not deleting) the Cluster block means the next boot takes the
 // cluster-OFF path, which tears the runtime container down (main.go), instead
-// of a stale k3s kubelet retry-looping forever on a Node cloudbox already
-// deleted. RestartPending=true when the node was joined so the caller applies it.
+// of a stale k3s kubelet retry-looping forever on a Node the plane already
+// deleted. RestartPending=true when the node was joined so the caller applies
+// it. Idempotent: a second call on an already-left node is a no-op save with
+// RestartPending=false.
+//
+// Result.Peer reports whether this was a peer-joined worker. The CLI uses it to
+// skip the cloudbox reclaim — cloudbox never issued this node. Deleting the
+// Node object from the PEER apiserver is deliberately NOT done here: the worker
+// holds only a k3s join token, not an admin credential for that plane, and
+// leave does not add one. That deletion is the control-plane host's
+// garbage-collection story.
+//
+// The runtime teardown itself is also plane-aware (see the purge comment
+// inline below): a cloud-managed leave purges the local overlay identity
+// because cloudbox has already deregistered it from Headscale, while a
+// peer-joined leave PRESERVES the overlay identity — no deregistration ever
+// happened (leave makes no call to the peer plane), so purging here would
+// desync the local machine key from a registration that still exists
+// wherever the peer plane's overlay is registered.
 func (s *Server) LeaveCluster(ctx context.Context) (KubeconfigResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -114,24 +169,47 @@ func (s *Server) LeaveCluster(ctx context.Context) (KubeconfigResult, error) {
 	if err != nil {
 		return KubeconfigResult{}, err
 	}
-	wasEnabled := fc.ClusterOn()
+	// Determine BEFORE clearing: disableClusterMembership wipes the fields
+	// both of these read.
+	wasActive := fc.ClusterOn()
+	wasPeer := fc.Cluster.JoinsPeerPlane()
 	disableClusterMembership(fc)
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		return KubeconfigResult{}, internalErr("%s", err.Error())
 	}
-	// Tear the runtime down NOW (not only via the deferred restart) and PURGE
-	// the node's identity volumes so a rejoin registers a FRESH overlay
-	// identity. cloudbox has already deleted this node's Headscale registration,
-	// so re-attaching the persisted machine key would strand the overlay (an IP
-	// but no peers, pod-CIDR route never approved). Best-effort: the desired
-	// state is already persisted and the boot-time cluster-off teardown is the
-	// fallback, so a purge failure must not fail the leave.
-	if s.deps.ClusterRuntimeDown != nil {
-		if derr := s.deps.ClusterRuntimeDown(ctx, true); derr != nil {
-			slog.Warn("LeaveCluster: runtime teardown/purge failed (boot-time fallback applies)", "err", derr)
+	// Tear the runtime down NOW (not only via the deferred restart), but only
+	// when the node was actually active — an already-left node (second `leave`
+	// call, or one that was never joined) has no runtime to stop and no
+	// identity to purge, so skip the call rather than re-invoking it as a
+	// no-op every time.
+	//
+	// purge differs by plane:
+	//   - cloud-managed (wasPeer=false): purge=true. cloudbox has already
+	//     deleted this node's Headscale registration (the cloudbox reclaim
+	//     call below/at the CLI layer), so re-attaching the persisted machine
+	//     key would strand the overlay (an IP but no peers, pod-CIDR route
+	//     never approved) — a fresh identity on rejoin is required.
+	//   - peer-joined (wasPeer=true): purge=false. Leave never contacts the
+	//     peer plane or any headscale/overlay registrar — the worker holds no
+	//     admin credential to deregister anything remotely. Purging the local
+	//     machine key here would orphan a registration that still exists on
+	//     the peer side, so the overlay identity is deliberately PRESERVED;
+	//     a later rejoin reuses it rather than presenting a peer/registrar
+	//     mismatch.
+	// Best-effort either way: the desired state is already persisted and the
+	// boot-time cluster-off teardown is the fallback, so a failure here must
+	// not fail the leave.
+	if wasActive && s.deps.ClusterRuntimeDown != nil {
+		purge := !wasPeer
+		if derr := s.deps.ClusterRuntimeDown(ctx, purge); derr != nil {
+			slog.Warn("LeaveCluster: runtime teardown/purge failed (boot-time fallback applies)", "err", derr, "purge", purge)
 		}
 	}
-	return KubeconfigResult{OK: true, RestartPending: wasEnabled && fc.AgentName != ""}, nil
+	return KubeconfigResult{
+		OK:             true,
+		Peer:           wasPeer,
+		RestartPending: wasActive && fc.AgentName != "",
+	}, nil
 }
 
 // JoinCluster is the symmetric partner to LeaveCluster: it re-ENABLES cluster

@@ -430,6 +430,46 @@ func TestClusterRuntimes(t *testing.T) {
 	}
 }
 
+// TestJoinTarget_PeerThenLeaveFallsBackToCloudbox pins the config-level
+// invariant behind `outpost cluster leave` on a peer-joined worker: while a
+// join endpoint is configured JoinTarget routes the runtime at the PEER plane,
+// and once leave clears the peer membership fields it falls cleanly back to the
+// cloudbox pairing — so a leave leaves no half-attached state and a rejoin is
+// clean.
+func TestJoinTarget_PeerThenLeaveFallsBackToCloudbox(t *testing.T) {
+	fc := &FileConfig{
+		ServerAddr: "ai.dhnt.io",
+		ServerPort: 7000,
+		Token:      "cloudbox-tunnel-token",
+		Cluster: &ClusterConfig{
+			JoinEndpoint: "10.0.0.5:7100",
+			JoinToken:    "peer-tunnel-token",
+		},
+	}
+	// Peer plane while joined.
+	if !fc.Cluster.JoinsPeerPlane() {
+		t.Fatal("configured join endpoint must report as a peer plane")
+	}
+	h, p, tok, user := fc.JoinTarget()
+	if h != "10.0.0.5" || p != 7100 || tok != "peer-tunnel-token" || user != ControlPlanePublisherUser {
+		t.Errorf("peer JoinTarget = %q/%d/%q/%q", h, p, tok, user)
+	}
+
+	// Leave clears the peer membership fields (what disableClusterMembership does).
+	fc.Cluster.JoinEndpoint = ""
+	fc.Cluster.JoinToken = ""
+	fc.Cluster.NodeToken = ""
+	fc.Cluster.STCPSecret = ""
+
+	if fc.Cluster.JoinsPeerPlane() {
+		t.Error("still a peer plane after clearing the join endpoint")
+	}
+	h, p, tok, user = fc.JoinTarget()
+	if h != "ai.dhnt.io" || p != 7000 || tok != "cloudbox-tunnel-token" || user != "cloudbox" {
+		t.Errorf("post-leave JoinTarget did not fall back to cloudbox: %q/%d/%q/%q", h, p, tok, user)
+	}
+}
+
 // TestO3BuiltinsDefaultOn — with none of the keys set, the o3 built-ins
 // (podman / ollama / otel) report ON at runtime: the opt-in posture is
 // applied to NEW pairings at Exchange, not via the runtime default, so
