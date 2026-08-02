@@ -168,6 +168,15 @@ type Deps struct {
 	// bundleapply.ResolveVenue before calling the factory, so an injected
 	// client can never bypass the cloudbox-venue guard.
 	BundleApplyClient func(kubeconfig string) (bundleapply.ResourceClient, error)
+
+	// PeerImage, when set, is the peer image distribution engine (the four
+	// verbs publish / mesh-resolve / ensure / report) backing
+	// admincore/peerimage.go. Nil when the feature is off or its prerequisites
+	// (cluster runtime, recipe store) aren't met — the verbs then report
+	// "not enabled" rather than panicking. Interface so admincore never
+	// imports the peerimage wiring details, and so the parity tests can
+	// substitute a recording fake.
+	PeerImage PeerImageOps
 }
 
 // LLMPoolStatusView is the wire shape rendered into SafeView. Kept here
