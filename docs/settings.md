@@ -122,6 +122,8 @@ tool, or wipe `agent.json` by hand.
 | Digital Ocean API token | `cloud_do_token` | `builtins set --cloud-do-token` | Inbound > Cloud | `outpost_set_builtins` | Restart |
 | Cloudbox-pushed self-upgrade | `update_mode` | `builtins set --update=auto\|manual\|never` | Inbound > Built-ins | `outpost_set_builtins` | Live |
 | Auto-rollback watchdog (destructive revert) | `auto_rollback_enabled` | `builtins set --auto-rollback=on\|off` | Inbound > Built-ins | `outpost_set_builtins` | Live |
+| Headlamp operating UI (peer DKS plane) | `headlamp_enabled` | `builtins set --headlamp` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
+| Headlamp loopback forward port | `headlamp_port` | `builtins set --headlamp-port` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 
 All built-in toggles default to ON when the JSON key is absent (old
 configs) so an upgrade doesn't silently disable features. That now
@@ -182,6 +184,27 @@ Four surfaces: `meet_enabled` / `meet_port` file keys, `builtins set
 the `meet` / `meet_port` args on the `outpost_set_builtins` MCP tool.
 Like loom, a meet change triggers a **restart** (the service is wired at
 boot).
+
+### Headlamp operating UI (peer DKS plane)
+
+`headlamp_enabled` (default **OFF**) deploys [Headlamp](https://headlamp.dev)
+(the Kubernetes cluster operating UI) into a peer-hosted DKS control plane.
+When on and `cluster.control_plane` is enabled, outpost runs
+`headlamp.Deploy` against the plane, supervises the loopback port-forward on
+`headlamp_port` (default `18466`), and exposes it over the mesh as the
+`headlamp` service. Headlamp runs in token-login mode: the pod's
+ServiceAccount holds zero RBAC grants; every apiserver request is
+authenticated with the token the operator pastes into the UI.
+
+Four surfaces: `headlamp_enabled` / `headlamp_port` file keys, `builtins set
+--headlamp=on --headlamp-port N` CLI, the Built-ins > Headlamp UI toggle,
+and the `headlamp` / `headlamp_port` args on the `outpost_set_builtins` MCP
+tool. A headlamp change triggers a **restart** (the deployment + forward are
+wired at boot). The forward binds loopback only — `headlamp.ValidateListenAddr`
+rejects non-loopback binds per the standing rule.
+
+See `docs/peer-dks-headlamp.md` for the complete security model, auth
+boundary, and verification procedure.
 
 ### Same-LAN direct inference (LAN-trust)
 
