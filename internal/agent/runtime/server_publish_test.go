@@ -130,7 +130,7 @@ func TestPeerMetricsServerIsColocatedWithoutEnablingAgent(t *testing.T) {
 		"--disable-agent",
 		"--disable-cloud-controller",
 		"--disable=traefik,servicelb,metrics-server",
-		"--egress-selector-mode=pod",
+		"--egress-selector-mode=disabled",
 		"--kube-apiserver-arg=kubelet-preferred-address-types=ExternalIP",
 		"OUTPOST_METRICS_ADDRESS=\"${ADVERTISE_ADDR}\"",
 		"/usr/local/bin/metrics-server-supervisor.sh",
@@ -142,6 +142,11 @@ func TestPeerMetricsServerIsColocatedWithoutEnablingAgent(t *testing.T) {
 	}
 	if !strings.Contains(script, "not k3s's embedded cloud controller, owns") {
 		t.Error("server entrypoint does not document peer ownership of the reconciled ExternalIP")
+	}
+	if strings.Contains(script, "--egress-selector-mode=pod") ||
+		strings.Contains(script, "--egress-selector-mode=cluster") ||
+		strings.Contains(script, "--egress-selector-mode=agent") {
+		t.Error("peer apiserver must dial colocated FRP and metrics endpoints directly")
 	}
 	if strings.Contains(script, "hostNetwork:true") || strings.Contains(script, "patch deployment metrics-server") {
 		t.Error("peer metrics must not resurrect the worker-hostNetwork patch disproved by the live gate")

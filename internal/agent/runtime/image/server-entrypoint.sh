@@ -112,7 +112,7 @@ set -- server \
     --disable-agent \
     --disable-cloud-controller \
     --disable=traefik,servicelb,metrics-server \
-    --egress-selector-mode=pod \
+    --egress-selector-mode=disabled \
     --write-kubeconfig=/etc/rancher/k3s/k3s-internal.yaml \
     --write-kubeconfig-mode=644 \
     --https-listen-port="${OUTPOST_API_PORT}" \
@@ -128,6 +128,13 @@ done
 # addresses there, causing controller-manager to exit during bootstrap.
 # Workers keep using the K3S_URL configured on their own local STCP visitor;
 # the server's internal, non-loopback advertise address is not their join URL.
+
+# Peer kubelet and metrics routes terminate in THIS network namespace: frps
+# publishes worker kubelets on 127/8, and metrics-server is a local sibling.
+# An agent/pod/cluster egress selector diverts those addresses through k3s's
+# remotedialer and asks a worker to reach control-plane-local sockets; logs,
+# exec and the aggregated metrics API then 502. Disable that diversion so the
+# apiserver uses the explicit authenticated tunnel endpoints directly.
 
 # THE FLAG THE WHOLE TUNNELLED-KUBELET PATH DEPENDS ON. The apiserver dials
 # a node using the first address type it finds in this list. Kubelet reports
