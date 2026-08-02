@@ -77,9 +77,11 @@ func run(kubeconfig, nodeName, podmanSock, backendName, nativeData, ollamaData s
 	opts := vknode.RunOptions{
 		NodeName: nodeName,
 	}
+	backendLabel := ""
 
 	switch backendName {
 	case "podman":
+		backendLabel = conf.ClusterRuntimeVKPodman
 		if podmanSock == "" {
 			bt := agent.DetectPodman()
 			if !bt.Available {
@@ -90,6 +92,7 @@ func run(kubeconfig, nodeName, podmanSock, backendName, nativeData, ollamaData s
 		}
 		opts.PodmanSocket = podmanSock
 	case "native", "process", "native-process":
+		backendLabel = conf.ClusterRuntimeVKNative
 		if !allowAnyNS {
 			return errors.New("--backend=native requires --allow-any-namespace for this standalone PoC runner")
 		}
@@ -108,6 +111,7 @@ func run(kubeconfig, nodeName, podmanSock, backendName, nativeData, ollamaData s
 		opts.Backend = be
 		opts.AllowAnyNamespace = true
 	case "ollama":
+		backendLabel = conf.ClusterRuntimeVKOllama
 		if !allowAnyNS {
 			return errors.New("--backend=ollama requires --allow-any-namespace for this standalone PoC runner")
 		}
@@ -129,6 +133,14 @@ func run(kubeconfig, nodeName, podmanSock, backendName, nativeData, ollamaData s
 		return fmt.Errorf("unknown --backend %q; must be podman, native, or ollama", backendName)
 	}
 
+	// Keep the standalone validation runner on the same node-identity
+	// contract as the supervised daemon. Controllers use these labels—not
+	// node-name conventions—to exclude virtual nodes from kubelet address
+	// reconciliation, runtime probes, stale real-agent GC, and peer-flannel
+	// acceptance. Omitting them makes a virtual node look like a malformed
+	// physical agent and can publish a kubelet endpoint that does not exist.
+	opts.ExtraNodeLabels = standaloneNodeLabels(backendLabel, nodeName)
+
 	kubeCfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		return fmt.Errorf("kubeconfig: %w", err)
@@ -139,4 +151,16 @@ func run(kubeconfig, nodeName, podmanSock, backendName, nativeData, ollamaData s
 	defer stop()
 
 	return vknode.Run(ctx, opts)
+}
+
+func standaloneNodeLabels(backend, fallbackHost string) map[string]string {
+	hostName, err := os.Hostname()
+	if err != nil || hostName == "" {
+		hostName = fallbackHost
+	}
+	return map[string]string{
+		vknode.NodeHostLabel:      hostName,
+		"outpost.dhnt.io/runtime": "virtual",
+		"outpost.dhnt.io/backend": backend,
+	}
 }
