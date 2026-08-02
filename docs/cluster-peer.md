@@ -72,12 +72,14 @@ presence booleans only.
 
 ## 3. Retrieve the join credentials
 
-A tunnelled worker needs the endpoint and three credentials. Retrieve them on
-the **control-plane host** only:
+A tunnelled worker needs the endpoint and three credentials — four when it
+will register virtual-kubelet Nodes. Retrieve them on the **control-plane
+host** only:
 
 ```bash
 outpost cluster control-plane token
 outpost cluster token
+outpost cluster control-plane vk-credential   # only for --cluster-virtual workers
 ```
 
 `outpost cluster control-plane token` prints the endpoint, the hosted plane's
@@ -88,9 +90,20 @@ where this value is stored when the worker joins somebody else's plane.
 `outpost cluster token` prints the separate k3s node token minted inside the
 hosted control-plane container. Do not substitute one token for the other.
 
-All three values are credentials. Never paste them into shared documentation,
+`outpost cluster control-plane vk-credential` mints (idempotently) the
+**least-privilege virtual-kubelet bundle**: a ServiceAccount bearer token
+scoped to exactly the verbs a vk node uses, the plane's CA, and the namespace
+allow-list the worker enforces fail-closed, packaged as one opaque
+`outpost-vk1.…` string. `--namespace` names (and provisions on the plane) the
+allowed workload namespaces; omitting it allows only `default`. The k3s node
+token can NOT stand in for this — it is a node-join credential, not an
+apiserver bearer token. The plane's admin kubeconfig is read locally to mint
+the bundle and never leaves the hosting machine.
+
+All four values are credentials. Never paste them into shared documentation,
 tickets, chat transcripts, or logs. Prefer
-`outpost cluster control-plane token --quiet`, the worker's credential
+`outpost cluster control-plane token --quiet` /
+`outpost cluster control-plane vk-credential --quiet`, the worker's credential
 environment variables, or `--token-stdin` in automation so secret values do
 not enter shell history or process listings.
 
@@ -137,21 +150,33 @@ By default the join registers one real k3s-agent Node. Pass `--cluster-agent`
 alongside, it:
 
 ```bash
-# agent + a vk-podman Node
+# agent + a vk-podman Node (the vk bundle from `control-plane vk-credential`)
 outpost cluster join <control-plane-host>:7000 --token '<tunnel-token>' \
-  --cluster-virtual vk-podman
+  --stcp-secret '<stcp-secret>' --node-token '<k3s-node-token>' \
+  --vk-bundle 'outpost-vk1.…' --cluster-virtual vk-podman
 
 # vk only — no k3s agent on this worker
-outpost cluster join --cluster-agent=off --cluster-virtual vk-podman,vk-native
+outpost cluster join --cluster-agent=off --cluster-virtual vk-podman,vk-native \
+  --vk-bundle 'outpost-vk1.…'
 ```
 
-A peer-hosted plane supports vk Nodes as-is: the vk kubeconfig loader accepts
-the client-certificate credentials k3s issues, as distinct from a
-cloudbox-minted bearer token. So this is runtime *selection*, not new runtime
-support — before these flags existed, reaching a vk Node on a peer plane meant
-hand-editing `agent.json`. It is what lets `VENUE=vk-podman` and vk-native
-workloads run on a peer plane, and the real k3s agent and any selected virtual
-backends register concurrently as independent Nodes owned by this host.
+This is what lets `VENUE=vk-podman` and vk-native workloads run on a peer
+plane, and the real k3s agent and any selected virtual backends register
+concurrently as independent Nodes owned by this host.
+
+Selecting a virtual runtime makes `--vk-bundle` (env
+`OUTPOST_CLUSTER_VK_BUNDLE`, MCP arg `vk_bundle`) **required state**: the join
+is refused unless the resulting config holds a vk apiserver credential, the
+peer CA, and a non-empty namespace allow-list — all three of which the bundle
+carries. Refusing at join time (while the operator still has the hosting
+machine at hand) replaces the old failure mode, where the daemon booted into an
+endless `no usable credentials` retry because none of the tunnel/agent join
+values is an apiserver bearer credential. Applying a bundle persists
+`cluster.ca`, `cluster.token`, and `cluster.allowed_namespaces`, and clears any
+stale `client_cert`/`client_key` pair (which would otherwise win over the fresh
+token). A hand-provisioned k3s client-certificate pair (plus `cluster.ca` and
+`cluster.allowed_namespaces`) satisfies the same gate — the bundle is the paved
+road, not the only road.
 
 #### vk credentials and namespace policy on a peer plane
 
@@ -161,26 +186,34 @@ start the cloudbox token/access refreshers. Instead it derives everything
 locally:
 
 - **Peer CA identity.** The node trusts `cluster.ca` (the peer plane's CA
-  bundle, PEM) — not cloudbox's CA and not the system roots. Supply it in
-  `agent.json` when joining a peer plane whose apiserver is self-signed (the
-  k3s default).
+  bundle, PEM) — not cloudbox's CA and not the system roots. The vk bundle
+  carries it (it is the `ca.crt` of the minted ServiceAccount token secret).
 - **Local credential.** The vk node authenticates with a locally held
   credential: `cluster.client_cert` + `cluster.client_key` (the client-cert
-  form k3s issues, which wins when present) or `cluster.token` (a k3s bearer
-  credential). It is materialized to `~/.cache/outpost/cluster-peer/` at mode
+  form k3s issues, which wins when present) or `cluster.token` (the bearer
+  token a vk bundle delivers — a ServiceAccount bound to the `outpost-vk-node`
+  ClusterRole, which can register its Node, watch and report its pods, read
+  configmaps/secrets/services, and emit events, nothing else; never the admin
+  kubeconfig). It is materialized to `~/.cache/outpost/cluster-peer/` at mode
   `0600`. A bearer token is written as a file so client-go re-reads a rotation
-  live; rotating it (save a new `cluster.token`) is picked up within a minute
-  with no cloudbox involvement. A client-cert rotation takes effect on the next
-  restart.
+  live; rotating it (re-join with a fresh bundle, or save a new
+  `cluster.token`) is picked up within a minute with no cloudbox involvement.
+  A client-cert rotation takes effect on the next restart. To rotate the
+  bundle's token at the source: on the hosting machine
+  `kubectl -n outpost-system delete secret outpost-vk-token`, re-mint,
+  re-join every vk worker.
 - **Apiserver address.** The node dials `https://127.0.0.1:<k8s_api_port>`
   (default 6443) — the same loopback visitor the k3s agent runtime binds — never
   a cloudbox public URL.
 - **Fail-closed namespace admission.** `cluster.allowed_namespaces` is the
   peer-local admission policy, enforced fail-closed: a pod whose namespace is
   not listed is refused. An **empty** list denies every pod, on purpose — a peer
-  plane has no cloudbox authority to consult, so the operator must declare
-  policy rather than have the node silently accept every workload. (On the
-  cloudbox plane the allow-set is still fetched and refreshed from cloudbox.)
+  plane has no cloudbox authority to consult, so the policy must be declared
+  rather than have the node silently accept every workload. The bundle carries
+  the list (`vk-credential --namespace …`, default `default`), and the mint
+  provisions each listed namespace on the plane so the policy names namespaces
+  that exist. (On the cloudbox plane the allow-set is still fetched and
+  refreshed from cloudbox.)
 
 `outpost cluster leave` clears these peer-only fields
 (`client_cert`/`client_key`/`allowed_namespaces`) along with the other peer

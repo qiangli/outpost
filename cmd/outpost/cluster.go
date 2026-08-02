@@ -224,21 +224,31 @@ machine, all of which it prints:
 Supply them here as --token / --stcp-secret / --node-token. To keep secrets
 out of argv and shell history, --token-stdin reads the join token from stdin
 and each credential also has an environment fallback (` +
-			envJoinToken + `, ` + envSTCPSecret + `, ` + envNodeToken + `).
+			envJoinToken + `, ` + envSTCPSecret + `, ` + envNodeToken + `, ` + envVKBundle + `).
 
 RUNTIME SELECTION. --cluster-agent / --cluster-virtual choose which Nodes this
 worker registers, spelling cluster.runtimes.agent and cluster.runtimes.virtual.
-A peer plane hosts virtual-kubelet nodes as-is (vk authenticates to k3s with
-client certificates), so vk-podman / vk-native workloads run on one. Naming
-neither keeps the historical default: the agent runtime, and only when no
-runtime is selected already — a join never overwrites a selection you made.
+Naming neither keeps the historical default: the agent runtime, and only when
+no runtime is selected already — a join never overwrites a selection you made.
+
+Selecting a virtual runtime needs a FOURTH credential: the vk bundle, minted on
+the hosting machine with
+
+    outpost cluster control-plane vk-credential   # least-privilege vk bundle
+
+and passed here as --vk-bundle. It carries the peer CA, a ServiceAccount
+bearer token scoped to exactly what a vk node does, and the namespace
+allow-list the node enforces fail-closed. The k3s node token cannot stand in
+for it — that is a node-join credential, not an apiserver bearer token.
 
 Examples:
   outpost cluster join
   outpost cluster join 10.0.0.5:7000 --token T --stcp-secret S --node-token K10…
   outpost cluster token | ssh worker outpost cluster join 10.0.0.5 --token-stdin
-  outpost cluster join 10.0.0.5 --token T --cluster-virtual vk-podman,vk-native
-  outpost cluster join --cluster-agent=off --cluster-virtual vk-podman  # vk only
+  outpost cluster join 10.0.0.5 --token T --stcp-secret S --node-token K10… \
+      --vk-bundle outpost-vk1.… --cluster-virtual vk-podman,vk-native
+  outpost cluster join --cluster-agent=off --cluster-virtual vk-podman \
+      --vk-bundle outpost-vk1.…   # vk only
   outpost cluster join --show     # which plane this host joins (redacted)
   outpost cluster join --clear    # back to the cloudbox-hosted plane`,
 		Args: cobra.MaximumNArgs(1),
@@ -295,6 +305,7 @@ func addClusterJoinFlags(cmd *cobra.Command, f *clusterJoinFlags) {
 	cmd.Flags().BoolVar(&f.tokenStdin, "token-stdin", false, "Read the tunnel token from stdin, keeping it out of argv")
 	cmd.Flags().StringVar(&f.stcpSecret, "stcp-secret", "", "Peer's STCP secret, which authorizes reaching its apiserver (env "+envSTCPSecret+")")
 	cmd.Flags().StringVar(&f.nodeToken, "node-token", "", "Peer's k3s node token, from `outpost cluster token` there (env "+envNodeToken+")")
+	cmd.Flags().StringVar(&f.vkBundle, "vk-bundle", "", "Peer-issued vk credential bundle, from `outpost cluster control-plane vk-credential` there — required for --cluster-virtual (env "+envVKBundle+")")
 	cmd.Flags().IntVar(&f.apiPort, "api-port", 0, "Local port this worker binds the joined apiserver on (default 6443)")
 	cmd.Flags().BoolVar(&f.offline, "offline", false, "Mutate the FileConfig directly without contacting the daemon (installer-script mode)")
 	cmd.Flags().BoolVar(&f.show, "show", false, "Report which control plane this host joins (credentials redacted)")

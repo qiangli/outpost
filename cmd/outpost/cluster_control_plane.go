@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/qiangli/outpost/internal/agent/vkcred"
 )
 
 // controlPlaneOut mirrors admincore.ControlPlaneResult over MCP.
@@ -103,6 +106,72 @@ network.`,
 	cmd.Flags().IntVar(&bindPort, "bind-port", 0, "Port the tunnel server binds (default 7000)")
 	cmd.AddCommand(clusterControlPlaneTokenCmd())
 	cmd.AddCommand(clusterControlPlaneStatusCmd())
+	cmd.AddCommand(clusterControlPlaneVKCredentialCmd())
+	return cmd
+}
+
+// clusterControlPlaneVKCredentialCmd mints the least-privilege virtual-kubelet
+// bundle — the fourth join value, needed only by workers that select a virtual
+// runtime. It lives beside `token` because the two are read in the same
+// operator motion: gather everything on the host, carry it to the worker.
+func clusterControlPlaneVKCredentialCmd() *cobra.Command {
+	var namespaces []string
+	var quiet bool
+	cmd := &cobra.Command{
+		Use:   "vk-credential",
+		Short: "Mint the least-privilege vk credential bundle workers pass as --vk-bundle",
+		Long: `Mint (idempotently) the virtual-kubelet credential of the control plane
+hosted here, and print it as one opaque bundle for the worker's
+` + "`outpost cluster join --vk-bundle`" + `.
+
+The bundle carries the plane's CA, a ServiceAccount bearer token scoped to
+exactly the verbs a virtual-kubelet node uses (register its Node, watch and
+report its pods, read configmaps/secrets/services, emit events — nothing
+else), and the namespace allow-list the worker enforces FAIL-CLOSED: pods
+outside it are refused. --namespace names that list and provisions each
+namespace on the plane; omitting it allows only "default".
+
+The plane's admin kubeconfig is read locally to mint this and is never part
+of the output — it does not leave this machine.
+
+Re-minting returns the same token, so a second worker does not invalidate the
+first. To rotate: kubectl -n ` + vkcred.SystemNamespace + ` delete secret ` + vkcred.TokenSecretName + `,
+re-mint, re-join every vk worker.
+
+Use --quiet to print the bare bundle for piping.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			session, err := dialMCP(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer session.close()
+			args := map[string]any{}
+			if len(namespaces) > 0 {
+				args["namespaces"] = namespaces
+			}
+			var out struct {
+				OK         bool     `json:"ok"`
+				Bundle     string   `json:"bundle"`
+				Namespaces []string `json:"namespaces"`
+				Endpoint   string   `json:"endpoint,omitempty"`
+			}
+			if err := session.callTool(cmd.Context(), "outpost_control_plane_vk_credential", args, &out); err != nil {
+				return err
+			}
+			if quiet {
+				fmt.Println(out.Bundle)
+				return nil
+			}
+			fmt.Printf("vk bundle:  %s\n", out.Bundle)
+			fmt.Printf("namespaces: %s\n", strings.Join(out.Namespaces, ", "))
+			fmt.Println("\nOn the worker, join with all four values:")
+			fmt.Printf("  outpost cluster join %s --token … --stcp-secret … --node-token … \\\n", out.Endpoint)
+			fmt.Println("      --vk-bundle " + out.Bundle[:min(24, len(out.Bundle))] + "… --cluster-virtual vk-podman")
+			return nil
+		},
+	}
+	cmd.Flags().StringSliceVar(&namespaces, "namespace", nil, "Workload namespace to allow + provision (repeatable; default: default)")
+	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Print only the bundle")
 	return cmd
 }
 

@@ -153,6 +153,7 @@ func TestToolListAndStatusResource(t *testing.T) {
 		"outpost_cluster_join_peer",
 		"outpost_cluster_leave_peer",
 		"outpost_cluster_node_token",
+		"outpost_control_plane_vk_credential",
 		"outpost_restart",
 		"outpost_rotate_mcp_token",
 	}

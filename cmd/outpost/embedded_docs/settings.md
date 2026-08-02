@@ -524,6 +524,7 @@ switching placement is a configuration change, not a migration.
 | Join token | `cluster.tunnel_token` | `cluster control-plane token` | `has_tunnel_token` flag only | `outpost_control_plane_token` |
 | Rotate the join token | `cluster.tunnel_token` | `cluster control-plane token rotate --yes` | — | `outpost_rotate_control_plane_token` |
 | k3s node token | (k3s state, not `agent.json`) | `cluster token` | — | `outpost_cluster_node_token` |
+| vk credential bundle | (minted on the plane, not `agent.json`) | `cluster control-plane vk-credential [--namespace …]` | — | `outpost_control_plane_vk_credential` |
 | Hosted-plane kubeconfig | `cluster.control_plane_kubeconfig` | (edit agent.json) | — | — |
 | Hosted apiserver address | `cluster.control_plane_api_addr` | (edit agent.json) | — | — |
 
@@ -541,6 +542,17 @@ never to the daemon log, so it pipes cleanly:
 ```bash
 outpost cluster token | ssh worker outpost cluster join 10.0.0.5 --token-stdin
 ```
+
+`cluster control-plane vk-credential` mints (idempotently) the
+**least-privilege virtual-kubelet bundle** a worker passes as
+`cluster join --vk-bundle` when it selects a virtual runtime: a
+ServiceAccount (`outpost-vk` in `outpost-system`, bound to the
+`outpost-vk-node` ClusterRole) bearer token scoped to exactly what a vk node
+does, the plane's CA, and the fail-closed namespace allow-list — one opaque
+`outpost-vk1.…` string. `--namespace` names and provisions the allowed
+namespaces (default `default`). The k3s node token above cannot stand in for
+it (a node-join credential is not an apiserver bearer token), and the admin
+kubeconfig never leaves this machine.
 
 `control_plane_kubeconfig` is what the cluster-wide reconcilers (node
 addressing, runtime capability) act through. It must be an admin kubeconfig
@@ -612,6 +624,7 @@ cloudbox-hosted plane", which is the default and the historical behaviour.
 | Peer's tunnel token | `cluster.join_token` | `cluster join --token` / `--token-stdin` / `$OUTPOST_CLUSTER_JOIN_TOKEN` | `has_join_token` flag only | `outpost_cluster_join_peer` |
 | Peer's STCP secret | `cluster.stcp_secret` | `cluster join --stcp-secret` / `$OUTPOST_CLUSTER_STCP_SECRET` | `has_stcp_secret` flag only | `outpost_cluster_join_peer` |
 | Peer's k3s node token | `cluster.node_token` | `cluster join --node-token` / `$OUTPOST_CLUSTER_NODE_TOKEN` | `has_node_token` flag only | `outpost_cluster_join_peer` |
+| Peer's vk credential bundle | `cluster.ca` + `cluster.token` + `cluster.allowed_namespaces` | `cluster join --vk-bundle` / `$OUTPOST_CLUSTER_VK_BUNDLE` | `has_vk_credential` flag + namespace list | `outpost_cluster_join_peer` (`vk_bundle`) |
 | Local apiserver port | `cluster.k8s_api_port` | `cluster join --api-port` | — | `outpost_cluster_join_peer` |
 | Agent Node on the joined plane | `cluster.runtimes.agent` | `cluster join --cluster-agent=on/off` | Inbound > Cluster (same field) | `outpost_cluster_join_peer` (`cluster_agent`) |
 | Virtual Nodes on the joined plane | `cluster.runtimes.virtual` | `cluster join --cluster-virtual vk-podman,vk-native` | Inbound > Cluster (same field) | `outpost_cluster_join_peer` (`cluster_virtual`) |
@@ -647,24 +660,34 @@ Five behaviours worth knowing:
   `--cluster-virtual` write the same `cluster.runtimes.agent` and
   `cluster.runtimes.virtual` fields `builtins set` writes, with the same
   partial-update rules: an omitted flag leaves the persisted value alone, and
-  `--cluster-virtual` replaces the complete set. A peer-hosted plane supports
-  vk nodes as-is — vk authenticates to k3s with client certificates rather
-  than a cloudbox-minted bearer token — so `vk-podman` and `vk-native`
-  workloads run on one.
+  `--cluster-virtual` replaces the complete set. Selecting a virtual runtime
+  requires the vk bundle from the hosting machine — none of the other three
+  join values is an apiserver bearer credential (the k3s node token in
+  particular is not one), so the join is refused fail-closed unless the
+  resulting config holds a vk credential, the peer CA, and a non-empty
+  namespace allow-list, all of which the bundle carries.
 
   ```bash
+  # on the host running the plane
+  outpost cluster control-plane vk-credential --namespace workloads
+
   # agent + a vk-podman node on the joined plane
-  outpost cluster join 10.0.0.5:7000 --token T --cluster-virtual vk-podman
+  outpost cluster join 10.0.0.5:7000 --token T --stcp-secret S --node-token K10… \
+      --vk-bundle outpost-vk1.… --cluster-virtual vk-podman
 
   # vk only, no k3s agent
-  outpost cluster join --cluster-agent=off --cluster-virtual vk-podman,vk-native
+  outpost cluster join --cluster-agent=off --cluster-virtual vk-podman,vk-native \
+      --vk-bundle outpost-vk1.…
   ```
 
-  Naming NEITHER flag is the default and is unchanged: the `agent` runtime,
-  and only when nothing is selected yet. Naming either one is an explicit
-  choice, so it does change an existing selection — that is the only way a
-  join ever rewrites one. Deselecting everything at once is refused rather
-  than silently reinstating the agent runtime.
+  Applying a bundle persists `cluster.ca` + `cluster.token` +
+  `cluster.allowed_namespaces` and clears a stale `client_cert`/`client_key`
+  pair; a hand-provisioned k3s client-certificate pair satisfies the same gate.
+  Naming NEITHER runtime flag is the default and is unchanged: the `agent`
+  runtime, and only when nothing is selected yet. Naming either one is an
+  explicit choice, so it does change an existing selection — that is the only
+  way a join ever rewrites one. Deselecting everything at once is refused
+  rather than silently reinstating the agent runtime.
 - **This is independent of cloudbox pairing.** The host stays paired for apps,
   shell, the LLM pool and the fleet registry; only cluster membership moves.
   While a peer endpoint is set, the boot reattach deliberately leaves cluster

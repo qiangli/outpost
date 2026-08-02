@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/agent/vkcred"
 )
 
 // Peer-plane JOIN surface — the worker-side twin of control_plane.go.
@@ -45,6 +46,16 @@ type PeerPlaneParams struct {
 	// apiserver on (cluster.k8s_api_port). Optional; 0 means the 6443 default.
 	APIPort *int `json:"api_port,omitempty"`
 
+	// VKBundle is the peer-issued least-privilege virtual-kubelet credential —
+	// the FIFTH join value, needed only when a virtual runtime is selected.
+	// Minted on the hosting machine with `outpost cluster control-plane
+	// vk-credential`; the node token above cannot stand in for it (a k3s
+	// node-join token is not an apiserver bearer credential, so presenting it
+	// there gets a 401 that reads like a network fault). Applying it writes
+	// cluster.ca + cluster.token + cluster.allowed_namespaces and clears any
+	// stale client-cert pair — the bundle is authoritative for all three.
+	VKBundle *string `json:"vk_bundle,omitempty"`
+
 	// Agent / Virtual select which Nodes this worker registers on the joined
 	// plane — cluster.runtimes.agent and cluster.runtimes.virtual, the same
 	// two fields SetBuiltins writes and with the same partial-update rules
@@ -77,6 +88,19 @@ type PeerPlaneResult struct {
 	HasToken      bool `json:"has_token"`
 	HasSTCPSecret bool `json:"has_stcp_secret"`
 	HasNodeToken  bool `json:"has_node_token"`
+
+	// HasVKCredential / VKCredentialKind report whether a virtual-kubelet node
+	// on this worker can authenticate to the joined apiserver, and with which
+	// credential form ("token" from a vk bundle, or "client-cert" when the
+	// operator provisioned a k3s client-certificate pair by hand). Presence
+	// only — the credential itself is never returned.
+	HasVKCredential  bool   `json:"has_vk_credential"`
+	VKCredentialKind string `json:"vk_credential_kind,omitempty"`
+	// AllowedNamespaces is the fail-closed namespace policy the vk nodes
+	// enforce. Namespace NAMES are policy, not secrets, so they are reported
+	// verbatim — an operator debugging "every pod is denied" needs to see the
+	// list, not a boolean.
+	AllowedNamespaces []string `json:"allowed_namespaces,omitempty"`
 
 	// ClusterEnabled reflects cluster.enabled AFTER the operation. Surfaced
 	// because a join that persisted its credentials but left cluster mode off
@@ -162,6 +186,22 @@ func (s *Server) JoinPeerPlane(p PeerPlaneParams) (PeerPlaneResult, error) {
 		}
 		fc.Cluster.K8sAPIPort = port
 	}
+	if p.VKBundle != nil {
+		bundle, err := vkcred.Decode(*p.VKBundle)
+		if err != nil {
+			return PeerPlaneResult{}, badRequest("vk_bundle: %s", err.Error())
+		}
+		// The bundle is authoritative for the whole vk credential set: peer CA
+		// identity, bearer token, and the fail-closed namespace policy. A stale
+		// client-cert pair is cleared rather than kept — the cert would win over
+		// the fresh token (vknode's credential precedence) and resurrect exactly
+		// the confusion the bundle exists to end.
+		fc.Cluster.CA = bundle.CA
+		fc.Cluster.Token = bundle.Token
+		fc.Cluster.AllowedNamespaces = bundle.Namespaces
+		fc.Cluster.ClientCert = nil
+		fc.Cluster.ClientKey = nil
+	}
 
 	// Validate the RESULT, not the input: a second call that supplies only a
 	// rotated token must still land on a complete configuration, and a first
@@ -203,6 +243,18 @@ func (s *Server) JoinPeerPlane(p PeerPlaneParams) (PeerPlaneResult, error) {
 	}
 	if err := fc.Cluster.ValidateRuntimes(); err != nil {
 		return PeerPlaneResult{}, badRequest("%s", err.Error())
+	}
+	// Validate the vk provision on the RESULT too: a virtual runtime on a peer
+	// plane needs an apiserver credential + a non-empty fail-closed namespace
+	// policy, and none of the four tunnel/agent join values supplies either.
+	// Refusing here turns what used to be a boot-time "no usable credentials"
+	// loop (or, worse, a node that denies every pod) into an actionable error
+	// at the moment the operator is still holding the hosting machine's
+	// credentials.
+	if len(fc.Cluster.Runtimes.Virtual) > 0 {
+		if err := validatePeerVKProvision(fc.Cluster); err != nil {
+			return PeerPlaneResult{}, err
+		}
 	}
 	enabled := true
 	fc.Cluster.Enabled = &enabled
@@ -319,6 +371,31 @@ func normalizeJoinEndpoint(raw string) (string, error) {
 	return net.JoinHostPort(host, strconv.Itoa(port)), nil
 }
 
+// validatePeerVKProvision is the fail-closed gate on a peer join that selects
+// virtual runtimes: the resulting config must hold a usable apiserver
+// credential (a bundle-issued bearer token or a hand-provisioned client-cert
+// pair), the peer CA to pin it against (a peer k3s apiserver is self-signed,
+// so system roots cannot verify it), and a non-empty namespace policy (empty
+// denies every pod by design). Each error names the mint command because the
+// remedy lives on the OTHER machine.
+func validatePeerVKProvision(cc *conf.ClusterConfig) error {
+	const mintHint = "mint one on the hosting machine with `outpost cluster control-plane vk-credential` " +
+		"and pass it here as --vk-bundle (MCP: vk_bundle)"
+	if !cc.HasClientCert() && strings.TrimSpace(cc.Token) == "" {
+		return badRequest(
+			"virtual runtimes on a peer plane need a vk apiserver credential — the k3s node token is not one; " + mintHint)
+	}
+	if len(cc.CA) == 0 {
+		return badRequest(
+			"virtual runtimes on a peer plane need the peer CA (cluster.ca) to pin its self-signed apiserver — the vk bundle carries it; " + mintHint)
+	}
+	if len(cc.AllowedNamespaces) == 0 {
+		return badRequest(
+			"virtual runtimes on a peer plane need a namespace policy (cluster.allowed_namespaces; fail-closed, so empty denies every pod) — the vk bundle carries it; " + mintHint)
+	}
+	return nil
+}
+
 func peerPlaneResult(fc *conf.FileConfig) PeerPlaneResult {
 	out := PeerPlaneResult{OK: true}
 	if fc == nil || fc.Cluster == nil {
@@ -331,6 +408,15 @@ func peerPlaneResult(fc *conf.FileConfig) PeerPlaneResult {
 	out.HasToken = cc.JoinToken != ""
 	out.HasSTCPSecret = cc.STCPSecret != ""
 	out.HasNodeToken = cc.NodeToken != ""
+	switch {
+	case cc.HasClientCert():
+		out.HasVKCredential = true
+		out.VKCredentialKind = "client-cert"
+	case strings.TrimSpace(cc.Token) != "":
+		out.HasVKCredential = true
+		out.VKCredentialKind = "token"
+	}
+	out.AllowedNamespaces = cc.AllowedNamespaces
 	out.ClusterEnabled = fc.ClusterOn()
 	out.RuntimeAgent = cc.HasAgentRuntime()
 	out.RuntimeVirtual = cc.VirtualRuntimes()

@@ -24,6 +24,7 @@ type peerPlaneIn struct {
 	STCPSecret *string `json:"stcp_secret,omitempty" jsonschema:"SENSITIVE - the peer's stcp_secret, which authorizes reaching its apiserver"`
 	NodeToken  *string `json:"node_token,omitempty" jsonschema:"SENSITIVE - the k3s node token, read on the peer with 'outpost cluster token'"`
 	APIPort    *int    `json:"api_port,omitempty" jsonschema:"local port this worker binds the joined apiserver on; defaults to 6443"`
+	VKBundle   *string `json:"vk_bundle,omitempty" jsonschema:"SENSITIVE - the peer-issued least-privilege virtual-kubelet credential bundle (outpost-vk1.…), minted on the hosting machine with outpost_control_plane_vk_credential. Required when cluster_virtual selects any backend; it carries the peer CA, an apiserver bearer token, and the fail-closed namespace allow-list. The k3s node_token cannot stand in for it."`
 
 	ClusterAgent   *bool    `json:"cluster_agent,omitempty" jsonschema:"run one real k3s-agent Node on the joined plane. Omit to leave the current selection alone; omitting both runtime fields on a host with no selection yields the agent-only default."`
 	ClusterVirtual []string `json:"cluster_virtual,omitempty" jsonschema:"complete set of virtual-kubelet backends to register on the joined plane: vk-podman, vk-native, vk-ollama. Replaces the whole set; omit to leave the current selection alone."`
@@ -42,23 +43,32 @@ type peerPlaneOut struct {
 	ClusterEnabled bool   `json:"cluster_enabled"`
 	RestartPending bool   `json:"restart_pending"`
 
+	// vk credential presence + the (non-secret) namespace policy. The
+	// credential value itself never appears here.
+	HasVKCredential   bool     `json:"has_vk_credential"`
+	VKCredentialKind  string   `json:"vk_credential_kind,omitempty"`
+	AllowedNamespaces []string `json:"allowed_namespaces,omitempty"`
+
 	RuntimeAgent   bool     `json:"runtime_agent"`
 	RuntimeVirtual []string `json:"runtime_virtual,omitempty"`
 }
 
 func toPeerPlaneOut(res admincore.PeerPlaneResult) peerPlaneOut {
 	return peerPlaneOut{
-		OK:             res.OK,
-		Joined:         res.Joined,
-		Endpoint:       res.Endpoint,
-		APIPort:        res.APIPort,
-		HasToken:       res.HasToken,
-		HasSTCPSecret:  res.HasSTCPSecret,
-		HasNodeToken:   res.HasNodeToken,
-		ClusterEnabled: res.ClusterEnabled,
-		RestartPending: res.RestartPending,
-		RuntimeAgent:   res.RuntimeAgent,
-		RuntimeVirtual: res.RuntimeVirtual,
+		OK:                res.OK,
+		Joined:            res.Joined,
+		Endpoint:          res.Endpoint,
+		APIPort:           res.APIPort,
+		HasToken:          res.HasToken,
+		HasSTCPSecret:     res.HasSTCPSecret,
+		HasNodeToken:      res.HasNodeToken,
+		ClusterEnabled:    res.ClusterEnabled,
+		RestartPending:    res.RestartPending,
+		HasVKCredential:   res.HasVKCredential,
+		VKCredentialKind:  res.VKCredentialKind,
+		AllowedNamespaces: res.AllowedNamespaces,
+		RuntimeAgent:      res.RuntimeAgent,
+		RuntimeVirtual:    res.RuntimeVirtual,
 	}
 }
 
@@ -99,6 +109,7 @@ func (s *Server) registerPeerPlaneTools() {
 			STCPSecret: in.STCPSecret,
 			NodeToken:  in.NodeToken,
 			APIPort:    in.APIPort,
+			VKBundle:   in.VKBundle,
 			Agent:      in.ClusterAgent,
 			Virtual:    in.ClusterVirtual,
 		})
@@ -132,4 +143,33 @@ func (s *Server) registerPeerPlaneTools() {
 		}
 		return nil, nodeTokenOut{OK: res.OK, NodeToken: res.NodeToken, Endpoint: res.Endpoint}, nil
 	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "outpost_control_plane_vk_credential",
+		Description: "SENSITIVE OUTPUT - returns a credential. Mint (idempotently) the least-privilege virtual-kubelet credential bundle of the " +
+			"control plane hosted on THIS machine: a scoped ServiceAccount token + the peer CA + a fail-closed namespace allow-list, packaged " +
+			"as one opaque string a worker passes as vk_bundle to outpost_cluster_join_peer. Provisions the named namespaces on the plane " +
+			"(default: [\"default\"]). Never returns the admin kubeconfig — that credential stays on this machine. " +
+			"Fails when this host does not host a control plane or the plane is not up yet.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in vkCredentialIn) (*mcp.CallToolResult, vkCredentialOut, error) {
+		res, err := s.core.ControlPlaneVKCredential(ctx, in.Namespaces)
+		if err != nil {
+			return apiErrResult[vkCredentialOut](err)
+		}
+		return nil, vkCredentialOut{OK: res.OK, Bundle: res.Bundle, Namespaces: res.Namespaces, Endpoint: res.Endpoint}, nil
+	})
+}
+
+// vkCredentialIn / vkCredentialOut are the mint tool's shapes. The out struct
+// carries a credential; like nodeTokenOut it is reachable only from the
+// explicitly-named tool above, never from a status read.
+type vkCredentialIn struct {
+	Namespaces []string `json:"namespaces,omitempty" jsonschema:"workload namespaces to provision and allow (created on the plane when missing). Omit for [\"default\"]. The worker enforces this list fail-closed: pods in any other namespace are refused."`
+}
+
+type vkCredentialOut struct {
+	OK         bool     `json:"ok"`
+	Bundle     string   `json:"bundle"`
+	Namespaces []string `json:"namespaces,omitempty"`
+	Endpoint   string   `json:"endpoint,omitempty"`
 }

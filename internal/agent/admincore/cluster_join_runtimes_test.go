@@ -8,9 +8,25 @@ import (
 	"testing"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/agent/vkcred"
 )
 
 func boolp(b bool) *bool { return &b }
+
+// testVKBundleStr is a valid encoded vk bundle — the credential a peer join
+// that selects virtual runtimes must now carry.
+func testVKBundleStr(t *testing.T) string {
+	t.Helper()
+	enc, err := vkcred.Bundle{
+		CA:         []byte("test-peer-ca"),
+		Token:      "test-sa-token",
+		Namespaces: []string{"default"},
+	}.Encode()
+	if err != nil {
+		t.Fatalf("encode test bundle: %v", err)
+	}
+	return enc
+}
 
 // readCluster reads the persisted runtime selection back off disk, so these
 // tests assert what a restart would actually load rather than what the return
@@ -34,6 +50,12 @@ func joinFresh(t *testing.T, s *Server, p PeerPlaneParams) PeerPlaneResult {
 	}
 	if p.Token == nil {
 		p.Token = strp("tunnel-token")
+	}
+	// Selecting a virtual runtime requires the vk credential; attach the test
+	// bundle so runtime-selection tests exercise selection, not the gate (which
+	// has its own tests in cluster_join_test.go).
+	if len(p.Virtual) > 0 && p.VKBundle == nil {
+		p.VKBundle = strp(testVKBundleStr(t))
 	}
 	res, err := s.JoinPeerPlane(p)
 	if err != nil {
@@ -132,7 +154,7 @@ func TestJoinPeerPlane_DoesNotClobberExistingSelection(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("SetBuiltins: %v", err)
 		}
-		res := joinFresh(t, s, PeerPlaneParams{})
+		res := joinFresh(t, s, PeerPlaneParams{VKBundle: strp(testVKBundleStr(t))})
 		if res.RuntimeAgent {
 			t.Error("join started an agent runtime over a virtual-only selection")
 		}

@@ -33,6 +33,7 @@ const (
 	envJoinToken  = "OUTPOST_CLUSTER_JOIN_TOKEN"
 	envSTCPSecret = "OUTPOST_CLUSTER_STCP_SECRET"
 	envNodeToken  = "OUTPOST_CLUSTER_NODE_TOKEN"
+	envVKBundle   = "OUTPOST_CLUSTER_VK_BUNDLE"
 )
 
 // peerPlaneOut mirrors admincore.PeerPlaneResult over MCP. It has no field
@@ -48,6 +49,10 @@ type peerPlaneOut struct {
 	ClusterEnabled bool   `json:"cluster_enabled"`
 	RestartPending bool   `json:"restart_pending"`
 
+	HasVKCredential   bool     `json:"has_vk_credential"`
+	VKCredentialKind  string   `json:"vk_credential_kind,omitempty"`
+	AllowedNamespaces []string `json:"allowed_namespaces,omitempty"`
+
 	RuntimeAgent   bool     `json:"runtime_agent"`
 	RuntimeVirtual []string `json:"runtime_virtual,omitempty"`
 }
@@ -58,6 +63,7 @@ type clusterJoinFlags struct {
 	tokenStdin bool
 	stcpSecret string
 	nodeToken  string
+	vkBundle   string
 	apiPort    int
 	offline    bool
 	show       bool
@@ -106,6 +112,9 @@ func resolveJoinParams(cmd *cobra.Command, endpoint string, f *clusterJoinFlags)
 	if s := firstNonEmpty(f.nodeToken, os.Getenv(envNodeToken)); s != "" {
 		p.NodeToken = &s
 	}
+	if s := firstNonEmpty(f.vkBundle, os.Getenv(envVKBundle)); s != "" {
+		p.VKBundle = &s
+	}
 	if cmd.Flags().Changed("api-port") {
 		port := f.apiPort
 		p.APIPort = &port
@@ -148,7 +157,7 @@ func firstNonEmpty(vals ...string) string {
 // to being the bare node-lifecycle rejoin.
 func wantsPeerJoin(endpoint string, f *clusterJoinFlags) bool {
 	return endpoint != "" || f.token != "" || f.tokenStdin ||
-		f.stcpSecret != "" || f.nodeToken != "" ||
+		f.stcpSecret != "" || f.nodeToken != "" || f.vkBundle != "" ||
 		f.clusterAgent != "" || f.clusterVirtual != nil ||
 		os.Getenv(envJoinToken) != ""
 }
@@ -166,8 +175,10 @@ func runPeerJoin(ctx context.Context, p admincore.PeerPlaneParams, offline bool)
 		printPeerPlane(peerPlaneOut{
 			OK: res.OK, Joined: res.Joined, Endpoint: res.Endpoint, APIPort: res.APIPort,
 			HasToken: res.HasToken, HasSTCPSecret: res.HasSTCPSecret, HasNodeToken: res.HasNodeToken,
-			ClusterEnabled: res.ClusterEnabled,
-			RuntimeAgent:   res.RuntimeAgent, RuntimeVirtual: res.RuntimeVirtual,
+			HasVKCredential: res.HasVKCredential, VKCredentialKind: res.VKCredentialKind,
+			AllowedNamespaces: res.AllowedNamespaces,
+			ClusterEnabled:    res.ClusterEnabled,
+			RuntimeAgent:      res.RuntimeAgent, RuntimeVirtual: res.RuntimeVirtual,
 		})
 		fmt.Println("\nWritten to agent.json. Start (or restart) outpost to join.")
 		return nil
@@ -208,6 +219,9 @@ func peerJoinArgs(p admincore.PeerPlaneParams) map[string]any {
 	if p.NodeToken != nil {
 		args["node_token"] = *p.NodeToken
 	}
+	if p.VKBundle != nil {
+		args["vk_bundle"] = *p.VKBundle
+	}
 	if p.APIPort != nil {
 		args["api_port"] = *p.APIPort
 	}
@@ -233,8 +247,10 @@ func runPeerPlaneShow(ctx context.Context, offline bool) error {
 		printPeerPlane(peerPlaneOut{
 			OK: res.OK, Joined: res.Joined, Endpoint: res.Endpoint, APIPort: res.APIPort,
 			HasToken: res.HasToken, HasSTCPSecret: res.HasSTCPSecret, HasNodeToken: res.HasNodeToken,
-			ClusterEnabled: res.ClusterEnabled,
-			RuntimeAgent:   res.RuntimeAgent, RuntimeVirtual: res.RuntimeVirtual,
+			HasVKCredential: res.HasVKCredential, VKCredentialKind: res.VKCredentialKind,
+			AllowedNamespaces: res.AllowedNamespaces,
+			ClusterEnabled:    res.ClusterEnabled,
+			RuntimeAgent:      res.RuntimeAgent, RuntimeVirtual: res.RuntimeVirtual,
 		})
 		return nil
 	}
@@ -293,6 +309,18 @@ func printPeerPlane(out peerPlaneOut) {
 	fmt.Printf("join token:    %s\n", presence(out.HasToken))
 	fmt.Printf("stcp secret:   %s\n", presence(out.HasSTCPSecret))
 	fmt.Printf("node token:    %s\n", presence(out.HasNodeToken))
+	if out.HasVKCredential {
+		vk := "set"
+		if out.VKCredentialKind != "" {
+			vk = "set (" + out.VKCredentialKind + ")"
+		}
+		fmt.Printf("vk credential: %s\n", vk)
+	} else {
+		fmt.Println("vk credential: missing")
+	}
+	if len(out.AllowedNamespaces) > 0 {
+		fmt.Printf("vk namespaces: %s\n", strings.Join(out.AllowedNamespaces, ", "))
+	}
 	if out.APIPort != 0 {
 		fmt.Printf("apiserver:     127.0.0.1:%d (bound locally by this worker)\n", out.APIPort)
 	}
@@ -304,6 +332,13 @@ func printPeerPlane(out peerPlaneOut) {
 		fmt.Println("\nNOTE: a peer join needs all three credentials. Read them on the hosting machine:")
 		fmt.Println("  outpost cluster control-plane token   # endpoint + join token + stcp secret")
 		fmt.Println("  outpost cluster token                 # node token")
+	}
+	if out.Joined && len(out.RuntimeVirtual) > 0 && !out.HasVKCredential {
+		// Reachable only from the status view — the join itself refuses this
+		// state — but a config written before the vk bundle existed can show it.
+		fmt.Println("\nNOTE: virtual runtimes are selected but no vk credential is set — every vk node")
+		fmt.Println("will fail to authenticate. Mint one on the hosting machine and re-join:")
+		fmt.Println("  outpost cluster control-plane vk-credential   # bundle for --vk-bundle")
 	}
 }
 

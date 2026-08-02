@@ -234,6 +234,12 @@ func TestJoinPeerPlane_KeepsAnExistingRuntimeSelection(t *testing.T) {
 	if err := conf.SaveFile(s.deps.ConfigPath, &conf.FileConfig{
 		Cluster: &conf.ClusterConfig{
 			Runtimes: conf.ClusterRuntimes{Virtual: []string{conf.ClusterRuntimeVKPodman}},
+			// A virtual selection needs the vk credential set; seed the fields a
+			// prior bundle-carrying join would have persisted, so this join is
+			// purely a selection-preservation exercise.
+			Token:             "sa-token",
+			CA:                []byte("peer-ca"),
+			AllowedNamespaces: []string{"default"},
 		},
 	}); err != nil {
 		t.Fatal(err)

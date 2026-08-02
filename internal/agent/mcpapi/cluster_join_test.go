@@ -14,6 +14,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/agent/vkcred"
 )
 
 // connectTestMCP opens an authenticated MCP session against a fresh server.
@@ -271,10 +272,18 @@ func TestPeerPlaneTools_RuntimeSelection(t *testing.T) {
 	}
 
 	// Selecting vk-podman + vk-native on a peer plane, the case
-	// dag-to-k8s-job.sh and dks-native-job.sh need.
+	// dag-to-k8s-job.sh and dks-native-job.sh need. Virtual runtimes require
+	// the peer-issued vk credential bundle, so the join carries one.
+	vkBundle, err := vkcred.Bundle{
+		CA: []byte("peer-ca"), Token: "sa-token", Namespaces: []string{"default"},
+	}.Encode()
+	if err != nil {
+		t.Fatalf("encode vk bundle: %v", err)
+	}
 	body, isErr := callJSON(t, session, "outpost_cluster_join_peer", map[string]any{
 		"endpoint":        "10.0.0.5",
 		"token":           "t",
+		"vk_bundle":       vkBundle,
 		"cluster_agent":   false,
 		"cluster_virtual": []string{"vk-podman", "vk-native"},
 	})
