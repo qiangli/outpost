@@ -128,7 +128,7 @@ func TestStore_ProvenanceRefusesInvalidDigests(t *testing.T) {
 	s := newTestStore(t)
 	base := Provenance{
 		Node: "worker-a", Ref: "localhost/cluster/demo:v1", Recipe: "demo",
-		RecipeDigest: "sha256:" + strings.Repeat("b", 64),
+		RecipeDigest:  "sha256:" + strings.Repeat("b", 64),
 		ContentDigest: "sha256:" + strings.Repeat("a", 64),
 	}
 	noContent := base

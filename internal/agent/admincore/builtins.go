@@ -104,7 +104,7 @@ type BuiltinsParams struct {
 	// loopback port, auto-exposed over the mesh as `registry`. ZotPort sets its
 	// HTTP port (0 = default 5000). nil = leave unchanged.
 	Zot     *bool `json:"zot,omitempty"`
-	ZotPort *int  `json:"zot_port,omitempty"`	// Seaweedfs toggles running SeaweedFS (object/blob store, S3 gateway) as a
+	ZotPort *int  `json:"zot_port,omitempty"` // Seaweedfs toggles running SeaweedFS (object/blob store, S3 gateway) as a
 	// managed external binary on a loopback port, auto-exposed over the mesh as
 	// `s3`. SeaweedfsPort sets its S3 port (0 = default 8333). nil = unchanged.
 	Seaweedfs     *bool `json:"seaweedfs,omitempty"`

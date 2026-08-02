@@ -226,7 +226,7 @@ func TestEnsure_AlreadyResidentAndProven(t *testing.T) {
 
 // Resident + provenance DISAGREES → loud failure, and NO silent repair.
 func TestEnsure_DigestMismatchFailsLoudlyWithoutRepair(t *testing.T) {
-	live := "sha256:" + strings.Repeat("c", 64)    // what containerd has NOW
+	live := "sha256:" + strings.Repeat("c", 64)     // what containerd has NOW
 	recorded := "sha256:" + strings.Repeat("a", 64) // what this node built
 	b := &fakeBuilder{}
 	s := newTestService(t, &fakeRuntime{script: []rtStep{{state: StateResident, digest: live}}}, b)

@@ -65,10 +65,10 @@ type builtinsIn struct {
 	CloudDOToken           *string             `json:"cloud_do_token,omitempty" jsonschema:"Digital Ocean API token (exported as DIGITALOCEAN_ACCESS_TOKEN; redacted from status reads)"`
 	ActrunnerSandbox       *bool               `json:"actrunner_sandbox,omitempty" jsonschema:"Opt the runner into the tier-3 sandbox (container) executor: adds a 'sandbox' docker-executor label so runs-on:sandbox jobs run in an OCI container via bashy podman. Additive to the host build lane."`
 	ActrunnerSandboxImage  *string             `json:"actrunner_sandbox_image,omitempty" jsonschema:"OCI image the sandbox executor runs jobs in (empty = a node image with git+node+bash)"`
-	ActrunnerDockerHost   *string `json:"actrunner_docker_host,omitempty" jsonschema:"DOCKER_HOST the sandbox executor dials (empty = auto-resolve bashy podman's socket)"`
-	Headlamp              *bool   `json:"headlamp,omitempty" jsonschema:"Toggle deploying Headlamp (the operating UI) on the peer DKS plane. Deploys into the cluster, supervises the loopback port-forward, and exposes it over the mesh as 'headlamp'. Requires cluster.control_plane to be enabled. Default OFF."`
-	HeadlampPort          *int    `json:"headlamp_port,omitempty" jsonschema:"headlamp's supervised loopback forward port (0 = default 18466; loopback only — non-loopback binds are rejected per the standing rule)"`
-	Shard                 *bool   `json:"shard,omitempty" jsonschema:"Toggle Ollama sharding — serve a model bigger than one node by splitting it across same-LAN mesh peers. Default ON for a paired Ollama node; set false to opt out."`
+	ActrunnerDockerHost    *string             `json:"actrunner_docker_host,omitempty" jsonschema:"DOCKER_HOST the sandbox executor dials (empty = auto-resolve bashy podman's socket)"`
+	Headlamp               *bool               `json:"headlamp,omitempty" jsonschema:"Toggle deploying Headlamp (the operating UI) on the peer DKS plane. Deploys into the cluster, supervises the loopback port-forward, and exposes it over the mesh as 'headlamp'. Requires cluster.control_plane to be enabled. Default OFF."`
+	HeadlampPort           *int                `json:"headlamp_port,omitempty" jsonschema:"headlamp's supervised loopback forward port (0 = default 18466; loopback only — non-loopback binds are rejected per the standing rule)"`
+	Shard                  *bool               `json:"shard,omitempty" jsonschema:"Toggle Ollama sharding — serve a model bigger than one node by splitting it across same-LAN mesh peers. Default ON for a paired Ollama node; set false to opt out."`
 	ShardPeers             []string            `json:"shard_peers,omitempty" jsonschema:"Worker hostnames for the shard ring (empty or ['auto'] = every reachable same-LAN peer)"`
 	ShardRole              *string             `json:"shard_role,omitempty" jsonschema:"Shard role: 'auto' (most-VRAM host leads), 'leader', or 'worker'"`
 }

@@ -14,11 +14,11 @@ func TestValidContentDigest(t *testing.T) {
 	}
 	for _, bad := range []string{
 		"",
-		strings.Repeat("a", 64),          // no prefix
+		strings.Repeat("a", 64),             // no prefix
 		"sha256:" + strings.Repeat("a", 63), // short
 		"sha256:" + strings.Repeat("a", 65), // long
 		"sha256:" + strings.Repeat("z", 64), // non-hex
-		"sha256:",                          // empty body
+		"sha256:",                           // empty body
 		"localhost/cluster/demo:v1",         // a ref, not a digest
 	} {
 		if ValidContentDigest(bad) {
