@@ -51,6 +51,7 @@ import (
 	agentmirror "github.com/qiangli/outpost/internal/agent/mirror"
 	"github.com/qiangli/outpost/internal/agent/nodeaddr"
 	"github.com/qiangli/outpost/internal/agent/nodecap"
+	"github.com/qiangli/outpost/internal/agent/nodegc"
 	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/otel"
 	"github.com/qiangli/outpost/internal/agent/overlaykey"
@@ -3068,6 +3069,16 @@ func startControlPlaneReconcilers(ctx context.Context, g *errgroup.Group, fc *co
 	}
 	g.Go(func() error { addr.Run(ctx); return nil })
 	slog.Info("control-plane reconcilers: apiserver→kubelet addressing started")
+
+	// Stale-node garbage collection. A peer worker's `cluster leave`
+	// deliberately cannot delete its own Node object (it holds only a
+	// join token), and every k3s rejoin registers under a new node-id —
+	// so NotReady ghosts accumulate on the hosted plane unless the
+	// control-plane host reaps them. Bounded, oldest-first, 24 h grace,
+	// UID-preconditioned; see internal/agent/nodegc.
+	gc := &nodegc.Collector{Client: cs, Log: slog.Default()}
+	g.Go(func() error { gc.Run(ctx); return nil })
+	slog.Info("control-plane reconcilers: stale-node garbage collection started")
 }
 
 // shouldFetchKubeconfig reports whether the boot path should ask
