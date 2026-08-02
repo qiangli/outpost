@@ -249,12 +249,12 @@ type BundleObjectStatus struct {
 	Exists    bool   `json:"exists"`
 	Ready     bool   `json:"ready"`
 	Reason    string `json:"reason,omitempty"`
-	// Installer marks an outpost.io/lifecycle=installer object — judged
+	// Installer marks an outpost.dhnt.io/lifecycle=installer object — judged
 	// by its declared durable outputs, not by its own presence (a
 	// ttlSecondsAfterFinished Job is reaped by design after success).
 	Installer bool `json:"installer,omitempty"`
 	// DeclaredOutput marks a row asserted from an installer's
-	// outpost.io/installs declaration rather than decoded from the
+	// outpost.dhnt.io/installs declaration rather than decoded from the
 	// manifest.
 	DeclaredOutput bool `json:"declared_output,omitempty"`
 }

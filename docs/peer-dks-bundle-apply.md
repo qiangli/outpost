@@ -156,18 +156,18 @@ metadata:
   name: install-headlamp
   namespace: headlamp
   annotations:
-    outpost.io/lifecycle: installer
-    outpost.io/installs: >-
+    outpost.dhnt.io/lifecycle: installer
+    outpost.dhnt.io/installs: >-
       apps/v1:Deployment:headlamp:headlamp,
       rbac.authorization.k8s.io/v1:ClusterRoleBinding::headlamp-admin
 spec:
   ttlSecondsAfterFinished: 30
 ```
 
-- `outpost.io/lifecycle: installer` marks a bootstrap object expected to
+- `outpost.dhnt.io/lifecycle: installer` marks a bootstrap object expected to
   complete and possibly be garbage-collected afterwards. Any other lifecycle
   value is a hard error.
-- `outpost.io/installs` is **required** with it: comma/whitespace-separated
+- `outpost.dhnt.io/installs` is **required** with it: comma/whitespace-separated
   entries `<apiVersion>:<Kind>:<namespace>:<name>` (empty namespace for
   cluster-scoped) declaring the durable post-install resources. An installer
   without a parseable declaration **refuses to load** — without declared

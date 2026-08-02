@@ -182,8 +182,8 @@ metadata:
   name: install-headlamp
   namespace: headlamp
   annotations:
-    outpost.io/lifecycle: installer
-    outpost.io/installs: "apps/v1:Deployment:headlamp:headlamp"
+    outpost.dhnt.io/lifecycle: installer
+    outpost.dhnt.io/installs: "apps/v1:Deployment:headlamp:headlamp"
 spec:
   ttlSecondsAfterFinished: 30
 `

@@ -36,12 +36,12 @@ type ObjectStatus struct {
 	// Reason is a short human string: why not-ready, why not-exists, or
 	// the confirming detail when ready.
 	Reason string `json:"reason,omitempty"`
-	// Installer marks an object annotated outpost.io/lifecycle=installer.
+	// Installer marks an object annotated outpost.dhnt.io/lifecycle=installer.
 	// Its absence alone never decides installed-ness — the declared
 	// outputs do (see the lifecycle contract in lifecycle.go).
 	Installer bool `json:"installer,omitempty"`
 	// DeclaredOutput marks a row synthesized from an installer's
-	// outpost.io/installs declaration rather than decoded from the
+	// outpost.dhnt.io/installs declaration rather than decoded from the
 	// manifest — the durable post-install evidence being asserted.
 	DeclaredOutput bool `json:"declared_output,omitempty"`
 }
@@ -73,7 +73,7 @@ type StatusResult struct {
 // evidence the object is absent.
 //
 // Installer lifecycle (see lifecycle.go): an object annotated
-// outpost.io/lifecycle=installer is judged by its DECLARED OUTPUTS, not
+// outpost.dhnt.io/lifecycle=installer is judged by its DECLARED OUTPUTS, not
 // by its own presence. A completed installer Job reaped by
 // ttlSecondsAfterFinished does not make the bundle "not installed" as
 // long as every declared durable output exists; conversely, a bundle is

@@ -23,7 +23,7 @@ const (
 	// lifecycle. The only recognized value is LifecycleInstaller; any
 	// other value is a hard error (an unparseable signal must fail, not
 	// vanish).
-	AnnotationLifecycle = "outpost.io/lifecycle"
+	AnnotationLifecycle = "outpost.dhnt.io/lifecycle"
 	// LifecycleInstaller marks a bootstrap object (typically a Job with
 	// ttlSecondsAfterFinished) that is EXPECTED to complete and may then
 	// be garbage-collected. Its absence alone proves nothing — the
@@ -41,7 +41,7 @@ const (
 	//
 	//	apps/v1:Deployment:headlamp:headlamp,
 	//	rbac.authorization.k8s.io/v1:ClusterRoleBinding::headlamp-admin
-	AnnotationInstalls = "outpost.io/installs"
+	AnnotationInstalls = "outpost.dhnt.io/installs"
 )
 
 // isInstaller reports whether obj is annotated as a lifecycle installer.

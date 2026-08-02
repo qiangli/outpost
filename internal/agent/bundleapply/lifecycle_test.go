@@ -266,8 +266,8 @@ metadata:
   name: install-headlamp
   namespace: headlamp
   annotations:
-    outpost.io/lifecycle: installer
-    outpost.io/installs: "apps/v1:Deployment:headlamp:headlamp"
+    outpost.dhnt.io/lifecycle: installer
+    outpost.dhnt.io/installs: "apps/v1:Deployment:headlamp:headlamp"
 `
 	b, err := LoadBundle(write(t, ok))
 	if err != nil {
@@ -283,7 +283,7 @@ metadata:
   name: install-headlamp
   namespace: headlamp
   annotations:
-    outpost.io/lifecycle: installer
+    outpost.dhnt.io/lifecycle: installer
 `
 	if _, err := LoadBundle(write(t, noOutputs)); err == nil || !strings.Contains(err.Error(), "declares no") {
 		t.Fatalf("installer without outputs must refuse to load: %v", err)
@@ -295,8 +295,8 @@ metadata:
   name: install-headlamp
   namespace: headlamp
   annotations:
-    outpost.io/lifecycle: installer
-    outpost.io/installs: "Deployment/headlamp"
+    outpost.dhnt.io/lifecycle: installer
+    outpost.dhnt.io/installs: "Deployment/headlamp"
 `
 	if _, err := LoadBundle(write(t, malformed)); err == nil || !strings.Contains(err.Error(), "malformed") {
 		t.Fatalf("malformed outputs entry must refuse to load: %v", err)
@@ -308,7 +308,7 @@ metadata:
   name: install-headlamp
   namespace: headlamp
   annotations:
-    outpost.io/lifecycle: cleanup
+    outpost.dhnt.io/lifecycle: cleanup
 `
 	if _, err := LoadBundle(write(t, unknown)); err == nil || !strings.Contains(err.Error(), "unknown") {
 		t.Fatalf("unknown lifecycle value must refuse to load: %v", err)
