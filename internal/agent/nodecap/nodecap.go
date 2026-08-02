@@ -27,8 +27,12 @@ import (
 	"log/slog"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -37,6 +41,11 @@ const (
 	ProbeLabelSelector = "app.kubernetes.io/name=dks-runtime-probe"
 	// ProbeNamespace is where the probe DaemonSet runs.
 	ProbeNamespace = "kube-system"
+	// ProbeDaemonSetName is the name of the probe DaemonSet.
+	ProbeDaemonSetName = "dks-runtime-probe"
+	// DefaultProbeImage is the default container image for the probe.
+	// Reused image guaranteed by k3s containerd; no cloudbox dependency.
+	DefaultProbeImage = "rancher/mirrored-pause:3.6"
 
 	// UnavailableTaint keeps ordinary workloads off a node whose runtime
 	// cannot create a sandbox. The probe itself tolerates it.
@@ -47,6 +56,11 @@ const (
 	// itself instead of showing a bare taint.
 	UnavailableReason = "outpost.dhnt.io/runtime-unavailable-reason"
 
+	// RuntimeLabel identifies the runtime type of a node.
+	RuntimeLabel = "outpost.dhnt.io/runtime"
+	// RuntimeVirtual is the label value for virtual-kubelet nodes.
+	RuntimeVirtual = "virtual"
+
 	// ProbeGrace is how long a not-yet-Ready probe is given before its
 	// node is declared unavailable. Without it every node would be tainted
 	// during the seconds between scheduling the probe and its first Ready,
@@ -56,6 +70,169 @@ const (
 	unavailableReasonText = "runtime sandbox probe did not become Ready"
 	taintValue            = "sandbox"
 )
+
+// ConstructProbeDaemonSet builds the desired DaemonSet spec for the runtime probe.
+func ConstructProbeDaemonSet(image string) *appsv1.DaemonSet {
+	if image == "" {
+		image = DefaultProbeImage
+	}
+	zeroGrace := int64(0)
+	maxUnavail := intstr.FromString("25%")
+	return &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ProbeDaemonSetName,
+			Namespace: ProbeNamespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       "dks-runtime-probe",
+				"app.kubernetes.io/managed-by": "nodecap",
+			},
+		},
+		Spec: appsv1.DaemonSetSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app.kubernetes.io/name": "dks-runtime-probe",
+				},
+			},
+			UpdateStrategy: appsv1.DaemonSetUpdateStrategy{
+				Type: appsv1.RollingUpdateDaemonSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateDaemonSet{
+					MaxUnavailable: &maxUnavail,
+				},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"app.kubernetes.io/name": "dks-runtime-probe",
+					},
+				},
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						NodeAffinity: &corev1.NodeAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+								NodeSelectorTerms: []corev1.NodeSelectorTerm{
+									{
+										MatchExpressions: []corev1.NodeSelectorRequirement{
+											{
+												Key:      RuntimeLabel,
+												Operator: corev1.NodeSelectorOpNotIn,
+												Values:   []string{RuntimeVirtual},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					Tolerations: []corev1.Toleration{
+						{
+							Key:      UnavailableTaint,
+							Operator: corev1.TolerationOpExists,
+							Effect:   corev1.TaintEffectNoSchedule,
+						},
+						{
+							Key:      "node-role.kubernetes.io/master",
+							Operator: corev1.TolerationOpExists,
+							Effect:   corev1.TaintEffectNoSchedule,
+						},
+						{
+							Key:      "node-role.kubernetes.io/control-plane",
+							Operator: corev1.TolerationOpExists,
+							Effect:   corev1.TaintEffectNoSchedule,
+						},
+						{
+							Key:      "CriticalAddonsOnly",
+							Operator: corev1.TolerationOpExists,
+						},
+					},
+					TerminationGracePeriodSeconds: &zeroGrace,
+					Containers: []corev1.Container{
+						{
+							Name:            "probe",
+							Image:           image,
+							ImagePullPolicy: corev1.PullIfNotPresent,
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("1m"),
+									corev1.ResourceMemory: resource.MustParse("4Mi"),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("10m"),
+									corev1.ResourceMemory: resource.MustParse("16Mi"),
+								},
+							},
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: ptrToBool(false),
+								ReadOnlyRootFilesystem:   ptrToBool(true),
+								RunAsNonRoot:             ptrToBool(true),
+								RunAsUser:                ptrToInt64(65534),
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func ptrToBool(b bool) *bool    { return &b }
+func ptrToInt64(i int64) *int64 { return &i }
+
+// EnsureProbeDaemonSet deploys or updates the runtime probe DaemonSet in kube-system.
+func EnsureProbeDaemonSet(ctx context.Context, client kubernetes.Interface, image string) error {
+	if client == nil {
+		return fmt.Errorf("nodecap: Client is required")
+	}
+	if image == "" {
+		image = DefaultProbeImage
+	}
+	desired := ConstructProbeDaemonSet(image)
+	dsClient := client.AppsV1().DaemonSets(ProbeNamespace)
+
+	existing, err := dsClient.Get(ctx, ProbeDaemonSetName, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			_, err := dsClient.Create(ctx, desired, metav1.CreateOptions{})
+			if err != nil && !errors.IsAlreadyExists(err) {
+				return fmt.Errorf("create runtime probe daemonset: %w", err)
+			}
+			return nil
+		}
+		return fmt.Errorf("get runtime probe daemonset: %w", err)
+	}
+
+	if probeDaemonSetNeedsUpdate(existing, desired) {
+		existing.Spec = desired.Spec
+		existing.Labels = desired.Labels
+		_, err := dsClient.Update(ctx, existing, metav1.UpdateOptions{})
+		if err != nil {
+			return fmt.Errorf("update runtime probe daemonset: %w", err)
+		}
+	}
+	return nil
+}
+
+// DeleteProbeDaemonSet removes the runtime probe DaemonSet from kube-system.
+func DeleteProbeDaemonSet(ctx context.Context, client kubernetes.Interface) error {
+	if client == nil {
+		return nil
+	}
+	dsClient := client.AppsV1().DaemonSets(ProbeNamespace)
+	err := dsClient.Delete(ctx, ProbeDaemonSetName, metav1.DeleteOptions{})
+	if err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("delete runtime probe daemonset: %w", err)
+	}
+	return nil
+}
+
+func probeDaemonSetNeedsUpdate(existing, desired *appsv1.DaemonSet) bool {
+	if len(existing.Spec.Template.Spec.Containers) == 0 || len(desired.Spec.Template.Spec.Containers) == 0 {
+		return true
+	}
+	return existing.Spec.Template.Spec.Containers[0].Image != desired.Spec.Template.Spec.Containers[0].Image
+}
 
 // PodReady reports whether a pod has PodReady=True.
 func PodReady(p *corev1.Pod) bool {
@@ -168,11 +345,13 @@ type NodeFilter func(*corev1.Node) bool
 
 // Reconciler applies probe verdicts to nodes.
 type Reconciler struct {
-	Client   kubernetes.Interface
-	Include  NodeFilter
-	Interval time.Duration
-	Log      *slog.Logger
-	Now      func() time.Time // nil => time.Now
+	Client                kubernetes.Interface
+	Include               NodeFilter
+	Interval              time.Duration
+	Log                   *slog.Logger
+	Now                   func() time.Time // nil => time.Now
+	ProbeImage            string           // empty => DefaultProbeImage
+	DisableProbeDaemonSet bool             // true => delete probe DaemonSet
 }
 
 // Run reconciles until ctx is cancelled.
@@ -215,6 +394,17 @@ func (r *Reconciler) Once(ctx context.Context) error {
 	now := time.Now
 	if r.Now != nil {
 		now = r.Now
+	}
+
+	if r.DisableProbeDaemonSet {
+		if err := DeleteProbeDaemonSet(ctx, r.Client); err != nil {
+			log.Warn("nodecap: cleanup probe daemonset failed", "err", err)
+		}
+		return nil
+	}
+
+	if err := EnsureProbeDaemonSet(ctx, r.Client, r.ProbeImage); err != nil {
+		log.Warn("nodecap: ensure probe daemonset failed", "err", err)
 	}
 
 	listCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
