@@ -343,6 +343,20 @@ func removeTaintByKey(taints []corev1.Taint, key string) ([]corev1.Taint, bool) 
 // exclude them here rather than the package guessing from node names.
 type NodeFilter func(*corev1.Node) bool
 
+// IsVirtualNode reports whether n is a virtual-kubelet node — one carrying
+// RuntimeLabel=RuntimeVirtual. Such a node runs no container runtime the
+// sandbox probe could exercise, so the capability Reconciler must skip it,
+// by LABEL rather than by node name.
+func IsVirtualNode(n *corev1.Node) bool {
+	return n != nil && n.Labels[RuntimeLabel] == RuntimeVirtual
+}
+
+// DefaultInclude is the standard Reconciler.Include filter: probe every node
+// EXCEPT virtual-kubelet nodes. Exported so the control-plane wiring and the
+// mixed-runtime conformance gate share ONE definition of the exclusion
+// instead of each re-deriving the runtime-label check.
+func DefaultInclude(n *corev1.Node) bool { return !IsVirtualNode(n) }
+
 // Reconciler applies probe verdicts to nodes.
 type Reconciler struct {
 	Client                kubernetes.Interface

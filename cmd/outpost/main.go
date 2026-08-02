@@ -73,7 +73,6 @@ import (
 	"github.com/qiangli/outpost/internal/agent/warm"
 	"github.com/qiangli/outpost/internal/scheduler"
 	"github.com/qiangli/outpost/internal/telemetry"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -3082,15 +3081,6 @@ func rememberControlPlaneKubeconfig(fc *conf.FileConfig, cfgPath, path string) e
 	return conf.SaveFile(cfgPath, fc)
 }
 
-// Node runtime labels, matching the cloud-hosted control plane's values
-// exactly (cloudbox internal/cluster/node_identity.go). A node's runtime
-// must read the same whichever placement runs its cluster — divergence
-// would make selectors and manifests non-portable between placements.
-const (
-	clusterRuntimeLabel   = "outpost.dhnt.io/runtime"
-	clusterRuntimeVirtual = "virtual"
-)
-
 // startControlPlaneReconcilers runs the controllers a PEER-HOSTED control
 // plane needs and cloudbox would otherwise provide
 // (dhnt/docs/dks-control-plane-on-sphere.md).
@@ -3204,11 +3194,9 @@ func startControlPlaneReconcilers(ctx context.Context, g *errgroup.Group, fc *co
 	// Virtual-kubelet backends have no container runtime of their own to
 	// probe, so they are excluded — by RUNTIME LABEL, never by node name.
 	cap := &nodecap.Reconciler{
-		Client: cs,
-		Log:    slog.Default(),
-		Include: func(n *corev1.Node) bool {
-			return n.Labels[clusterRuntimeLabel] != clusterRuntimeVirtual
-		},
+		Client:  cs,
+		Log:     slog.Default(),
+		Include: nodecap.DefaultInclude,
 	}
 	g.Go(func() error { cap.Run(ctx); return nil })
 	slog.Info("control-plane reconcilers: runtime capability canary started")

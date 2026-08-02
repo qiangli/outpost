@@ -31,6 +31,29 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// Node-identity label vocabulary, matching the cloud-hosted control plane
+// and the peer packages (nodegc, nodecap) exactly. A virtual-kubelet node
+// carries RuntimeLabel=RuntimeVirtual.
+const (
+	RuntimeLabel   = "outpost.dhnt.io/runtime"
+	RuntimeVirtual = "virtual"
+)
+
+// IsVirtualNode reports whether n is a virtual-kubelet node.
+//
+// Address reconciliation exists to make the apiserver dial a kubelet that is
+// only reachable through a tunnel. A virtual-kubelet node runs NO kubelet of
+// its own — it serves only the Pod lifecycle subset, not the streaming API —
+// so there is nothing at the derived loopback address:port to dial. Patching
+// one would publish an ExternalIP the apiserver then prefers for `kubectl
+// logs`/`exec`/`port-forward`/metrics, turning "unsupported on a virtual
+// node" into a confusing dial timeout, and would consume a slot in k3s's
+// ExternalIP routing trie that a real kubelet could use. So the reconciler
+// skips virtual nodes by LABEL — never by node name.
+func IsVirtualNode(n *corev1.Node) bool {
+	return n != nil && n.Labels[RuntimeLabel] == RuntimeVirtual
+}
+
 // LoopbackForNode maps a node name to a stable, node-UNIQUE address in
 // 127.0.0.0/8.
 //
@@ -194,6 +217,9 @@ func (r *Reconciler) Once(ctx context.Context) error {
 
 	taken := map[string]string{}
 	for _, n := range items {
+		if IsVirtualNode(n) {
+			continue // no kubelet to reach — see IsVirtualNode
+		}
 		addr := LoopbackForNode(n.Name, taken)
 		if addr == "" {
 			continue
@@ -298,6 +324,9 @@ func (r *Reconciler) Diagnostics(ctx context.Context) ([]NodeAddressDiagnostic, 
 	taken := map[string]string{}
 	var diagnostics []NodeAddressDiagnostic
 	for _, n := range items {
+		if IsVirtualNode(n) {
+			continue // virtual nodes are not address-reconciled — see IsVirtualNode
+		}
 		expectedAddr := LoopbackForNode(n.Name, taken)
 		expectedPort, ok := r.PortFor(n.Name)
 		if !ok || expectedPort <= 0 {

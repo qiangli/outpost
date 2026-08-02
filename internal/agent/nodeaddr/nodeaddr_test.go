@@ -133,6 +133,54 @@ func TestReconcile_PatchesNodesAndSkipsCorrectOnes(t *testing.T) {
 	}
 }
 
+// A virtual-kubelet node runs no kubelet, so it has nothing to reach at the
+// derived loopback address:port. Patching it would publish an ExternalIP the
+// apiserver then prefers for logs/exec/port-forward — turning "unsupported on
+// a virtual node" into a dial timeout — and would burn a slot in k3s's
+// ExternalIP routing trie. The reconciler must skip it by LABEL.
+func TestReconcile_SkipsVirtualKubeletNode(t *testing.T) {
+	virt := node("laptop-vk-podman", "", 0)
+	virt.Labels = map[string]string{RuntimeLabel: RuntimeVirtual}
+
+	cs := fake.NewSimpleClientset(
+		virt,
+		node("agent", "", 0), // real agent node — must still be patched
+	)
+	r := &Reconciler{
+		Client:  cs,
+		PortFor: func(string) (int, bool) { return 10250, true },
+	}
+	if err := r.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	patched := map[string]bool{}
+	for _, a := range cs.Actions() {
+		if a.GetVerb() == "patch" {
+			if pa, ok := a.(interface{ GetName() string }); ok {
+				patched[pa.GetName()] = true
+			}
+		}
+	}
+	if patched["laptop-vk-podman"] {
+		t.Error("virtual-kubelet node was address-patched; it runs no kubelet")
+	}
+	if !patched["agent"] {
+		t.Error("real agent node was not patched")
+	}
+
+	// It is also excluded from diagnostics — a virtual node showing up as
+	// unpatched would read as a bug rather than an intentional skip.
+	diags, err := r.Diagnostics(context.Background())
+	if err != nil {
+		t.Fatalf("Diagnostics: %v", err)
+	}
+	for _, d := range diags {
+		if d.NodeName == "laptop-vk-podman" {
+			t.Error("virtual-kubelet node appeared in address diagnostics")
+		}
+	}
+}
+
 // A node whose tunnel is not up has no reachable kubelet port. Patching a
 // bogus one would publish an address that dials nothing.
 func TestReconcile_SkipsNodeWithNoPort(t *testing.T) {
