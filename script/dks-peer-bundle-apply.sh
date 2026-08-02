@@ -66,12 +66,15 @@ expand_tilde() {
 # symlinks and `..` in the containing directory (via `pwd -P`), so a
 # route to the cloudbox kubeconfig via a file symlink, a directory
 # symlink, a relative path, or a `..` traversal all collapse to the same
-# canonical absolute path. Best-effort on a non-existent LEAF (the file
-# may not be created yet — the caller's -f check catches that), but
-# FAIL-CLOSED (rc 1, no output) on a genuine resolution error: a symlink
-# loop, an unreadable link, or a path with no resolvable ancestor. An
-# un-canonicalizable venue is never treated as "probably fine" — that is
-# exactly the hole a naive string compare left open.
+# canonical absolute path. Best-effort on not-yet-existing components
+# (the file may not be created yet — the caller's -f check catches
+# that), but FAIL-CLOSED (rc 1, no output) on a genuine resolution
+# error: a leaf symlink loop, an unreadable link, an ancestor that is a
+# dangling or looped SYMLINK (a directory that cannot be traversed is a
+# resolution failure, not a missing directory), or a path with no
+# resolvable ancestor. An un-canonicalizable venue is never treated as
+# "probably fine" — that is exactly the hole a naive string compare
+# left open.
 canonicalize_path() {
     local p; p="$(expand_tilde "$1")"
     [ -n "$p" ] || return 1
@@ -98,6 +101,10 @@ canonicalize_path() {
         if cdir="$(cd "$dir" 2>/dev/null && pwd -P)"; then
             break
         fi
+        # An ancestor that cannot be traversed AND is a symlink is
+        # dangling or looped — a genuine resolution error, not a
+        # not-yet-created directory. Fail closed rather than guess.
+        [ ! -L "$dir" ] || return 1
         parent="$(dirname "$dir")"
         [ "$parent" != "$dir" ] || return 1
         if [ -n "$rest" ]; then rest="$(basename "$dir")/$rest"; else rest="$(basename "$dir")"; fi

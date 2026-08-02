@@ -128,6 +128,32 @@ out="$(resolve_kubeconfig 0 "$FIX/loopA.yaml" 2>&1)"; rc=$?
 is       "fail-closed symlink loop -> rc 1" "$rc" "1"
 contains "fail-closed symlink loop -> loud" "$out" "cannot resolve kubeconfig path"
 
+# fail-closed: an ANCESTOR that is a symlink loop is a resolution error
+# too — a directory that cannot be traversed is not a missing directory.
+ln -s "$FIX/dirloop" "$FIX/dirloop"
+out="$(resolve_kubeconfig 0 "$FIX/dirloop/k3s.yaml" 2>&1)"; rc=$?
+is       "fail-closed ancestor loop -> rc 1" "$rc" "1"
+contains "fail-closed ancestor loop -> loud" "$out" "cannot resolve kubeconfig path"
+
+# fail-closed: an ancestor that is a DANGLING symlink is a resolution
+# error (unreachable), never silently passed through.
+ln -s "$FIX/no-such-target" "$FIX/dangling"
+out="$(resolve_kubeconfig 0 "$FIX/dangling/k3s.yaml" 2>&1)"; rc=$?
+is       "fail-closed dangling ancestor -> rc 1" "$rc" "1"
+contains "fail-closed dangling ancestor -> loud" "$out" "cannot resolve kubeconfig path"
+
+# negative control: a plain not-yet-created ancestor directory (NOT a
+# symlink) is still best-effort — the -f evidence check owns that case.
+out="$(resolve_kubeconfig 0 "$FIX/future-dir/k3s.yaml" 2>&1)"; rc=$?
+is "missing-dir passthrough -> rc 0" "$rc" "0"
+
+# fail-closed on the CLOUDBOX side: if the cloudbox reference itself
+# cannot be canonicalized, the guard cannot prove a chosen path is not
+# the cloudbox plane — every chosen path is refused.
+out="$(DKS_CLOUDBOX_KUBECONFIG="$FIX/dirloop/outpost.yaml" resolve_kubeconfig 0 "$DKS_PEER_KUBECONFIG" 2>&1)"; rc=$?
+is       "unresolvable cloudbox ref -> rc 1" "$rc" "1"
+contains "unresolvable cloudbox ref -> loud" "$out" "cannot resolve cloudbox kubeconfig reference"
+
 STUB_ARGS_FILE="$FIX/args.txt"
 export STUB_ARGS_FILE
 
