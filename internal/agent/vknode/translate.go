@@ -26,7 +26,20 @@ import (
 // Pod uses a feature outside the v1 supported surface (see the file
 // comment). The returned spec carries the outpost.io/* identity labels
 // so reconcile and `podman ps` both stay informative.
+//
+// This unscoped form (no ClusterLabel) exists for legacy callers and
+// tests; the podman backend uses BuildSpecForCluster so containers are
+// stamped with the owning cluster's identity.
 func BuildSpec(pod *corev1.Pod) (*SpecGenerator, error) {
+	return BuildSpecForCluster(pod, "")
+}
+
+// BuildSpecForCluster is BuildSpec plus cluster-identity scoping: when
+// clusterID is non-empty the container is stamped with ClusterLabel and
+// its hostPath named volumes are keyed under that cluster (see
+// hostPathVolumeName), so two clusters sharing one podman socket can
+// never see each other's containers or silently share a volume.
+func BuildSpecForCluster(pod *corev1.Pod, clusterID string) (*SpecGenerator, error) {
 	if pod == nil {
 		return nil, fmt.Errorf("vknode: nil Pod")
 	}
@@ -48,7 +61,7 @@ func BuildSpec(pod *corev1.Pod) (*SpecGenerator, error) {
 		WorkDir:  c.WorkingDir,
 		Terminal: c.TTY,
 		Stdin:    c.Stdin,
-		Labels:   buildLabels(pod, c.Name),
+		Labels:   buildLabels(pod, c.Name, clusterID),
 	}
 
 	// container.Command in K8s corresponds to OCI ENTRYPOINT; container.Args
@@ -74,7 +87,7 @@ func BuildSpec(pod *corev1.Pod) (*SpecGenerator, error) {
 	}
 
 	if len(c.VolumeMounts) > 0 {
-		mounts, volumes, err := buildMounts(pod, c.VolumeMounts)
+		mounts, volumes, err := buildMounts(pod, c.VolumeMounts, clusterID)
 		if err != nil {
 			return nil, err
 		}
@@ -122,13 +135,16 @@ func ContainerName(pod *corev1.Pod) string {
 	return fmt.Sprintf("outpost-%s-%s", uidPrefix, name)
 }
 
-func buildLabels(pod *corev1.Pod, containerName string) map[string]string {
+func buildLabels(pod *corev1.Pod, containerName, clusterID string) map[string]string {
 	out := map[string]string{
 		ManagedLabel:       "true",
 		PodUIDLabel:        string(pod.UID),
 		PodNamespaceLabel:  pod.Namespace,
 		PodNameLabel:       pod.Name,
 		ContainerNameLabel: containerName,
+	}
+	if clusterID != "" {
+		out[ClusterLabel] = clusterID
 	}
 	// Record the resolved host ports as labels so HydratePodPortsFromLabels
 	// can re-derive them on daemon restart without re-allocating
@@ -192,7 +208,7 @@ func buildEnv(envs []corev1.EnvVar) (map[string]string, error) {
 // auto-injects on every pod since 1.21) are SILENTLY SKIPPED rather
 // than rejected — workload pods on outposts don't need in-cluster API
 // access, and rejecting these would refuse every kubectl-run pod.
-func buildMounts(pod *corev1.Pod, vms []corev1.VolumeMount) ([]Mount, []NamedVolume, error) {
+func buildMounts(pod *corev1.Pod, vms []corev1.VolumeMount, clusterID string) ([]Mount, []NamedVolume, error) {
 	volByName := make(map[string]corev1.Volume, len(pod.Spec.Volumes))
 	for _, v := range pod.Spec.Volumes {
 		volByName[v.Name] = v
@@ -214,7 +230,7 @@ func buildMounts(pod *corev1.Pod, vms []corev1.VolumeMount) ([]Mount, []NamedVol
 				return nil, nil, fmt.Errorf("vknode: hostPath %q must be absolute", src)
 			}
 			nv := NamedVolume{
-				Name: hostPathVolumeName(pod.Namespace, src),
+				Name: hostPathVolumeName(clusterID, pod.Namespace, src),
 				Dest: vm.MountPath,
 			}
 			if vm.ReadOnly {

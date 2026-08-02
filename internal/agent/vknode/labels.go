@@ -16,6 +16,24 @@ const (
 	PodNameLabel      = "outpost.io/pod-name"
 	PodNamespaceLabel = "outpost.io/pod-namespace"
 
+	// ClusterLabel scopes a managed container (or volume) to the CLUSTER
+	// that created it, not just to "some outpost vk". Two providers can
+	// share one podman socket while serving different control planes
+	// (e.g. the supervised daemon on cloud DKS plus a standalone
+	// outpost-vk on a peer DKS); without this label each one's reconcile
+	// saw — and garbage-collected — the other's containers. The value is
+	// derived from the cluster CA fingerprint (see ClusterIdentityFromCA),
+	// NOT the API URL, so it stays stable when the same cluster is
+	// reached via different addresses (LAN IP vs mesh forward).
+	//
+	// Legacy containers created before this label existed carry only
+	// ManagedLabel. The migration rule is fail-closed: an unlabeled
+	// container is never listed, adopted, or deleted from reconcile —
+	// only an apiserver-driven pod-UID match (UIDs are apiserver-minted
+	// UUIDs, so a match is unambiguous proof of ownership) lets a scoped
+	// provider adopt or delete one.
+	ClusterLabel = "outpost.io/cluster"
+
 	// ContainerNameLabel records the K8s container-spec name inside a
 	// (potentially multi-container) Pod. v1 only supports
 	// single-container Pods so this is always pod.Spec.Containers[0].Name,

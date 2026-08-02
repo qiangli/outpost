@@ -62,6 +62,15 @@ type RunOptions struct {
 	// at a trusted kubeconfig and have no cloudbox-derived Access set.
 	AllowAnyNamespace bool
 
+	// ClusterIdentity scopes the podman backend's containers and volumes
+	// to one cluster (see ClusterLabel). Leave empty to let Run derive it
+	// from Kube's CA bundle via ClusterIdentityFromRestConfig — the
+	// default for both the supervised daemon and the standalone
+	// outpost-vk runner, which keeps two providers pointed at different
+	// control planes safe on one shared podman socket without either
+	// caller having to remember the wiring.
+	ClusterIdentity string
+
 	// TransientApps, when non-nil, is the local app router each
 	// Running pod gets published into so cloudbox can reach it via
 	// the existing /h/<node>/app/<name>/ proxy. nil = don't publish
@@ -106,6 +115,24 @@ func Run(ctx context.Context, opts RunOptions) error {
 		)
 	}
 
+	// Cluster identity for podman-substrate scoping. Derived from the CA
+	// fingerprint (never the API URL — the same cluster stays one
+	// identity across address changes). Fail-closed on derivation errors:
+	// running unscoped against a socket another cluster may share is
+	// exactly the cross-delete hazard the scoping exists to prevent.
+	clusterID := opts.ClusterIdentity
+	if clusterID == "" {
+		id, err := ClusterIdentityFromRestConfig(opts.Kube)
+		if err != nil {
+			return fmt.Errorf("cluster identity: %w", err)
+		}
+		clusterID = id
+	}
+	if clusterID == "" && opts.Backend == nil {
+		slog.Warn("vknode: no cluster CA in kube config — podman containers run UNSCOPED; " +
+			"a second cluster sharing this podman socket would not be isolated")
+	}
+
 	var (
 		prov    *Provider
 		provErr error
@@ -113,7 +140,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if opts.Backend != nil {
 		prov = NewProviderWithBackend(opts.Backend)
 	} else {
-		prov, provErr = NewProvider(opts.PodmanSocket)
+		prov, provErr = NewProvider(opts.PodmanSocket, clusterID)
 	}
 	if provErr != nil {
 		return fmt.Errorf("provider: %w", provErr)
@@ -220,6 +247,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 		slog.Info("vknode: running",
 			"node", opts.NodeName,
 			"podman_socket", opts.PodmanSocket,
+			"cluster_identity", clusterID,
 			"apiserver", opts.Kube.Host)
 	}
 	err = g.Wait()

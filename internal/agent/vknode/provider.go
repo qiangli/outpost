@@ -47,12 +47,21 @@ type Provider struct {
 // repopulate the in-memory pod cache from containers podman is already
 // running with the outpost.io/managed label — this is what makes
 // vknode survive a crash without forgetting what it owns.
-func NewProvider(podmanSocket string) (*Provider, error) {
+//
+// clusterID is the stable cluster identity (ClusterIdentityFromCA /
+// ClusterIdentityFromRestConfig) scoping every container and volume
+// this provider touches. A podman socket is shared substrate — another
+// provider serving a DIFFERENT cluster may drive it concurrently, and
+// the scoping is what keeps each one's reconcile from adopting or
+// deleting the other's containers. Empty clusterID runs unscoped
+// (legacy semantics; only safe when this is the sole cluster on the
+// socket).
+func NewProvider(podmanSocket, clusterID string) (*Provider, error) {
 	c, err := NewClient(podmanSocket)
 	if err != nil {
 		return nil, err
 	}
-	p := NewProviderWithBackend(&podmanBackend{client: c})
+	p := NewProviderWithBackend(&podmanBackend{client: c, clusterID: clusterID})
 	p.client = c
 	p.requireExplicitAccess = false
 	return p, nil

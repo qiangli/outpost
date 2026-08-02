@@ -18,11 +18,17 @@ import (
 // namespace gate prevents cross-tenant collisions on a path everyone
 // might happen to pick (/data, /var/lib/x).
 //
-// Format: outpost-hp-<sha1(ns + "\x00" + path)[:16]>.
-// The hash collapses arbitrary path characters into the libpod volume
-// name alphabet ([a-zA-Z0-9_.-]) without us having to escape; 16 hex
-// chars = 64 bits of namespace, ample for "no collisions across the
-// volumes any one outpost holds".
+// Format: outpost-hp-<sha1(clusterID + "\x00" + ns + "\x00" + path)[:16]>
+// (legacy unscoped form omits the clusterID segment entirely, keeping
+// pre-scoping volume names byte-identical). The clusterID segment keeps
+// two clusters sharing one podman socket from silently sharing storage:
+// without it, cluster A's default//data and cluster B's default//data
+// hashed to the same volume name and CreateVolume's already-exists
+// tolerance quietly bound both to one volume. The hash collapses
+// arbitrary path characters into the libpod volume name alphabet
+// ([a-zA-Z0-9_.-]) without us having to escape; 16 hex chars = 64 bits
+// of namespace, ample for "no collisions across the volumes any one
+// outpost holds".
 //
 // We use a libpod-managed named volume instead of a host bind mount
 // because on macOS podman runs in a vfkit/libkrun Linux VM — bind-
@@ -33,8 +39,12 @@ import (
 // so they "just work" on both macOS and Linux outposts and still
 // survive container removal — which is what the SeaweedFS-style
 // "Deployment recreates the pod, data should persist" use case needs.
-func hostPathVolumeName(namespace, path string) string {
-	sum := sha1.Sum([]byte(namespace + "\x00" + path))
+func hostPathVolumeName(clusterID, namespace, path string) string {
+	key := namespace + "\x00" + path
+	if clusterID != "" {
+		key = clusterID + "\x00" + key
+	}
+	sum := sha1.Sum([]byte(key))
 	return "outpost-hp-" + hex.EncodeToString(sum[:8])
 }
 
@@ -83,20 +93,26 @@ func sanitizeVolName(s string) string {
 // Labels stamped on each volume so an operator using
 // `podman volume inspect <name>` / `podman volume ls --filter label=...`
 // can recover which K8s namespace and HostPath / EmptyDir name is
-// behind a given opaque outpost-* identifier.
-func EnsureVolumesForPod(ctx context.Context, c *Client, pod *corev1.Pod) error {
+// behind a given opaque outpost-* identifier. clusterID (when non-empty)
+// is recorded as ClusterLabel and folded into the hostPath volume name,
+// mirroring the container-side scoping — the volume names here MUST stay
+// in lockstep with what buildMounts references in the container spec.
+func EnsureVolumesForPod(ctx context.Context, c *Client, pod *corev1.Pod, clusterID string) error {
 	if pod == nil || c == nil {
 		return nil
 	}
 	for _, v := range pod.Spec.Volumes {
 		switch {
 		case v.HostPath != nil:
-			name := hostPathVolumeName(pod.Namespace, v.HostPath.Path)
+			name := hostPathVolumeName(clusterID, pod.Namespace, v.HostPath.Path)
 			labels := map[string]string{
 				"outpost.io/managed":   "true",
 				"outpost.io/kind":      "hostpath",
 				"outpost.io/namespace": pod.Namespace,
 				"outpost.io/hostpath":  v.HostPath.Path,
+			}
+			if clusterID != "" {
+				labels[ClusterLabel] = clusterID
 			}
 			if err := c.CreateVolume(ctx, name, labels); err != nil {
 				return fmt.Errorf("vknode: ensure hostPath volume %q: %w", name, err)
@@ -112,6 +128,9 @@ func EnsureVolumesForPod(ctx context.Context, c *Client, pod *corev1.Pod) error 
 				"outpost.io/namespace":   pod.Namespace,
 				"outpost.io/pod-uid":     string(pod.UID),
 				"outpost.io/volume-name": v.Name,
+			}
+			if clusterID != "" {
+				labels[ClusterLabel] = clusterID
 			}
 			if err := c.CreateVolume(ctx, name, labels); err != nil {
 				return fmt.Errorf("vknode: ensure emptyDir volume %q: %w", name, err)
@@ -131,6 +150,11 @@ func EnsureVolumesForPod(ctx context.Context, c *Client, pod *corev1.Pod) error 
 // returned so the larger DeletePod path still succeeds. A leftover
 // volume becomes inspectable via `podman volume ls` (outpost-ed-*
 // prefix) and the operator can drop it manually.
+//
+// No cluster-identity scoping is needed here: emptyDir volume names
+// embed the pod UID, which is an apiserver-minted UUID — a cluster can
+// only ever compute the names of its own pods' volumes, so a cross-
+// cluster reap is structurally impossible.
 func RemoveEmptyDirsForPod(ctx context.Context, c *Client, pod *corev1.Pod) error {
 	if pod == nil || c == nil {
 		return nil

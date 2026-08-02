@@ -215,7 +215,7 @@ func TestBuildSpec_HostPathMount(t *testing.T) {
 		t.Fatalf("Volumes: %+v", spec.Volumes)
 	}
 	nv := spec.Volumes[0]
-	want := hostPathVolumeName(p.Namespace, "/srv/data")
+	want := hostPathVolumeName("", p.Namespace, "/srv/data")
 	if nv.Name != want || nv.Dest != "/data" {
 		t.Errorf("named vol: %+v (want name=%s)", nv, want)
 	}

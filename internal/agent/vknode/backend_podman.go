@@ -17,8 +17,39 @@ import (
 // through the hand-rolled HTTP-over-unix Client (see client.go); libpod
 // serializes per-container, so concurrent Ensure/Delete for distinct
 // pods don't race.
+//
+// clusterID scopes everything this backend touches to ONE cluster (see
+// ClusterLabel). A podman socket is a shared substrate: the supervised
+// daemon's provider and a standalone outpost-vk pointed at a different
+// control plane may both drive it concurrently. Every list/adopt/delete
+// therefore consults ownsUIDMatched / the List partition below instead
+// of trusting ManagedLabel alone. Empty clusterID = legacy unscoped
+// mode (no CA to fingerprint): the backend stamps no ClusterLabel and
+// claims only unlabeled containers.
 type podmanBackend struct {
-	client *Client
+	client    *Client
+	clusterID string
+}
+
+// ownsUIDMatched reports whether a managed container ALREADY MATCHED by
+// PodUIDLabel belongs to this backend's cluster. Rules:
+//
+//   - same ClusterLabel (including both empty) → ours;
+//   - no ClusterLabel (legacy pre-scoping container) → ours, because the
+//     caller matched the pod UID first and UIDs are apiserver-minted
+//     UUIDs — another cluster cannot hold a pod with this UID, so the
+//     UID match is unambiguous proof of ownership. This is the fail-
+//     closed migration path for legacy containers: apiserver-driven
+//     adopt/delete works, reconcile-driven listing does not (see List);
+//   - any OTHER non-empty ClusterLabel → not ours, never touch it. Also
+//     covers the unscoped-backend-vs-scoped-container direction: a
+//     legacy daemon never claims a container a scoped provider stamped.
+//
+// Only valid after a UID match — List must NOT use this (a legacy
+// container with a non-matching UID is ambiguous and stays untouched).
+func (b *podmanBackend) ownsUIDMatched(labels map[string]string) bool {
+	owner := labels[ClusterLabel]
+	return owner == b.clusterID || owner == ""
 }
 
 // Ensure builds the spec, ensures the image + named volumes exist, and
@@ -28,7 +59,7 @@ type podmanBackend struct {
 // namespace gate and host-port allocation; caching + transient-app
 // publishing happen Provider-side after this returns.
 func (b *podmanBackend) Ensure(ctx context.Context, pod *corev1.Pod) error {
-	spec, err := BuildSpec(pod)
+	spec, err := BuildSpecForCluster(pod, b.clusterID)
 	if err != nil {
 		return err
 	}
@@ -45,7 +76,7 @@ func (b *podmanBackend) Ensure(ctx context.Context, pod *corev1.Pod) error {
 	// /containers/create does not auto-create named volumes referenced
 	// via mounts, so the first-create and the daemon-restart adopt path
 	// both need the volumes to exist first.
-	if err := EnsureVolumesForPod(ctx, b.client, pod); err != nil {
+	if err := EnsureVolumesForPod(ctx, b.client, pod, b.clusterID); err != nil {
 		return fmt.Errorf("vknode: ensure volumes for pod %s: %w", podKey(pod.Namespace, pod.Name), err)
 	}
 
@@ -153,9 +184,32 @@ func (b *podmanBackend) Status(ctx context.Context, pod *corev1.Pod) (*corev1.Po
 }
 
 // List rebuilds skeleton Pods from libpod's managed containers (those
-// carrying ManagedLabel=true). The reconstruction is intentionally
-// minimal — the apiserver is the source of truth for the full spec; the
-// PodController issues an UpdatePod with the real Pod once it lists.
+// carrying ManagedLabel=true) that belong to THIS cluster. The
+// reconstruction is intentionally minimal — the apiserver is the source
+// of truth for the full spec; the PodController issues an UpdatePod
+// with the real Pod once it lists.
+//
+// Ownership partition (the load-bearing safety boundary — whatever List
+// returns, the PodController garbage-collects when its apiserver
+// doesn't know the pod, so listing a container is a license to delete
+// it):
+//
+//   - ClusterLabel == b.clusterID → ours, listed;
+//   - ClusterLabel set but different → another cluster's, skipped
+//     silently;
+//   - ClusterLabel absent → legacy pre-scoping container: AMBIGUOUS.
+//     Fail closed — not listed (so never GC'd), not adopted here. If it
+//     is really ours, the apiserver still knows the pod and CreatePod's
+//     UID-matched adopt path (ownsUIDMatched) recovers it; if it
+//     belongs to another cluster, that cluster does the same. Scoped ↔
+//     unscoped symmetry: an unscoped backend (clusterID == "") lists
+//     only unlabeled containers and skips every claimed one.
+//
+// We deliberately fetch with the broad ManagedLabel filter and partition
+// client-side rather than pushing ClusterLabel into the libpod filter:
+// the client-side rule is the single enforcement point (exercised
+// directly by the two-cluster tests) and it lets us log the legacy
+// containers we're leaving alone instead of silently not seeing them.
 func (b *podmanBackend) List(ctx context.Context) ([]*corev1.Pod, error) {
 	items, err := b.client.ListContainers(ctx, true, map[string]string{ManagedLabel: "true"})
 	if err != nil {
@@ -163,6 +217,17 @@ func (b *podmanBackend) List(ctx context.Context) ([]*corev1.Pod, error) {
 	}
 	out := make([]*corev1.Pod, 0, len(items))
 	for _, item := range items {
+		owner := item.Labels[ClusterLabel]
+		if owner != b.clusterID {
+			if owner == "" {
+				// Legacy unscoped container — see the fail-closed rule
+				// in the function comment.
+				slog.Warn("vknode: skipping legacy unscoped managed container (fail-closed; adopt happens on the pod-UID match path)",
+					"container", item.ID,
+					"pod", item.Labels[PodNamespaceLabel]+"/"+item.Labels[PodNameLabel])
+			}
+			continue
+		}
 		ns := item.Labels[PodNamespaceLabel]
 		name := item.Labels[PodNameLabel]
 		uid := item.Labels[PodUIDLabel]
@@ -203,9 +268,19 @@ func (b *podmanBackend) HydratePorts(ctx context.Context, pod *corev1.Pod) error
 }
 
 // findContainerByPodUID returns the libpod container ID for the given
-// pod UID, or "" if no managed container matches. Errors only on
-// list-level failures — an empty result is a normal "not here yet /
-// already gone" signal.
+// pod UID, or "" if no managed container OWNED BY THIS CLUSTER matches.
+// Errors only on list-level failures — an empty result is a normal "not
+// here yet / already gone" signal.
+//
+// Ownership is ownsUIDMatched: same ClusterLabel, or a legacy container
+// with no ClusterLabel (the UID match itself disambiguates — this is
+// how pre-scoping containers get adopted and eventually replaced by
+// labeled ones as pods churn). A container claimed by a DIFFERENT
+// cluster is reported as not-found even on a UID match, so adopt,
+// status, hydrate, and delete all fail closed against it. Because
+// ContainerName is UID-derived, a synthetic cross-cluster UID collision
+// then surfaces as a loud create-name conflict rather than a silent
+// takeover — exactly what we want.
 func (b *podmanBackend) findContainerByPodUID(ctx context.Context, podUID string) (string, error) {
 	if podUID == "" {
 		return "", nil
@@ -217,19 +292,28 @@ func (b *podmanBackend) findContainerByPodUID(ctx context.Context, podUID string
 	if err != nil {
 		return "", err
 	}
-	if len(items) == 0 {
+	owned := items[:0]
+	for _, it := range items {
+		if b.ownsUIDMatched(it.Labels) {
+			owned = append(owned, it)
+			continue
+		}
+		slog.Warn("vknode: pod UID matches a container owned by another cluster — leaving it alone",
+			"pod_uid", podUID, "container", it.ID, "owner", it.Labels[ClusterLabel], "self", b.clusterID)
+	}
+	if len(owned) == 0 {
 		return "", nil
 	}
-	if len(items) > 1 {
+	if len(owned) > 1 {
 		// Shouldn't happen — ContainerName is deterministic per podUID.
 		// Prefer a running one; log so we can investigate.
 		slog.Warn("vknode: multiple containers match pod UID",
-			"pod_uid", podUID, "count", len(items))
-		for _, it := range items {
+			"pod_uid", podUID, "count", len(owned))
+		for _, it := range owned {
 			if it.State == "running" {
 				return it.ID, nil
 			}
 		}
 	}
-	return items[0].ID, nil
+	return owned[0].ID, nil
 }

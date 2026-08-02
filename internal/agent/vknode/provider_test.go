@@ -59,6 +59,17 @@ func (f *fakeLibpod) handler(t *testing.T) http.HandlerFunc {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			// Real libpod refuses a duplicate container name with 409.
+			// The two-cluster tests rely on this: a UID collision across
+			// clusters must surface as a loud conflict, never a takeover.
+			for _, c := range f.containers {
+				if c.Name == spec.Name {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusConflict)
+					_, _ = io.WriteString(w, `{"message":"container name is already in use"}`)
+					return
+				}
+			}
 			id := "id-" + spec.Name
 			f.containers[id] = &fakeContainer{
 				ID:     id,
@@ -164,7 +175,7 @@ func newProviderWithFake(t *testing.T) (*Provider, *fakeLibpod) {
 	t.Helper()
 	fake := newFakeLibpod()
 	sock := startFakeLibpod(t, fake.handler(t))
-	p, err := NewProvider(sock)
+	p, err := NewProvider(sock, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,8 +396,11 @@ func TestProvider_GetPod_NotFound(t *testing.T) {
 
 func TestProvider_GetPods_ReturnsCachedSlice(t *testing.T) {
 	p, _ := newProviderWithFake(t)
-	for i, name := range []string{"a", "b", "c"} {
-		pod := newTestPod(name, "uid-multi-"+string(rune('0'+i)))
+	// UIDs must differ within their first 8 non-dash characters —
+	// ContainerName derives from that prefix and the fake (like real
+	// libpod) 409s duplicate names.
+	for _, name := range []string{"a", "b", "c"} {
+		pod := newTestPod(name, "uid"+name+"-multi")
 		if err := p.CreatePod(context.Background(), pod); err != nil {
 			t.Fatal(err)
 		}
