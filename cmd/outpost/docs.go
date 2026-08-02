@@ -41,6 +41,7 @@ var docsManifest = []struct {
 	{"mcp", "MCP server guide", "Setup, tool catalog, .mcp.json snippet, token rotation, security posture."},
 	{"dev-deploy", "Direct-local dev → deploy", "Makefile recipes for same-machine and LAN deploys (podman); apps stop/start; remote-cred caching."},
 	{"windows-service", "Windows host runbook", "Reboot-surviving Task Scheduler setup + sleep disable; and running commands over ssh/scp on Windows (minimal PATH — invoke .exe via $COMSPEC /c or full path; scp to deploy)."},
+	{"dks-peer-plane-gaps", "DKS peer plane gap tracker", "Implementation status and gap closure record for peer-hosted DKS control planes."},
 }
 
 func docsCmd() *cobra.Command {

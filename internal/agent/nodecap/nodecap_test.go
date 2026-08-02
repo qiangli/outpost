@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -143,7 +144,7 @@ func TestReconcile_NoProbeLeavesNodeAlone(t *testing.T) {
 		t.Fatalf("Once: %v", err)
 	}
 	for _, a := range cs.Actions() {
-		if a.GetVerb() == "update" {
+		if a.GetVerb() == "update" && a.GetResource().Resource == "nodes" {
 			t.Fatal("updated a node that has no probe — absence was treated as failure")
 		}
 	}
@@ -164,7 +165,7 @@ func TestReconcile_FilterExcludesNodes(t *testing.T) {
 		t.Fatalf("Once: %v", err)
 	}
 	for _, a := range cs.Actions() {
-		if a.GetVerb() == "update" {
+		if a.GetVerb() == "update" && a.GetResource().Resource == "nodes" {
 			t.Fatal("filtered node was still updated")
 		}
 	}
@@ -191,5 +192,179 @@ func TestProbesByNode_FallsBackToOldest(t *testing.T) {
 	got := probesByNode([]corev1.Pod{fresh, old})
 	if got["n1"].Name != "probe-old" {
 		t.Errorf("got %s, want the oldest probe", got["n1"].Name)
+	}
+}
+
+func TestConstructProbeDaemonSet(t *testing.T) {
+	ds := ConstructProbeDaemonSet("")
+	if ds.Namespace != ProbeNamespace {
+		t.Errorf("namespace = %s, want %s", ds.Namespace, ProbeNamespace)
+	}
+	if ds.Name != ProbeDaemonSetName {
+		t.Errorf("name = %s, want %s", ds.Name, ProbeDaemonSetName)
+	}
+	if ds.Spec.Selector.MatchLabels["app.kubernetes.io/name"] != "dks-runtime-probe" {
+		t.Errorf("selector = %v, want app.kubernetes.io/name=dks-runtime-probe", ds.Spec.Selector.MatchLabels)
+	}
+	if ds.Spec.Template.Labels["app.kubernetes.io/name"] != "dks-runtime-probe" {
+		t.Errorf("pod labels = %v", ds.Spec.Template.Labels)
+	}
+
+	container := ds.Spec.Template.Spec.Containers[0]
+	if container.Image != DefaultProbeImage {
+		t.Errorf("image = %s, want %s", container.Image, DefaultProbeImage)
+	}
+
+	// Least privilege checks
+	sc := container.SecurityContext
+	if sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
+		t.Error("expected RunAsNonRoot = true")
+	}
+	if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+		t.Error("expected AllowPrivilegeEscalation = false")
+	}
+	if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
+		t.Error("expected ReadOnlyRootFilesystem = true")
+	}
+	if sc.Capabilities == nil || len(sc.Capabilities.Drop) == 0 || sc.Capabilities.Drop[0] != "ALL" {
+		t.Error("expected capabilities drop ALL")
+	}
+
+	// Toleration check
+	hasUnavailableTol := false
+	for _, tol := range ds.Spec.Template.Spec.Tolerations {
+		if tol.Key == UnavailableTaint {
+			hasUnavailableTol = true
+			break
+		}
+	}
+	if !hasUnavailableTol {
+		t.Errorf("daemonset missing toleration for %s", UnavailableTaint)
+	}
+
+	// Virtual node exclusion via NodeAffinity
+	affinity := ds.Spec.Template.Spec.Affinity
+	if affinity == nil || affinity.NodeAffinity == nil {
+		t.Fatal("expected NodeAffinity set")
+	}
+	terms := affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+	foundVirtualExclusion := false
+	for _, term := range terms {
+		for _, expr := range term.MatchExpressions {
+			if expr.Key == RuntimeLabel && expr.Operator == corev1.NodeSelectorOpNotIn {
+				for _, val := range expr.Values {
+					if val == RuntimeVirtual {
+						foundVirtualExclusion = true
+					}
+				}
+			}
+		}
+	}
+	if !foundVirtualExclusion {
+		t.Errorf("node affinity missing virtual node exclusion for key %s val %s", RuntimeLabel, RuntimeVirtual)
+	}
+
+	// Bounded rollout check
+	if ds.Spec.UpdateStrategy.Type != appsv1.RollingUpdateDaemonSetStrategyType {
+		t.Errorf("update strategy = %s, want RollingUpdate", ds.Spec.UpdateStrategy.Type)
+	}
+}
+
+func TestEnsureProbeDaemonSet_Lifecycle(t *testing.T) {
+	ctx := context.Background()
+	cs := fake.NewSimpleClientset()
+
+	// Initial creation
+	if err := EnsureProbeDaemonSet(ctx, cs, ""); err != nil {
+		t.Fatalf("EnsureProbeDaemonSet create: %v", err)
+	}
+	ds, err := cs.AppsV1().DaemonSets(ProbeNamespace).Get(ctx, ProbeDaemonSetName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get daemonset: %v", err)
+	}
+	if ds.Spec.Template.Spec.Containers[0].Image != DefaultProbeImage {
+		t.Errorf("image = %s, want %s", ds.Spec.Template.Spec.Containers[0].Image, DefaultProbeImage)
+	}
+
+	// Idempotent second call
+	if err := EnsureProbeDaemonSet(ctx, cs, ""); err != nil {
+		t.Fatalf("EnsureProbeDaemonSet idempotent call: %v", err)
+	}
+
+	// Update image
+	newImg := "rancher/mirrored-pause:3.9"
+	if err := EnsureProbeDaemonSet(ctx, cs, newImg); err != nil {
+		t.Fatalf("EnsureProbeDaemonSet update image: %v", err)
+	}
+	ds, err = cs.AppsV1().DaemonSets(ProbeNamespace).Get(ctx, ProbeDaemonSetName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get daemonset after update: %v", err)
+	}
+	if ds.Spec.Template.Spec.Containers[0].Image != newImg {
+		t.Errorf("updated image = %s, want %s", ds.Spec.Template.Spec.Containers[0].Image, newImg)
+	}
+
+	// Cleanup / Delete
+	if err := DeleteProbeDaemonSet(ctx, cs); err != nil {
+		t.Fatalf("DeleteProbeDaemonSet: %v", err)
+	}
+	_, err = cs.AppsV1().DaemonSets(ProbeNamespace).Get(ctx, ProbeDaemonSetName, metav1.GetOptions{})
+	if err == nil {
+		t.Fatal("expected daemonset to be deleted")
+	}
+
+	// Idempotent delete
+	if err := DeleteProbeDaemonSet(ctx, cs); err != nil {
+		t.Fatalf("DeleteProbeDaemonSet second call: %v", err)
+	}
+}
+
+func TestReconcile_DisableProbeDaemonSet(t *testing.T) {
+	ctx := context.Background()
+	cs := fake.NewSimpleClientset()
+
+	// Ensure it exists first
+	if err := EnsureProbeDaemonSet(ctx, cs, ""); err != nil {
+		t.Fatalf("EnsureProbeDaemonSet: %v", err)
+	}
+
+	r := &Reconciler{
+		Client:                cs,
+		DisableProbeDaemonSet: true,
+	}
+	if err := r.Once(ctx); err != nil {
+		t.Fatalf("Once with DisableProbeDaemonSet: %v", err)
+	}
+
+	_, err := cs.AppsV1().DaemonSets(ProbeNamespace).Get(ctx, ProbeDaemonSetName, metav1.GetOptions{})
+	if err == nil {
+		t.Fatal("expected daemonset to be deleted when DisableProbeDaemonSet is set")
+	}
+}
+
+func TestVocabularyParity(t *testing.T) {
+	if ProbeLabelSelector != "app.kubernetes.io/name=dks-runtime-probe" {
+		t.Errorf("ProbeLabelSelector = %q", ProbeLabelSelector)
+	}
+	if ProbeNamespace != "kube-system" {
+		t.Errorf("ProbeNamespace = %q", ProbeNamespace)
+	}
+	if ProbeDaemonSetName != "dks-runtime-probe" {
+		t.Errorf("ProbeDaemonSetName = %q", ProbeDaemonSetName)
+	}
+	if UnavailableTaint != "outpost.dhnt.io/runtime-unavailable" {
+		t.Errorf("UnavailableTaint = %q", UnavailableTaint)
+	}
+	if ReadyLabel != "outpost.dhnt.io/runtime-ready" {
+		t.Errorf("ReadyLabel = %q", ReadyLabel)
+	}
+	if UnavailableReason != "outpost.dhnt.io/runtime-unavailable-reason" {
+		t.Errorf("UnavailableReason = %q", UnavailableReason)
+	}
+	if RuntimeLabel != "outpost.dhnt.io/runtime" {
+		t.Errorf("RuntimeLabel = %q", RuntimeLabel)
+	}
+	if RuntimeVirtual != "virtual" {
+		t.Errorf("RuntimeVirtual = %q", RuntimeVirtual)
 	}
 }
