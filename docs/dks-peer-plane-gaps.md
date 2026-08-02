@@ -1,55 +1,75 @@
-# DKS Peer-Hosted Control Plane Gap Tracker
+# Peer-Hosted DKS Control Plane Gaps
 
-This document tracks known implementation gaps and closure status for peer-hosted DKS control planes (`outpost cluster control-plane`).
+Audit and closure tracking for peer-hosted DKS control-plane functionality.
 
----
+## Gap inventory
 
-## Gap Inventory
+| Item | Component | Implementation status | Live two-host proof |
+| --- | --- | --- | --- |
+| 1 | Peer control-plane boot | Closed | Pending |
+| 2 | Worker tunnel and visitor | Closed | Pending |
+| 3 | Node address and kubelet port patching | Closed | Pending |
+| 4 | Stale node garbage collection | Closed | Pending |
+| 5 | Peer join runtime selection | Closed | Pending |
+| 6 | Pod networking and PodCIDR allocation | Closed: stock k3s flannel VXLAN over `tailscale0`; Kubernetes allocates `Node.spec.podCIDR` | Pending |
+| 7 | Kubelet metrics and `kubectl top` | Closed in code | Pending |
+| 8 | Runtime capability probe | Closed in code | Pending |
 
-### 1. Control Plane Listener and Tunnel Supervision [CLOSED]
-Hosted peer planes supervise frps beside k3s to establish worker tunnels on loopback without requiring cloudbox.
+“Closed in code” means the implementation and deterministic tests exist. It does
+not claim that the current revision has passed the two-host hardware gate.
 
-### 2. Node Address Resolution (`nodeaddr`) [CLOSED]
-Derived per-node kubelet ports ensure `kubectl logs`, `exec`, and `port-forward` dial through the tunnel namespace correctly.
+## Item 6: pod networking and PodCIDRs
 
-### 3. Stale Node Garbage Collection (`nodegc`) [CLOSED]
-Bounded GC cleans up NotReady node ghosts after the 24 h grace period on peer worker departure/rejoin.
+Peer DKS does not need a cloudbox-specific pod network or a second allocator.
+The peer control plane starts stock k3s flannel VXLAN on the Tailscale underlay
+with `--flannel-iface=tailscale0`. Kubernetes assigns each node its
+`Node.spec.podCIDR`. Acceptance checks require distinct PodCIDRs and
+cross-node pod reachability; they do not replace Kubernetes allocation.
 
-### 4. Peer Pod Overlay Networking (Flannel) [CLOSED]
-Stock k3s flannel VXLAN pinned to the Tailscale interface (`--flannel-iface=tailscale0`) for cross-node pod routing without cloudbox.
+## Item 7: kubelet metrics
 
-### 5. Peer Image Distribution [CLOSED]
-Node-local OCI caching and peer registry distribution path for workloads without cloudbox image proxy.
+k3s's packaged metrics-server remains enabled. The peer control-plane entrypoint
+writes a `HelmChartConfig` that makes metrics-server:
 
-### 6. Runtime Sandbox Probe DaemonSet Deployment (`dks-runtime-probe`) [CLOSED]
+- run with host networking so it can reach the control-plane host's loopback
+  tunnel listeners;
+- prefer `ExternalIP`, then `InternalIP`, then `Hostname`;
+- use each node's status kubelet port; and
+- tolerate the peer kubelet certificate/address mismatch with
+  `--kubelet-insecure-tls`.
 
-#### Problem
-The `nodecap` reconciler existed and was started for hosted peer planes to translate container runtime readiness into truthful node scheduler state (`outpost.dhnt.io/runtime-ready` label and `outpost.dhnt.io/runtime-unavailable` taint). However, its backing `dks-runtime-probe` DaemonSet was not deployed to `kube-system` by the control plane supervisor, leaving `nodecap` with no probe pods to observe.
+The `nodeaddr` reconciler supplies the derived loopback `ExternalIP` and
+kubelet port. An unreachable tunnel fails closed; no synthetic metrics are
+returned.
 
-#### Solution
-Implemented an idempotent peer-plane-owned probe deployment manager in `internal/agent/nodecap`.
+## Item 8: runtime capability probe
 
-- **Deployment & Namespace**: Manages `DaemonSet` named `dks-runtime-probe` in `kube-system`.
-- **Exact Selector**: Uses `app.kubernetes.io/name=dks-runtime-probe`.
-- **Image Choice**: Defaults to `rancher/mirrored-pause:3.6` (guaranteed by k3s containerd; no cloudbox dependency).
-- **Node Selection & Exclusion**: Excludes virtual-kubelet nodes (`outpost.dhnt.io/runtime=virtual`) using NodeAffinity (`outpost.dhnt.io/runtime` `NotIn` `["virtual"]`).
-- **Tolerations**: Explicitly tolerates `outpost.dhnt.io/runtime-unavailable` (Effect: `NoSchedule`), allowing the probe pod to remain running on tainted nodes to demonstrate runtime recovery. Also tolerates standard master and control-plane taints.
-- **Least Privilege**: SecurityContext drops all capabilities (`Capabilities.Drop = ["ALL"]`), enforces `RunAsNonRoot: true`, `RunAsUser: 65534` (`nobody`), `AllowPrivilegeEscalation: false`, and `ReadOnlyRootFilesystem: true`. Resource requests/limits are set to minimal bounds (1m/4Mi request, 10m/16Mi limit).
-- **Bounded Rollout**: Configured with `RollingUpdate` strategy (`MaxUnavailable: 25%`).
-- **Cleanup & Disable**: `DeleteProbeDaemonSet` / `r.DisableProbeDaemonSet = true` safely removes the probe DaemonSet from `kube-system`.
-- **Vocabulary Parity**: Identical label, taint, and annotation keys as cloudbox-hosted planes:
-  - Taint: `outpost.dhnt.io/runtime-unavailable` (Value: `sandbox`, Effect: `NoSchedule`)
-  - Ready Label: `outpost.dhnt.io/runtime-ready` (`true`/`false`)
-  - Runtime Label: `outpost.dhnt.io/runtime` (`virtual`)
-  - Reason Annotation: `outpost.dhnt.io/runtime-unavailable-reason`
+The control plane idempotently owns a `kube-system/dks-runtime-probe`
+DaemonSet. It excludes virtual-kubelet nodes, tolerates the
+`outpost.dhnt.io/runtime-unavailable` taint so recovery can be observed, and
+uses a non-root, read-only, capability-free security context.
 
-#### Verification & Test Matrix
-1. **Absent Probe**: Absence of probe pod leaves node untouched (status unknown, not failure).
-2. **Failed Sandbox Taint**: Probe PodNotReady past `ProbeGrace` (2 min) taints node `outpost.dhnt.io/runtime-unavailable=sandbox:NoSchedule`, sets `outpost.dhnt.io/runtime-ready=false`, and adds reason annotation.
-3. **Recovery**: Probe PodReady=True removes taint and reason annotation, sets `outpost.dhnt.io/runtime-ready=true`.
-4. **Rollout Duplicates**: Handles multi-probe pods during rolling updates (prefers Ready probe; falls back to oldest unready probe).
-5. **Vocabulary Parity**: Verified keys and selectors match cloudbox specification.
+The `nodecap` reconciler converts probe state into the cloudbox-compatible
+contract:
 
-#### Live Two-Node Proof
-- Status: **UNPROVEN**
-- Note: Live hardware execution requires a multi-node peer-hosted control plane cluster with active worker nodes. Unit and fake-clientset tests in `internal/agent/nodecap` verify contract adherence.
+- `outpost.dhnt.io/runtime-ready=true|false`
+- `outpost.dhnt.io/runtime-unavailable=sandbox:NoSchedule`
+- `outpost.dhnt.io/runtime-unavailable-reason`
+
+Absence of a probe is unknown rather than failure. A ready probe removes the
+taint and reason annotation.
+
+## Required live acceptance
+
+On a control-plane host and a distinct peer worker:
+
+1. Run `script/dks-peer-acceptance.sh` against the peer kubeconfig.
+2. Confirm both nodes are Ready with distinct PodCIDRs.
+3. Confirm cross-node DNS, service routing, logs, exec, and port-forward.
+4. Confirm the runtime probe runs on physical nodes and nodecap state recovers.
+5. Confirm `kubectl top nodes` and `kubectl top pods -A` report both hosts.
+6. Stop the worker tunnel and confirm logs/exec/metrics fail closed.
+7. Reconnect or leave/rejoin and confirm stale-node GC does not delete a live
+   replacement.
+
+Until that gate runs on two hosts, hardware parity remains unproven.

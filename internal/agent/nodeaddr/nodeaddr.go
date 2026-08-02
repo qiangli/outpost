@@ -265,3 +265,65 @@ func (r *Reconciler) patch(ctx context.Context, name, addr string, port int) err
 	)
 	return err
 }
+
+// NodeAddressDiagnostic provides deterministic, secret-free diagnostics for node addressing status.
+type NodeAddressDiagnostic struct {
+	NodeName            string `json:"node_name"`
+	ExpectedExternalIP  string `json:"expected_external_ip,omitempty"`
+	ObservedExternalIP  string `json:"observed_external_ip,omitempty"`
+	ExpectedKubeletPort int    `json:"expected_kubelet_port,omitempty"`
+	ObservedKubeletPort int    `json:"observed_kubelet_port,omitempty"`
+	Patched             bool   `json:"patched"`
+}
+
+// Diagnostics returns deterministic node addressing status for all nodes in the cluster.
+func (r *Reconciler) Diagnostics(ctx context.Context) ([]NodeAddressDiagnostic, error) {
+	if r.Client == nil || r.PortFor == nil {
+		return nil, fmt.Errorf("nodeaddr: Client and PortFor are required")
+	}
+
+	listCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	nodes, err := r.Client.CoreV1().Nodes().List(listCtx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]*corev1.Node, 0, len(nodes.Items))
+	for i := range nodes.Items {
+		items = append(items, &nodes.Items[i])
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
+
+	taken := map[string]string{}
+	var diagnostics []NodeAddressDiagnostic
+	for _, n := range items {
+		expectedAddr := LoopbackForNode(n.Name, taken)
+		expectedPort, ok := r.PortFor(n.Name)
+		if !ok || expectedPort <= 0 {
+			expectedPort = 0
+		}
+
+		var observedAddr string
+		for _, a := range n.Status.Addresses {
+			if a.Type == corev1.NodeExternalIP {
+				observedAddr = a.Address
+				break
+			}
+		}
+		observedPort := int(n.Status.DaemonEndpoints.KubeletEndpoint.Port)
+
+		patched := expectedAddr != "" && expectedPort > 0 &&
+			observedAddr == expectedAddr && observedPort == expectedPort
+
+		diagnostics = append(diagnostics, NodeAddressDiagnostic{
+			NodeName:            n.Name,
+			ExpectedExternalIP:  expectedAddr,
+			ObservedExternalIP:  observedAddr,
+			ExpectedKubeletPort: expectedPort,
+			ObservedKubeletPort: observedPort,
+			Patched:             patched,
+		})
+	}
+	return diagnostics, nil
+}
