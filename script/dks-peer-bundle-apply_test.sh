@@ -84,6 +84,50 @@ echo "apiVersion: v1" > "$DKS_CLOUDBOX_KUBECONFIG"
 BUNDLE="$FIX/bundle.yaml"
 echo "kind: Namespace" > "$BUNDLE"
 
+# ---------------------------------------------------------------------------
+# Layer 1b — canonicalization guard: every alias that reaches the cloudbox
+# kubeconfig is refused, however it is spelled. resolve_kubeconfig is
+# exercised directly (still sourced) so each alias is asserted
+# deterministically, with no cluster/runner in the loop.
+# ---------------------------------------------------------------------------
+
+# file symlink -> cloudbox
+ln -s "$DKS_CLOUDBOX_KUBECONFIG" "$FIX/filelink.yaml"
+out="$(resolve_kubeconfig 0 "$FIX/filelink.yaml" 2>&1)"; rc=$?
+is       "alias file-symlink -> rc 1" "$rc" "1"
+contains "alias file-symlink -> refused" "$out" "refusing to apply a PEER bundle against the cloudbox"
+
+# directory symlink -> cloud dir, then the real file name inside it
+ln -s "$FIX/cloud" "$FIX/cloudlink"
+out="$(resolve_kubeconfig 0 "$FIX/cloudlink/outpost.yaml" 2>&1)"; rc=$?
+is       "alias dir-symlink -> rc 1" "$rc" "1"
+contains "alias dir-symlink -> refused" "$out" "refusing to apply a PEER bundle against the cloudbox"
+
+# relative path -> cloudbox (resolved against $FIX as cwd)
+out="$( (cd "$FIX" && resolve_kubeconfig 0 "cloud/outpost.yaml") 2>&1 )"; rc=$?
+is       "alias relative -> rc 1" "$rc" "1"
+contains "alias relative -> refused" "$out" "refusing to apply a PEER bundle against the cloudbox"
+
+# `..` traversal -> cloudbox
+out="$(resolve_kubeconfig 0 "$FIX/cloud/../cloud/outpost.yaml" 2>&1)"; rc=$?
+is       "alias dotdot -> rc 1" "$rc" "1"
+contains "alias dotdot -> refused" "$out" "refusing to apply a PEER bundle against the cloudbox"
+
+# negative control: a symlink to the PEER kubeconfig is NOT the cloudbox
+# plane and must still resolve (canonicalization refuses aliases to
+# cloudbox, not every symlink).
+ln -s "$DKS_PEER_KUBECONFIG" "$FIX/peerlink.yaml"
+out="$(resolve_kubeconfig 0 "$FIX/peerlink.yaml")"; rc=$?
+is  "alias peer-symlink -> rc 0" "$rc" "0"
+is  "alias peer-symlink -> returns the given path" "$out" "$FIX/peerlink.yaml"
+
+# fail-closed: a symlink loop is a resolution error, refused (never a pass).
+ln -s "$FIX/loopB.yaml" "$FIX/loopA.yaml"
+ln -s "$FIX/loopA.yaml" "$FIX/loopB.yaml"
+out="$(resolve_kubeconfig 0 "$FIX/loopA.yaml" 2>&1)"; rc=$?
+is       "fail-closed symlink loop -> rc 1" "$rc" "1"
+contains "fail-closed symlink loop -> loud" "$out" "cannot resolve kubeconfig path"
+
 STUB_ARGS_FILE="$FIX/args.txt"
 export STUB_ARGS_FILE
 
@@ -140,6 +184,15 @@ contains "peer+explicit -> loud" "$(cat "$FIX/stderr.txt")" "mutually exclusive"
 run_script --kubeconfig "$DKS_CLOUDBOX_KUBECONFIG" --bundle "$BUNDLE"; rc=$?
 is       "cloudbox refused -> rc 2" "$rc" "2"
 contains "cloudbox refused -> loud" "$(cat "$FIX/stderr.txt")" "refusing to apply a PEER bundle"
+
+# --- failure: a symlink alias to cloudbox is refused end-to-end -----------
+# Proves the canonicalization guard runs on the real script, not just the
+# sourced helper: the stub runner must never be reached.
+: > "$STUB_ARGS_FILE"
+run_script --kubeconfig "$FIX/filelink.yaml" --bundle "$BUNDLE"; rc=$?
+is       "cloudbox symlink alias refused -> rc 2" "$rc" "2"
+contains "cloudbox symlink alias refused -> loud" "$(cat "$FIX/stderr.txt")" "refusing to apply a PEER bundle"
+is       "cloudbox symlink alias -> runner never invoked" "$(cat "$STUB_ARGS_FILE")" ""
 
 # --- failure: kubeconfig file missing (evidence invariant) ----------------
 run_script --kubeconfig "$FIX/nope.yaml" --bundle "$BUNDLE"; rc=$?

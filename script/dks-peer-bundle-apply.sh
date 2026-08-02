@@ -61,6 +61,57 @@ expand_tilde() {
     esac
 }
 
+# canonicalize_path <path> — the shell port of bundleapply.CanonicalizePath.
+# Expands a leading ~, resolves leaf symlinks, and resolves directory
+# symlinks and `..` in the containing directory (via `pwd -P`), so a
+# route to the cloudbox kubeconfig via a file symlink, a directory
+# symlink, a relative path, or a `..` traversal all collapse to the same
+# canonical absolute path. Best-effort on a non-existent LEAF (the file
+# may not be created yet — the caller's -f check catches that), but
+# FAIL-CLOSED (rc 1, no output) on a genuine resolution error: a symlink
+# loop, an unreadable link, or a path with no resolvable ancestor. An
+# un-canonicalizable venue is never treated as "probably fine" — that is
+# exactly the hole a naive string compare left open.
+canonicalize_path() {
+    local p; p="$(expand_tilde "$1")"
+    [ -n "$p" ] || return 1
+    # Follow leaf symlinks, bounded so a symlink loop fails closed rather
+    # than spinning forever.
+    local i=0 tgt
+    while [ -L "$p" ]; do
+        i=$((i + 1)); [ "$i" -le 40 ] || return 1
+        tgt="$(readlink "$p")" || return 1
+        case "$tgt" in
+            /*) p="$tgt" ;;
+            *)  p="$(dirname "$p")/$tgt" ;;
+        esac
+    done
+    local dir base
+    dir="$(dirname "$p")"
+    base="$(basename "$p")"
+    # Resolve the deepest existing ancestor of dir with `pwd -P` (which
+    # collapses directory symlinks and `..`), re-appending any trailing
+    # not-yet-existing components. Only a path whose every ancestor is
+    # unresolvable fails closed.
+    local rest="" cdir parent
+    while :; do
+        if cdir="$(cd "$dir" 2>/dev/null && pwd -P)"; then
+            break
+        fi
+        parent="$(dirname "$dir")"
+        [ "$parent" != "$dir" ] || return 1
+        if [ -n "$rest" ]; then rest="$(basename "$dir")/$rest"; else rest="$(basename "$dir")"; fi
+        dir="$parent"
+    done
+    local out="$cdir"
+    [ -n "$rest" ] && out="$out/$rest"
+    case "$base" in
+        /|.|"") : ;;
+        *)      out="$out/$base" ;;
+    esac
+    printf '%s\n' "$out"
+}
+
 # resolve_kubeconfig <use_peer> <explicit> — decide the kubeconfig path,
 # enforcing: exactly one source, and never the cloudbox file. Echoes the
 # resolved path on success; on a policy violation it prints to stderr and
@@ -78,10 +129,22 @@ resolve_kubeconfig() {
         echo "no kubeconfig: pass --peer or --kubeconfig PATH (there is no default cluster)" >&2
         return 1
     fi
-    # Never apply a peer bundle against the cloudbox kubeconfig.
-    local cloudbox; cloudbox="$(expand_tilde "$DKS_CLOUDBOX_KUBECONFIG")"
-    if [ "$path" = "$cloudbox" ]; then
-        echo "refusing to apply a PEER bundle against the cloudbox kubeconfig ($path) — the peer and cloudbox planes are never conflated" >&2
+    # Never apply a peer bundle against the cloudbox kubeconfig. Compare
+    # CANONICAL forms of both sides so a file symlink, a directory symlink,
+    # a relative path, or a `..` traversal to the cloudbox kubeconfig is
+    # still recognized and refused. Fail closed if either side cannot be
+    # canonicalized — an unresolvable venue is never a pass.
+    local canon_path canon_cloud
+    canon_path="$(canonicalize_path "$path")" || {
+        echo "cannot resolve kubeconfig path ($path) — refusing to proceed (fail-closed)" >&2
+        return 1
+    }
+    canon_cloud="$(canonicalize_path "$DKS_CLOUDBOX_KUBECONFIG")" || {
+        echo "cannot resolve cloudbox kubeconfig reference ($DKS_CLOUDBOX_KUBECONFIG) — refusing to proceed (fail-closed)" >&2
+        return 1
+    }
+    if [ "$canon_path" = "$canon_cloud" ]; then
+        echo "refusing to apply a PEER bundle against the cloudbox kubeconfig ($path resolves to $canon_path) — the peer and cloudbox planes are never conflated" >&2
         return 1
     fi
     printf '%s\n' "$path"
