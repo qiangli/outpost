@@ -48,7 +48,79 @@ type bundleKubeconfigOut struct {
 	Default    string `json:"default"`
 }
 
+type installBuiltinIn struct {
+	Name              string `json:"name" jsonschema:"operator-facing OSS appstore built-in name, for example core-storage, coredns, headlamp, or gpu-device-plugin"`
+	Catalog           string `json:"catalog,omitempty" jsonschema:"path to an OSS dhnt/appstore checkout or fetched/versioned appstore tree; omit to use cluster.bundle_catalog or umbrella-checkout discovery"`
+	Kubeconfig        string `json:"kubeconfig,omitempty" jsonschema:"kubeconfig path of the PEER control plane; the cloudbox kubeconfig is refused"`
+	TimeoutSeconds    int    `json:"timeout_seconds,omitempty"`
+	PollSeconds       int    `json:"poll_seconds,omitempty"`
+	CRDTimeoutSeconds int    `json:"crd_timeout_seconds,omitempty"`
+	AllowScaleToZero  bool   `json:"allow_scale_to_zero,omitempty"`
+	NoRollback        bool   `json:"no_rollback,omitempty"`
+	SaveKubeconfig    bool   `json:"save_kubeconfig,omitempty"`
+	SaveCatalog       bool   `json:"save_catalog,omitempty" jsonschema:"after a successful install, persist the explicit catalog as cluster.bundle_catalog"`
+}
+
+type installBuiltinOut struct {
+	OK              bool     `json:"ok"`
+	Name            string   `json:"name"`
+	Catalog         string   `json:"catalog"`
+	Manifest        string   `json:"manifest"`
+	Kubeconfig      string   `json:"kubeconfig"`
+	Applied         int      `json:"applied"`
+	Ready           int      `json:"ready"`
+	Created         []string `json:"created,omitempty"`
+	RolledBack      []string `json:"rolled_back,omitempty"`
+	CleanupFailed   []string `json:"cleanup_failed,omitempty"`
+	KubeconfigSaved bool     `json:"kubeconfig_saved,omitempty"`
+	CatalogSaved    bool     `json:"catalog_saved,omitempty"`
+}
+
+type bundleCatalogOut struct {
+	OK       bool     `json:"ok"`
+	Catalog  string   `json:"catalog"`
+	Builtins []string `json:"builtins"`
+}
+
+type bundleCatalogIn struct {
+	Catalog string `json:"catalog,omitempty" jsonschema:"explicit OSS appstore root; omit to use cluster.bundle_catalog or umbrella-checkout discovery"`
+}
+
 func (s *Server) registerBundleTools() {
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "outpost_install_builtin",
+		Description: "Install an operator-named built-in from an open-source dhnt/appstore catalog onto a peer-hosted DKS plane. " +
+			"Only builtin/<name>/install.yaml is resolved; missing, invalid, or escaping assets fail closed. " +
+			"The install reuses the peer bundle readiness, rollback, and cloudbox-kubeconfig venue guard.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in installBuiltinIn) (*mcp.CallToolResult, installBuiltinOut, error) {
+		res, err := s.core.BuiltinInstall(ctx, admincore.BuiltinInstallParams{
+			Name: in.Name, Catalog: in.Catalog, Kubeconfig: in.Kubeconfig,
+			TimeoutSeconds: in.TimeoutSeconds, PollSeconds: in.PollSeconds,
+			CRDTimeoutSeconds: in.CRDTimeoutSeconds, AllowScaleToZero: in.AllowScaleToZero,
+			NoRollback: in.NoRollback, SaveKubeconfig: in.SaveKubeconfig, SaveCatalog: in.SaveCatalog,
+		})
+		if err != nil {
+			return apiErrResult[installBuiltinOut](err)
+		}
+		return nil, installBuiltinOut{
+			OK: res.OK, Name: res.Name, Catalog: res.Catalog, Manifest: res.Manifest,
+			Kubeconfig: res.Kubeconfig, Applied: res.Applied, Ready: res.Ready,
+			Created: res.Created, RolledBack: res.RolledBack, CleanupFailed: res.CleanupFailed,
+			KubeconfigSaved: res.KubeconfigSaved, CatalogSaved: res.CatalogSaved,
+		}, nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_bundle_catalog",
+		Description: "Show the effective open-source appstore catalog and the built-in names currently installable from it.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in bundleCatalogIn) (*mcp.CallToolResult, bundleCatalogOut, error) {
+		view, err := s.core.BundleCatalog(in.Catalog)
+		if err != nil {
+			return apiErrResult[bundleCatalogOut](err)
+		}
+		return nil, bundleCatalogOut{OK: view.OK, Catalog: view.Catalog, Builtins: view.Builtins}, nil
+	})
+
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "outpost_apply_bundle",
 		Description: "Apply an app/bundle manifest set against a PEER-HOSTED control plane addressed purely by a kubeconfig path — no cloudbox anywhere on the path. " +

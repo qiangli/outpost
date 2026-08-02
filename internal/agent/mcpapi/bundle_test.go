@@ -84,6 +84,7 @@ func newBundleTestMCP(t *testing.T, token string) (*httptest.Server, peerPaths) 
 		peer:     filepath.Join(peerDir, "k3s.yaml"),
 		cloudbox: filepath.Join(tmp, ".kube", "outpost.yaml"),
 		bundle:   filepath.Join(tmp, "bundle"),
+		catalog:  filepath.Join(tmp, "appstore"),
 	}
 	for _, p := range []string{paths.peer, paths.cloudbox} {
 		if err := os.WriteFile(p, []byte("apiVersion: v1\nkind: Config\n"), 0o600); err != nil {
@@ -95,6 +96,13 @@ func newBundleTestMCP(t *testing.T, token string) (*httptest.Server, peerPaths) 
 	}
 	manifest := "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: demo\n---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cfg\n  namespace: demo\n"
 	if err := os.WriteFile(filepath.Join(paths.bundle, "all.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	builtinDir := filepath.Join(paths.catalog, "builtin", "headlamp")
+	if err := os.MkdirAll(builtinDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(builtinDir, "install.yaml"), []byte("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: headlamp\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -122,7 +130,7 @@ func newBundleTestMCP(t *testing.T, token string) (*httptest.Server, peerPaths) 
 }
 
 type peerPaths struct {
-	peer, cloudbox, bundle string
+	peer, cloudbox, bundle, catalog string
 }
 
 func connectBundleMCP(t *testing.T) (*mcp.ClientSession, peerPaths) {
@@ -159,7 +167,7 @@ func TestBundleTools_ApplyOverProtocol(t *testing.T) {
 	for _, tl := range tools.Tools {
 		found[tl.Name] = true
 	}
-	for _, want := range []string{"outpost_apply_bundle", "outpost_bundle_kubeconfig"} {
+	for _, want := range []string{"outpost_apply_bundle", "outpost_bundle_kubeconfig", "outpost_install_builtin", "outpost_bundle_catalog"} {
 		if !found[want] {
 			t.Fatalf("tool %s not registered", want)
 		}
@@ -210,6 +218,18 @@ func TestBundleTools_ApplyOverProtocol(t *testing.T) {
 	}
 	if view.Default != bundleapply.PeerControlPlaneKubeconfig {
 		t.Fatalf("view must name the conventional default, got %q", view.Default)
+	}
+
+	body, isErr = callJSON(t, session, "outpost_install_builtin", map[string]any{
+		"name": "headlamp", "catalog": paths.catalog, "kubeconfig": paths.peer,
+		"timeout_seconds": 5, "save_catalog": true,
+	})
+	if isErr || !strings.Contains(body, `"name":"headlamp"`) || !strings.Contains(body, `"catalog_saved":true`) {
+		t.Fatalf("built-in install: isErr=%v body=%s", isErr, body)
+	}
+	body, isErr = callJSON(t, session, "outpost_bundle_catalog", map[string]any{})
+	if isErr || !strings.Contains(body, `"headlamp"`) {
+		t.Fatalf("catalog view: isErr=%v body=%s", isErr, body)
 	}
 }
 

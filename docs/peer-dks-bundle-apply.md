@@ -131,7 +131,19 @@ script/dks-peer-bundle-apply.sh --peer --bundle ./bundle/
 # Explicit kubeconfig:
 script/dks-peer-bundle-apply.sh --kubeconfig /path/k3s.yaml --bundle ./app.yaml \
     --timeout 5m --poll 2s
+
+# Install by OSS appstore built-in name through the normal CLI/MCP surface:
+outpost bundle install headlamp --catalog ../appstore --kubeconfig /path/k3s.yaml
+outpost bundle catalog
 ```
+
+The named install path accepts only `builtin/<name>/install.yaml` beneath a
+canonicalized open-source appstore root. Traversal, escaping symlinks, missing
+assets, and unavailable catalogs fail closed. The source can be the umbrella's
+sibling `appstore` checkout or a separately fetched/versioned appstore tree;
+there is no cloudbox/private-manifest fallback. Once resolved, the manifest is
+sent through the same readiness, rollback, and peer-venue guard as an explicit
+bundle apply.
 
 The script owns argument handling, the peer/cloudbox distinction, and loud
 failure on anything unsupported or absent; all Kubernetes work lives in the Go
@@ -185,8 +197,8 @@ real hostname.
 
 The package is wired into the normal outpost surfaces, in the repo convention
 (land in `admincore` first, wrappers in lockstep). Every surface converges on
-**one** method — `admincore.Server.BundleApply` — so the venue guard, the
-rolled-out readiness bar, and the rollback accounting cannot drift:
+the same bundle transaction — `admincore.Server.BundleApply` — so the venue
+guard, rolled-out readiness bar, and rollback accounting cannot drift:
 
 1. **File key (`internal/agent/conf/file.go`).** `cluster.bundle_kubeconfig` —
    the persisted **default venue** used when an apply doesn't pass a kubeconfig
@@ -195,6 +207,8 @@ rolled-out readiness bar, and the rollback accounting cannot drift:
    path — explicit arg, persisted key, or the conventional peer default — it
    goes through `bundleapply.ResolveVenue` and the cloudbox kubeconfig is
    refused after canonicalization.
+   `cluster.bundle_catalog` is the optional persisted OSS appstore root for
+   named installs. It is also Live and can name a fetched/versioned tree.
 
 2. **admincore (`internal/agent/admincore/bundle.go`).**
    `Server.BundleApply(ctx, BundleApplyParams)` resolves the venue (explicit >
@@ -204,17 +218,22 @@ rolled-out readiness bar, and the rollback accounting cannot drift:
    `CleanupFailed`). `Server.BundleKubeconfig()` reports the persisted venue.
    `Deps.BundleApplyClient` is the test seam — it only ever sees an accepted,
    canonicalized path, so an injected client cannot bypass the guard.
+   `Server.BuiltinInstall` resolves an OSS built-in name and delegates to
+   `Server.BundleApply`; `Server.BundleCatalog` reports the effective source and
+   installable names.
 
 3. **MCP (`internal/agent/mcpapi/tools_bundle.go`).** `outpost_apply_bundle`
    (args `kubeconfig?`, `bundle`, `timeout_seconds?`, `poll_seconds?`,
    `crd_timeout_seconds?`, `allow_scale_to_zero?`, `no_rollback?`,
-   `save_kubeconfig?`) and `outpost_bundle_kubeconfig`. Thin wrappers;
+   `save_kubeconfig?`), `outpost_bundle_kubeconfig`,
+   `outpost_install_builtin`, and `outpost_bundle_catalog`. Thin wrappers;
    `APIError` maps to `CallToolResult.IsError`.
 
 4. **CLI (`cmd/outpost/bundle.go`).** `outpost bundle apply <file-or-dir>
    [--kubeconfig PATH] [--timeout N] [--poll N] [--crd-timeout N]
    [--allow-scale-to-zero] [--no-rollback] [--save-kubeconfig] [--offline]`
-   and `outpost bundle kubeconfig`. The default path is a thin MCP client;
+   plus `outpost bundle install <name>`, `outpost bundle catalog`, and
+   `outpost bundle kubeconfig`. The default path is a thin MCP client;
    `--offline` calls the same admincore method in-process (no daemon). The
    standalone `script/dks-peer-bundle-apply.sh` remains the shell-only path.
 

@@ -701,6 +701,9 @@ surfaces converge on `admincore.BundleApply`; the standalone
 | Default kubeconfig venue | `cluster.bundle_kubeconfig` | `bundle apply --kubeconfig … --save-kubeconfig` | — | `outpost_apply_bundle` (`kubeconfig` + `save_kubeconfig`) |
 | Show the persisted venue | (read-only) | `bundle kubeconfig` | — | `outpost_bundle_kubeconfig` |
 | Apply a bundle | (operation, not persisted) | `bundle apply <file-or-dir>` | — | `outpost_apply_bundle` |
+| Default OSS appstore catalog | `cluster.bundle_catalog` | `bundle install <name> --catalog … --save-catalog` | — | `outpost_install_builtin` (`catalog` + `save_catalog`) |
+| Install an OSS built-in | (operation, not persisted) | `bundle install <name>` | — | `outpost_install_builtin` |
+| List the effective catalog | (read-only) | `bundle catalog` | — | `outpost_bundle_catalog` |
 
 Save = **live**. `cluster.bundle_kubeconfig` is read on each apply; changing
 it never restarts the daemon (the operation touches the peer cluster, not
@@ -730,6 +733,17 @@ Behaviours worth knowing:
   reported).
 - **`--save-kubeconfig` persists only after a successful apply**, so a saved
   default that never worked can't become a trap for the next run.
+- **Built-in names resolve only through the OSS appstore.** `bundle install
+  headlamp` resolves exactly `builtin/headlamp/install.yaml` beneath an explicit
+  `--catalog`, persisted `cluster.bundle_catalog`, or a sibling `appstore`
+  checkout in the umbrella. Canonical-path containment rejects traversal and
+  escaping symlinks. Unknown or unavailable assets fail closed; there is no
+  cloudbox/private-manifest or network fallback. A catalog can also be a
+  fetched, versioned appstore tree. Current compatible names are shown by
+  `bundle catalog`; the OSS tree includes `core-storage`, `coredns`, `headlamp`,
+  `gpu-device-plugin`, and other appstore built-ins.
+- **`--save-catalog` persists only after a successful install** and requires an
+  explicit `--catalog`.
 - `--offline` runs the apply in the CLI process against the on-disk
   `agent.json` — no running daemon required.
 

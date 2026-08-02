@@ -99,6 +99,24 @@ func TestBundleApplyArgs_KeysMatchMCPTool(t *testing.T) {
 	}
 }
 
+func TestBuiltinInstallArgs_KeysMatchMCPTool(t *testing.T) {
+	p := admincore.BuiltinInstallParams{
+		Name: "headlamp", Catalog: "/tmp/appstore", Kubeconfig: "/tmp/peer.yaml",
+		TimeoutSeconds: 120, PollSeconds: 3, CRDTimeoutSeconds: 30,
+		AllowScaleToZero: true, NoRollback: true, SaveKubeconfig: true, SaveCatalog: true,
+	}
+	args := builtinInstallArgs(p)
+	var keys []string
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	want := []string{"allow_scale_to_zero", "catalog", "crd_timeout_seconds", "kubeconfig", "name", "no_rollback", "poll_seconds", "save_catalog", "save_kubeconfig", "timeout_seconds"}
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("arg keys drifted:\n got %v\nwant %v", keys, want)
+	}
+}
+
 // cliFakeBundleClient is a deterministic in-memory ResourceClient — no
 // apiserver, no cloudbox.
 type cliFakeBundleClient struct {
@@ -232,5 +250,27 @@ func TestBundleApplyOffline_VenueGuard(t *testing.T) {
 		if !errors.As(err, &apiErr) || apiErr.Status != 400 {
 			t.Fatalf("venue refusal should be the admincore 400, got %v", err)
 		}
+	}
+}
+
+func TestBuiltinInstallOffline_ReachesAdmincore(t *testing.T) {
+	core, peer, _ := newBundleCLICore(t)
+	catalog := filepath.Join(os.Getenv("HOME"), "appstore")
+	dir := filepath.Join(catalog, "builtin", "headlamp")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "install.yaml"), []byte("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: headlamp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	err := builtinInstallOffline(context.Background(), core, admincore.BuiltinInstallParams{
+		Name: "headlamp", Catalog: catalog, Kubeconfig: peer, TimeoutSeconds: 5,
+	}, &buf)
+	if err != nil {
+		t.Fatalf("offline install: %v", err)
+	}
+	if !strings.Contains(buf.String(), "installed:  headlamp") {
+		t.Fatalf("output:\n%s", buf.String())
 	}
 }

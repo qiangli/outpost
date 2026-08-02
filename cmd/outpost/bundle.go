@@ -128,7 +128,183 @@ func bundleCmd() *cobra.Command {
 		Use:   "bundle",
 		Short: "Apply app/bundle manifests to a peer-hosted control plane (no cloudbox on the path)",
 	}
-	cmd.AddCommand(bundleApplyCmd(), bundleKubeconfigCmd())
+	cmd.AddCommand(bundleApplyCmd(), bundleInstallCmd(), bundleKubeconfigCmd(), bundleCatalogCmd())
+	return cmd
+}
+
+type bundleInstallFlags struct {
+	bundleApplyFlags
+	catalog     string
+	saveCatalog bool
+}
+
+func resolveBuiltinInstallParams(name string, f *bundleInstallFlags) admincore.BuiltinInstallParams {
+	return admincore.BuiltinInstallParams{
+		Name: name, Catalog: strings.TrimSpace(f.catalog), Kubeconfig: strings.TrimSpace(f.kubeconfig),
+		TimeoutSeconds: f.timeout, PollSeconds: f.poll, CRDTimeoutSeconds: f.crdTimeout,
+		AllowScaleToZero: f.allowScaleToZero, NoRollback: f.noRollback,
+		SaveKubeconfig: f.saveKubeconfig, SaveCatalog: f.saveCatalog,
+	}
+}
+
+func builtinInstallArgs(p admincore.BuiltinInstallParams) map[string]any {
+	args := map[string]any{"name": p.Name}
+	if p.Catalog != "" {
+		args["catalog"] = p.Catalog
+	}
+	if p.Kubeconfig != "" {
+		args["kubeconfig"] = p.Kubeconfig
+	}
+	if p.TimeoutSeconds > 0 {
+		args["timeout_seconds"] = p.TimeoutSeconds
+	}
+	if p.PollSeconds > 0 {
+		args["poll_seconds"] = p.PollSeconds
+	}
+	if p.CRDTimeoutSeconds > 0 {
+		args["crd_timeout_seconds"] = p.CRDTimeoutSeconds
+	}
+	if p.AllowScaleToZero {
+		args["allow_scale_to_zero"] = true
+	}
+	if p.NoRollback {
+		args["no_rollback"] = true
+	}
+	if p.SaveKubeconfig {
+		args["save_kubeconfig"] = true
+	}
+	if p.SaveCatalog {
+		args["save_catalog"] = true
+	}
+	return args
+}
+
+type builtinInstallOut struct {
+	OK              bool     `json:"ok"`
+	Name            string   `json:"name"`
+	Catalog         string   `json:"catalog"`
+	Manifest        string   `json:"manifest"`
+	Kubeconfig      string   `json:"kubeconfig"`
+	Applied         int      `json:"applied"`
+	Ready           int      `json:"ready"`
+	Created         []string `json:"created,omitempty"`
+	RolledBack      []string `json:"rolled_back,omitempty"`
+	CleanupFailed   []string `json:"cleanup_failed,omitempty"`
+	KubeconfigSaved bool     `json:"kubeconfig_saved,omitempty"`
+	CatalogSaved    bool     `json:"catalog_saved,omitempty"`
+}
+
+func bundleInstallCmd() *cobra.Command {
+	var f bundleInstallFlags
+	cmd := &cobra.Command{
+		Use:   "install <built-in>",
+		Short: "Install an OSS appstore built-in on a peer-hosted control plane",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p := resolveBuiltinInstallParams(args[0], &f)
+			return runBuiltinInstall(cmd.Context(), p, f.offline, cmd.OutOrStdout())
+		},
+	}
+	addBundleApplyFlags(cmd, &f.bundleApplyFlags)
+	cmd.Flags().StringVar(&f.catalog, "catalog", "", "OSS dhnt/appstore checkout (or fetched/versioned appstore tree).")
+	cmd.Flags().BoolVar(&f.saveCatalog, "save-catalog", false, "After success, persist explicit --catalog as cluster.bundle_catalog.")
+	return cmd
+}
+
+func runBuiltinInstall(ctx context.Context, p admincore.BuiltinInstallParams, offline bool, w io.Writer) error {
+	var out builtinInstallOut
+	if offline {
+		core, err := offlineCore()
+		if err != nil {
+			return err
+		}
+		return builtinInstallOffline(ctx, core, p, w)
+	} else {
+		session, err := dialMCP(ctx)
+		if err != nil {
+			return err
+		}
+		defer session.close()
+		if err := session.callTool(ctx, "outpost_install_builtin", builtinInstallArgs(p), &out); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(w, "installed:  %s (%d object(s), %d confirmed ready)\n", out.Name, out.Applied, out.Ready)
+	fmt.Fprintf(w, "catalog:    %s\nmanifest:   %s\nkubeconfig: %s\n", out.Catalog, out.Manifest, out.Kubeconfig)
+	if out.CatalogSaved {
+		fmt.Fprintln(w, "saved cluster.bundle_catalog — future installs can omit --catalog")
+	}
+	if out.KubeconfigSaved {
+		fmt.Fprintln(w, "saved cluster.bundle_kubeconfig — future installs can omit --kubeconfig")
+	}
+	return nil
+}
+
+func builtinInstallOffline(ctx context.Context, core *admincore.Server, p admincore.BuiltinInstallParams, w io.Writer) error {
+	res, err := core.BuiltinInstall(ctx, p)
+	if err != nil {
+		return err
+	}
+	out := builtinInstallOut{
+		OK: res.OK, Name: res.Name, Catalog: res.Catalog, Manifest: res.Manifest,
+		Kubeconfig: res.Kubeconfig, Applied: res.Applied, Ready: res.Ready,
+		Created: res.Created, RolledBack: res.RolledBack, CleanupFailed: res.CleanupFailed,
+		KubeconfigSaved: res.KubeconfigSaved, CatalogSaved: res.CatalogSaved,
+	}
+	fmt.Fprintf(w, "installed:  %s (%d object(s), %d confirmed ready)\n", out.Name, out.Applied, out.Ready)
+	fmt.Fprintf(w, "catalog:    %s\nmanifest:   %s\nkubeconfig: %s\n", out.Catalog, out.Manifest, out.Kubeconfig)
+	if out.CatalogSaved {
+		fmt.Fprintln(w, "saved cluster.bundle_catalog — future installs can omit --catalog")
+	}
+	if out.KubeconfigSaved {
+		fmt.Fprintln(w, "saved cluster.bundle_kubeconfig — future installs can omit --kubeconfig")
+	}
+	return nil
+}
+
+type bundleCatalogOut struct {
+	OK       bool     `json:"ok"`
+	Catalog  string   `json:"catalog"`
+	Builtins []string `json:"builtins"`
+}
+
+func bundleCatalogCmd() *cobra.Command {
+	var offline bool
+	var catalog string
+	cmd := &cobra.Command{
+		Use: "catalog", Short: "Show the effective OSS catalog and installable built-ins", Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			var out bundleCatalogOut
+			if offline {
+				core, err := offlineCore()
+				if err != nil {
+					return err
+				}
+				view, err := core.BundleCatalog(catalog)
+				if err != nil {
+					return err
+				}
+				out = bundleCatalogOut{OK: view.OK, Catalog: view.Catalog, Builtins: view.Builtins}
+			} else {
+				session, err := dialMCP(cmd.Context())
+				if err != nil {
+					return err
+				}
+				defer session.close()
+				args := map[string]any{}
+				if strings.TrimSpace(catalog) != "" {
+					args["catalog"] = strings.TrimSpace(catalog)
+				}
+				if err := session.callTool(cmd.Context(), "outpost_bundle_catalog", args, &out); err != nil {
+					return err
+				}
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "bundle_catalog: %s\nbuilt-ins:     %s\n", out.Catalog, strings.Join(out.Builtins, ", "))
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&offline, "offline", false, "Read the on-disk agent.json instead of the running daemon.")
+	cmd.Flags().StringVar(&catalog, "catalog", "", "Explicit OSS dhnt/appstore root to inspect.")
 	return cmd
 }
 
