@@ -104,8 +104,7 @@ type BuiltinsParams struct {
 	// loopback port, auto-exposed over the mesh as `registry`. ZotPort sets its
 	// HTTP port (0 = default 5000). nil = leave unchanged.
 	Zot     *bool `json:"zot,omitempty"`
-	ZotPort *int  `json:"zot_port,omitempty"`
-	// Seaweedfs toggles running SeaweedFS (object/blob store, S3 gateway) as a
+	ZotPort *int  `json:"zot_port,omitempty"`	// Seaweedfs toggles running SeaweedFS (object/blob store, S3 gateway) as a
 	// managed external binary on a loopback port, auto-exposed over the mesh as
 	// `s3`. SeaweedfsPort sets its S3 port (0 = default 8333). nil = unchanged.
 	Seaweedfs     *bool `json:"seaweedfs,omitempty"`
@@ -136,6 +135,12 @@ type BuiltinsParams struct {
 	ActrunnerSandbox      *bool   `json:"actrunner_sandbox,omitempty"`
 	ActrunnerSandboxImage *string `json:"actrunner_sandbox_image,omitempty"`
 	ActrunnerDockerHost   *string `json:"actrunner_docker_host,omitempty"`
+
+	// headlamp toggles deploying Headlamp (the operating UI) on the peer DKS
+	// plane. HeadlampPort sets its supervised loopback forward port (0 = default
+	// 18466). nil = leave unchanged. See docs/peer-dks-headlamp.md.
+	Headlamp     *bool `json:"headlamp,omitempty"`
+	HeadlampPort *int  `json:"headlamp_port,omitempty"`
 }
 
 // BuiltinsResult reports what happened. RestartPending is true when
@@ -296,6 +301,12 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	if p.KopiaPort != nil {
 		fc.KopiaPort = *p.KopiaPort
 	}
+	if p.Headlamp != nil {
+		fc.HeadlampEnabled = p.Headlamp
+	}
+	if p.HeadlampPort != nil {
+		fc.HeadlampPort = *p.HeadlampPort
+	}
 	if p.Actrunner != nil {
 		fc.ActrunnerEnabled = p.Actrunner
 	}
@@ -383,7 +394,7 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterAgent == nil && p.ClusterVirtual == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.Loom == nil && p.LoomPort == nil && p.Meet == nil && p.MeetPort == nil && p.BashyServices == nil && p.BashyVersion == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil && p.ActrunnerSandbox == nil && p.ActrunnerSandboxImage == nil && p.ActrunnerDockerHost == nil && p.CloudDOEnabled == nil && p.CloudDOToken == nil
+	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterAgent == nil && p.ClusterVirtual == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.Loom == nil && p.LoomPort == nil && p.Meet == nil && p.MeetPort == nil && p.BashyServices == nil && p.BashyVersion == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil && p.ActrunnerSandbox == nil && p.ActrunnerSandboxImage == nil && p.ActrunnerDockerHost == nil && p.CloudDOEnabled == nil && p.CloudDOToken == nil && p.Headlamp == nil && p.HeadlampPort == nil
 	if p.UpdateMode != nil {
 		if !conf.ValidUpdateMode(*p.UpdateMode) {
 			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")

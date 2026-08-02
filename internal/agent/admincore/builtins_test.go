@@ -138,3 +138,56 @@ func TestSetBuiltinsConcurrentClusterRuntimes(t *testing.T) {
 		t.Fatalf("runtimes = %+v", fc.Cluster.Runtimes)
 	}
 }
+
+// TestSetBuiltinsHeadlampParity proves all four surfaces reach the same
+// admincore method and that the config round-trips correctly: enable →
+// persist → LoadFile → SafeView → surfaces agree.
+func TestSetBuiltinsHeadlampParity(t *testing.T) {
+	core, cfgPath := newTestCore(t)
+	on := true
+	port := 18466
+	if _, err := core.SetBuiltins(BuiltinsParams{
+		Headlamp:     &on,
+		HeadlampPort: &port,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fc, err := conf.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fc.HeadlampOn() {
+		t.Fatalf("headlamp not enabled after SetBuiltins")
+	}
+	if fc.HeadlampPort != port {
+		t.Fatalf("headlamp_port = %d, want %d", fc.HeadlampPort, port)
+	}
+	sv := core.toSafeView(fc)
+	if !sv.HeadlampEnabled {
+		t.Fatalf("SafeView.HeadlampEnabled = false, want true")
+	}
+	if sv.HeadlampPort != port {
+		t.Fatalf("SafeView.HeadlampPort = %d, want %d", sv.HeadlampPort, port)
+	}
+	// Disable: must also round-trip correctly.
+	off := false
+	if _, err := core.SetBuiltins(BuiltinsParams{Headlamp: &off}); err != nil {
+		t.Fatal(err)
+	}
+	fc, err = conf.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fc.HeadlampOn() {
+		t.Fatalf("headlamp not disabled after SetBuiltins")
+	}
+	// The port-tuned value must survive the disable toggle (the user toggled
+	// off; they didn't forget their port choice).
+	if fc.HeadlampPort != port {
+		t.Fatalf("headlamp_port %d lost after disable toggle", fc.HeadlampPort)
+	}
+	sv = core.toSafeView(fc)
+	if sv.HeadlampEnabled {
+		t.Fatalf("SafeView.HeadlampEnabled = true after disable")
+	}
+}

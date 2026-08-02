@@ -681,6 +681,18 @@ type FileConfig struct {
 	// coreutils/pkg/mirror (recursive watch + rclone sync), for availability /
 	// failover. See docs/external-binary-builtins.md.
 	Mirror *MirrorConfig `json:"mirror,omitempty"`
+
+	// headlamp enables the Headlamp operating UI on a peer-hosted DKS control
+	// plane. When on and cluster.control_plane is enabled, outpost deploys
+	// Headlamp into the plane, supervises the loopback port-forward, and exposes
+	// it over the mesh as the `headlamp` service. Default OFF (explicit opt-in).
+	// See docs/peer-dks-headlamp.md.
+	HeadlampEnabled *bool `json:"headlamp_enabled,omitempty"`
+
+	// headlamp_port is the loopback port the supervised port-forward binds on.
+	// Default headlamp.DefaultLocalPort (18466); validated through
+	// headlamp.ValidateListenAddr so non-loopback binds are rejected.
+	HeadlampPort int `json:"headlamp_port,omitempty"`
 }
 
 // ClusterConfig persists the kubeconfig fields cloudbox issues at
@@ -1895,6 +1907,21 @@ func (fc *FileConfig) ZotPortOrDefault() int {
 		return fc.ZotPort
 	}
 	return 5000
+}
+
+// HeadlampOn reports whether this outpost should deploy and supervise
+// Headlamp on its peer-hosted DKS plane (default OFF).
+func (fc *FileConfig) HeadlampOn() bool {
+	return fc != nil && fc.HeadlampEnabled != nil && *fc.HeadlampEnabled
+}
+
+// HeadlampPortOrDefault returns the configured headlamp loopback port,
+// or 18466 (headlamp.DefaultLocalPort).
+func (fc *FileConfig) HeadlampPortOrDefault() int {
+	if fc != nil && fc.HeadlampPort > 0 {
+		return fc.HeadlampPort
+	}
+	return 18466
 }
 
 func (fc *FileConfig) SeaweedfsOn() bool {
