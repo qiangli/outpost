@@ -205,8 +205,35 @@ apiserver, and it does not contact cloudbox to reclaim anything — cloudbox nev
 issued a peer-joined node. The worker holds only a k3s **join token**, which is
 not an admin credential for the peer apiserver, and leave deliberately does not
 add one to a worker. Removing the stale `Node` object is the **control-plane
-host's** garbage-collection responsibility. On that host, after the worker has
-left, delete it explicitly if it is not GC'd:
+host's** garbage-collection responsibility.
+
+The control-plane host's outpost daemon does this automatically. Alongside the
+other control-plane reconcilers (which require
+`cluster.control_plane_kubeconfig` to point at an admin kubeconfig for the
+hosted plane), a garbage collector runs every hour and deletes Node objects
+that are all of:
+
+- labelled exactly as an outpost k3s agent node
+  (`outpost.dhnt.io/runtime=agent`, `outpost.dhnt.io/backend=k3s`, and a
+  nonempty `outpost.dhnt.io/host` whose value prefixes the node name — the
+  identity the k3s agent entrypoint stamps at registration);
+- `NotReady` or `Unknown` for **longer than 24 hours**, per the Ready
+  condition's own last-transition timestamp — no cloudbox liveness feed is
+  consulted, so the collector works fully offline.
+
+Everything else is out of scope by construction: Ready nodes,
+virtual-kubelet nodes (`runtime=virtual`), foreign or unlabelled nodes, nodes
+whose name does not match their host label, and nodes missing readiness
+evidence are never touched. Deletes are capped at 3 per pass (oldest first),
+each node is re-checked with a fresh read immediately before its delete, the
+delete carries a UID precondition so a same-name rejoin registered in between
+survives, and any apiserver error aborts the whole pass. A machine that comes
+back inside the 24 h window simply reconnects and goes Ready again — nothing
+is lost by waiting a day.
+
+A worker that left (or died) therefore disappears from `kubectl get nodes` on
+its own after the grace period. To reclaim it sooner, delete it explicitly on
+the control-plane host:
 
 ```bash
 kubectl --kubeconfig ~/.kube/outpost-control-plane/k3s.yaml delete node <worker-node-name>
