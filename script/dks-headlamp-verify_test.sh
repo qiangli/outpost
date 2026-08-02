@@ -180,13 +180,14 @@ hlv_http_code 127.0.0.1 18466 >/dev/null && bad "http override none must rc 1" |
 unset HLV_HTTP_OVERRIDE
 
 # Path-keyed pairs distinguish routes on the same host:port (the auth probe
-# GETs /clusters/main/api/v1 on the same forward answering GETs /).
-HLV_HTTP_OVERRIDE="127.0.0.1:18466=200 127.0.0.1:18466/clusters/main/api/v1=401"
-is "http override path-keyed hit" "$(hlv_http_code 127.0.0.1 18466 8 /clusters/main/api/v1)" "401"
+# GETs the base-URL-prefixed cluster proxy on the same forward answering GETs /).
+AUTH_PATH=/matrix/cluster/svc/headlamp/headlamp/clusters/main/api/v1
+HLV_HTTP_OVERRIDE="127.0.0.1:18466=200 127.0.0.1:18466${AUTH_PATH}=401"
+is "http override path-keyed hit" "$(hlv_http_code 127.0.0.1 18466 8 "$AUTH_PATH")" "401"
 is "http override path-less fallback" "$(hlv_http_code 127.0.0.1 18466 8 /)" "200"
 is "http override other path falls back" "$(hlv_http_code 127.0.0.1 18466 8 /healthz)" "200"
-HLV_HTTP_OVERRIDE="127.0.0.1:18466/clusters/main/api/v1=403"
-is "http override path-keyed only" "$(hlv_http_code 127.0.0.1 18466 8 /clusters/main/api/v1)" "403"
+HLV_HTTP_OVERRIDE="127.0.0.1:18466${AUTH_PATH}=403"
+is "http override path-keyed only" "$(hlv_http_code 127.0.0.1 18466 8 "$AUTH_PATH")" "403"
 hlv_http_code 127.0.0.1 18466 8 / >/dev/null && bad "http override unknown pair must rc 1" || ok "http override unknown pair -> rc 1"
 unset HLV_HTTP_OVERRIDE
 
@@ -295,7 +296,7 @@ stub_reset() {
     STUB_CRB="$FIX/crb-clean"; STUB_RB="$FIX/rb-empty"
     STUB_ADDRS="control-plane-host:192.0.2.10,;"
     STUB_PROBE="127.0.0.1:18466=open 192.0.2.10:10250=open 192.0.2.10:4466=closed"
-    STUB_HTTP="127.0.0.1:18466=200 127.0.0.1:18466/clusters/main/api/v1=401"
+    STUB_HTTP="127.0.0.1:18466=200 127.0.0.1:18466/matrix/cluster/svc/headlamp/headlamp/clusters/main/api/v1=401"
     STUB_LOG=""; STUB_ONLY=""; STUB_PROBE_ADDRS=""
 }
 
@@ -452,19 +453,19 @@ AR=auth-token-required
 
 # 401: the apiserver denies the anonymous request outright.
 stub_reset
-STUB_HTTP="127.0.0.1:18466=200 127.0.0.1:18466/clusters/main/api/v1=401"
+STUB_HTTP="127.0.0.1:18466=200 127.0.0.1:18466/matrix/cluster/svc/headlamp/headlamp/clusters/main/api/v1=401"
 STUB_ONLY=running,$AR; run_case
 expect "auth: 401 -> PASS (gate holds)" 2 "CHECK $AR PASS" "CHECK $AR FAIL"
 
 # 403: anonymous authenticated but RBAC-denied — equally the gate working.
 stub_reset
-STUB_HTTP="127.0.0.1:18466=200 127.0.0.1:18466/clusters/main/api/v1=403"
+STUB_HTTP="127.0.0.1:18466=200 127.0.0.1:18466/matrix/cluster/svc/headlamp/headlamp/clusters/main/api/v1=403"
 STUB_ONLY=running,$AR; run_case
 expect "auth: 403 -> PASS (gate holds)" 2 "CHECK $AR PASS" "CHECK $AR FAIL"
 
 # THE fail this run exists to catch: authority without a token.
 stub_reset
-STUB_HTTP="127.0.0.1:18466=200 127.0.0.1:18466/clusters/main/api/v1=200"
+STUB_HTTP="127.0.0.1:18466=200 127.0.0.1:18466/matrix/cluster/svc/headlamp/headlamp/clusters/main/api/v1=200"
 STUB_ONLY=running,$AR; run_case
 expect "auth: 200 unauthenticated -> FAIL, never PASS" 1 "CHECK $AR FAIL" "CHECK $AR PASS"
 case "$RH_OUT" in *"WITHOUT a token"*) ok "auth: FAIL names the broken boundary" ;; *) bad "auth: FAIL names the broken boundary" "$RH_OUT" ;; esac
@@ -472,14 +473,14 @@ case "$RH_OUT" in *"WITHOUT a token"*) ok "auth: FAIL names the broken boundary"
 # Route-layout drift (the pinned image's in-cluster context is "main") is
 # indeterminate: BLOCKED, never silently OK and never a false FAIL.
 stub_reset
-STUB_HTTP="127.0.0.1:18466=200 127.0.0.1:18466/clusters/main/api/v1=404"
+STUB_HTTP="127.0.0.1:18466=200 127.0.0.1:18466/matrix/cluster/svc/headlamp/headlamp/clusters/main/api/v1=404"
 STUB_ONLY=running,$AR; run_case
 expect "auth: unexpected code -> BLOCKED" 2 "CHECK $AR BLOCKED" "CHECK $AR PASS"
 case "$RH_OUT" in *"UNCONFIRMED"*) ok "auth: BLOCKED says the gate is unconfirmed" ;; *) bad "auth: BLOCKED says the gate is unconfirmed" "$RH_OUT" ;; esac
 
 # No HTTP answer at all: could not determine.
 stub_reset
-STUB_HTTP="127.0.0.1:18466=200 127.0.0.1:18466/clusters/main/api/v1=none"
+STUB_HTTP="127.0.0.1:18466=200 127.0.0.1:18466/matrix/cluster/svc/headlamp/headlamp/clusters/main/api/v1=none"
 STUB_ONLY=running,$AR; run_case
 expect "auth: no HTTP status -> BLOCKED" 2 "CHECK $AR BLOCKED" "CHECK $AR PASS"
 

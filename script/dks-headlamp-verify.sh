@@ -223,6 +223,26 @@ hlv_tcp_probe() {
         fi
         return 0
     fi
+    # Prefer netcat when available. macOS's system Bash is built without
+    # /dev/tcp support, and polling a failed background redirection with
+    # `kill -0` observes the unreaped zombie as alive until the deadline —
+    # falsely classifying even a listening loopback forward as a timeout.
+    # Both BSD and OpenBSD netcat support this connect-only shape.
+    if command -v nc >/dev/null 2>&1; then
+        local ncerr ncrc
+        ncerr="$(nc -z -w "$to" "$host" "$port" 2>&1)"
+        ncrc=$?
+        if [ "$ncrc" -eq 0 ]; then
+            echo open
+        elif printf '%s' "$ncerr" | grep -qi 'refused'; then
+            echo closed
+        elif printf '%s' "$ncerr" | grep -Eqi 'timed out|timeout'; then
+            echo timeout
+        else
+            echo error
+        fi
+        return 0
+    fi
     local errf
     errf="$(mktemp)" || { echo error; return 0; }
     ( exec 2>>"$errf"; exec 3<>"/dev/tcp/$host/$port"; exec 3>&- ) &
@@ -270,6 +290,20 @@ hlv_http_code() {
         v="$(hlv_override_lookup "$HLV_HTTP_OVERRIDE" "$host:$port")" || return 1
         [ "$v" = "none" ] && return 1
         printf '%s\n' "$v"
+        return 0
+    fi
+    # curl is the portable live path. macOS's system Bash has no /dev/tcp,
+    # so relying on the fallback below makes a healthy port-forward look like
+    # "no HTTP status" even after the TCP probe has succeeded.
+    if command -v curl >/dev/null 2>&1; then
+        local curl_code
+        curl_code="$(curl -sS -o /dev/null --max-time "$to" -w '%{http_code}' \
+            "http://$host:$port$path" 2>/dev/null)" || return 1
+        case "$curl_code" in
+            [0-9][0-9][0-9]) [ "$curl_code" != "000" ] || return 1 ;;
+            *) return 1 ;;
+        esac
+        printf '%s\n' "$curl_code"
         return 0
     fi
     local line code
@@ -325,6 +359,7 @@ HLV_SERVICE_PORT="${HLV_SERVICE_PORT:-80}"
 HLV_CONTAINER_PORT="${HLV_CONTAINER_PORT:-4466}"
 HLV_CONTROL_PORT="${HLV_CONTROL_PORT:-10250}"
 HLV_TIMEOUT="${HLV_TIMEOUT:-30}"
+HLV_BASE_PATH="${HLV_BASE_PATH:-/matrix/cluster/svc/headlamp/headlamp}"
 
 # Deterministic peer kubeconfig — NEVER ambient.
 # The peer admin kubeconfig is ~/.kube/outpost-control-plane/k3s.yaml.
@@ -550,9 +585,9 @@ fi
 # that claim is PROVEN, not assumed: an unauthenticated GET of Headlamp's
 # apiserver-proxy route must be shown NOT to yield cluster authority.
 #
-# For the pinned image (ghcr.io/headlamp-k8s/headlamp:v0.27.0, deployed with
-# -in-cluster) the documented signal is an unauthenticated GET of
-# /clusters/main/api/v1: the in-cluster context is named "main"
+# For the pinned image (deployed with -in-cluster) the documented signal is an
+# unauthenticated GET of <base-url>/clusters/main/api/v1: the in-cluster
+# context is named "main" and the configured base URL prefixes every route
 # (backend/pkg/kubeconfig InClusterContextName) and /clusters/{name}/{api}
 # reverse-proxies to the apiserver forwarding only the caller's Authorization
 # header — the in-cluster context itself carries NO credentials. With no
@@ -574,19 +609,20 @@ if hlv_selected auth-token-required; then
         if ! hlv_start_forward; then
             hlv_record auth-token-required BLOCKED "loopback port-forward did not open 127.0.0.1:$HLV_LOCAL_PORT within ${HLV_TIMEOUT}s: $(tail -c 200 "$PF_LOG" 2>/dev/null)"
         else
-            ACODE="$(hlv_http_code 127.0.0.1 "$HLV_LOCAL_PORT" 8 /clusters/main/api/v1)"
+            AUTH_PATH="${HLV_BASE_PATH%/}/clusters/main/api/v1"
+            ACODE="$(hlv_http_code 127.0.0.1 "$HLV_LOCAL_PORT" 8 "$AUTH_PATH")"
             case "$ACODE" in
                 401|403)
-                    hlv_record auth-token-required PASS "unauthenticated GET /clusters/main/api/v1 denied with HTTP $ACODE — authority enters only with a pasted token"
+                    hlv_record auth-token-required PASS "unauthenticated GET $AUTH_PATH denied with HTTP $ACODE — authority enters only with a pasted token"
                     ;;
                 2*)
-                    hlv_record auth-token-required FAIL "unauthenticated GET /clusters/main/api/v1 returned HTTP $ACODE — the UI serves cluster authority WITHOUT a token; the token-login boundary is broken"
+                    hlv_record auth-token-required FAIL "unauthenticated GET $AUTH_PATH returned HTTP $ACODE — the UI serves cluster authority WITHOUT a token; the token-login boundary is broken"
                     ;;
                 "")
                     hlv_record auth-token-required BLOCKED "no HTTP status for the unauthenticated probe at 127.0.0.1:$HLV_LOCAL_PORT — could not determine whether the auth gate holds"
                     ;;
                 *)
-                    hlv_record auth-token-required BLOCKED "unexpected HTTP $ACODE for /clusters/main/api/v1 (pinned image v0.27.0 names the in-cluster context 'main') — the route layout may have drifted; the auth gate is UNCONFIRMED"
+                    hlv_record auth-token-required BLOCKED "unexpected HTTP $ACODE for $AUTH_PATH (the pinned deployment names the in-cluster context 'main') — the route layout may have drifted; the auth gate is UNCONFIRMED"
                     ;;
             esac
         fi
