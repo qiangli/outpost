@@ -5,6 +5,7 @@ package runtime
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -116,5 +117,106 @@ func TestServerEntrypointDoesNotAdvertiseLoopback(t *testing.T) {
 	}
 	if !strings.Contains(script, `--advertise-address="$ADVERTISE_ADDR"`) {
 		t.Fatal("k3s must advertise its non-loopback container address")
+	}
+}
+
+func TestPeerMetricsServerIsColocatedWithoutEnablingAgent(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("image", "server-entrypoint.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(b)
+	for _, required := range []string{
+		"--disable-agent",
+		"--disable=traefik,servicelb,metrics-server",
+		"--egress-selector-mode=pod",
+		"--kube-apiserver-arg=kubelet-preferred-address-types=ExternalIP",
+		"OUTPOST_METRICS_ADDRESS=\"${ADVERTISE_ADDR}\"",
+		"/usr/local/bin/metrics-server-supervisor.sh",
+		`kill -0 "${METRICS_PID:-0}"`,
+	} {
+		if !strings.Contains(script, required) {
+			t.Errorf("server entrypoint missing colocated metrics contract %q", required)
+		}
+	}
+	if strings.Contains(script, "hostNetwork:true") || strings.Contains(script, "patch deployment metrics-server") {
+		t.Error("peer metrics must not resurrect the worker-hostNetwork patch disproved by the live gate")
+	}
+	if strings.Contains(script, "kubelet-preferred-address-types=ExternalIP,") {
+		t.Error("apiserver must not fall back from reconciler-owned ExternalIP to unreachable worker addresses")
+	}
+
+	dockerfile, err := os.ReadFile(filepath.Join("image", "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"ARG METRICS_SERVER_VERSION=v0.8.1",
+		"metrics-server-linux-${TARGETARCH}",
+		"dd2455a5902d100aab7e5f7f9bcd8f715b6d39f97f161bbe87e3c24f61fa296c",
+		"0a3a052c44111dd0cc4ee86729d1eb621dd12b064f4dfb92e012d420ef0fd06f",
+		`sha256sum -c -`,
+		"COPY metrics-server-supervisor.sh /usr/local/bin/metrics-server-supervisor.sh",
+	} {
+		if !strings.Contains(string(dockerfile), required) {
+			t.Errorf("runtime image missing metrics-server artifact contract %q", required)
+		}
+	}
+}
+
+func TestPeerMetricsResourcesPreserveTunnelBoundary(t *testing.T) {
+	helper := filepath.Join("image", "metrics-server-supervisor.sh")
+	cmd := exec.Command("/bin/sh", "-c",
+		`OUTPOST_METRICS_LIB_ONLY=1 . "$1"; render_metrics_resources 10.88.0.7`, "sh", helper)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("render metrics resources: %v\n%s", err, out)
+	}
+	yaml := string(out)
+	for _, required := range []string{
+		"clusterIP: None",
+		`ip: "10.88.0.7"`,
+		"addressType: IPv4",
+		"kubernetes.io/service-name: metrics-server",
+		"endpointslice.kubernetes.io/skip-mirror",
+		"name: v1beta1.metrics.k8s.io",
+		"name: system:metrics-server",
+		"name: extension-apiserver-authentication-reader",
+	} {
+		if !strings.Contains(yaml, required) {
+			t.Errorf("rendered metrics resources missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"kind: Deployment", "hostNetwork:", "NodePort", "LoadBalancer"} {
+		if strings.Contains(yaml, forbidden) {
+			t.Errorf("rendered metrics resources cross the colocated-process boundary with %q", forbidden)
+		}
+	}
+
+	helperBody, err := os.ReadFile(helper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(helperBody)
+	for _, required := range []string{
+		"--reuid=65532", "--clear-groups",
+		`--kubeconfig="$internal_kubeconfig"`,
+		"--kubelet-preferred-address-types=ExternalIP",
+		"--kubelet-use-node-status-port", "--kubelet-insecure-tls",
+		"CN=system:serviceaccount:kube-system:metrics-server",
+		"openssl x509 -req -days 2",
+		`-lt 8640`,
+	} {
+		if !strings.Contains(s, required) {
+			t.Errorf("metrics supervisor missing security/routing contract %q", required)
+		}
+	}
+	for _, forbidden := range []string{"system:masters", "server: https://127.0.0.1:16443"} {
+		if strings.Contains(s, forbidden) {
+			t.Errorf("metrics supervisor contains over-privileged or host-routed credential %q", forbidden)
+		}
+	}
+	if strings.Contains(s, "kubelet-preferred-address-types=ExternalIP,") {
+		t.Error("metrics-server must fail closed rather than fall back to an unreachable/non-tunnel node address")
 	}
 }

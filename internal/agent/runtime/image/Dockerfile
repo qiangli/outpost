@@ -72,6 +72,22 @@ RUN K3S_BIN=k3s$([ "$TARGETARCH" = "arm64" ] && echo -arm64 || true) && \
     chmod +x /usr/local/bin/k3s && \
     /usr/local/bin/k3s --version | head -2
 
+# Official metrics-server binary, matching the version embedded by k3s
+# 1.36.1. The peer control plane has no local agent, so this runs as a sibling
+# process in the k3s/frps network namespace rather than as a scheduled Pod.
+# Verify the per-architecture checksum published on the signed v0.8.1 release.
+ARG METRICS_SERVER_VERSION=v0.8.1
+RUN case "$TARGETARCH" in \
+        amd64) METRICS_SHA=dd2455a5902d100aab7e5f7f9bcd8f715b6d39f97f161bbe87e3c24f61fa296c ;; \
+        arm64) METRICS_SHA=0a3a052c44111dd0cc4ee86729d1eb621dd12b064f4dfb92e012d420ef0fd06f ;; \
+        *) echo "unsupported metrics-server architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL -o /tmp/metrics-server \
+        "https://github.com/kubernetes-sigs/metrics-server/releases/download/${METRICS_SERVER_VERSION}/metrics-server-linux-${TARGETARCH}" && \
+    echo "${METRICS_SHA}  /tmp/metrics-server" | sha256sum -c - && \
+    install /tmp/metrics-server /usr/local/bin/metrics-server && \
+    rm -f /tmp/metrics-server
+
 # frp client (matrix-tunnel client) — establishes the WSS tunnel to
 # cloudbox + the STCP visitor that exposes cloudbox's embedded
 # apiserver as 127.0.0.1:6443 inside the container. Pinned to the
@@ -115,10 +131,12 @@ RUN chmod +x /opt/cni/bin/outpost-cni && mkdir -p /etc/cni/net.d
 # Entrypoint reads OUTPOST_* env, writes the CNI conflist, starts
 # tailscaled (if overlay creds are set), then exec's k3s agent.
 COPY frpc-supervisor.sh /usr/local/bin/frpc-supervisor.sh
+COPY metrics-server-supervisor.sh /usr/local/bin/metrics-server-supervisor.sh
 COPY entrypoint.sh /entrypoint.sh
 # The control-plane half. One image, two roles: the supervisor picks the
 # entrypoint, so an operator never has to keep two images in step.
 COPY server-entrypoint.sh /server-entrypoint.sh
-RUN chmod +x /entrypoint.sh /server-entrypoint.sh /usr/local/bin/frpc-supervisor.sh
+RUN chmod +x /entrypoint.sh /server-entrypoint.sh \
+        /usr/local/bin/frpc-supervisor.sh /usr/local/bin/metrics-server-supervisor.sh
 
 ENTRYPOINT ["/entrypoint.sh"]

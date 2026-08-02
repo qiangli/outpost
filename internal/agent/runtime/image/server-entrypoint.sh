@@ -7,7 +7,10 @@
 #   frps        accepts worker frpc logins; publishes each worker's kubelet
 #               on this container's loopback at 127.0.0.1:<kubelet-port>
 #   k3s server  the apiserver, which dials those loopback ports to serve
-#               `kubectl logs` / `exec` / `port-forward` / metrics
+#               `kubectl logs` / `exec` / `port-forward`
+#   metrics-server
+#               an unprivileged sibling process that scrapes the same
+#               authenticated loopback ports and serves `kubectl top`
 #
 # WHY THEY MUST SHARE A NAMESPACE, learned by shipping it wrong first: frp
 # publishes a proxy's remotePort on 0.0.0.0, so any 127.0.0.0/8 address on
@@ -107,7 +110,8 @@ EOF
 # --------------------------------------------------------- k3s server ----
 set -- server \
     --disable-agent \
-    --disable=traefik,servicelb \
+    --disable=traefik,servicelb,metrics-server \
+    --egress-selector-mode=pod \
     --write-kubeconfig=/etc/rancher/k3s/k3s-internal.yaml \
     --write-kubeconfig-mode=644 \
     --https-listen-port="${OUTPOST_API_PORT}" \
@@ -133,7 +137,11 @@ done
 # k3s WRAPS kube-apiserver rather than exposing its flags directly, so this
 # must be passed through. Spelled as a k3s flag it is rejected and k3s
 # prints its help and exits — which is how this was found.
-set -- "$@" --kube-apiserver-arg=kubelet-preferred-address-types=ExternalIP,InternalIP,Hostname
+# SINGLE value is intentional. A fallback list lets the apiserver accept the
+# worker's self-reported InternalIP when the ExternalIP route is stale, then
+# fail later with an opaque 502. ExternalIP is the reconciler-owned tunnel
+# address; absence must fail closed instead of escaping the tunnel contract.
+set -- "$@" --kube-apiserver-arg=kubelet-preferred-address-types=ExternalIP
 
 [ -n "${OUTPOST_CLUSTER_CIDR:-}" ] && set -- "$@" --cluster-cidr="${OUTPOST_CLUSTER_CIDR}"
 [ -n "${OUTPOST_SERVICE_CIDR:-}" ] && set -- "$@" --service-cidr="${OUTPOST_SERVICE_CIDR}"
@@ -160,6 +168,16 @@ if listening "${OUTPOST_API_PORT}"; then
     chmod 0644 /etc/rancher/k3s/k3s.yaml.new
     mv -f /etc/rancher/k3s/k3s.yaml.new /etc/rancher/k3s/k3s.yaml
 
+    # A scheduled metrics-server Pod cannot reach this namespace's loopback
+    # FRP listeners, even with hostNetwork: it gets the WORKER host namespace.
+    # Run the official binary here instead. The helper creates least-privilege
+    # client credentials and a selectorless Service endpoint at ADVERTISE_ADDR;
+    # no kubelet listener is published outside the authenticated tunnel.
+    log "starting colocated metrics-server on ${ADVERTISE_ADDR}:10250"
+    OUTPOST_METRICS_ADDRESS="${ADVERTISE_ADDR}" \
+        /usr/local/bin/metrics-server-supervisor.sh &
+    METRICS_PID=$!
+
     log "publishing apiserver 127.0.0.1:${OUTPOST_API_PORT} as stcp k3s-apiserver"
     frpc -c /tmp/frpc-publish.toml &
 else
@@ -170,10 +188,11 @@ fi
 # frps accepts no workers, and one with a live frps and a dead apiserver
 # accepts workers and serves nothing — both look "running" to the supervisor,
 # so neither may be survived silently.
-while kill -0 "$FRPS_PID" 2>/dev/null && kill -0 "$K3S_PID" 2>/dev/null; do
+while kill -0 "$FRPS_PID" 2>/dev/null && kill -0 "$K3S_PID" 2>/dev/null && \
+      kill -0 "${METRICS_PID:-0}" 2>/dev/null; do
     sleep 5
 done
 log "a control-plane process exited; stopping so the supervisor recreates us"
-kill "$FRPS_PID" "$K3S_PID" 2>/dev/null || true
+kill "$FRPS_PID" "$K3S_PID" "${METRICS_PID:-0}" 2>/dev/null || true
 wait "$K3S_PID" 2>/dev/null || true
 exit 1
