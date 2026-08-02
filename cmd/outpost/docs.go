@@ -41,6 +41,7 @@ var docsManifest = []struct {
 	{"mcp", "MCP server guide", "Setup, tool catalog, .mcp.json snippet, token rotation, security posture."},
 	{"dev-deploy", "Direct-local dev → deploy", "Makefile recipes for same-machine and LAN deploys (podman); apps stop/start; remote-cred caching."},
 	{"windows-service", "Windows host runbook", "Reboot-surviving Task Scheduler setup + sleep disable; and running commands over ssh/scp on Windows (minimal PATH — invoke .exe via $COMSPEC /c or full path; scp to deploy)."},
+	{"peer-dks-image-distribution", "Peer image distribution", "Peer DKS image recipe distribution: publish/mesh-resolve/ensure/report verbs, evidence invariants, hardware acceptance."},
 }
 
 func docsCmd() *cobra.Command {

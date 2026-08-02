@@ -681,6 +681,17 @@ type FileConfig struct {
 	// coreutils/pkg/mirror (recursive watch + rclone sync), for availability /
 	// failover. See docs/external-binary-builtins.md.
 	Mirror *MirrorConfig `json:"mirror,omitempty"`
+
+	// peerimage: peer image distribution for DKS — "recipes, not blobs"
+	// (docs/peer-dks-image-distribution.md). When enabled, this node keeps a
+	// local recipe store, serves its published recipes to peers over the
+	// existing mesh forwarder (a loopback listener exposed under an
+	// allowlisted service name — no second overlay, no widened allowlist),
+	// and answers the four verbs (publish / mesh-resolve / ensure / report)
+	// through admincore. Boot-only: the block governs which loopback listener
+	// and mesh exposure exist, so a change takes effect on the next
+	// `outpost start`, never live.
+	PeerImage *PeerImageConfig `json:"peer_image,omitempty"`
 }
 
 // ClusterConfig persists the kubeconfig fields cloudbox issues at
@@ -2553,4 +2564,46 @@ func migrateLegacyRole(fc *FileConfig) {
 		}
 		fc.Apps[i].Role = "" // drop the legacy field
 	}
+}
+
+// peerimage: peer image distribution for DKS (docs/peer-dks-image-distribution.md).
+// Recipes — an indexed Dockerfile + build context + its sha256 — travel between
+// nodes; image blobs never do. Each node builds natively from the recipe. This
+// block gates the node-local recipe store, the mesh-served recipe index, and the
+// four verbs (publish / mesh-resolve / ensure / report) on every surface.
+type PeerImageConfig struct {
+	// Enabled is the opt-in master switch. nil and false are both off — the
+	// feature serves a loopback recipe index to peers, so it is never on by
+	// default. Boot-only: a change restarts the daemon.
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Service is the mesh service name this node's recipe index is exposed
+	// under (and the name peers resolve when looking for recipe publishers).
+	// Empty → PeerImageDefaultService. Boot-only: the exposure happens once at
+	// daemon start.
+	Service string `json:"service,omitempty"`
+}
+
+// PeerImageDefaultService is the mesh service name the recipe index is exposed
+// under when PeerImageConfig.Service is unset. It is an ordinary allowlisted
+// mesh-forward service name — the same boundary every wrapped tool uses.
+const PeerImageDefaultService = "recipes"
+
+// PeerImageOn reports whether peer image distribution is enabled. Opt-in
+// (default OFF): it opens a loopback listener and a mesh exposure, so an
+// absent key must mean off.
+func (fc *FileConfig) PeerImageOn() bool {
+	return fc != nil && fc.PeerImage != nil &&
+		fc.PeerImage.Enabled != nil && *fc.PeerImage.Enabled
+}
+
+// PeerImageServiceOrDefault returns the mesh service name for the recipe
+// index, defaulting to PeerImageDefaultService when unset or blank.
+func (fc *FileConfig) PeerImageServiceOrDefault() string {
+	if fc != nil && fc.PeerImage != nil {
+		if s := strings.TrimSpace(fc.PeerImage.Service); s != "" {
+			return s
+		}
+	}
+	return PeerImageDefaultService
 }

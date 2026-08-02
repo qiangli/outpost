@@ -134,9 +134,25 @@ func (b *Builder) tick(ctx context.Context) {
 	}
 }
 
-// buildOne resolves the recipe's context, builds it natively, and loads it into
-// the node's containerd.
+// buildOne materializes the recipe and then confirms the image really landed
+// in the runtime's image store.
 func (b *Builder) buildOne(ctx context.Context, r Recipe) error {
+	if err := b.materialize(ctx, r); err != nil {
+		return err
+	}
+	present, err := b.runner.ImagePresent(ctx, r.ref(), b.cfg.RuntimeContainer)
+	if err != nil {
+		return fmt.Errorf("verify loaded image: %w", err)
+	}
+	if !present {
+		return fmt.Errorf("verify loaded image: %s is absent from runtime %s", r.ref(), b.cfg.RuntimeContainer)
+	}
+	return nil
+}
+
+// materialize resolves the recipe's context, builds it natively, and loads it
+// into the node's containerd. Shared with the peer path via Materialize.
+func (b *Builder) materialize(ctx context.Context, r Recipe) error {
 	var ctxRoot string
 	switch r.ContextType {
 	case "local":
@@ -187,13 +203,6 @@ func (b *Builder) buildOne(ctx context.Context, r Recipe) error {
 	}
 	if err := b.runner.Load(ctx, r.ref(), b.cfg.RuntimeContainer); err != nil {
 		return fmt.Errorf("load: %w", err)
-	}
-	present, err := b.runner.ImagePresent(ctx, r.ref(), b.cfg.RuntimeContainer)
-	if err != nil {
-		return fmt.Errorf("verify loaded image: %w", err)
-	}
-	if !present {
-		return fmt.Errorf("verify loaded image: %s is absent from runtime %s", r.ref(), b.cfg.RuntimeContainer)
 	}
 	return nil
 }

@@ -56,6 +56,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/otel"
 	"github.com/qiangli/outpost/internal/agent/overlaykey"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
+	"github.com/qiangli/outpost/internal/agent/peerimage"
 	"github.com/qiangli/outpost/internal/agent/peerplane"
 	"github.com/qiangli/outpost/internal/agent/portal"
 	"github.com/qiangli/outpost/internal/agent/recipebuilder"
@@ -128,6 +129,8 @@ func main() {
 		remoteCmd(), meshCmd(), mirrorCmd(), shardCmd(),
 		docsCmd(), gitCmd(), shellCmd(), versionCmd(), upgradeCmd(), rollbackCmd(), buildCmd(), bashyCmd(),
 		supervisordCmd(), serviceCmd(), doctorCmd(),
+		// peerimage: peer image distribution verbs (recipes, not blobs).
+		peerImageCmd(),
 	)
 	// Wave 3A: LAN peer discovery + peer-assisted repair. Registered
 	// via a helper so main.go's root AddCommand block stays compact.
@@ -869,6 +872,54 @@ func startCmd() *cobra.Command {
 			hasNodeToken := func() bool { return cc != nil && strings.TrimSpace(cc.NodeToken) != "" }
 			hasSTCPSecret := func() bool { return cc != nil && strings.TrimSpace(cc.STCPSecret) != "" }
 
+			// peerimage: peer image distribution (recipes, not blobs) — the
+			// peer half of docs/peer-dks-image-distribution.md. Constructed
+			// here so the SAME *peerimage.Service feeds admincore (and through
+			// it the MCP tools + CLI subcommands); serving its recipe index
+			// over the mesh happens in the errgroup below. Gated on the
+			// peer_image toggle + an agent runtime (the <node>-runtime
+			// container is what ensure/report read and build into). bashy is
+			// resolved lazily (NewBashyRunner / CtrRuntime.BashyPath), so
+			// construction never blocks boot on provisioning the toolchain.
+			var peerImageSvc *peerimage.Service
+			if fc.PeerImageOn() && fc.ClusterOn() && fc.Cluster.HasAgentRuntime() && fc.ClusterNodeName() != "" {
+				if cacheDir, cderr := conf.ResolveCacheDir(); cderr != nil || cacheDir == "" {
+					slog.Warn("peerimage: no cache dir; peer image distribution disabled", "err", cderr)
+				} else if store, serr := peerimage.NewStore(filepath.Join(cacheDir, "peerimage")); serr != nil {
+					slog.Warn("peerimage: recipe store init failed; peer image distribution disabled", "err", serr)
+				} else {
+					nodeName := fc.ClusterNodeName()
+					runtimeContainer := nodeName + "-runtime"
+					peerImageSvc = &peerimage.Service{
+						Identity: peerimage.NodeIdentity{Name: nodeName},
+						Store:    store,
+						Runtime: peerimage.CtrRuntime{
+							BashyPath: bashyResolver.Path,
+							Container: runtimeContainer,
+						},
+						Build: peerimage.RecipeBuilder{
+							Runner:           recipebuilder.NewBashyRunner(bashyResolver.Path),
+							RuntimeContainer: runtimeContainer,
+						},
+						Resolver: func(service string) ([]peerimage.PeerRef, error) {
+							if meshResolver == nil {
+								return nil, fmt.Errorf("mesh service registry is not available (pair the host and enable the mesh)")
+							}
+							peers, err := meshResolver(service)
+							if err != nil {
+								return nil, err
+							}
+							out := make([]peerimage.PeerRef, 0, len(peers))
+							for _, p := range peers {
+								out = append(out, peerimage.PeerRef{Host: p.Host, PeerID: p.PeerID, Services: p.Services})
+							}
+							return out, nil
+						},
+					}
+					slog.Info("peerimage: peer image distribution enabled", "node", nodeName, "service", fc.PeerImageServiceOrDefault())
+				}
+			}
+
 			core, err := admincore.New(admincore.Deps{
 				ConfigPath:          cfgPath,
 				Apps:                apps,
@@ -917,6 +968,9 @@ func startCmd() *cobra.Command {
 					}
 					return nil
 				},
+				// peerimage: nil when the feature is off — the verbs then
+				// report "not enabled" through every surface.
+				PeerImage: peerImageSvc,
 			})
 			if err != nil {
 				return fmt.Errorf("admincore: %w", err)
@@ -2023,6 +2077,32 @@ func startCmd() *cobra.Command {
 						return nil
 					})
 				}
+			}
+
+			// peerimage: serve this node's published recipes to peers over the
+			// EXISTING mesh forwarder — a loopback-only listener Expose()d under
+			// the configured allowlisted service name. No second overlay, and the
+			// forwarder's allowlist boundary is unchanged (the exposure is the
+			// deliberate peer_image.service setting). Recipes ride the mesh;
+			// image blobs never do.
+			if peerImageSvc != nil && meshHost != nil {
+				g.Go(func() error {
+					ln, lerr := net.Listen("tcp", transferLoopback+":0")
+					if lerr != nil {
+						slog.Warn("peerimage: recipe index listen failed; peers cannot fetch recipes from this node", "err", lerr)
+						<-gctx.Done()
+						return nil
+					}
+					srv := &http.Server{Handler: peerImageSvc.IndexHandler()}
+					go func() { _ = srv.Serve(ln) }()
+					svcName := fc.PeerImageServiceOrDefault()
+					meshHost.Forwarder().Expose(svcName, ln.Addr().String())
+					slog.Info("peerimage: recipe index serving", "addr", ln.Addr().String(), "service", svcName)
+					<-gctx.Done()
+					meshHost.Forwarder().Unexpose(svcName)
+					_ = srv.Close()
+					return nil
+				})
 			}
 
 			// Cluster mode: join the cloudbox virtual-podman cluster as a

@@ -713,6 +713,22 @@ outpost stays an ordinary single-machine pool member. Both are
 boot-time-bound (a change restarts the daemon). The key is redacted
 from `SafeView` like other secrets.
 
+### Peer image distribution (recipes, not blobs)
+
+| Field | File key | CLI | UI | MCP | Effect |
+|---|---|---|---|---|---|
+| Peer image distribution opt-in | `peer_image.enabled` | `builtins set --peer-image` / `agent.json` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
+| Mesh service for recipe index | `peer_image.service` | `builtins set --peer-image-service` / `agent.json` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
+
+Peer image verbs:
+
+| Verb | CLI | MCP Tool | Arg(s) | Side-effect class |
+|---|---|---|---|---|
+| Publish recipe | `outpost peer-image publish` | `outpost_publish_image_recipe` | `name`, `body` | Live |
+| Resolve mesh peers | `outpost peer-image mesh-resolve` | `outpost_mesh_resolve_image_recipes` | `service`, `minimum` | Live |
+| Ensure image resident | `outpost peer-image ensure` | `outpost_ensure_image` | `name` | Live |
+| Challenge report | `outpost peer-image report` | `outpost_report_image` | `node`, `ref`, `recipe_digest`, `nonce` | Live |
+
 ### Admin allowlist
 
 | Field | File key | CLI | UI | MCP |

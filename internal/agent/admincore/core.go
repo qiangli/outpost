@@ -159,6 +159,15 @@ type Deps struct {
 	// cached LastServerHealth) and threads them through an interface seam for
 	// testing. Closure-captured dependencies keep admincore focused.
 	ControlPlaneStatusProber ControlPlaneStatusProber
+
+	// PeerImage, when set, is the peer image distribution engine (the four
+	// verbs publish / mesh-resolve / ensure / report) backing
+	// admincore/peerimage.go. Nil when the feature is off or its prerequisites
+	// (cluster runtime, recipe store) aren't met — the verbs then report
+	// "not enabled" rather than panicking. Interface so admincore never
+	// imports the peerimage wiring details, and so the parity tests can
+	// substitute a recording fake.
+	PeerImage PeerImageOps
 }
 
 // LLMPoolStatusView is the wire shape rendered into SafeView. Kept here
