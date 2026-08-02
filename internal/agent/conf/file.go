@@ -834,6 +834,12 @@ type ClusterConfig struct {
 	// time. Side-effect class: Live — read on each apply, no restart.
 	BundleKubeconfig string `json:"bundle_kubeconfig,omitempty"`
 
+	// BundleCatalog is the default open-source dhnt/appstore checkout used
+	// by `outpost bundle install <built-in>`. It may also name a fetched,
+	// versioned appstore tree. Empty enables umbrella-checkout discovery;
+	// missing or unknown assets fail closed. Live — read on each install.
+	BundleCatalog string `json:"bundle_catalog,omitempty"`
+
 	// JoinEndpoint / JoinToken point this host at a control plane that is
 	// NOT cloudbox's — the worker-side counterpart of ControlPlane above.
 	//
