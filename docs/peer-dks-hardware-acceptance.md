@@ -26,7 +26,7 @@ it is *not* evidence about the peer-flannel slice either way.
 ## Harness corrective (sprint 42)
 
 The pre-corrective harness could report success without the underlying fact
-being true. Four paths were closed; a gate that can go green while blind is
+being true. Five paths were closed; a gate that can go green while blind is
 worse than no gate, because it launders absence of evidence into a claim of
 proof.
 
@@ -34,9 +34,10 @@ proof.
    contract was "≥1 PASS and 0 FAIL", and `nodes-ready` passes on any two-node
    cluster. A run with all ten substantive checks BLOCKED printed `RESULT OK`
    and exited `0`. Checks are now split into **preconditions** (`preflight`,
-   `nodes-ready`, `peer-venue`) and **substantive** checks; exit `0` requires
-   at least one *substantive* check to have been OBSERVED to pass. See
-   *Check taxonomy*.
+   `nodes-ready`, `peer-venue`, `distinct-pod-cidrs`) and **substantive**
+   checks; exit `0` requires at least one *substantive* check — one that
+   actually moved a packet or inspected a host, not one that only read the
+   API server — to have been OBSERVED to pass. See *Check taxonomy*.
 2. **`kubectl exec`'s return code was never read.** `service-clusterip` scored
    on a negative blacklist — PASS unless the output mentioned
    `refused|timed out|no route|error` — so busybox's `Network is unreachable`
@@ -81,13 +82,31 @@ still never run on two peer-hosted machines.** The corrective makes the harness
 
 ## Check taxonomy
 
+Checks are classified by a single test: *if the cluster were completely broken — no
+CNI, no routes, not one packet able to cross between nodes — but the API server
+were healthy, could this check still PASS?* If yes, it is a precondition. If not,
+it is substantive evidence — and only because it moved a packet or inspected a host.
+
 | Class | Checks | Meaning |
 | --- | --- | --- |
-| **Precondition** | `preflight`, `nodes-ready`, `peer-venue` | Establish that a venue of the right shape exists. Passing is necessary, never sufficient — it says nothing about whether peer-hosted pod networking works. |
-| **Substantive** | `distinct-pod-cidrs`, `flannel-iface`, `no-stale-conflist`, `cross-node-pod-ip`, `service-clusterip`, `cluster-dns`, `logs-exec`, `headlamp`, `nanochat`, `bashy-chunked` | Assert a property of the slice under test. Only these can make a run green. |
+| **Precondition** | `preflight`, `nodes-ready`, `peer-venue`, `distinct-pod-cidrs` | Describe the venue, not the slice. Passing says nothing about whether peer-hosted pod networking works. |
+| **Substantive** | `flannel-iface`, `no-stale-conflist`, `cross-node-pod-ip`, `service-clusterip`, `cluster-dns`, `logs-exec`, `headlamp`, `nanochat`, `bashy-chunked` | Assert a property of the slice under test. Each moved a packet across the pod network or inspected a host. Only these can make a run green. |
 
 A run in which no substantive check was observed to pass is `INCONCLUSIVE`
-(exit `2`) even if every precondition passed.
+(exit `2`) even if every precondition passed. The classification is enforced by
+**allowlist** (not blacklist): a check not explicitly listed as substantive
+contributes nothing to a green verdict, so a future API-only check cannot inherit
+the saturating role by being forgotten.
+
+`distinct-pod-cidrs` was the worked example of the rule: it reads `.spec.podCIDR`
+from the API server and nothing else — no probe pod, no host inspection, no
+packet. Distinct per-node podCIDRs are IPAM bookkeeping that stays true whether
+or not flannel runs, tailscale0 exists, or a byte can cross between nodes. For
+five sprints it was the only substantive check that survived a degraded
+environment, which made it precisely the check that passed when everything else
+blocked — the successor saturator that closed the first four false-greens and
+created the fifth. It is still run and reported (a duplicate/absent podCIDR is a
+real defect), but its PASS no longer makes a run green.
 
 ---
 

@@ -23,12 +23,40 @@
 #             "Evidence provenance" below.
 #
 # ---------------------------------------------------------------------------
-# Precondition checks vs SUBSTANTIVE checks
+# Precondition checks vs SUBSTANTIVE (evidence) checks
 # ---------------------------------------------------------------------------
-# `preflight`, `nodes-ready` and `peer-venue` establish that a venue of the
-# right shape exists. They are PRECONDITIONS: their passing says nothing about
-# whether peer-hosted pod networking works. Every other check is SUBSTANTIVE —
-# it asserts a property of the slice under test.
+# THE CLASSIFICATION RULE, and it is a test you apply to every new check:
+#
+#     If the cluster were completely broken — no CNI, no routes, not one packet
+#     able to cross between nodes — but the API SERVER were healthy, could this
+#     check still PASS?
+#
+#     YES  -> it is a PRECONDITION. It describes the venue, not the slice.
+#     NO   -> it is SUBSTANTIVE, and only because it MOVED A PACKET or
+#             INSPECTED A HOST.
+#
+# A substantive check must rest on something the API server cannot fabricate:
+# bytes that crossed the pod network, a workload the kubelets actually ran, or
+# host state read through an inspection pod. Reading a FIELD out of the API
+# server is never evidence about the slice, however specific the field looks —
+# an object's spec is bookkeeping written at registration time, and it stays
+# true while the dataplane underneath it is dead.
+#
+# `distinct-pod-cidrs` is the worked example, and it is classified as a
+# PRECONDITION for exactly this reason: it reads `.spec.podCIDR` and nothing
+# else. Distinct per-node podCIDRs are IPAM bookkeeping that k3s assigns at
+# node registration under its default `--allocate-node-cidrs`. They are true
+# whether or not flannel is running, whether or not `tailscale0` exists, and
+# whether or not a single byte can cross between nodes. It sends no probe pod,
+# inspects no host, and moves no packet. It answers YES to the rule above, so
+# it cannot carry a verdict — even though it was Substantive for five sprints.
+#
+# The classification is enforced POSITIVELY, by allowlist (DKS_EVIDENCE_CHECKS
+# below), never by blacklist: a check that is not explicitly listed as evidence
+# contributes NOTHING to a green verdict. That way a future API-only check
+# cannot inherit the saturating role by being forgotten — the default is
+# "not evidence", and making a check count requires stating that it moves a
+# packet or inspects a host.
 #
 # A run in which no SUBSTANTIVE check passed proves nothing, so it is
 # INCONCLUSIVE (exit 2) even if every precondition passed. A single trivially
@@ -37,17 +65,42 @@
 # docs/fleet-evidence-invariant.md forbids.
 #
 # ---------------------------------------------------------------------------
+# The venue assertion is BINDING
+# ---------------------------------------------------------------------------
+# `peer-venue` is a precondition, but a LOAD-BEARING one: it is the only check
+# that asserts this is the peer-hosted DKS plane at all, which is the entire
+# point of a *peer*-DKS gate. So it binds the verdict:
+#
+#     peer-venue PASS  ..... required for any green verdict.
+#     anything else — FAIL, BLOCKED, or NOT SELECTED — caps the verdict at
+#     INCONCLUSIVE (or FAIL, where something already failed).
+#
+# In particular it is not selectable-away: DKS_ONLY omitting `peer-venue` can
+# no longer produce exit 0. Before this rule, the same cluster exited 1 with
+# the venue check selected ("this is NOT a peer-hosted DKS plane") and 0
+# without it — a cluster the harness ITSELF declared non-peer passed the gate.
+# A BLOCKED venue caps too: "we could not tell where we are" is not a licence
+# to certify what we found there.
+#
+# ---------------------------------------------------------------------------
 # Exit status (the contract a CI gate reads; the exit code carries the full
 # verdict, and every code below is asserted against the real runner process by
 # script/dks-peer-acceptance_test.sh)
 # ---------------------------------------------------------------------------
-#     0  OK           — at least one SUBSTANTIVE check PASSed (observed) and
-#                       nothing FAILed.
+#     0  OK           — BOTH of: `peer-venue` PASSed (the venue was positively
+#                       asserted), AND at least one SUBSTANTIVE check PASSed
+#                       (observed); and nothing FAILed.
 #     1  FAIL         — at least one check FAILed. Outranks INCONCLUSIVE.
-#     2  INCONCLUSIVE — nothing was proven: no substantive check was OBSERVED
-#                       to pass. Covers "no check ran", "all BLOCKED", "only
-#                       preconditions passed", and "only operator-attested
-#                       evidence". Absence of evidence is NOT success.
+#     2  INCONCLUSIVE — nothing was proven. Covers "no check ran", "all
+#                       BLOCKED", "only preconditions passed", "only
+#                       operator-attested evidence", and "the peer venue was
+#                       never asserted (peer-venue BLOCKED or not selected)".
+#                       Absence of evidence is NOT success.
+#
+# A gate may read the exit status alone: it carries the full verdict, including
+# the venue assertion. Exit 0 means this harness observed the peer venue AND
+# observed at least one property of the slice under test — neither can be
+# skipped, deselected, or satisfied by an API-server read.
 #
 # ---------------------------------------------------------------------------
 # Evidence provenance
@@ -115,18 +168,59 @@ DKS_PASS_COUNT=0
 DKS_FAIL_COUNT=0
 DKS_BLOCKED_COUNT=0
 DKS_ATTESTED_COUNT=0
-# Passes that actually prove something about the slice under test. Preconditions
-# are excluded, so they cannot saturate the "at least one PASS" requirement.
+# Passes that actually prove something about the slice under test — i.e. a PASS
+# from a check on the DKS_EVIDENCE_CHECKS allowlist. Preconditions and any
+# unclassified check are excluded, so neither can saturate the "at least one
+# PASS" requirement.
 DKS_SUBSTANTIVE_PASS_COUNT=0
+# Outcome of the binding venue assertion: "" until peer-venue records anything,
+# then its literal status. Set from dks_record itself so it can never disagree
+# with the CHECK line that was actually emitted.
+DKS_VENUE_STATUS=""
 DKS_RESULTS=()
 
 # Checks that establish the venue rather than test the slice. Passing one of
 # these is necessary, never sufficient.
-DKS_PRECONDITION_CHECKS="preflight nodes-ready peer-venue"
+#
+# `distinct-pod-cidrs` sits here — not with the evidence checks — because it
+# reads .spec.podCIDR from the API server and nothing else; see "The
+# classification rule" in the header. It was the successor saturator: the one
+# substantive check that survived a degraded environment, so it was precisely
+# the check that still passed when everything else blocked.
+DKS_PRECONDITION_CHECKS="preflight nodes-ready peer-venue distinct-pod-cidrs"
+
+# THE evidence allowlist. Only a PASS from a check named here can make a run
+# green. Each one either MOVED A PACKET across the pod network or INSPECTED A
+# HOST; none can pass on an API-server read alone:
+#
+#   flannel-iface       host k3s argv + host tailscale0, via inspection pods
+#   no-stale-conflist   host /etc/cni/net.d, via inspection pods
+#   cross-node-pod-ip   ICMP pod->pod across nodes
+#   service-clusterip   HTTP pod->clusterIP->backend pod on the other node
+#   cluster-dns         DNS query answered by the in-cluster resolver
+#   logs-exec           kubelet log/exec stream against a pod on the far node
+#   headlamp            HTTP pod->Service, cross-node
+#   nanochat            a real workload the kubelets pulled and RAN on 2 nodes
+#   bashy-chunked       indexed Job chunks actually completed across 2 nodes
+#
+# ALLOWLIST, DELIBERATELY, NOT A BLACKLIST: an unlisted check contributes
+# nothing to a green verdict. Adding a check here is an explicit claim that it
+# moves a packet or inspects a host — so a future API-only check cannot become
+# the next saturator by default.
+DKS_EVIDENCE_CHECKS="flannel-iface no-stale-conflist cross-node-pod-ip service-clusterip cluster-dns logs-exec headlamp nanochat bashy-chunked"
 
 # dks_is_precondition <name> — 0 when <name> is a precondition check.
 dks_is_precondition() {
     case " $DKS_PRECONDITION_CHECKS " in
+        *" ${1:-} "*) return 0 ;;
+    esac
+    return 1
+}
+
+# dks_is_evidence <name> — 0 when a PASS from <name> may count toward a green
+# verdict. Unlisted => not evidence (the safe default; see the allowlist note).
+dks_is_evidence() {
+    case " $DKS_EVIDENCE_CHECKS " in
         *" ${1:-} "*) return 0 ;;
     esac
     return 1
@@ -145,7 +239,9 @@ dks_record() {
     case "$status" in
         PASS)
             DKS_PASS_COUNT=$((DKS_PASS_COUNT + 1))
-            dks_is_precondition "$name" || DKS_SUBSTANTIVE_PASS_COUNT=$((DKS_SUBSTANTIVE_PASS_COUNT + 1))
+            # Allowlist, not "not a precondition": a check nobody classified
+            # must not become evidence by omission.
+            dks_is_evidence "$name" && DKS_SUBSTANTIVE_PASS_COUNT=$((DKS_SUBSTANTIVE_PASS_COUNT + 1))
             ;;
         FAIL)     DKS_FAIL_COUNT=$((DKS_FAIL_COUNT + 1)) ;;
         BLOCKED)  DKS_BLOCKED_COUNT=$((DKS_BLOCKED_COUNT + 1)) ;;
@@ -160,39 +256,64 @@ dks_record() {
             detail="harness error: unknown status; $detail"
             ;;
     esac
+    # The binding venue assertion. Recorded here, from the status actually
+    # emitted, so the verdict cap can never drift from the CHECK line.
+    [ "$name" = "peer-venue" ] && DKS_VENUE_STATUS="$status"
     DKS_RESULTS+=("CHECK $name $status $detail")
     echo "CHECK $name $status $detail"
 }
 
 # dks_summary — prints the tally; returns the harness exit code:
-#   0 OK (>=1 SUBSTANTIVE observed PASS, 0 FAIL)
+#   0 OK (peer-venue PASSed AND >=1 SUBSTANTIVE observed PASS, 0 FAIL)
 #   1 FAIL (>=1 FAIL)
-#   2 INCONCLUSIVE (nothing substantive was observed to pass).
+#   2 INCONCLUSIVE (the venue was not asserted, or nothing substantive was
+#     observed to pass).
 dks_summary() {
-    echo "SUMMARY pass=$DKS_PASS_COUNT fail=$DKS_FAIL_COUNT blocked=$DKS_BLOCKED_COUNT attested=$DKS_ATTESTED_COUNT substantive_pass=$DKS_SUBSTANTIVE_PASS_COUNT"
+    echo "SUMMARY pass=$DKS_PASS_COUNT fail=$DKS_FAIL_COUNT blocked=$DKS_BLOCKED_COUNT attested=$DKS_ATTESTED_COUNT substantive_pass=$DKS_SUBSTANTIVE_PASS_COUNT venue=${DKS_VENUE_STATUS:-NOT-RUN}"
     if [ "$DKS_FAIL_COUNT" -gt 0 ]; then
         echo "RESULT FAIL"
         return 1
     fi
+
+    # The BINDING venue assertion. Anything other than an observed PASS caps
+    # the verdict: without it we do not know we are on the peer-hosted DKS
+    # plane, so every other result in this run is about some unidentified
+    # venue. Deliberately NOT skippable via DKS_ONLY.
+    local venue_note=""
+    case "$DKS_VENUE_STATUS" in
+        PASS) ;;
+        "")   venue_note="; the peer venue was never asserted (peer-venue did not run; DKS_ONLY cannot deselect it out of the verdict)" ;;
+        BLOCKED) venue_note="; the peer venue could not be asserted (peer-venue BLOCKED) — 'we could not tell where we are' is not a licence to certify what we found there" ;;
+        *)    venue_note="; the peer venue was not asserted (peer-venue $DKS_VENUE_STATUS)" ;;
+    esac
+
+    # Name WHICH flavour of nothing, because "all blocked", "only the
+    # preconditions passed" and "only an operator said so" need different
+    # operator responses.
+    local base=""
     if [ "$DKS_SUBSTANTIVE_PASS_COUNT" -eq 0 ]; then
-        # Nothing about the slice under test was proven. Say so, and exit
-        # NON-ZERO (2) — a gate that reads only the exit code must never score
-        # "no evidence" as a pass. Name WHICH flavour of nothing, because
-        # "all blocked", "only the preconditions passed" and "only an operator
-        # said so" need different operator responses.
         local total=$((DKS_PASS_COUNT + DKS_FAIL_COUNT + DKS_BLOCKED_COUNT + DKS_ATTESTED_COUNT))
         if [ "$total" -eq 0 ]; then
-            echo "RESULT INCONCLUSIVE (no check ran)"
+            base="no check ran"
         elif [ "$DKS_ATTESTED_COUNT" -gt 0 ]; then
-            echo "RESULT INCONCLUSIVE (only operator-attested evidence; no substantive check was observed to pass)"
+            base="only operator-attested evidence; no substantive check was observed to pass"
         elif [ "$DKS_PASS_COUNT" -gt 0 ]; then
-            echo "RESULT INCONCLUSIVE (only precondition checks passed; no substantive check proved anything)"
+            base="only precondition checks passed; no substantive check proved anything"
         else
-            echo "RESULT INCONCLUSIVE (no check passed)"
+            base="no check passed"
         fi
+    else
+        base="$DKS_SUBSTANTIVE_PASS_COUNT substantive PASS observed"
+    fi
+
+    # Nothing about the slice was proven, OR we do not know where we are.
+    # Either way exit NON-ZERO (2) — a gate that reads only the exit code must
+    # never score "no evidence" as a pass.
+    if [ "$DKS_SUBSTANTIVE_PASS_COUNT" -eq 0 ] || [ -n "$venue_note" ]; then
+        echo "RESULT INCONCLUSIVE ($base$venue_note)"
         return 2
     fi
-    echo "RESULT OK ($DKS_SUBSTANTIVE_PASS_COUNT substantive PASS observed; no failures; $DKS_BLOCKED_COUNT blocked; $DKS_ATTESTED_COUNT operator-attested and NOT counted as proof)"
+    echo "RESULT OK ($DKS_SUBSTANTIVE_PASS_COUNT substantive PASS observed on a peer venue asserted by peer-venue; no failures; $DKS_BLOCKED_COUNT blocked; $DKS_ATTESTED_COUNT operator-attested and NOT counted as proof)"
     return 0
 }
 
@@ -304,6 +425,41 @@ dks_resolve_ev() {
     fi
     DKS_EV_SOURCE="none"
     return 1
+}
+
+# dks_run <cmd> [args...] — run a command, capturing its stdout, its stderr and
+# its RETURN CODE into globals. Returns that return code.
+#
+# This exists because of a whole class of defect in this harness: a query
+# written as
+#     OUT="$(kubectl get ... 2>/dev/null)"
+# discards both the error text and the return code, so an RBAC denial, an
+# expired credential or a transient API error is indistinguishable from a
+# healthy cluster that legitimately has nothing to report. The caller then sees
+# an empty string and reports "flannel is not running" or "no node returned a
+# podCIDR" — a confident, WRONG diagnosis of a query that never ran.
+#
+# THE RULE: a check that COULD NOT RUN must be distinguishable from a check
+# that RAN AND FOUND NOTHING. The first is BLOCKED with the transport error
+# named; only the second may be scored against the claim.
+DKS_RUN_OUT=""; DKS_RUN_ERR=""; DKS_RUN_RC=0
+dks_run() {
+    local errf
+    errf="$(mktemp 2>/dev/null)" || errf=""
+    if [ -z "$errf" ]; then
+        # No temp file available: still capture rc, and say that stderr was
+        # not captured rather than implying the command produced none.
+        DKS_RUN_OUT="$("$@" 2>/dev/null)"
+        DKS_RUN_RC=$?
+        DKS_RUN_ERR="(stderr not captured: mktemp unavailable)"
+        return "$DKS_RUN_RC"
+    fi
+    DKS_RUN_OUT="$("$@" 2>"$errf")"
+    DKS_RUN_RC=$?
+    # Single line, bounded: this text lands in a CHECK detail line.
+    DKS_RUN_ERR="$(tr '\n' ' ' <"$errf" | head -c 200)"
+    rm -f "$errf"
+    return "$DKS_RUN_RC"
 }
 
 # Guard: sourcing for tests stops here.
@@ -510,9 +666,23 @@ echo "NOTE namespace=$DKS_NAMESPACE run_id=$RUN_ID image=$DKS_TEST_IMAGE"
 # mapfile/readarray is not available in every bash-compatible runner, and a
 # nested ${arr[0]:-} default trips `set -u` in some of them; keep it to a
 # whitespace-separated string built by a plain pipeline.
-READY_LIST="$(kubectl get nodes -o \
-    'jsonpath={range .items[*]}{.metadata.name}{" "}{.status.nodeInfo.kubeletVersion}{" "}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}{end}' 2>/dev/null \
-    | awk '$3=="True" && $2 !~ /vknode/ && $2 ~ /k3s|^v1\./ {print $1}' | tr '\n' ' ')"
+#
+# The rc is CHECKED (dks_run), not discarded. This query previously swallowed
+# both stderr and rc, so an RBAC denial produced an empty READY_LIST that was
+# then reported as "found 0 Ready nodes" — a wrong diagnosis that additionally
+# BLOCKed every downstream check while `distinct-pod-cidrs` sailed on past it
+# off its own separate query, and the run still exited 0.
+NODE_QUERY_OK=1; NODE_QUERY_ERR=""; NODE_QUERY_RC=0
+if dks_run kubectl get nodes -o \
+    'jsonpath={range .items[*]}{.metadata.name}{" "}{.status.nodeInfo.kubeletVersion}{" "}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}{end}'
+then
+    READY_LIST="$(printf '%s\n' "$DKS_RUN_OUT" \
+        | awk '$3=="True" && $2 !~ /vknode/ && $2 ~ /k3s|^v1\./ {print $1}' | tr '\n' ' ')"
+else
+    NODE_QUERY_OK=0; NODE_QUERY_RC="$DKS_RUN_RC"; NODE_QUERY_ERR="$DKS_RUN_ERR"
+    READY_LIST=""
+    echo "NOTE node-list query FAILED rc=$NODE_QUERY_RC: ${NODE_QUERY_ERR:-no stderr}"
+fi
 READY_COUNT="$(echo "$READY_LIST" | wc -w | tr -d ' ')"
 
 NODE_A="${DKS_NODE_A:-}"; NODE_B="${DKS_NODE_B:-}"
@@ -523,7 +693,12 @@ echo "NOTE ready_real_node_list=$READY_LIST"
 
 TWO_NODES=0
 [ -n "$NODE_A" ] && [ -n "$NODE_B" ] && [ "$NODE_A" != "$NODE_B" ] && TWO_NODES=1
-NO_TWO="requires two Ready kubelet-backed nodes in one cluster; found $READY_COUNT"
+# "could not run" and "ran and found nothing" get DIFFERENT words.
+if [ "$NODE_QUERY_OK" = "1" ]; then
+    NO_TWO="requires two Ready kubelet-backed nodes in one cluster; found $READY_COUNT"
+else
+    NO_TWO="the node-list query COULD NOT RUN (rc=$NODE_QUERY_RC: ${NODE_QUERY_ERR:-no stderr}); the venue was never enumerated, which is not the same as finding 0 nodes"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. nodes-ready  (PRECONDITION — never evidence about the slice under test)
@@ -534,7 +709,9 @@ NO_TWO="requires two Ready kubelet-backed nodes in one cluster; found $READY_COU
 # worthless (there was no venue).
 # ---------------------------------------------------------------------------
 if dks_selected nodes-ready; then
-    if [ "$READY_COUNT" -ge 2 ]; then
+    if [ "$NODE_QUERY_OK" != "1" ]; then
+        dks_record nodes-ready BLOCKED "the node-list query COULD NOT RUN (rc=$NODE_QUERY_RC): ${NODE_QUERY_ERR:-no stderr}; the venue was never enumerated — this is NOT 'zero Ready nodes'"
+    elif [ "$READY_COUNT" -ge 2 ]; then
         dks_record nodes-ready PASS "$READY_COUNT Ready kubelet-backed nodes: $READY_LIST"
     else
         dks_record nodes-ready BLOCKED "$NO_TWO (${READY_LIST:-none}); a one-node venue proves nothing either way"
@@ -557,10 +734,19 @@ fi
 # (no node list at all) is BLOCKED.
 # ---------------------------------------------------------------------------
 if dks_selected peer-venue; then
-    if [ "$READY_COUNT" -lt 1 ]; then
+    if [ "$NODE_QUERY_OK" != "1" ]; then
+        dks_record peer-venue BLOCKED "the node-list query COULD NOT RUN (rc=$NODE_QUERY_RC): ${NODE_QUERY_ERR:-no stderr}; the venue could not be identified either way"
+    elif [ "$READY_COUNT" -lt 1 ]; then
         dks_record peer-venue BLOCKED "no Ready kubelet-backed node to inspect; the venue could not be identified either way"
+    # The rc is CHECKED. Previously this query discarded stderr AND rc, so an
+    # RBAC denial or a transient API error yielded VENUE_SEEN=0 -> BLOCKED,
+    # indistinguishable from a cluster that answered and had no annotations —
+    # and the verdict then proceeded to green past the skipped venue check.
+    elif ! dks_run kubectl get nodes $READY_LIST -o 'jsonpath={range .items[*]}{.metadata.name}{" "}{.metadata.annotations.flannel\.alpha\.coreos\.com/public-ip}{"\n"}{end}'
+    then
+        dks_record peer-venue BLOCKED "the node-annotation query COULD NOT RUN (rc=$DKS_RUN_RC): ${DKS_RUN_ERR:-no stderr}; the venue could not be identified either way — this is NOT 'the nodes carry no flannel annotation'"
     else
-        VENUE_ANN="$(kubectl get nodes $READY_LIST -o 'jsonpath={range .items[*]}{.metadata.name}{" "}{.metadata.annotations.flannel\.alpha\.coreos\.com/public-ip}{"\n"}{end}' 2>/dev/null)"
+        VENUE_ANN="$DKS_RUN_OUT"
         VENUE_SEEN=0; VENUE_OK=""; VENUE_BAD=""
         while read -r vnode vann _vrest; do
             [ -z "${vnode:-}" ] && continue
@@ -587,6 +773,21 @@ fi
 
 # ---------------------------------------------------------------------------
 # 3. distinct-pod-cidrs  (the B5 acceptance)
+# PRECONDITION — NOT evidence about the slice under test, despite having been
+# classified Substantive for five sprints. It reads .spec.podCIDR from the API
+# server and nothing else: no probe pod, no host inspection, not one packet.
+# Distinct per-node podCIDRs are IPAM bookkeeping k3s assigns at node
+# registration under its default --allocate-node-cidrs, so they hold whether or
+# not flannel runs, whether or not tailscale0 exists, and whether or not a byte
+# can cross between nodes. Applying the header's classification rule — "if the
+# cluster were completely broken but the API server healthy, could this still
+# pass?" — the answer is YES, so it cannot carry a verdict.
+#
+# That mattered: it was the ONLY substantive check that survived a degraded
+# environment, which made it exactly the check that still passed when every
+# other check blocked (SUMMARY pass=2 fail=0 blocked=10 -> RESULT OK -> exit 0).
+# It is still run and still reported — a duplicate/absent podCIDR is a real
+# defect worth FAILing on — it just no longer makes a run green.
 # Scoped to Ready kubelet-backed nodes only (stale NotReady nodes excluded).
 # ---------------------------------------------------------------------------
 if dks_selected distinct-pod-cidrs; then
@@ -594,8 +795,17 @@ if dks_selected distinct-pod-cidrs; then
     # custom-columns (not jsonpath): jsonpath emits NOTHING for absent
     # .spec.podCIDR, which shifts columns and makes missing CIDR masquerade as
     # the next field; custom-columns prints literal <none>.
-    NODE_TABLE="$(kubectl get nodes --no-headers -o \
-        'custom-columns=NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,PODCIDR:.spec.podCIDR,VER:.status.nodeInfo.kubeletVersion' 2>/dev/null)"
+    #
+    # rc CHECKED: an unchecked rc here turned a denied query into the confident
+    # (and wrong) "no Ready kubelet-backed nodes returned a .spec.podCIDR".
+    CIDR_QUERY_OK=1
+    if dks_run kubectl get nodes --no-headers -o \
+        'custom-columns=NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,PODCIDR:.spec.podCIDR,VER:.status.nodeInfo.kubeletVersion'
+    then
+        NODE_TABLE="$DKS_RUN_OUT"
+    else
+        CIDR_QUERY_OK=0; NODE_TABLE=""
+    fi
     # One query, split three ways: the scope (Ready, kubelet-backed) and both
     # exclusion NOTE lines all derive from the same snapshot, so they cannot
     # disagree with each other.
@@ -604,7 +814,9 @@ if dks_selected distinct-pod-cidrs; then
     EXCLUDED_NOTREADY="$(printf '%s\n' "$NODE_TABLE" | awk 'NF>0 && $2!="True" && $4 !~ /vknode/ {printf "%s ", $1}')"
     [ -n "$EXCLUDED_VIRTUAL" ] && echo "NOTE excluded from distinct-pod-cidrs (virtual-kubelet): $EXCLUDED_VIRTUAL"
     [ -n "$EXCLUDED_NOTREADY" ] && echo "NOTE excluded from distinct-pod-cidrs (NotReady): $EXCLUDED_NOTREADY"
-    if [ -z "$CIDR_LINES" ]; then
+    if [ "$CIDR_QUERY_OK" != "1" ]; then
+        dks_record distinct-pod-cidrs BLOCKED "the node podCIDR query COULD NOT RUN (rc=$DKS_RUN_RC): ${DKS_RUN_ERR:-no stderr}; this is NOT 'no node reported a podCIDR'"
+    elif [ -z "$CIDR_LINES" ]; then
         dks_record distinct-pod-cidrs BLOCKED "no Ready kubelet-backed nodes returned a .spec.podCIDR field"
     else
         REASON="$(echo "$CIDR_LINES" | dks_distinct_cidrs)"
@@ -639,8 +851,14 @@ fi
 if dks_selected flannel-iface; then
     if [ "$TWO_NODES" != "1" ]; then
         dks_record flannel-iface BLOCKED "$NO_TWO"
+    # rc CHECKED: unchecked, a denied query produced an empty annotation pair
+    # and the harness then announced "flannel is not running on the selected
+    # nodes" — a diagnosis about a query that never ran.
+    elif ! dks_run kubectl get nodes "$NODE_A" "$NODE_B" -o 'jsonpath={range .items[*]}{.metadata.name}{" "}{.metadata.annotations.flannel\.alpha\.coreos\.com/public-ip}{"\n"}{end}'
+    then
+        dks_record flannel-iface BLOCKED "the node-annotation query COULD NOT RUN (rc=$DKS_RUN_RC): ${DKS_RUN_ERR:-no stderr}; this is NOT 'flannel is not running'"
     else
-        ANN="$(kubectl get nodes "$NODE_A" "$NODE_B" -o 'jsonpath={range .items[*]}{.metadata.name}{" "}{.metadata.annotations.flannel\.alpha\.coreos\.com/public-ip}{"\n"}{end}' 2>/dev/null)"
+        ANN="$DKS_RUN_OUT"
         ANN_A="$(printf '%s\n' "$ANN" | awk -v n="$NODE_A" '$1==n {print $2; exit}')"
         ANN_B="$(printf '%s\n' "$ANN" | awk -v n="$NODE_B" '$1==n {print $2; exit}')"
         if [ -z "$ANN_A" ] && [ -z "$ANN_B" ]; then
@@ -923,10 +1141,19 @@ if dks_selected headlamp; then
     if [ -z "$HL_NS" ] || [ -z "$HL_SVC" ]; then
         dks_record headlamp BLOCKED "no Headlamp Service found and DKS_HEADLAMP_NS/DKS_HEADLAMP_SVC unset; this harness does not deploy Headlamp"
     else
-        HL_POD="$(kubectl -n "$HL_NS" get pods -l 'app.kubernetes.io/name=headlamp' -o jsonpath='{.items[0].status.phase}' 2>/dev/null)"
+        # rc CHECKED on the pod lookup: unchecked, a denied query looked exactly
+        # like "no pod carries the headlamp label" and was reported as such.
+        HL_QUERY_OK=1
+        if dks_run kubectl -n "$HL_NS" get pods -l 'app.kubernetes.io/name=headlamp' -o jsonpath='{.items[0].status.phase}'; then
+            HL_POD="$DKS_RUN_OUT"
+        else
+            HL_QUERY_OK=0; HL_POD=""; HL_QUERY_ERR="$DKS_RUN_ERR"; HL_QUERY_RC="$DKS_RUN_RC"
+        fi
         HL_IP="$(kubectl -n "$HL_NS" get svc "$HL_SVC" -o jsonpath='{.spec.clusterIP}' 2>/dev/null)"
         HL_PORT="$(kubectl -n "$HL_NS" get svc "$HL_SVC" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null)"
-        if [ -z "$HL_POD" ]; then
+        if [ "$HL_QUERY_OK" != "1" ]; then
+            dks_record headlamp BLOCKED "the Headlamp pod query COULD NOT RUN (rc=$HL_QUERY_RC): ${HL_QUERY_ERR:-no stderr}; this is NOT 'no pod carries the headlamp label'"
+        elif [ -z "$HL_POD" ]; then
             # No pod matched the selector. That is almost always a deployment
             # that does not carry the conventional label, i.e. THIS HARNESS
             # CANNOT SEE the backend -- missing evidence, not a defect of the

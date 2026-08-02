@@ -51,6 +51,7 @@ DKS_LIB_ONLY=1 . "$HARNESS"
 # skipped when the real definition is present), so it cannot mask a regression.
 : "${DKS_ATTESTED_COUNT:=0}"
 : "${DKS_SUBSTANTIVE_PASS_COUNT:=0}"
+: "${DKS_VENUE_STATUS:=}"
 : "${DKS_EV_VALUE:=}"
 : "${DKS_EV_SOURCE:=}"
 HARNESS_LEGACY=0
@@ -59,6 +60,13 @@ if ! command -v dks_is_precondition >/dev/null 2>&1; then
     # A harness with no precondition/substantive distinction classifies nothing
     # as a precondition — which is precisely FALSE-GREEN #1.
     dks_is_precondition() { return 1; }
+fi
+if ! command -v dks_is_evidence >/dev/null 2>&1; then
+    HARNESS_LEGACY=1
+    # A harness with no evidence ALLOWLIST decided what counts as proof by
+    # blacklist — "anything that is not a precondition" — which is exactly
+    # FALSE-GREEN #5: an API-only check counts as evidence by default.
+    dks_is_evidence() { ! dks_is_precondition "${1:-}"; }
 fi
 if ! command -v dks_resolve_ev >/dev/null 2>&1; then
     HARNESS_LEGACY=1
@@ -74,8 +82,16 @@ fi
 reset() {
     DKS_PASS_COUNT=0; DKS_FAIL_COUNT=0; DKS_BLOCKED_COUNT=0
     DKS_ATTESTED_COUNT=0; DKS_SUBSTANTIVE_PASS_COUNT=0
+    DKS_VENUE_STATUS=""
     DKS_RESULTS=()
 }
+
+# Most summary-level unit tests are about something OTHER than the venue rule,
+# and every one of them would now be capped at INCONCLUSIVE by an unasserted
+# venue. venue_ok() records the venue PASS those cases assume, so each test
+# still exercises the invariant it was written for. The venue rule itself is
+# asserted separately, below.
+venue_ok() { dks_record peer-venue PASS "stub venue" >/dev/null; }
 
 # --- dks_distinct_cidrs -----------------------------------------------------
 out="$(printf 'a 10.42.0.0/24\nb 10.42.1.0/24\nc 10.42.2.0/24\n' | dks_distinct_cidrs)"; rc=$?
@@ -154,13 +170,37 @@ dks_resolve_ev "" node-a tailscale0
 is "resolve_ev: no evidence file at all -> none" "$DKS_EV_SOURCE" "none"
 
 # --- precondition vs substantive classification ------------------------------
-for p in preflight nodes-ready peer-venue; do
+# FALSE-GREEN #5: `distinct-pod-cidrs` is a PRECONDITION. It reads .spec.podCIDR
+# out of the API server and nothing else — no probe pod, no host inspection, no
+# packet — and distinct per-node podCIDRs are IPAM bookkeeping k3s assigns at
+# registration under --allocate-node-cidrs. They stay true with flannel dead,
+# tailscale0 absent and no byte able to cross between nodes. It was the ONLY
+# substantive check that survived a degraded environment, which made it exactly
+# the check that still passed when everything else blocked.
+for p in preflight nodes-ready peer-venue distinct-pod-cidrs; do
     dks_is_precondition "$p" && ok "precondition: $p" || bad "precondition: $p"
 done
-for s in distinct-pod-cidrs flannel-iface no-stale-conflist cross-node-pod-ip \
+for s in flannel-iface no-stale-conflist cross-node-pod-ip \
          service-clusterip cluster-dns logs-exec headlamp nanochat bashy-chunked; do
     dks_is_precondition "$s" && bad "substantive: $s must NOT be a precondition" || ok "substantive: $s"
 done
+
+# THE evidence rule, asserted directly: only a check that MOVED A PACKET or
+# INSPECTED A HOST may count toward a green verdict.
+for e in flannel-iface no-stale-conflist cross-node-pod-ip service-clusterip \
+         cluster-dns logs-exec headlamp nanochat bashy-chunked; do
+    dks_is_evidence "$e" && ok "evidence: $e" || bad "evidence: $e must count as evidence"
+done
+# Every precondition, and distinct-pod-cidrs above all, is NOT evidence.
+for n in preflight nodes-ready peer-venue distinct-pod-cidrs; do
+    dks_is_evidence "$n" && bad "not-evidence: $n must NOT count as evidence" || ok "not-evidence: $n"
+done
+# The classification is an ALLOWLIST, not a blacklist: a check nobody has
+# classified contributes nothing to a green verdict. This is what stops the
+# NEXT API-only check from inheriting the saturating role by being forgotten.
+dks_is_evidence some-future-api-only-check \
+    && bad "an unclassified check must NOT be evidence by default" \
+    || ok "unclassified check defaults to NOT evidence (allowlist, not blacklist)"
 
 # --- dks_record / dks_summary ----------------------------------------------
 reset
@@ -169,9 +209,21 @@ is "record emits one CHECK line" "$line" "CHECK demo PASS all good"
 # Tally must be asserted outside a command substitution — $( ) forks a subshell,
 # so the counter mutation inside it would not reach us.
 reset
-dks_record demo PASS all good >/dev/null
+dks_record cross-node-pod-ip PASS all good >/dev/null
 is "record tallies pass" "$DKS_PASS_COUNT" "1"
 is "record tallies a substantive pass" "$DKS_SUBSTANTIVE_PASS_COUNT" "1"
+
+# FALSE-GREEN #5 (unit level): an API-only check's PASS is tallied as a pass but
+# must NOT be a substantive pass — it cannot make a run green on its own.
+reset
+dks_record distinct-pod-cidrs PASS "2 distinct podCIDRs" >/dev/null
+is "distinct-pod-cidrs tallies as pass" "$DKS_PASS_COUNT" "1"
+is "distinct-pod-cidrs is NOT a substantive pass" "$DKS_SUBSTANTIVE_PASS_COUNT" "0"
+
+# An unclassified check likewise cannot saturate the gate.
+reset
+dks_record some-future-api-only-check PASS "looks convincing" >/dev/null
+is "unclassified pass is NOT a substantive pass" "$DKS_SUBSTANTIVE_PASS_COUNT" "0"
 
 # FALSE-GREEN #1 (unit level): a precondition PASS is NOT evidence about the
 # slice under test and must not satisfy the "something passed" requirement.
@@ -220,10 +272,10 @@ is "unknown status is not a pass" "$DKS_PASS_COUNT" "0"
 
 # --- exit-status contract ---------------------------------------------------
 reset
-dks_record a PASS x >/dev/null; dks_record b BLOCKED y >/dev/null
+venue_ok; dks_record cross-node-pod-ip PASS x >/dev/null; dks_record b BLOCKED y >/dev/null
 sum="$(dks_summary)"; rc=$?
-is "substantive pass, no failures -> summary rc 0" "$rc" "0"
-case "$sum" in *"pass=1 fail=0 blocked=1"*) ok "summary tallies" ;; *) bad "summary tallies" "$sum" ;; esac
+is "venue asserted + substantive pass, no failures -> summary rc 0" "$rc" "0"
+case "$sum" in *"pass=2 fail=0 blocked=1"*) ok "summary tallies" ;; *) bad "summary tallies" "$sum" ;; esac
 case "$sum" in *"RESULT OK"*) ok "summary says OK" ;; *) bad "summary says OK" "$sum" ;; esac
 
 reset
@@ -263,17 +315,63 @@ case "$sum" in *"attested=1"*) ok "summary tallies attested separately" ;; *) ba
 # An attested check alongside a real substantive PASS is still green — but the
 # summary must say the attested item was NOT counted as proof.
 reset
+venue_ok
 dks_record cross-node-pod-ip PASS "0% loss" >/dev/null
 dks_record flannel-iface ATTESTED "operator file" >/dev/null
 sum="$(dks_summary)"; rc=$?
 is "substantive pass + attested -> rc 0" "$rc" "0"
 case "$sum" in *"operator-attested and NOT counted as proof"*) ok "OK line disclaims the attested item" ;; *) bad "OK line disclaims the attested item" "$sum" ;; esac
 
+# --- FALSE-GREEN #5: the venue assertion is BINDING --------------------------
+# `peer-venue` is the entire point of a *peer*-DKS gate. Anything other than an
+# observed PASS -- FAIL, BLOCKED, or NOT SELECTED -- caps the verdict. It must
+# not be possible to reach RESULT OK without the venue positively asserted.
+
+# BLOCKED venue: a real substantive pass is NOT enough.
+reset
+dks_record peer-venue BLOCKED "annotation query could not run" >/dev/null
+dks_record cross-node-pod-ip PASS "0% packet loss" >/dev/null
+sum="$(dks_summary)"; rc=$?
+is "venue BLOCKED caps a substantive pass -> rc 2" "$rc" "2"
+case "$sum" in *"RESULT OK"*) bad "venue BLOCKED must never say OK" "$sum" ;; *) ok "venue BLOCKED never says OK" ;; esac
+case "$sum" in *"venue could not be asserted"*) ok "venue BLOCKED names the reason" ;; *) bad "venue BLOCKED wording" "$sum" ;; esac
+
+# NOT SELECTED venue: same cap. This is the DKS_ONLY bypass.
+reset
+dks_record cross-node-pod-ip PASS "0% packet loss" >/dev/null
+sum="$(dks_summary)"; rc=$?
+is "venue never run caps a substantive pass -> rc 2" "$rc" "2"
+case "$sum" in *"RESULT OK"*) bad "unasserted venue must never say OK" "$sum" ;; *) ok "unasserted venue never says OK" ;; esac
+case "$sum" in *"never asserted"*) ok "unasserted venue names the reason" ;; *) bad "unasserted venue wording" "$sum" ;; esac
+
+# The venue status is carried in the SUMMARY line, so a log reader can see
+# which of the two required conditions was missing without re-deriving it.
+case "$sum" in *"venue=NOT-RUN"*) ok "summary reports venue=NOT-RUN" ;; *) bad "summary reports venue" "$sum" ;; esac
+
+# The positive control: venue asserted AND a substantive pass -> and ONLY then
+# is the run green. Without this the suite could not tell "correctly strict"
+# from "can never be green".
+reset
+venue_ok; dks_record cross-node-pod-ip PASS "0% packet loss" >/dev/null
+sum="$(dks_summary)"; rc=$?
+is "venue PASS + substantive pass -> rc 0" "$rc" "0"
+case "$sum" in *"venue=PASS"*) ok "summary reports venue=PASS" ;; *) bad "summary reports venue=PASS" "$sum" ;; esac
+case "$sum" in *"peer venue asserted by peer-venue"*) ok "OK line states the venue was asserted" ;; *) bad "OK line states the venue was asserted" "$sum" ;; esac
+
+# The venue check cannot pull its own weight either: venue PASS + an API-only
+# pass is still nothing proven (FALSE-GREEN #5 and the venue rule together).
+reset
+venue_ok; dks_record nodes-ready PASS "2 nodes" >/dev/null
+dks_record distinct-pod-cidrs PASS "2 distinct podCIDRs" >/dev/null
+sum="$(dks_summary)"; rc=$?
+is "venue PASS + only API-only passes -> rc 2" "$rc" "2"
+case "$sum" in *"RESULT OK"*) bad "API-only passes must never say OK" "$sum" ;; *) ok "API-only passes never say OK" ;; esac
+
 # Zero checks at all is the same absence-of-evidence case.
 reset
 sum="$(dks_summary)"; rc=$?
 is "no check ran -> rc 2 (INCONCLUSIVE)" "$rc" "2"
-case "$sum" in *"INCONCLUSIVE (no check ran)"*) ok "no-check-ran names the reason" ;; *) bad "no-check-ran wording" "$sum" ;; esac
+case "$sum" in *"INCONCLUSIVE (no check ran"*) ok "no-check-ran names the reason" ;; *) bad "no-check-ran wording" "$sum" ;; esac
 
 # FAIL outranks INCONCLUSIVE: a run with a FAIL and no PASS is rc 1, not 2.
 reset
@@ -343,9 +441,25 @@ case "$*" in
     # Suffix match, not substring: "-o jsonpath=..." also contains "-o json",
     # and swallowing a jsonpath call would corrupt a fixture answer.
     *"-o json") echo '{"items":[]}'; exit 0 ;;
-    *custom-columns*) cat "${DKS_STUB_CIDRS:-/dev/null}"; exit 0 ;;
-    *public-ip*) cat "${DKS_STUB_ANN:-/dev/null}"; exit 0 ;;
-    *kubeletVersion*Ready*) cat "${DKS_STUB_NODES:-/dev/null}"; exit 0 ;;
+    # The three node queries can be made to FAIL (rc + stderr, no stdout), which
+    # is what an RBAC denial or a transient API error actually looks like. A
+    # harness that discards rc cannot tell this from a healthy cluster with
+    # nothing to report -- that is the defect these knobs exist to exercise.
+    *custom-columns*)
+        if [ "${DKS_STUB_CIDRS_RC:-0}" != "0" ]; then
+            echo 'Error from server (Forbidden): nodes is forbidden' >&2; exit "$DKS_STUB_CIDRS_RC"
+        fi
+        cat "${DKS_STUB_CIDRS:-/dev/null}"; exit 0 ;;
+    *public-ip*)
+        if [ "${DKS_STUB_ANN_RC:-0}" != "0" ]; then
+            echo 'Error from server (Forbidden): nodes is forbidden' >&2; exit "$DKS_STUB_ANN_RC"
+        fi
+        cat "${DKS_STUB_ANN:-/dev/null}"; exit 0 ;;
+    *kubeletVersion*Ready*)
+        if [ "${DKS_STUB_NODES_RC:-0}" != "0" ]; then
+            echo 'Error from server (Forbidden): nodes is forbidden' >&2; exit "$DKS_STUB_NODES_RC"
+        fi
+        cat "${DKS_STUB_NODES:-/dev/null}"; exit 0 ;;
     *"{.items[0].status.phase}") echo "${DKS_STUB_HL_PHASE:-}"; exit 0 ;;
     *"{.spec.clusterIP}") echo "${DKS_STUB_SVC_IP:-}"; exit 0 ;;
     *"{.spec.ports[0].port}") echo "${DKS_STUB_SVC_PORT:-}"; exit 0 ;;
@@ -439,6 +553,8 @@ stub_reset() {
     STUB_LOGS=/dev/null; STUB_LOGS_RC=0; STUB_EXECO=/dev/null; STUB_EXEC_RC=0
     STUB_HL_NS=""; STUB_HL_SVC=""; STUB_HL_PHASE=""
     STUB_BASHY_IMG=""; STUB_BJ_SUCC=""; STUB_BJ_NODES=/dev/null; STUB_BJ_PULL=/dev/null
+    # Query-failure knobs: 0 = the query answers, non-zero = it could not run.
+    STUB_NODES_RC=0; STUB_ANN_RC=0; STUB_CIDRS_RC=0
 }
 
 # run_case <DKS_ONLY> — executes the real runner; sets RH_OUT / RH_RC.
@@ -446,6 +562,8 @@ run_case() {
     RH_OUT="$(PATH="$STUB_PATH" DKS_NAMESPACE=default DKS_ONLY="$1" \
         DKS_STUB_NODES="$STUB_NODES" DKS_STUB_CIDRS="$STUB_CIDRS" \
         DKS_STUB_ANN="$STUB_ANN" DKS_STUB_EV_A="$STUB_EV_A" \
+        DKS_STUB_NODES_RC="$STUB_NODES_RC" DKS_STUB_ANN_RC="$STUB_ANN_RC" \
+        DKS_STUB_CIDRS_RC="$STUB_CIDRS_RC" \
         DKS_STUB_EV_B="$STUB_EV_B" DKS_STUB_LOG="$STUB_LOG" \
         DKS_STUB_APPLY_RC="$STUB_APPLY_RC" DKS_STUB_POD_PHASE="$STUB_PHASE" \
         DKS_ALLOW_NODE_DEBUG="$STUB_DEBUG" DKS_HOST_EVIDENCE="$STUB_HOSTEV" \
@@ -470,6 +588,17 @@ run_case() {
     RH_RC=$?
 }
 
+# run_case_on_peer_venue <checks> — as run_case, but ALSO selects `peer-venue`
+# and (unless the test pinned its own) supplies a venue-valid annotation
+# fixture. Every test whose subject is some OTHER check but which expects a
+# GREEN verdict has to assert the venue too, because the venue assertion is
+# binding. That is the rule working as designed, not a workaround: a green
+# verdict is exactly "we know where we are AND we observed something here".
+run_case_on_peer_venue() {
+    [ "$STUB_ANN" = "/dev/null" ] && STUB_ANN="$FIX/ann-good"
+    run_case "peer-venue,$1"
+}
+
 # expect <label> <want-rc> [must-contain] [must-not-contain]
 expect() {
     local label="$1" want="$2" needle="${3:-}" anti="${4:-}"
@@ -488,10 +617,10 @@ expect() {
 # --- exit-code contract of the real runner -----------------------------------
 # Every documented code is asserted against the real process, not its stdout.
 stub_reset; run_case nonexistent-check
-expect "runner: no check ran" 2 "RESULT INCONCLUSIVE (no check ran)"
+expect "runner: no check ran" 2 "RESULT INCONCLUSIVE (no check ran"
 
 stub_reset; run_case no-stale-conflist
-expect "runner: all BLOCKED" 2 "RESULT INCONCLUSIVE (no check passed)"
+expect "runner: all BLOCKED" 2 "RESULT INCONCLUSIVE (no check passed"
 
 # FALSE-GREEN #1, end to end: `nodes-ready` is the one check that is trivially
 # true on any 2-node cluster. Before the fix it alone satisfied the ">=1 PASS"
@@ -520,10 +649,29 @@ stub_reset; STUB_CIDRS="$FIX/cidrs-ready-dup"
 run_case distinct-pod-cidrs,no-stale-conflist
 expect "runner: FAIL outranks INCONCLUSIVE" 1 "RESULT FAIL"
 
-# Exit 0 requires a SUBSTANTIVE pass.
-stub_reset; STUB_CIDRS="$FIX/cidrs-excluded-dups"
-run_case distinct-pod-cidrs
-expect "runner: a substantive PASS, no FAIL" 0 "RESULT OK"
+# THE END-TO-END POSITIVE CONTROL. Exit 0 requires BOTH conditions and this is
+# the only shape that satisfies them: the venue positively asserted, AND a check
+# that actually moved a packet observed to pass. Without this test the suite
+# could not distinguish "correctly strict" from "can never be green", which
+# would be its own false result.
+stub_reset; STUB_ANN="$FIX/ann-good"
+STUB_READY_A=true; STUB_READY_B=true; STUB_TIMEOUT=1
+STUB_POD_IP="10.42.1.7"; STUB_PING_OUT="$FIX/ping-ok"; STUB_PING_RC=0
+run_case peer-venue,cross-node-pod-ip
+expect "runner: venue asserted + a packet moved -> the ONLY green shape" 0 "RESULT OK"
+case "$RH_OUT" in *"venue=PASS"*) ok "runner: green run reports venue=PASS" ;; *) bad "runner: green run reports venue=PASS" "$RH_OUT" ;; esac
+case "$RH_OUT" in *"substantive_pass=1"*) ok "runner: green run reports substantive_pass=1" ;; *) bad "runner: green run reports substantive_pass=1" "$RH_OUT" ;; esac
+
+# FALSE-GREEN #5, end to end: the SAME degraded cluster -- API server healthy,
+# venue fine, every packet-moving and host-inspecting check BLOCKED -- used to
+# exit 0 off distinct-pod-cidrs alone (SUMMARY pass=2 fail=0 blocked=10 ->
+# RESULT OK). An API-only read must never carry the verdict.
+stub_reset; STUB_ANN="$FIX/ann-good"; STUB_CIDRS="$FIX/cidrs-excluded-dups"
+STUB_NANOCHAT_IMG=""; STUB_TIMEOUT=1
+run_case nodes-ready,peer-venue,distinct-pod-cidrs,flannel-iface,no-stale-conflist,cross-node-pod-ip,nanochat,bashy-chunked
+expect "runner: API-only pass cannot saturate a degraded run" 2 \
+    "CHECK distinct-pod-cidrs PASS" "RESULT OK"
+case "$RH_OUT" in *"substantive_pass=0"*) ok "runner: API-only pass is not substantive" ;; *) bad "runner: API-only pass is not substantive" "$RH_OUT" ;; esac
 
 out="$(PATH="$FIX/nokubectl" DKS_NAMESPACE=default DKS_ONLY=nodes-ready \
     "$BASH_BIN" "$HARNESS" 2>&1)"; rc=$?
@@ -567,6 +715,76 @@ stub_reset; STUB_NODES=/dev/null
 run_case peer-venue
 expect "venue: no Ready node at all -> BLOCKED" 2 "CHECK peer-venue BLOCKED" "CHECK peer-venue FAIL"
 
+# --- FALSE-GREEN #5: DKS_ONLY could bypass the venue assertion entirely -------
+# THE two-invocation proof, on ONE cluster that is demonstrably not peer-hosted
+# (no flannel anywhere). With `peer-venue` selected the harness said so and
+# exited 1; with it merely not selected the same cluster exited 0. A cluster
+# the harness ITSELF declares non-peer must never pass the gate, and which
+# checks the operator happened to select cannot be what decides that.
+stub_reset; STUB_ANN="$FIX/ann-none"; STUB_CIDRS="$FIX/cidrs-excluded-dups"
+run_case nodes-ready,peer-venue,distinct-pod-cidrs
+expect "venue bypass: WITH peer-venue -> FAIL (not a peer plane)" 1 "CHECK peer-venue FAIL"
+VENUE_WITH_RC="$RH_RC"
+
+stub_reset; STUB_ANN="$FIX/ann-none"; STUB_CIDRS="$FIX/cidrs-excluded-dups"
+run_case nodes-ready,distinct-pod-cidrs
+expect "venue bypass: WITHOUT peer-venue -> still not green" 2 \
+    "the peer venue was never asserted" "RESULT OK"
+case "$RH_RC" in 0) bad "venue bypass: deselecting peer-venue must not reach exit 0" "$RH_OUT" ;; *) ok "venue bypass: deselecting peer-venue cannot reach exit 0" ;; esac
+# Neither invocation may be green: the two must not disagree about the verdict.
+if [ "$VENUE_WITH_RC" != "0" ] && [ "$RH_RC" != "0" ]; then
+    ok "venue bypass: both invocations agree the cluster is not acceptable"
+else
+    bad "venue bypass: invocations disagree" "with=$VENUE_WITH_RC without=$RH_RC"
+fi
+
+# A venue that could not be asserted caps even a genuine packet-moving PASS.
+stub_reset; STUB_ANN_RC=1
+STUB_READY_A=true; STUB_READY_B=true; STUB_TIMEOUT=1
+STUB_POD_IP="10.42.1.7"; STUB_PING_OUT="$FIX/ping-ok"; STUB_PING_RC=0
+run_case peer-venue,cross-node-pod-ip
+expect "venue BLOCKED caps a real cross-node PASS" 2 "CHECK cross-node-pod-ip PASS" "RESULT OK"
+case "$RH_OUT" in *"venue could not be asserted"*) ok "venue BLOCKED cap names the reason" ;; *) bad "venue BLOCKED cap names the reason" "$RH_OUT" ;; esac
+
+# --- unchecked rc: "could not run" vs "ran and found nothing" -----------------
+# A query whose rc is discarded turns an RBAC denial into a silent BLOCK with a
+# confident, WRONG diagnosis. Each site must name the transport failure instead
+# of reporting a fact about the cluster it never observed.
+stub_reset; STUB_ANN_RC=1
+run_case peer-venue
+expect "rc: denied annotation query -> BLOCKED naming the failure" 2 \
+    "the node-annotation query COULD NOT RUN" "CHECK peer-venue FAIL"
+case "$RH_OUT" in *"Forbidden"*) ok "rc: venue BLOCK quotes the server error" ;; *) bad "rc: venue BLOCK quotes the server error" "$RH_OUT" ;; esac
+# ...and it must NOT be reported as "the nodes carry no flannel annotation".
+case "$RH_OUT" in *"no-flannel-public-ip-annotation"*) bad "rc: denied query must not read as 'no annotation'" "$RH_OUT" ;; *) ok "rc: denied query is not read as 'no annotation'" ;; esac
+
+stub_reset; STUB_NODES_RC=1
+run_case nodes-ready,peer-venue
+expect "rc: denied node-list query -> nodes-ready BLOCKED naming the failure" 2 \
+    "the node-list query COULD NOT RUN" "CHECK nodes-ready PASS"
+case "$RH_OUT" in *"NOT 'zero Ready nodes'"*) ok "rc: node-list BLOCK distinguishes itself from 'found 0'" ;; *) bad "rc: node-list BLOCK distinguishes itself from 'found 0'" "$RH_OUT" ;; esac
+
+stub_reset; STUB_CIDRS_RC=1
+run_case distinct-pod-cidrs
+expect "rc: denied podCIDR query -> BLOCKED naming the failure" 2 \
+    "the node podCIDR query COULD NOT RUN" "CHECK distinct-pod-cidrs PASS"
+
+stub_reset; STUB_ANN_RC=1
+run_case flannel-iface
+# The anti-needle is the FULL wrong diagnosis ("flannel is not running on the
+# selected nodes"), not the fragment: the corrected BLOCKED message quotes the
+# fragment back to say it is NOT what happened.
+expect "rc: denied annotation query -> flannel-iface BLOCKED, not 'flannel not running'" 2 \
+    "the node-annotation query COULD NOT RUN" "flannel is not running on the selected nodes"
+
+# THE regression this whole corrective exists to prevent: a healthy API server,
+# every real check denied or blocked, and the run still exiting 0.
+stub_reset; STUB_ANN_RC=1; STUB_CIDRS="$FIX/cidrs-excluded-dups"
+STUB_NANOCHAT_IMG=""; STUB_TIMEOUT=1
+run_case nodes-ready,peer-venue,distinct-pod-cidrs,flannel-iface,no-stale-conflist,cross-node-pod-ip,service-clusterip,cluster-dns,logs-exec,headlamp,nanochat,bashy-chunked
+expect "the pass=N fail=0 blocked=many -> exit 0 shape is unreachable" 2 "" "RESULT OK"
+case "$RH_RC" in 0) bad "degraded-cluster run must never exit 0" "$RH_OUT" ;; *) ok "degraded-cluster run does not exit 0" ;; esac
+
 # --- flannel-iface: annotation alone can never PASS ---------------------------
 stub_reset; STUB_ANN="$FIX/ann-good"
 run_case flannel-iface
@@ -583,7 +801,7 @@ expect "flannel: inspection yields no evidence" 2 "CHECK flannel-iface BLOCKED" 
 # annotation, not just be independently well-formed.
 stub_reset; STUB_ANN="$FIX/ann-good"; STUB_DEBUG=1
 STUB_EV_A="$FIX/ev-good"; STUB_EV_B="$FIX/ev-good-b"; STUB_LOG="$FIX/log-flannel-pass"
-run_case flannel-iface
+run_case_on_peer_venue flannel-iface
 expect "flannel: full observed evidence both nodes" 0 "CHECK flannel-iface PASS"
 case "$RH_OUT" in *"annotation-equals-tailscale0"*) ok "flannel: equality evidence named on PASS" ;; *) bad "flannel: equality evidence named on PASS" "$RH_OUT" ;; esac
 # Every item on a PASS record must be marked observed — a reader must be able
@@ -681,7 +899,7 @@ run_case no-stale-conflist
 expect "conflist: no inspection, no evidence" 2 "CHECK no-stale-conflist BLOCKED"
 
 stub_reset; STUB_DEBUG=1; STUB_EV_A="$FIX/ev-good"; STUB_EV_B="$FIX/ev-good"
-run_case no-stale-conflist
+run_case_on_peer_venue no-stale-conflist
 expect "conflist: clean on both nodes (observed)" 0 "CHECK no-stale-conflist PASS"
 case "$RH_OUT" in *"(observed)"*) ok "conflist: PASS record marks provenance" ;; *) bad "conflist: PASS record marks provenance" "$RH_OUT" ;; esac
 
@@ -701,10 +919,15 @@ expect "conflist: unreadable stays BLOCKED" 2 "CHECK no-stale-conflist BLOCKED" 
 
 # --- distinct-pod-cidrs: NotReady + virtual nodes excluded --------------------
 # node-stale (NotReady, real) and node-virt (vknode) both collide with a Ready
-# node's CIDR; both must be excluded, so the check PASSes on the Ready pair.
+# node's CIDR; both must be excluded, so the CHECK PASSes on the Ready pair.
+# The RUN, however, is INCONCLUSIVE (exit 2): this check reads .spec.podCIDR
+# from the API server and proves nothing about the slice, so its PASS cannot
+# make the run green. Check-level PASS and run-level verdict are separate, and
+# this test asserts both at once.
 stub_reset; STUB_CIDRS="$FIX/cidrs-excluded-dups"
 run_case distinct-pod-cidrs
-expect "cidrs: NotReady/virtual excluded" 0 "CHECK distinct-pod-cidrs PASS"
+expect "cidrs: NotReady/virtual excluded (check PASSes, run stays INCONCLUSIVE)" 2 \
+    "CHECK distinct-pod-cidrs PASS" "RESULT OK"
 case "$RH_OUT" in *"excluded from distinct-pod-cidrs (NotReady): node-stale"*) ok "cidrs: NotReady exclusion named" ;; *) bad "cidrs: NotReady exclusion named" "$RH_OUT" ;; esac
 case "$RH_OUT" in *"excluded from distinct-pod-cidrs (virtual-kubelet): node-virt"*) ok "cidrs: virtual exclusion named" ;; *) bad "cidrs: virtual exclusion named" "$RH_OUT" ;; esac
 
@@ -737,7 +960,7 @@ expect "service-clusterip: rc 0 but wrong payload -> FAIL" 1 \
 # rc 0 AND the backend pod's own hostname: the only PASS.
 stub_reset; STUB_READY_A=true; STUB_READY_B=true; STUB_TIMEOUT=1
 STUB_SVC_IP="10.43.0.9"; STUB_WGET_HOSTNAME=1; STUB_WGET_RC=0
-run_case service-clusterip
+run_case_on_peer_venue service-clusterip
 expect "service-clusterip: backend hostname returned -> PASS" 0 "CHECK service-clusterip PASS"
 case "$RH_OUT" in *"backend pod's own hostname"*) ok "service-clusterip: PASS states what was proven" ;; *) bad "service-clusterip: PASS states what was proven" "$RH_OUT" ;; esac
 
@@ -758,7 +981,7 @@ expect "cross-node-pod-ip: rc!=0 -> FAIL despite success text" 1 \
 
 stub_reset; STUB_READY_A=true; STUB_READY_B=true; STUB_TIMEOUT=1
 STUB_POD_IP="10.42.1.7"; STUB_PING_OUT="$FIX/ping-ok"; STUB_PING_RC=0
-run_case cross-node-pod-ip
+run_case_on_peer_venue cross-node-pod-ip
 expect "cross-node-pod-ip: rc 0 + 0% loss -> PASS" 0 "CHECK cross-node-pod-ip PASS"
 
 stub_reset; STUB_READY_A=true; STUB_READY_B=true; STUB_TIMEOUT=1
@@ -775,7 +998,7 @@ expect "cluster-dns: rc!=0 -> FAIL despite the address appearing" 1 \
 
 stub_reset; STUB_READY_A=true; STUB_READY_B=true; STUB_TIMEOUT=1
 STUB_SVC_IP="10.43.9.9"; STUB_DNS_OUT="$FIX/dns-ok"; STUB_DNS_RC=0
-run_case cluster-dns
+run_case_on_peer_venue cluster-dns
 expect "cluster-dns: rc 0 + clusterIP resolved -> PASS" 0 "CHECK cluster-dns PASS"
 
 stub_reset; STUB_READY_A=true; STUB_READY_B=true; STUB_TIMEOUT=1
@@ -792,7 +1015,7 @@ expect "logs-exec: exec rc!=0 -> FAIL despite the marker text" 1 \
 
 stub_reset; STUB_READY_A=true; STUB_READY_B=true; STUB_TIMEOUT=1
 STUB_LOGS="$FIX/logs-alive"; STUB_EXECO="$FIX/exec-ok"
-run_case logs-exec
+run_case_on_peer_venue logs-exec
 expect "logs-exec: rc 0 + both markers -> PASS" 0 "CHECK logs-exec PASS"
 # The harness must not claim NODE_B is "the remote/tunnelled node": it never
 # verified how the API server reaches that kubelet.
@@ -834,7 +1057,7 @@ expect "headlamp: labelled pod not Running -> BLOCKED" 2 "CHECK headlamp BLOCKED
 stub_reset; STUB_READY_A=true; STUB_READY_B=true; STUB_TIMEOUT=1
 STUB_HL_NS=headlamp; STUB_HL_SVC=headlamp; STUB_HL_PHASE=Running
 STUB_SVC_IP="10.43.246.3"; STUB_SVC_PORT=80; STUB_WGET_OUT="$FIX/wget-http404"; STUB_WGET_RC=1
-run_case headlamp
+run_case_on_peer_venue headlamp
 expect "headlamp: reachable Service (404 from / still proves reachability) -> PASS" 0 "CHECK headlamp PASS"
 
 # Running and addressable, but nothing answers: an observed contradiction.
@@ -846,7 +1069,7 @@ expect "headlamp: no HTTP status line -> FAIL" 1 "CHECK headlamp FAIL" "CHECK he
 
 # --- nanochat: bounded rollout (DKS_TIMEOUT), not a fixed sleep --------------
 stub_reset; STUB_ROLLOUT_RC=0; STUB_NC_NODES="$FIX/nc-nodes-2"; STUB_NC_READY="$FIX/nc-ready-2"
-run_case nanochat
+run_case_on_peer_venue nanochat
 expect "nanochat: rollout succeeds, 2 replicas across 2 nodes -> PASS" 0 "CHECK nanochat PASS"
 
 # A slow/failed image pull is a missing precondition, not a placement defect:
@@ -886,7 +1109,7 @@ expect "bashy-chunked: incomplete job, no pull issue -> FAIL" 1 \
 
 stub_reset; STUB_BASHY_IMG="stub/bashy:latest"; STUB_BJ_SUCC=4
 STUB_BJ_NODES="$FIX/nc-nodes-2"; STUB_TIMEOUT=1
-run_case bashy-chunked
+run_case_on_peer_venue bashy-chunked
 expect "bashy-chunked: 4/4 across 2 nodes -> PASS" 0 "CHECK bashy-chunked PASS"
 
 stub_reset; STUB_BASHY_IMG=""
