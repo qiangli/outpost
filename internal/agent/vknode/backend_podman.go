@@ -103,8 +103,30 @@ func (b *podmanBackend) Ensure(ctx context.Context, pod *corev1.Pod) error {
 		return nil
 	}
 
+	// Honor Kubernetes imagePullPolicy for ordinary (non-build) pods.  The
+	// peer-DKS image delivery path deliberately side-loads large conformance
+	// images into a worker's local Podman store; unconditionally pulling here
+	// made both Never and IfNotPresent unusable and attempted to contact a
+	// fictitious registry for localhost-tagged images.
+	if !skipPull {
+		policy := pod.Spec.Containers[0].ImagePullPolicy
+		switch policy {
+		case corev1.PullNever, corev1.PullIfNotPresent:
+			exists, err := b.client.ImageExists(ctx, spec.Image)
+			if err != nil {
+				return fmt.Errorf("vknode: check local image %q: %w", spec.Image, err)
+			}
+			if exists {
+				skipPull = true
+			} else if policy == corev1.PullNever {
+				return fmt.Errorf("vknode: image %q is not present locally and imagePullPolicy is Never", spec.Image)
+			}
+		}
+	}
+
 	// First time we've seen this pod (or libpod lost the container).
-	// Skipped when EnsureImageBuilt confirmed a local image.
+	// Skipped when EnsureImageBuilt produced/found a local image or the
+	// Kubernetes pull policy selected an existing side-loaded image.
 	if !skipPull {
 		if err := b.client.PullImage(ctx, spec.Image); err != nil {
 			return fmt.Errorf("vknode: pull image %q: %w", spec.Image, err)
