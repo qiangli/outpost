@@ -32,8 +32,11 @@
 //     nodes-get/list/watch ClusterRole (nodes are cluster-scoped, so
 //     "view" alone cannot show them, and a plane UI without node
 //     visibility is pointless). It exists only so the operator can mint
-//     a scoped audit token to paste at login; no pod mounts it. Set
-//     Options.DisableViewerRBAC to converge it away. Admin access is
+//     a scoped audit token to paste at login; no pod mounts it. That
+//     token is a cluster credential — per the tenancy model it must
+//     never reach a guest or non-owner (guests reach shared apps via
+//     Periscope); see Options.DisableViewerRBAC for the full caveat.
+//     Set Options.DisableViewerRBAC to converge it away. Admin access is
 //     always the operator pasting an admin token themselves — this
 //     package never mints or persists one.
 //
@@ -122,6 +125,24 @@ type Options struct {
 	// DisableViewerRBAC skips (and on Deploy, removes) the read-only
 	// viewer SA and its two bindings. Inverted so the zero value keeps
 	// the documented default: viewer RBAC on.
+	//
+	// OPERATOR CAUTION — a token minted from the viewer SA is a CLUSTER
+	// CREDENTIAL: read-only, but cluster-wide. The tenancy model
+	// (docs/dks-tenancy-model.md) is absolute here: non-owners get no
+	// cluster credential; guests reach shared apps via Periscope. A
+	// minted viewer token must therefore NEVER reach a guest or
+	// non-owner — never pasted into a Headlamp session anyone but the
+	// owner can drive, never handed out, never persisted. Mint it
+	// short-lived (`kubectl -n headlamp create token headlamp-viewer
+	// --duration=1h`), use it, let it expire.
+	//
+	// Default evaluated: ON remains the default because creating the SA
+	// and its bindings confers no credential by itself — a credential
+	// exists only once someone already holding cluster-admin mints a
+	// token, which is an owner-only act. The residual risk is token
+	// distribution, governed by the caution above and by
+	// docs/peer-dks-headlamp.md; operators who want the minting target
+	// itself gone set this flag.
 	DisableViewerRBAC bool
 }
 

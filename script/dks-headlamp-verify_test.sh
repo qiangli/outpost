@@ -10,7 +10,10 @@
 #
 # The real /dev/tcp probe path is exercised only in live runs; what IS proven
 # here is every scoring decision built on top of it — in particular the
-# fail-closed invariant that an unvalidated refusal can never become a PASS.
+# fail-closed invariant that an unvalidated refusal can never become a PASS,
+# and the aggregate-verdict rules: a BLOCKED check, a NOT-RUN required check,
+# a partial address set, a narrowing HLV_PROBE_ADDRS, or an unauthenticated
+# 2xx can never become a green run.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -27,7 +30,7 @@ trap 'rm -rf "$FIX"' EXIT
 # Load the pure helpers only.
 HLV_LIB_ONLY=1 . "$HARNESS"
 
-reset() { HLV_PASS_COUNT=0; HLV_FAIL_COUNT=0; HLV_BLOCKED_COUNT=0; HLV_RESULTS=(); }
+reset() { HLV_PASS_COUNT=0; HLV_FAIL_COUNT=0; HLV_BLOCKED_COUNT=0; HLV_NOTRUN_COUNT=0; HLV_RESULTS=(); HLV_RECORDED=" "; HLV_UNRUN_CLOSED=0; }
 
 # --- hlv_record / hlv_summary ------------------------------------------------
 reset
@@ -88,6 +91,63 @@ hlv_record a FAIL x >/dev/null; hlv_record b BLOCKED y >/dev/null
 rc=0; hlv_summary >/dev/null || rc=$?
 is "FAIL outranks INCONCLUSIVE" "$rc" "1"
 
+# --- D3: a check that NEVER RAN is not a pass -------------------------------
+# NOTE: hlv_record/hlv_close_unrun must be called WITHOUT command
+# substitution — a $( ) subshell would lose the counter side effects.
+reset
+line="$(hlv_record somecheck NOT-RUN "did not run")"
+is "record emits NOT-RUN line" "$line" "CHECK somecheck NOT-RUN did not run"
+reset
+hlv_record somecheck NOT-RUN "did not run" >/dev/null
+is "NOT-RUN tallies notrun" "$HLV_NOTRUN_COUNT" "1"
+is "NOT-RUN is not a pass" "$HLV_PASS_COUNT" "0"
+
+reset
+hlv_record a PASS x >/dev/null; hlv_record b NOT-RUN y >/dev/null
+sum="$(hlv_summary)"; rc=$?
+is "PASS + NOT-RUN -> rc 2, never 0" "$rc" "2"
+case "$sum" in *"never ran"*) ok "NOT-RUN reason states the invariant" ;; *) bad "NOT-RUN reason states the invariant" "$sum" ;; esac
+
+reset
+hlv_record a NOT-RUN x >/dev/null; hlv_record b FAIL y >/dev/null
+rc=0; hlv_summary >/dev/null || rc=$?
+is "FAIL outranks NOT-RUN" "$rc" "1"
+
+# hlv_close_unrun: every required check without a verdict is closed NOT-RUN.
+reset
+for n in $HLV_REQUIRED_CHECKS; do hlv_record "$n" PASS x >/dev/null; done
+hlv_close_unrun >/dev/null
+is "all required recorded -> nothing closed" "$HLV_NOTRUN_COUNT" "0"
+sum="$(hlv_summary)"; rc=$?
+is "all required PASS -> rc 0" "$rc" "0"
+
+reset
+for n in $HLV_REQUIRED_CHECKS; do
+    [ "$n" = "no-unauthenticated-exposure" ] && continue
+    hlv_record "$n" PASS x >/dev/null
+done
+hlv_close_unrun >/dev/null
+is "one unrecorded required check -> one NOT-RUN" "$HLV_NOTRUN_COUNT" "1"
+case "${HLV_RESULTS[*]}" in *"CHECK no-unauthenticated-exposure NOT-RUN"*) ok "the missing check is the one closed" ;; *) bad "the missing check is the one closed" "${HLV_RESULTS[*]}" ;; esac
+case "${HLV_RESULTS[*]}" in *"not a pass"*) ok "NOT-RUN detail states it is not a pass" ;; *) bad "NOT-RUN detail states it is not a pass" "${HLV_RESULTS[*]}" ;; esac
+sum="$(hlv_summary)"; rc=$?
+is "5 PASS + 1 NOT-RUN -> rc 2" "$rc" "2"
+
+# Idempotent: a second close adds nothing.
+hlv_close_unrun >/dev/null
+is "second close is a no-op" "$HLV_NOTRUN_COUNT" "1"
+
+# HLV_ONLY is named in the NOT-RUN detail when it caused the omission.
+reset
+HLV_ONLY=running
+hlv_close_unrun >/dev/null
+case "$(hlv_summary)" in *"6 required check(s) never ran"*) ok "empty run closes all required NOT-RUN" ;; *) bad "empty run closes all required NOT-RUN" ;; esac
+reset
+HLV_ONLY=running
+hlv_close_unrun >/dev/null
+case "${HLV_RESULTS[*]}" in *"(HLV_ONLY=running)"*) ok "NOT-RUN detail names HLV_ONLY" ;; *) bad "NOT-RUN detail names HLV_ONLY" "${HLV_RESULTS[*]}" ;; esac
+unset HLV_ONLY
+
 # --- hlv_selected ------------------------------------------------------------
 unset HLV_ONLY
 hlv_selected anything && ok "no HLV_ONLY -> all selected" || bad "no HLV_ONLY -> all selected"
@@ -117,6 +177,17 @@ HLV_HTTP_OVERRIDE="127.0.0.1:18466=200"
 is "http override code" "$(hlv_http_code 127.0.0.1 18466)" "200"
 HLV_HTTP_OVERRIDE="127.0.0.1:18466=none"
 hlv_http_code 127.0.0.1 18466 >/dev/null && bad "http override none must rc 1" || ok "http override none -> rc 1 (no answer)"
+unset HLV_HTTP_OVERRIDE
+
+# Path-keyed pairs distinguish routes on the same host:port (the auth probe
+# GETs /clusters/main/api/v1 on the same forward answering GETs /).
+HLV_HTTP_OVERRIDE="127.0.0.1:18466=200 127.0.0.1:18466/clusters/main/api/v1=401"
+is "http override path-keyed hit" "$(hlv_http_code 127.0.0.1 18466 8 /clusters/main/api/v1)" "401"
+is "http override path-less fallback" "$(hlv_http_code 127.0.0.1 18466 8 /)" "200"
+is "http override other path falls back" "$(hlv_http_code 127.0.0.1 18466 8 /healthz)" "200"
+HLV_HTTP_OVERRIDE="127.0.0.1:18466/clusters/main/api/v1=403"
+is "http override path-keyed only" "$(hlv_http_code 127.0.0.1 18466 8 /clusters/main/api/v1)" "403"
+hlv_http_code 127.0.0.1 18466 8 / >/dev/null && bad "http override unknown pair must rc 1" || ok "http override unknown pair -> rc 1"
 unset HLV_HTTP_OVERRIDE
 
 # --- hlv_score_exposure: the fail-closed core --------------------------------
@@ -198,7 +269,10 @@ case "$ARGS" in
         esac ;;
     *"get clusterrolebindings"*) cat "${HLV_STUB_CRB:-/dev/null}"; exit 0 ;;
     *"get rolebindings -A"*)     cat "${HLV_STUB_RB:-/dev/null}"; exit 0 ;;
-    *InternalIP*) printf '%s' "${HLV_STUB_ADDRS:-}"; exit 0 ;;
+    # Node discovery: the harness asks for per-node address sets of ALL types
+    # ("name:addr,addr,;...") so an ExternalIP/Hostname is probed too and a
+    # narrowing HLV_PROBE_ADDRS can be cross-checked for coverage.
+    *".status.addresses"*) printf '%s' "${HLV_STUB_ADDRS:-}"; exit 0 ;;
     *port-forward*)
         # Long sleep: a forward the runner fails to kill stays visible to
         # the process-liveness leak check after the run.
@@ -219,9 +293,9 @@ stub_reset() {
     STUB_PREFLIGHT_RC=0; STUB_DEP=present; STUB_READY=1
     STUB_SVC="ClusterIP||"
     STUB_CRB="$FIX/crb-clean"; STUB_RB="$FIX/rb-empty"
-    STUB_ADDRS="192.0.2.10 "
+    STUB_ADDRS="control-plane-host:192.0.2.10,;"
     STUB_PROBE="127.0.0.1:18466=open 192.0.2.10:10250=open 192.0.2.10:4466=closed"
-    STUB_HTTP="127.0.0.1:18466=200"
+    STUB_HTTP="127.0.0.1:18466=200 127.0.0.1:18466/clusters/main/api/v1=401"
     STUB_LOG=""; STUB_ONLY=""; STUB_PROBE_ADDRS=""
 }
 
@@ -268,9 +342,32 @@ stub_reset; STUB_LOG="$FIX/log-green"; run_case
 expect "runner: clean deployment" 0 "RESULT OK"
 for want in "CHECK running PASS" "CHECK service-clusterip-only PASS" \
             "CHECK rbac-zero-grant PASS" "CHECK answering PASS" \
+            "CHECK auth-token-required PASS" \
             "CHECK no-unauthenticated-exposure PASS"; do
     case "$RH_OUT" in *"$want"*) ok "green run: $want" ;; *) bad "green run: $want" "$RH_OUT" ;; esac
 done
+# A full green run carries zero NOT-RUN lines.
+case "$RH_OUT" in *"NOT-RUN"*) bad "green run: no NOT-RUN lines" "$RH_OUT" ;; *) ok "green run: no NOT-RUN lines" ;; esac
+
+# --- D3: a required check that never ran can never be green ------------------
+# THE CI false-green scenario: a subset (HLV_ONLY) run of one passing check
+# used to exit 0 forever. Now every unselected check closes NOT-RUN and the
+# verdict is INCONCLUSIVE.
+stub_reset; STUB_ONLY=running; run_case
+expect "subset: one PASS + five NOT-RUN -> never green" 2 "CHECK running PASS" "RESULT OK"
+for want in "CHECK service-clusterip-only NOT-RUN" "CHECK rbac-zero-grant NOT-RUN" \
+            "CHECK answering NOT-RUN" "CHECK auth-token-required NOT-RUN" \
+            "CHECK no-unauthenticated-exposure NOT-RUN"; do
+    case "$RH_OUT" in *"$want"*) ok "subset: $want" ;; *) bad "subset: $want" "$RH_OUT" ;; esac
+done
+case "$RH_OUT" in *"(HLV_ONLY=running)"*) ok "subset: NOT-RUN names HLV_ONLY" ;; *) bad "subset: NOT-RUN names HLV_ONLY" "$RH_OUT" ;; esac
+case "$RH_OUT" in *"notrun=5"*) ok "subset: summary tallies notrun" ;; *) bad "subset: summary tallies notrun" "$RH_OUT" ;; esac
+
+# A typo'd/unknown HLV_ONLY runs nothing at all: every required check closes
+# NOT-RUN — distinguishable from PASS, and never green.
+stub_reset; STUB_ONLY=bogus; run_case
+expect "subset: unknown HLV_ONLY -> all NOT-RUN" 2 "CHECK running NOT-RUN" "RESULT OK"
+case "$RH_OUT" in *"CHECK no-unauthenticated-exposure NOT-RUN"*) ok "subset: bogus closes the negative check too" ;; *) bad "subset: bogus closes the negative check too" "$RH_OUT" ;; esac
 # Overrides were active — the run must say so, so a log reader can never
 # mistake an offline rehearsal for a real network verification.
 case "$RH_OUT" in *"offline test mode"*) ok "green run: override NOTE printed" ;; *) bad "green run: override NOTE printed" "$RH_OUT" ;; esac
@@ -329,9 +426,11 @@ stub_reset; STUB_RB="$FIX/rb-grant"; STUB_ONLY=rbac-zero-grant; run_case
 expect "rbac: namespaced grant on pod SA" 1 "CHECK rbac-zero-grant FAIL"
 
 # The viewer SA's own bindings are expected and must NOT trip the pod-SA
-# zero-grant check (field-exact match, no prefix collision).
+# zero-grant check (field-exact match, no prefix collision). The run is a
+# subset, so the verdict itself is INCONCLUSIVE (D3) — the assertion is on
+# the CHECK line: PASS, never FAIL.
 stub_reset; STUB_ONLY=rbac-zero-grant; run_case
-expect "rbac: viewer-SA binding does not false-FAIL" 0 "CHECK rbac-zero-grant PASS"
+expect "rbac: viewer-SA binding does not false-FAIL" 2 "CHECK rbac-zero-grant PASS" "CHECK rbac-zero-grant FAIL"
 
 # --- answering ---------------------------------------------------------------
 stub_reset; STUB_HTTP="127.0.0.1:18466=none"; STUB_ONLY=running,answering; run_case
@@ -343,6 +442,50 @@ stub_reset
 STUB_PROBE="127.0.0.1:18466=closed 192.0.2.10:10250=open 192.0.2.10:4466=closed"
 STUB_ONLY=running,answering; run_case
 expect "answering: forward never opens -> BLOCKED" 2 "CHECK answering BLOCKED" "CHECK answering PASS"
+
+# --- auth-token-required: the positive auth assertion ------------------------
+# The load-bearing claim of the security model — "the UI cannot yield
+# authority without a pasted token" — is PROVEN here, not assumed. Each run
+# selects running+auth-token-required; the other four close NOT-RUN (D3), so
+# a PASS line rides an INCONCLUSIVE verdict and a FAIL rides exit 1.
+AR=auth-token-required
+
+# 401: the apiserver denies the anonymous request outright.
+stub_reset
+STUB_HTTP="127.0.0.1:18466=200 127.0.0.1:18466/clusters/main/api/v1=401"
+STUB_ONLY=running,$AR; run_case
+expect "auth: 401 -> PASS (gate holds)" 2 "CHECK $AR PASS" "CHECK $AR FAIL"
+
+# 403: anonymous authenticated but RBAC-denied — equally the gate working.
+stub_reset
+STUB_HTTP="127.0.0.1:18466=200 127.0.0.1:18466/clusters/main/api/v1=403"
+STUB_ONLY=running,$AR; run_case
+expect "auth: 403 -> PASS (gate holds)" 2 "CHECK $AR PASS" "CHECK $AR FAIL"
+
+# THE fail this run exists to catch: authority without a token.
+stub_reset
+STUB_HTTP="127.0.0.1:18466=200 127.0.0.1:18466/clusters/main/api/v1=200"
+STUB_ONLY=running,$AR; run_case
+expect "auth: 200 unauthenticated -> FAIL, never PASS" 1 "CHECK $AR FAIL" "CHECK $AR PASS"
+case "$RH_OUT" in *"WITHOUT a token"*) ok "auth: FAIL names the broken boundary" ;; *) bad "auth: FAIL names the broken boundary" "$RH_OUT" ;; esac
+
+# Route-layout drift (the pinned image's in-cluster context is "main") is
+# indeterminate: BLOCKED, never silently OK and never a false FAIL.
+stub_reset
+STUB_HTTP="127.0.0.1:18466=200 127.0.0.1:18466/clusters/main/api/v1=404"
+STUB_ONLY=running,$AR; run_case
+expect "auth: unexpected code -> BLOCKED" 2 "CHECK $AR BLOCKED" "CHECK $AR PASS"
+case "$RH_OUT" in *"UNCONFIRMED"*) ok "auth: BLOCKED says the gate is unconfirmed" ;; *) bad "auth: BLOCKED says the gate is unconfirmed" "$RH_OUT" ;; esac
+
+# No HTTP answer at all: could not determine.
+stub_reset
+STUB_HTTP="127.0.0.1:18466=200 127.0.0.1:18466/clusters/main/api/v1=none"
+STUB_ONLY=running,$AR; run_case
+expect "auth: no HTTP status -> BLOCKED" 2 "CHECK $AR BLOCKED" "CHECK $AR PASS"
+
+# No running deployment: precondition absent -> BLOCKED, never false-PASS.
+stub_reset; STUB_DEP=absent; STUB_ONLY=running,$AR; run_case
+expect "auth: absent deployment -> BLOCKED" 1 "CHECK $AR BLOCKED" "CHECK $AR PASS"
 
 # --- no-unauthenticated-exposure: the fail-closed negative -------------------
 NE=no-unauthenticated-exposure
@@ -377,7 +520,7 @@ expect "exposure: probe error -> BLOCKED" 2 "CHECK $NE BLOCKED" "CHECK $NE PASS"
 
 # An address the override set does not cover resolves to error -> BLOCKED
 # (a probe that answers for the wrong address can never score a PASS).
-stub_reset; STUB_ADDRS="192.0.2.10 192.0.2.11 "
+stub_reset; STUB_ADDRS="control-plane-host:192.0.2.10,;worker-a:192.0.2.11,;"
 STUB_ONLY=$NE; run_case
 expect "exposure: one unprovable node blocks the claim" 2 "CHECK $NE BLOCKED" "CHECK $NE PASS"
 
@@ -392,11 +535,59 @@ stub_reset; STUB_SVC=error
 STUB_ONLY=$NE; run_case
 expect "exposure: unenumerable service ports -> BLOCKED" 2 "CHECK $NE BLOCKED" "CHECK $NE PASS"
 
-# Operator-supplied probe addresses take precedence over the node list.
+# --- D6: the ADDRESS set is held to the same standard as the PORT set -------
+# Discovery enumerates ALL address types; a PASS must name every discovered
+# address, InternalIP and ExternalIP and Hostname alike.
+stub_reset
+STUB_ADDRS="control-plane-host:192.0.2.10,203.0.113.10,control-plane-host,;"
+STUB_PROBE="192.0.2.10:10250=open 192.0.2.10:4466=closed 203.0.113.10:10250=open 203.0.113.10:4466=closed control-plane-host:10250=open control-plane-host:4466=closed"
+STUB_ONLY=$NE; run_case
+expect "exposure: all address types probed -> PASS" 2 "CHECK $NE PASS" "CHECK $NE BLOCKED"
+for want in "192.0.2.10:4466" "203.0.113.10:4466" "control-plane-host:4466"; do
+    case "$RH_OUT" in *"$want"*) ok "exposure: PASS evidence includes $want" ;; *) bad "exposure: PASS evidence includes $want" "$RH_OUT" ;; esac
+done
+
+# THE scenario D6 exists for: the exposure is on the ExternalIP — the address
+# type a partial (InternalIP-only) probe would never have seen.
+stub_reset
+STUB_ADDRS="control-plane-host:192.0.2.10,203.0.113.10,;"
+STUB_PROBE="192.0.2.10:10250=open 192.0.2.10:4466=closed 203.0.113.10:10250=open 203.0.113.10:4466=open"
+STUB_ONLY=$NE; run_case
+expect "exposure: open ExternalIP -> FAIL" 1 "CHECK $NE FAIL" "CHECK $NE PASS"
+case "$RH_OUT" in *"203.0.113.10:4466"*) ok "exposure: FAIL names the ExternalIP" ;; *) bad "exposure: FAIL names the ExternalIP" "$RH_OUT" ;; esac
+
+# A node with NO address is incomplete evidence, never a pass.
+stub_reset
+STUB_ADDRS="control-plane-host:192.0.2.10,;worker-a:,;"
+STUB_ONLY=$NE; run_case
+expect "exposure: addressless node -> BLOCKED" 2 "CHECK $NE BLOCKED" "CHECK $NE PASS"
+case "$RH_OUT" in *"worker-a"*) ok "exposure: names the addressless node" ;; *) bad "exposure: names the addressless node" "$RH_OUT" ;; esac
+
+# --- D7: HLV_PROBE_ADDRS can narrow the probe SET, never the COVERAGE -------
+# THE inversion: an override covering 1 of N nodes used to score a clean
+# PASS; it must now BLOCK — the other N-1 nodes are unproven.
 stub_reset; STUB_PROBE_ADDRS="192.0.2.20"
 STUB_PROBE="192.0.2.20:10250=open 192.0.2.20:4466=closed"
 STUB_ONLY=$NE; run_case
-expect "exposure: HLV_PROBE_ADDRS honoured" 0 "CHECK $NE PASS"
+expect "exposure: narrowing HLV_PROBE_ADDRS -> BLOCKED, never PASS" 2 "CHECK $NE BLOCKED" "CHECK $NE PASS"
+case "$RH_OUT" in *"does not cover every discovered node"*) ok "exposure: BLOCKED states the coverage rule" ;; *) bad "exposure: BLOCKED states the coverage rule" "$RH_OUT" ;; esac
+case "$RH_OUT" in *"control-plane-host"*) ok "exposure: names the uncovered node" ;; *) bad "exposure: names the uncovered node" "$RH_OUT" ;; esac
+
+# An override that DOES cover every discovered node (extras allowed) may
+# still PASS — the coverage assertion gates the verdict, not the knob.
+stub_reset; STUB_PROBE_ADDRS="192.0.2.10 192.0.2.20"
+STUB_PROBE="192.0.2.10:10250=open 192.0.2.10:4466=closed 192.0.2.20:10250=open 192.0.2.20:4466=closed"
+STUB_ONLY=$NE; run_case
+expect "exposure: full-coverage override -> PASS line" 2 "CHECK $NE PASS" "CHECK $NE BLOCKED"
+case "$RH_OUT" in *"covering every discovered node"*) ok "exposure: PASS states the override scope" ;; *) bad "exposure: PASS states the override scope" "$RH_OUT" ;; esac
+
+# An override against an unenumerable node set cannot be cross-checked —
+# unverifiable coverage is not evidence.
+stub_reset; STUB_ADDRS=""; STUB_PROBE_ADDRS="192.0.2.20"
+STUB_PROBE="192.0.2.20:10250=open 192.0.2.20:4466=closed"
+STUB_ONLY=$NE; run_case
+expect "exposure: override with unknown node set -> BLOCKED" 2 "CHECK $NE BLOCKED" "CHECK $NE PASS"
+case "$RH_OUT" in *"cannot be cross-checked"*) ok "exposure: BLOCKED states the cross-check" ;; *) bad "exposure: BLOCKED states the cross-check" "$RH_OUT" ;; esac
 
 # --- harness hygiene ---------------------------------------------------------
 if bash -n "$HARNESS"; then ok "harness parses (bash -n)"; else bad "harness parses (bash -n)"; fi
@@ -405,9 +596,14 @@ if grep -nE '(token|password|secret|authkey)[[:space:]]*=[[:space:]]*["'"'"'][A-
 else
     ok "harness contains no embedded secret literal"
 fi
-# Every check name in the contract must be implemented.
-for n in running service-clusterip-only rbac-zero-grant answering no-unauthenticated-exposure; do
+# Every check name in the contract must be implemented AND required (a check
+# that is implemented but not required could be skipped without a NOT-RUN).
+for n in running service-clusterip-only rbac-zero-grant answering auth-token-required no-unauthenticated-exposure; do
     if grep -q "hlv_selected $n" "$HARNESS"; then ok "check implemented: $n"; else bad "check missing: $n"; fi
+    case " $(grep -o 'HLV_REQUIRED_CHECKS="[^"]*"' "$HARNESS" | cut -d'"' -f2) " in
+        *" $n "*) ok "check required: $n" ;;
+        *) bad "check required: $n" ;;
+    esac
 done
 # The harness must reference the deterministic peer kubeconfig path, never
 # rely on ambient resolution.

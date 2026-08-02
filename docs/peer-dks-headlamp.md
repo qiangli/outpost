@@ -3,7 +3,8 @@
 `internal/agent/headlamp` deploys and audits a [Headlamp](https://headlamp.dev)
 operating UI on a peer-hosted DKS control plane, and
 `script/dks-headlamp-verify.sh` proves a deployed instance is running,
-answering, and **not** reachable unauthenticated.
+answering, **token-gated** (an unauthenticated request yields no cluster
+authority), and **not** reachable unauthenticated.
 
 **Why here.** cloudbox's Cluster page is a cross-host *inventory* only — it
 structurally cannot operate a peer-hosted plane (its endpoint is not even
@@ -91,6 +92,15 @@ escalate/bind/impersonate. Set `Options.DisableViewerRBAC` to converge the
 viewer SA, its ClusterRole, and both bindings away (`Deploy` removes them;
 `RenderJSON` omits them).
 
+**A minted viewer token is a cluster credential — owner-only.** Read-only,
+but cluster-wide, and the tenancy model is absolute: non-owners get no
+cluster credential; guests reach shared apps via Periscope. A minted viewer
+token must therefore **never reach a guest or non-owner** — never pasted
+into a Headlamp session anyone but the owner can drive, never handed out,
+never persisted. (The SA exists by default because creating it confers no
+credential by itself: minting requires cluster-admin, an owner-only act.
+`DisableViewerRBAC` removes even the minting target.)
+
 Mint a viewer token when needed (short-lived, never persisted):
 
 ```bash
@@ -146,21 +156,37 @@ kubeconfig — deterministically, canonicalizing via `readlink -f`. An ambient
 `KUBECONFIG` env var is rejected as a FAIL rather than silently selecting the
 wrong cluster.)
 
-Five checks, one `CHECK <name> PASS|FAIL|BLOCKED <detail>` line each; exit
-0 = OK, 1 = FAIL, 2 = INCONCLUSIVE (same contract as
-`script/dks-peer-acceptance.sh`, whose check 9 probes Headlamp *inside* the
-cluster and selects on the same `app.kubernetes.io/name=headlamp` label this
-package stamps):
+Six checks, one `CHECK <name> PASS|FAIL|BLOCKED|NOT-RUN <detail>` line each
+(same exit contract as `script/dks-peer-acceptance.sh`, whose check 9 probes
+Headlamp *inside* the cluster and selects on the same
+`app.kubernetes.io/name=headlamp` label this package stamps):
 
 1. `running` — the deployment has ≥1 ready replica.
 2. `service-clusterip-only` — type ClusterIP, no nodePorts, no externalIPs.
 3. `rbac-zero-grant` — no binding anywhere references the pod SA.
 4. `answering` — a loopback-pinned port-forward yields an HTTP status line.
-   (A 200 here is not an auth bypass: the anonymous GET gets the token login
-   screen; authority still only enters when a token is pasted.)
-5. `no-unauthenticated-exposure` — the negative check: every node address is
+   (What that answer is *worth* is the next check's job, not this one's.)
+5. `auth-token-required` — the positive auth assertion: an **unauthenticated**
+   GET of the apiserver-proxy route (`/clusters/main/api/v1` — the pinned
+   image v0.27.0 names its in-cluster context `main`, and the in-cluster
+   context carries no credentials of its own) must be denied: 401 or 403 is
+   the gate working. A 2xx is authority without a token — **FAIL**. Any other
+   answer means the pinned route layout drifted and the gate is UNCONFIRMED —
+   BLOCKED, never a silent pass and never a false fail.
+6. `no-unauthenticated-exposure` — the negative check: **every discovered
+   node address of every type** (InternalIP, ExternalIP — the single most
+   likely place a Headlamp would actually be exposed — and Hostname) is
    probed on the Headlamp container port plus any drifted nodePort, and each
    must be **actively refused on a host proven live**.
+
+**Exit contract — disclosed in full.** Exit 0 (OK) means *every required
+check ran and passed*. Exit 1 (FAIL) means at least one check failed. Exit 2
+(INCONCLUSIVE) means the verdict cannot be called OK **or** clean-FAIL: any
+check BLOCKED (a blocked security assurance is not OK), or any required
+check **never ran** (NOT-RUN — `HLV_ONLY` exists for focused debugging and a
+subset run closes every unselected check NOT-RUN, so CI invoking a subset
+can never report green forever). No success state is reachable by the
+absence of evidence.
 
 **Evidence invariant — the negative check fails closed.** A refusal counts
 as "not exposed" only after a control port on the same address (default
@@ -168,14 +194,22 @@ as "not exposed" only after a control port on the same address (default
 live host. Connection-refused for the wrong reason — wrong host, dead host,
 DNS failure, broken prober — is BLOCKED, never PASS. A timeout or any
 unclassifiable outcome is BLOCKED. An observed open port is FAIL even when
-the control could not be validated. "Could not determine" is never scored
-as "correctly not exposed".
+the control could not be validated. The **address set is held to the same
+standard as the port set**: an unreadable Service (unknown nodePorts)
+BLOCKs, and so does a node with no address, and so does an `HLV_PROBE_ADDRS`
+override that leaves any discovered node uncovered — partial evidence is
+never scored as "correctly not exposed".
 
-`script/dks-headlamp-verify_test.sh` proves every scoring decision offline
-(no cluster, no kubectl, no network): unit tests of the pure helpers plus
-behavioral runs of the real harness against a stub kubectl, including the
-false-green scenarios (refusal on an unproven host, timeouts, probe
-crashes, an unreadable Service hiding a nodePort).
+`script/dks-headlamp-verify_test.sh` proves the scoring offline (no cluster,
+no kubectl, no network): unit tests of the pure helpers plus behavioral runs
+of the real harness against a stub kubectl. That covers every per-check
+scoring decision **and the aggregate verdict rules**, including the
+false-green scenarios: refusal on an unproven host, timeouts, probe crashes,
+an unreadable Service hiding a nodePort, an ExternalIP-only exposure, a
+subset (`HLV_ONLY`) run that must never be green, a narrowing
+`HLV_PROBE_ADDRS` that must never score an unqualified PASS, and an
+unauthenticated 2xx that must FAIL. What remains unproven is only the live
+transport it all rides on — see the evidence boundary below.
 
 ## Four-surface wiring — `headlamp_enabled`
 
@@ -206,8 +240,10 @@ ClusterIP-only, viewer scope, drift repair, fail-closed Inspect, all against
 
 **HARDWARE-UNPROVEN:** Headlamp against a real peer-hosted plane. The image
 pin (v0.27.0), token login against a live DKS apiserver, the in-cluster
-config resolution with a powerless SA, the port-forward under the real CNI,
-and the mesh-forwarded browse from a peer workstation have **not** been
+config resolution with a powerless SA, the `/clusters/main/...` proxy route
+the auth-token-required assertion targets (verified against the pinned
+image's source, not against a live server), the port-forward under the real
+CNI, and the mesh-forwarded browse from a peer workstation have **not** been
 exercised on hardware. First hardware pass: deploy on the control-plane
 host, run `script/dks-headlamp-verify.sh` there, then
 `script/dks-peer-acceptance.sh` (check 9), then a viewer-token login from an
