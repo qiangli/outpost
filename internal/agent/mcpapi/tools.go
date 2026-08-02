@@ -36,6 +36,7 @@ func (s *Server) registerTools() {
 	s.registerMeshTools()
 	s.registerMirrorTools()
 	s.registerShardTools()
+	s.registerBundleTools()
 }
 
 func (s *Server) registerResources() {

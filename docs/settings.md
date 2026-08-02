@@ -664,6 +664,52 @@ outpost cluster token | ssh worker outpost cluster join 10.0.0.5 --token-stdin
 `--offline` writes `agent.json` directly for installer scripts that provision
 a host before the daemon first starts.
 
+### Applying bundles to a peer-hosted plane (live)
+
+Install an app/bundle manifest set against a **peer-hosted** control plane,
+addressed purely by a kubeconfig path — **no cloudbox anywhere on the apply
+path** (no `access_token`, no `/api/v1`, no overlay credential fetch). All
+surfaces converge on `admincore.BundleApply`; the standalone
+`script/dks-peer-bundle-apply.sh` remains the shell-only twin. See
+`docs/peer-dks-bundle-apply.md` for the full semantics.
+
+| Field | File key | CLI | UI | MCP |
+|---|---|---|---|---|
+| Default kubeconfig venue | `cluster.bundle_kubeconfig` | `bundle apply --kubeconfig … --save-kubeconfig` | — | `outpost_apply_bundle` (`kubeconfig` + `save_kubeconfig`) |
+| Show the persisted venue | (read-only) | `bundle kubeconfig` | — | `outpost_bundle_kubeconfig` |
+| Apply a bundle | (operation, not persisted) | `bundle apply <file-or-dir>` | — | `outpost_apply_bundle` |
+
+Save = **live**. `cluster.bundle_kubeconfig` is read on each apply; changing
+it never restarts the daemon (the operation touches the peer cluster, not
+this daemon's own wiring).
+
+Behaviours worth knowing:
+
+- **Venue resolution order:** explicit `--kubeconfig` / `kubeconfig` arg →
+  persisted `cluster.bundle_kubeconfig` → the conventional peer path
+  `~/.kube/outpost-control-plane/k3s.yaml`. Whatever the source, the path is
+  canonicalized (tilde, relative, `..`, symlinks all resolved) and the
+  **cloudbox kubeconfig (`~/.kube/outpost.yaml`) is refused** — a symlinked
+  or relative spelling of it included. A path that cannot be canonicalized
+  fails; it is never "probably fine".
+- **Readiness means rolled out.** The bounded wait (`--timeout`, default
+  300 s) requires updated replicas — not merely ready ones — StatefulSet
+  `currentRevision == updateRevision`, and `observedGeneration` caught up. A
+  workload with `spec.replicas: 0` is a hard failure without the explicit
+  `--allow-scale-to-zero` opt-in.
+- **Custom resources wait for their CRD.** A CR whose CRD ships in the same
+  bundle applies only after the CRD reports `Established` AND the type
+  appears in discovery, bounded by `--crd-timeout` (default 60 s); timing
+  out is a hard failure.
+- **Failures roll back what the run created** — reverse order, bounded,
+  best-effort — and report precisely what was and was not cleaned.
+  Pre-existing objects are never deleted. `--no-rollback` opts out (still
+  reported).
+- **`--save-kubeconfig` persists only after a successful apply**, so a saved
+  default that never worked can't become a trap for the next run.
+- `--offline` runs the apply in the CLI process against the on-disk
+  `agent.json` — no running daemon required.
+
 ### Networking (boot-time-bound)
 
 | Field | File key | CLI | UI | MCP |
