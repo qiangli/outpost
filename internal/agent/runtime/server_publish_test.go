@@ -90,7 +90,7 @@ exit 0
 		t.Errorf("tunnel publish should honor --bind-addr: %s", runLine)
 	}
 	// The apiserver must stay where the runbook says it is: loopback.
-	if !strings.Contains(runLine, "127.0.0.1:16443:16443") {
+	if !strings.Contains(runLine, "127.0.0.1:16443:6443") {
 		t.Errorf("apiserver publish is not loopback — docs/cluster-peer.md promises \"The hosted apiserver is published on 127.0.0.1:16443\", got:\n%s", runLine)
 	}
 	if strings.Contains(runLine, "0.0.0.0:16443:16443") {

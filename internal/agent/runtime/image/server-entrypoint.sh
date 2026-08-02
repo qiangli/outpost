@@ -39,6 +39,7 @@ listening() { socat -u /dev/null "TCP:127.0.0.1:$1,connect-timeout=1" 2>/dev/nul
 : "${OUTPOST_STCP_SECRET:?required: secret for the k3s-apiserver STCP proxy}"
 : "${OUTPOST_TUNNEL_PORT:=7000}"
 : "${OUTPOST_API_PORT:=6443}"
+: "${OUTPOST_HOST_API_PORT:=16443}"
 
 # k3s needs a non-loopback advertise address for the default kubernetes
 # Service endpoint. The address is internal to this control-plane network
@@ -170,6 +171,13 @@ while [ "$i" -lt 300 ]; do
     sleep 1
 done
 if listening "${OUTPOST_API_PORT}"; then
+    # k3s must run on its native internal port, but the host deliberately
+    # publishes it on 16443 to avoid colliding with a worker's local visitor.
+    # Export a host-usable kubeconfig without changing any internal component
+    # kubeconfig.
+    if [ "${OUTPOST_HOST_API_PORT}" != "${OUTPOST_API_PORT}" ]; then
+        sed -i "s#server: https://127.0.0.1:${OUTPOST_API_PORT}#server: https://127.0.0.1:${OUTPOST_HOST_API_PORT}#" /etc/rancher/k3s/k3s.yaml
+    fi
     log "publishing apiserver 127.0.0.1:${OUTPOST_API_PORT} as stcp k3s-apiserver"
     frpc -c /tmp/frpc-publish.toml &
 else

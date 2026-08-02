@@ -192,7 +192,7 @@ fi
 		t.Errorf("run command missing wide tunnel publish %q: %s", wantTunnel, runCmd)
 	}
 
-	wantAPI := fmt.Sprintf("-p 127.0.0.1:%d:%d", DefaultControlPlaneAPIPort, DefaultControlPlaneAPIPort)
+	wantAPI := fmt.Sprintf("-p 127.0.0.1:%d:%d", DefaultControlPlaneAPIPort, controlPlaneContainerAPIPort)
 	if !strings.Contains(runCmd, wantAPI) {
 		t.Errorf("run command missing loopback apiserver publish %q: %s", wantAPI, runCmd)
 	}

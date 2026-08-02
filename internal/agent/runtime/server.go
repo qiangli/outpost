@@ -85,6 +85,11 @@ type ServerOptions struct {
 // not 6443: that belongs to the visitor for a cluster this host JOINS.
 const DefaultControlPlaneAPIPort = 16443
 
+// controlPlaneContainerAPIPort stays at k3s's native supervisor port. Moving
+// --https-listen-port also moves its paired apiserver port, while k3s-generated
+// component kubeconfigs still target the native 6444 port.
+const controlPlaneContainerAPIPort = 6443
+
 // ServerContainerName is the container this host's control plane runs in.
 func ServerContainerName(agentName string) string { return agentName + "-control-plane" }
 
@@ -207,11 +212,12 @@ func UpServer(ctx context.Context, opts ServerOptions) error {
 		// widening the tunnel bind for worker joins also exposes the
 		// apiserver to the network, which contradicts the documented
 		// contract of --bind-addr.
-		"-p", fmt.Sprintf("127.0.0.1:%d:%d", opts.APIPort, opts.APIPort),
+		"-p", fmt.Sprintf("127.0.0.1:%d:%d", opts.APIPort, controlPlaneContainerAPIPort),
 		"-e", "OUTPOST_TUNNEL_TOKEN=" + opts.TunnelToken,
 		"-e", "OUTPOST_STCP_SECRET=" + opts.STCPSecret,
 		"-e", fmt.Sprintf("OUTPOST_TUNNEL_PORT=%d", opts.TunnelBindPort),
-		"-e", fmt.Sprintf("OUTPOST_API_PORT=%d", opts.APIPort),
+		"-e", fmt.Sprintf("OUTPOST_API_PORT=%d", controlPlaneContainerAPIPort),
+		"-e", fmt.Sprintf("OUTPOST_HOST_API_PORT=%d", opts.APIPort),
 	}
 	if opts.TLSSANs != "" {
 		args = append(args, "-e", "OUTPOST_TLS_SAN="+opts.TLSSANs)
