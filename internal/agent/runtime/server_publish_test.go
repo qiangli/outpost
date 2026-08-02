@@ -128,6 +128,7 @@ func TestPeerMetricsServerIsColocatedWithoutEnablingAgent(t *testing.T) {
 	script := string(b)
 	for _, required := range []string{
 		"--disable-agent",
+		"--disable-cloud-controller",
 		"--disable=traefik,servicelb,metrics-server",
 		"--egress-selector-mode=pod",
 		"--kube-apiserver-arg=kubelet-preferred-address-types=ExternalIP",
@@ -138,6 +139,9 @@ func TestPeerMetricsServerIsColocatedWithoutEnablingAgent(t *testing.T) {
 		if !strings.Contains(script, required) {
 			t.Errorf("server entrypoint missing colocated metrics contract %q", required)
 		}
+	}
+	if !strings.Contains(script, "not k3s's embedded cloud controller, owns") {
+		t.Error("server entrypoint does not document peer ownership of the reconciled ExternalIP")
 	}
 	if strings.Contains(script, "hostNetwork:true") || strings.Contains(script, "patch deployment metrics-server") {
 		t.Error("peer metrics must not resurrect the worker-hostNetwork patch disproved by the live gate")

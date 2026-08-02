@@ -110,6 +110,7 @@ EOF
 # --------------------------------------------------------- k3s server ----
 set -- server \
     --disable-agent \
+    --disable-cloud-controller \
     --disable=traefik,servicelb,metrics-server \
     --egress-selector-mode=pod \
     --write-kubeconfig=/etc/rancher/k3s/k3s-internal.yaml \
@@ -142,6 +143,15 @@ done
 # fail later with an opaque 502. ExternalIP is the reconciler-owned tunnel
 # address; absence must fail closed instead of escaping the tunnel contract.
 set -- "$@" --kube-apiserver-arg=kubelet-preferred-address-types=ExternalIP
+
+# The peer node-address reconciler, not k3s's embedded cloud controller, owns
+# each worker's ExternalIP. The embedded controller periodically rewrites the
+# Node status from the worker's container address and removes that loopback
+# ExternalIP; metrics then alternates between valid samples and "no address
+# matched types [ExternalIP]". There is no cloud provider on a peer plane, so
+# disabling that controller makes ownership explicit and keeps the tunnel
+# address stable. Kubernetes controller-manager remains the sole PodCIDR
+# allocator; this does not add or replace B5 allocation.
 
 [ -n "${OUTPOST_CLUSTER_CIDR:-}" ] && set -- "$@" --cluster-cidr="${OUTPOST_CLUSTER_CIDR}"
 [ -n "${OUTPOST_SERVICE_CIDR:-}" ] && set -- "$@" --service-cidr="${OUTPOST_SERVICE_CIDR}"
