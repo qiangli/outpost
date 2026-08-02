@@ -70,3 +70,91 @@ func TestBuiltinInstall_FailsClosedAndPreservesVenueGuard(t *testing.T) {
 		t.Fatalf("cloudbox venue guard lost: %v", err)
 	}
 }
+
+// BuiltinStatus resolves the same manifest BuiltinInstall applies (same
+// catalog resolution, same fail-closed name handling) and reuses
+// BundleStatus underneath.
+func TestBuiltinStatus_ResolvesCatalogAndReflectsInstallState(t *testing.T) {
+	fix := newBundleFixture(t)
+	catalog := builtinCatalogFixture(t, fix.home)
+
+	before, err := fix.srv.BuiltinStatus(context.Background(), BuiltinStatusParams{Name: "headlamp", Catalog: catalog, Kubeconfig: fix.peer})
+	if err != nil {
+		t.Fatalf("BuiltinStatus before install: %v", err)
+	}
+	if before.Installed || before.Name != "headlamp" {
+		t.Fatalf("unexpected pre-install status: %+v", before)
+	}
+
+	if _, err := fix.srv.BuiltinInstall(context.Background(), BuiltinInstallParams{Name: "headlamp", Catalog: catalog, Kubeconfig: fix.peer, TimeoutSeconds: 5}); err != nil {
+		t.Fatalf("BuiltinInstall: %v", err)
+	}
+	after, err := fix.srv.BuiltinStatus(context.Background(), BuiltinStatusParams{Name: "headlamp", Catalog: catalog, Kubeconfig: fix.peer})
+	if err != nil {
+		t.Fatalf("BuiltinStatus after install: %v", err)
+	}
+	if !after.Installed || !after.AllReady {
+		t.Fatalf("unexpected post-install status: %+v", after)
+	}
+}
+
+func TestBuiltinStatus_FailsClosedAndPreservesVenueGuard(t *testing.T) {
+	fix := newBundleFixture(t)
+	catalog := builtinCatalogFixture(t, fix.home)
+	for _, name := range []string{"../headlamp", "missing"} {
+		_, err := fix.srv.BuiltinStatus(context.Background(), BuiltinStatusParams{Name: name, Catalog: catalog, Kubeconfig: fix.peer})
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.Status != 400 {
+			t.Fatalf("%q should fail closed with 400: %v", name, err)
+		}
+	}
+	_, err := fix.srv.BuiltinStatus(context.Background(), BuiltinStatusParams{Name: "headlamp", Catalog: catalog, Kubeconfig: fix.cloudbox})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || !strings.Contains(apiErr.Msg, "cloudbox") {
+		t.Fatalf("cloudbox venue guard lost: %v", err)
+	}
+}
+
+// BuiltinUninstall reuses BuiltinInstall's exact catalog resolution and
+// BundleUninstall's deletion mechanics — install then uninstall leaves
+// the cluster clean.
+func TestBuiltinUninstall_RoundTripsWithInstall(t *testing.T) {
+	fix := newBundleFixture(t)
+	catalog := builtinCatalogFixture(t, fix.home)
+	if _, err := fix.srv.BuiltinInstall(context.Background(), BuiltinInstallParams{Name: "headlamp", Catalog: catalog, Kubeconfig: fix.peer, TimeoutSeconds: 5}); err != nil {
+		t.Fatalf("BuiltinInstall: %v", err)
+	}
+
+	res, err := fix.srv.BuiltinUninstall(context.Background(), BuiltinUninstallParams{Name: "headlamp", Catalog: catalog, Kubeconfig: fix.peer})
+	if err != nil {
+		t.Fatalf("BuiltinUninstall: %v", err)
+	}
+	if !res.OK || res.Name != "headlamp" || len(res.Deleted) != 1 {
+		t.Fatalf("unexpected uninstall result: %+v", res)
+	}
+
+	status, err := fix.srv.BuiltinStatus(context.Background(), BuiltinStatusParams{Name: "headlamp", Catalog: catalog, Kubeconfig: fix.peer})
+	if err != nil {
+		t.Fatalf("BuiltinStatus after uninstall: %v", err)
+	}
+	if status.Installed {
+		t.Fatalf("uninstalled built-in must not report installed: %+v", status)
+	}
+}
+
+func TestBuiltinUninstall_FailsClosedAndPreservesVenueGuard(t *testing.T) {
+	fix := newBundleFixture(t)
+	catalog := builtinCatalogFixture(t, fix.home)
+	for _, name := range []string{"../headlamp", "missing"} {
+		_, err := fix.srv.BuiltinUninstall(context.Background(), BuiltinUninstallParams{Name: name, Catalog: catalog, Kubeconfig: fix.peer})
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.Status != 400 {
+			t.Fatalf("%q should fail closed with 400: %v", name, err)
+		}
+	}
+	_, err := fix.srv.BuiltinUninstall(context.Background(), BuiltinUninstallParams{Name: "headlamp", Catalog: catalog, Kubeconfig: fix.cloudbox})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || !strings.Contains(apiErr.Msg, "cloudbox") {
+		t.Fatalf("cloudbox venue guard lost: %v", err)
+	}
+}

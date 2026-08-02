@@ -1,8 +1,8 @@
 # Peer-Hosted DKS — Bundle / App Apply
 
-Install an app/bundle manifest set against a **peer-hosted** DKS control plane,
-addressed purely by a kubeconfig path, with **no cloudbox dependency anywhere on
-the execution path**.
+Install, check, and remove an app/bundle manifest set against a
+**peer-hosted** DKS control plane, addressed purely by a kubeconfig path,
+with **no cloudbox dependency anywhere on the execution path**.
 
 - Package: `internal/agent/bundleapply`
 - Operator entry point: `script/dks-peer-bundle-apply.sh`
@@ -81,6 +81,19 @@ explicitly, or the run fails.
      ServiceAccount, RBAC, CRD, …) are Ready as soon as they exist — their
      creation *is* the evidence.
 
+4. **Status and uninstall reuse the same evidence and ordering, not
+   parallel logic.** `StatusBundle` (`internal/agent/bundleapply/status.go`)
+   is a read-only pass that calls the identical `evalReadiness` function
+   `WaitForReady` uses, so a status report's `ready` means exactly what a
+   successful apply would have confirmed — never a second, drifting
+   definition of "ready". `DeleteBundle` (`internal/agent/bundleapply/
+   delete.go`) removes objects in reverse apply order through the same
+   `deleteReverse` helper an apply failure's own rollback (`failAndCleanup`)
+   uses — one delete failure does not stop the rest, and is reported
+   precisely as an object the operator must remove by hand. An optional
+   bounded `WaitForGone` confirms objects actually vanish rather than merely
+   accepting the delete call.
+
 ## Evidence invariant
 
 Per `docs/fleet-evidence-invariant.md`: **no success state may be reached by the
@@ -99,6 +112,23 @@ absent signal:
 - A workload that never becomes Ready → `ErrReadinessTimeout` → non-zero exit.
 - An unsupported flag on the script → exit 2 with a loud message (coreutils/bashy
   convention; no silent fallback).
+- A `Get` that fails during a status check, for any reason other than the
+  object not existing (apiserver unreachable, permission error) → hard
+  error, never reported as "not installed".
+- A `Get` that fails during a post-uninstall gone-check, for any reason
+  other than the object not existing → hard error, never treated as "gone"
+  (`ErrDeletionTimeout` on a bounded-wait timeout instead).
+- A built-in name that does not resolve to `builtin/<name>/install.yaml`
+  under the catalog (missing, escapes the catalog root via symlink or
+  traversal, or fails the operator-name pattern) fails closed on install,
+  status, *and* uninstall alike — there is no partial resolution and no
+  cloudbox/private-manifest fallback for any of the three operations. A
+  chart or manifest format this package does not understand (arbitrary Helm
+  charts, kustomize overlays, non-Kubernetes assets) is simply never
+  resolved: the catalog only ever names plain `install.yaml` manifests, so
+  an appstore entry that isn't one is invisible to `bundle catalog` and a
+  direct name lookup fails the same way a missing built-in does — never a
+  best-effort partial apply.
 
 ---
 
@@ -135,6 +165,11 @@ script/dks-peer-bundle-apply.sh --kubeconfig /path/k3s.yaml --bundle ./app.yaml 
 # Install by OSS appstore built-in name through the normal CLI/MCP surface:
 outpost bundle install headlamp --catalog ../appstore --kubeconfig /path/k3s.yaml
 outpost bundle catalog
+
+# Discover, then check and remove the same built-in:
+outpost bundle catalog --catalog ../appstore
+outpost bundle status headlamp --catalog ../appstore --kubeconfig /path/k3s.yaml
+outpost bundle uninstall headlamp --catalog ../appstore --kubeconfig /path/k3s.yaml
 ```
 
 The named install path accepts only `builtin/<name>/install.yaml` beneath a
@@ -144,6 +179,23 @@ sibling `appstore` checkout or a separately fetched/versioned appstore tree;
 there is no cloudbox/private-manifest fallback. Once resolved, the manifest is
 sent through the same readiness, rollback, and peer-venue guard as an explicit
 bundle apply.
+
+`bundle status <name>` resolves the identical manifest `bundle install` would
+apply and reports each object's live state — `exists`, `ready`, a short
+reason — using the same readiness evidence (`evalReadiness`) the apply's
+rolled-out wait uses. It is a pure read: nothing is applied, deleted, or
+waited on. `bundle uninstall <name>` resolves the same manifest and removes
+every object in reverse apply order, reusing the identical best-effort
+deletion mechanics an apply failure's own rollback already relies on — one
+delete failure does not stop the rest, and is reported precisely as an object
+left behind for the operator to remove by hand. Both reuse `BundleApply`'s
+venue resolution (`resolveBundleVenue`): explicit `--kubeconfig` > persisted
+`cluster.bundle_kubeconfig` > the conventional peer path, with the cloudbox
+kubeconfig always refused. This is the peer-DKS parity surface for the
+install/status/uninstall lifecycle cloudbox's own DKS catalog already offers —
+scoped to public, open-source appstore entries only; there is no support here
+for arbitrary Helm charts or private cloudbox manifests, and an unresolvable
+or unsupported name fails closed rather than guessing.
 
 The script owns argument handling, the peer/cloudbox distinction, and loud
 failure on anything unsupported or absent; all Kubernetes work lives in the Go
@@ -162,7 +214,11 @@ bash script/dks-peer-bundle-apply_test.sh
 - The Go tests fake the Kubernetes surface entirely (`fake_test.go`) — apply
   ordering, idempotent convergence, readiness across polls, terminal-pod
   fast-fail, unreachable-apiserver failure, and bad-option rejection are all
-  observed without a cluster.
+  observed without a cluster. `status_test.go` and `delete_test.go` cover the
+  status/uninstall additions the same way: not-installed vs. installed-and-
+  ready reporting, zero-desired-is-not-fatal, reverse-order deletion,
+  partial-delete-failure accounting, and the bounded gone-check's timeout and
+  hard-error paths.
 - The script test executes the **real** script against a **stub** runner on a
   minimal env and asserts exit status, messages, and the exact args the stub
   received — nothing simulates the script's logic by hand.
@@ -210,29 +266,42 @@ guard, rolled-out readiness bar, and rollback accounting cannot drift:
    `cluster.bundle_catalog` is the optional persisted OSS appstore root for
    named installs. It is also Live and can name a fetched/versioned tree.
 
-2. **admincore (`internal/agent/admincore/bundle.go`).**
-   `Server.BundleApply(ctx, BundleApplyParams)` resolves the venue (explicit >
-   persisted `cluster.bundle_kubeconfig` > conventional peer path), enforces the
-   venue guard **in the Go API**, then runs `LoadBundle` + `ApplyBundle` and
-   returns the transactional accounting (`Created` / `RolledBack` /
-   `CleanupFailed`). `Server.BundleKubeconfig()` reports the persisted venue.
-   `Deps.BundleApplyClient` is the test seam — it only ever sees an accepted,
-   canonicalized path, so an injected client cannot bypass the guard.
-   `Server.BuiltinInstall` resolves an OSS built-in name and delegates to
-   `Server.BundleApply`; `Server.BundleCatalog` reports the effective source and
-   installable names.
+2. **admincore (`internal/agent/admincore/bundle.go`, `builtin.go`).**
+   `Server.resolveBundleVenue(explicit)` is the shared venue-resolution +
+   client-construction helper: explicit param > persisted
+   `cluster.bundle_kubeconfig` > conventional peer path, guard enforced **in
+   the Go API**, then the client is built through `Deps.BundleApplyClient`
+   (the test seam — it only ever sees an accepted, canonicalized path, so an
+   injected client cannot bypass the guard). `Server.BundleApply` uses it and
+   runs `LoadBundle` + `ApplyBundle`, returning the transactional accounting
+   (`Created` / `RolledBack` / `CleanupFailed`). `Server.BundleStatus` uses
+   the same helper and runs `LoadBundle` + `bundleapply.StatusBundle` — a
+   read-only pass reusing the identical `evalReadiness` evidence the apply
+   wait uses. `Server.BundleUninstall` uses the same helper and runs
+   `LoadBundle` + `bundleapply.DeleteBundle` — the identical reverse-order,
+   best-effort deletion mechanics `ApplyBundle`'s own rollback path uses.
+   `Server.BundleKubeconfig()` reports the persisted venue.
+   `Server.effectiveCatalog(explicit)` is the equivalent shared helper for
+   catalog resolution (explicit > persisted `cluster.bundle_catalog`).
+   `Server.BuiltinInstall` / `BuiltinStatus` / `BuiltinUninstall` each resolve
+   an OSS built-in name through it and delegate to the matching `Bundle*`
+   method, so a built-in's install/status/uninstall lifecycle always resolves
+   the identical manifest; `Server.BundleCatalog` reports the effective
+   source and installable names.
 
 3. **MCP (`internal/agent/mcpapi/tools_bundle.go`).** `outpost_apply_bundle`
    (args `kubeconfig?`, `bundle`, `timeout_seconds?`, `poll_seconds?`,
    `crd_timeout_seconds?`, `allow_scale_to_zero?`, `no_rollback?`,
    `save_kubeconfig?`), `outpost_bundle_kubeconfig`,
-   `outpost_install_builtin`, and `outpost_bundle_catalog`. Thin wrappers;
+   `outpost_install_builtin`, `outpost_builtin_status`,
+   `outpost_uninstall_builtin`, and `outpost_bundle_catalog`. Thin wrappers;
    `APIError` maps to `CallToolResult.IsError`.
 
 4. **CLI (`cmd/outpost/bundle.go`).** `outpost bundle apply <file-or-dir>
    [--kubeconfig PATH] [--timeout N] [--poll N] [--crd-timeout N]
    [--allow-scale-to-zero] [--no-rollback] [--save-kubeconfig] [--offline]`
-   plus `outpost bundle install <name>`, `outpost bundle catalog`, and
+   plus `outpost bundle install <name>`, `outpost bundle status <name>`,
+   `outpost bundle uninstall <name>`, `outpost bundle catalog`, and
    `outpost bundle kubeconfig`. The default path is a thin MCP client;
    `--offline` calls the same admincore method in-process (no daemon). The
    standalone `script/dks-peer-bundle-apply.sh` remains the shell-only path.
@@ -241,8 +310,9 @@ guard, rolled-out readiness bar, and rollback accounting cannot drift:
    peer-hosted plane") documents the key + tools + flags; the embedded copy is
    kept byte-identical (`cmd/outpost/docs_test.go` enforces).
 
-Parity is tested on all three code surfaces: `admincore/bundle_test.go`
-(behaviour + venue guard), `mcpapi/bundle_test.go` (protocol roundtrip landing
-on `BundleApply`), and `cmd/outpost/bundle_test.go` (flag→params mapping, MCP
-arg-key lockstep, and the offline path reaching the same method with the same
-400 venue refusal).
+Parity is tested on all three code surfaces: `admincore/bundle_test.go` +
+`builtin_test.go` (behaviour + venue guard, including status/uninstall),
+`mcpapi/bundle_test.go` (protocol roundtrip landing on `BundleApply` /
+`BuiltinStatus` / `BuiltinUninstall`), and `cmd/outpost/bundle_test.go`
+(flag→params mapping, MCP arg-key lockstep, and the offline path reaching the
+same method with the same 400 venue refusal).

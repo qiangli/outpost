@@ -199,18 +199,10 @@ func failAndCleanup(ctx context.Context, opts Options, log Logf, res *Result, cr
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 	defer cancel()
 
-	// Reverse apply order: dependents before the prerequisites they
-	// depend on (a Namespace created first is deleted last).
-	for i := len(created) - 1; i >= 0; i-- {
-		obj := created[i]
-		if err := opts.Client.Delete(cctx, obj); err != nil {
-			res.CleanupFailed = append(res.CleanupFailed, fmt.Sprintf("%s (%v)", identity(obj), err))
-			log("cleanup FAILED %s: %v", identity(obj), err)
-			continue
-		}
-		res.RolledBack = append(res.RolledBack, identity(obj))
-		log("rolled back %s", identity(obj))
-	}
+	// Reverse apply order (dependents before the prerequisites they
+	// depend on) via the same deletion mechanics DeleteBundle uses for an
+	// operator-initiated uninstall, so the two teardown paths can't drift.
+	res.RolledBack, res.CleanupFailed = deleteReverse(cctx, opts.Client, reverseOf(created), log, "rolled back", "cleanup FAILED")
 
 	if len(res.CleanupFailed) > 0 {
 		return *res, fmt.Errorf("%w; rolled back %d of %d created object(s); NOT cleaned (remove by hand): %s",

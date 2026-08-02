@@ -194,10 +194,14 @@ func newBundleCLICore(t *testing.T) (*admincore.Server, string, string) {
 	if err := conf.SaveFile(configPath, &conf.FileConfig{}); err != nil {
 		t.Fatal(err)
 	}
+	// One shared fake cluster across every factory call in a test — a
+	// real kubeconfig-addressed cluster persists between an install and a
+	// later status/uninstall call, so the fake must too.
+	shared := &cliFakeBundleClient{store: map[string]*unstructured.Unstructured{}}
 	core, err := admincore.New(admincore.Deps{
 		ConfigPath: configPath,
 		BundleApplyClient: func(string) (bundleapply.ResourceClient, error) {
-			return &cliFakeBundleClient{store: map[string]*unstructured.Unstructured{}}, nil
+			return shared, nil
 		},
 	})
 	if err != nil {
@@ -246,6 +250,145 @@ func TestBundleApplyOffline_VenueGuard(t *testing.T) {
 		if err == nil {
 			t.Fatalf("cloudbox venue %q must be refused", kubeconfig)
 		}
+		var apiErr *admincore.APIError
+		if !errors.As(err, &apiErr) || apiErr.Status != 400 {
+			t.Fatalf("venue refusal should be the admincore 400, got %v", err)
+		}
+	}
+}
+
+func TestBuiltinStatusArgs_KeysMatchMCPTool(t *testing.T) {
+	p := admincore.BuiltinStatusParams{
+		Name: "headlamp", Catalog: "/tmp/appstore", Kubeconfig: "/tmp/peer.yaml", AllowScaleToZero: true,
+	}
+	args := builtinStatusArgs(p)
+	var keys []string
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	want := []string{"allow_scale_to_zero", "catalog", "kubeconfig", "name"}
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("arg keys drifted:\n got %v\nwant %v", keys, want)
+	}
+	minimal := builtinStatusArgs(admincore.BuiltinStatusParams{Name: "headlamp"})
+	if len(minimal) != 1 || minimal["name"] != "headlamp" {
+		t.Fatalf("minimal args should carry only the name, got %v", minimal)
+	}
+}
+
+func TestBuiltinUninstallArgs_KeysMatchMCPTool(t *testing.T) {
+	p := admincore.BuiltinUninstallParams{
+		Name: "headlamp", Catalog: "/tmp/appstore", Kubeconfig: "/tmp/peer.yaml", TimeoutSeconds: 30, PollSeconds: 2,
+	}
+	args := builtinUninstallArgs(p)
+	var keys []string
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	want := []string{"catalog", "kubeconfig", "name", "poll_seconds", "timeout_seconds"}
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("arg keys drifted:\n got %v\nwant %v", keys, want)
+	}
+	minimal := builtinUninstallArgs(admincore.BuiltinUninstallParams{Name: "headlamp"})
+	if len(minimal) != 1 || minimal["name"] != "headlamp" {
+		t.Fatalf("minimal args should carry only the name, got %v", minimal)
+	}
+}
+
+// The offline status/uninstall paths land on the SAME admincore methods
+// (BuiltinStatus / BuiltinUninstall) the MCP tools reach — status before
+// install reports not-installed, install makes it ready, uninstall
+// removes it, and status confirms it again.
+func TestBuiltinStatusAndUninstallOffline_RoundTrip(t *testing.T) {
+	core, peer, _ := newBundleCLICore(t)
+	catalog := filepath.Join(os.Getenv("HOME"), "appstore")
+	dir := filepath.Join(catalog, "builtin", "headlamp")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "install.yaml"), []byte("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: headlamp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var before bytes.Buffer
+	if err := builtinStatusOffline(context.Background(), core, admincore.BuiltinStatusParams{
+		Name: "headlamp", Catalog: catalog, Kubeconfig: peer,
+	}, &before); err != nil {
+		t.Fatalf("status before install: %v", err)
+	}
+	if !strings.Contains(before.String(), "installed=false") {
+		t.Fatalf("expected not-installed, got:\n%s", before.String())
+	}
+
+	if err := builtinInstallOffline(context.Background(), core, admincore.BuiltinInstallParams{
+		Name: "headlamp", Catalog: catalog, Kubeconfig: peer, TimeoutSeconds: 5,
+	}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	var after bytes.Buffer
+	if err := builtinStatusOffline(context.Background(), core, admincore.BuiltinStatusParams{
+		Name: "headlamp", Catalog: catalog, Kubeconfig: peer,
+	}, &after); err != nil {
+		t.Fatalf("status after install: %v", err)
+	}
+	if !strings.Contains(after.String(), "installed=true all_ready=true") {
+		t.Fatalf("expected installed+ready, got:\n%s", after.String())
+	}
+
+	var uninst bytes.Buffer
+	if err := builtinUninstallOffline(context.Background(), core, admincore.BuiltinUninstallParams{
+		Name: "headlamp", Catalog: catalog, Kubeconfig: peer,
+	}, &uninst); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	if !strings.Contains(uninst.String(), "uninstalled: headlamp (1 object(s) removed)") {
+		t.Fatalf("unexpected uninstall output:\n%s", uninst.String())
+	}
+
+	var final bytes.Buffer
+	if err := builtinStatusOffline(context.Background(), core, admincore.BuiltinStatusParams{
+		Name: "headlamp", Catalog: catalog, Kubeconfig: peer,
+	}, &final); err != nil {
+		t.Fatalf("status after uninstall: %v", err)
+	}
+	if !strings.Contains(final.String(), "installed=false") {
+		t.Fatalf("expected not-installed after uninstall, got:\n%s", final.String())
+	}
+}
+
+// The venue guard runs identically on the status/uninstall offline paths.
+func TestBuiltinStatusAndUninstallOffline_VenueGuard(t *testing.T) {
+	core, _, _ := newBundleCLICore(t)
+	home := os.Getenv("HOME")
+	cloudbox := filepath.Join(home, ".kube", "outpost.yaml")
+	catalog := filepath.Join(home, "appstore")
+	dir := filepath.Join(catalog, "builtin", "headlamp")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "install.yaml"), []byte("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: headlamp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := builtinStatusOffline(context.Background(), core, admincore.BuiltinStatusParams{
+		Name: "headlamp", Catalog: catalog, Kubeconfig: cloudbox,
+	}, &bytes.Buffer{}); err == nil {
+		t.Fatal("status against the cloudbox kubeconfig must be refused")
+	} else {
+		var apiErr *admincore.APIError
+		if !errors.As(err, &apiErr) || apiErr.Status != 400 {
+			t.Fatalf("venue refusal should be the admincore 400, got %v", err)
+		}
+	}
+
+	if err := builtinUninstallOffline(context.Background(), core, admincore.BuiltinUninstallParams{
+		Name: "headlamp", Catalog: catalog, Kubeconfig: cloudbox,
+	}, &bytes.Buffer{}); err == nil {
+		t.Fatal("uninstall against the cloudbox kubeconfig must be refused")
+	} else {
 		var apiErr *admincore.APIError
 		if !errors.As(err, &apiErr) || apiErr.Status != 400 {
 			t.Fatalf("venue refusal should be the admincore 400, got %v", err)

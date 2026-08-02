@@ -110,11 +110,15 @@ func newBundleTestMCP(t *testing.T, token string) (*httptest.Server, peerPaths) 
 	if err := conf.SaveFile(configPath, &conf.FileConfig{}); err != nil {
 		t.Fatal(err)
 	}
+	// One shared fake cluster across every factory call in this test
+	// session — a real kubeconfig-addressed cluster persists between an
+	// install and a later status/uninstall call, so the fake must too.
+	shared := &fakeBundleClient{store: map[string]*unstructured.Unstructured{}}
 	core, err := admincore.New(admincore.Deps{
 		ConfigPath: configPath,
 		Apps:       agent.NewAppRegistry(),
 		BundleApplyClient: func(string) (bundleapply.ResourceClient, error) {
-			return &fakeBundleClient{store: map[string]*unstructured.Unstructured{}}, nil
+			return shared, nil
 		},
 	})
 	if err != nil {
@@ -230,6 +234,123 @@ func TestBundleTools_ApplyOverProtocol(t *testing.T) {
 	body, isErr = callJSON(t, session, "outpost_bundle_catalog", map[string]any{})
 	if isErr || !strings.Contains(body, `"headlamp"`) {
 		t.Fatalf("catalog view: isErr=%v body=%s", isErr, body)
+	}
+}
+
+// Status and uninstall reuse the same admincore methods (BuiltinStatus /
+// BuiltinUninstall) as install — the round trip an operator actually
+// drives: not-installed, install, ready, uninstall, not-installed again.
+func TestBundleTools_BuiltinStatusAndUninstallOverProtocol(t *testing.T) {
+	session, paths := connectBundleMCP(t)
+
+	tools, err := session.ListTools(context.Background(), &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, tl := range tools.Tools {
+		found[tl.Name] = true
+	}
+	for _, want := range []string{"outpost_builtin_status", "outpost_uninstall_builtin"} {
+		if !found[want] {
+			t.Fatalf("tool %s not registered", want)
+		}
+	}
+
+	body, isErr := callJSON(t, session, "outpost_builtin_status", map[string]any{
+		"name": "headlamp", "catalog": paths.catalog, "kubeconfig": paths.peer,
+	})
+	if isErr {
+		t.Fatalf("status before install reported an error: %s", body)
+	}
+	var before struct {
+		Installed bool `json:"installed"`
+		AllReady  bool `json:"all_ready"`
+	}
+	if err := json.Unmarshal([]byte(body), &before); err != nil {
+		t.Fatalf("decode %q: %v", body, err)
+	}
+	if before.Installed || before.AllReady {
+		t.Fatalf("nothing installed yet, got %+v", before)
+	}
+
+	body, isErr = callJSON(t, session, "outpost_install_builtin", map[string]any{
+		"name": "headlamp", "catalog": paths.catalog, "kubeconfig": paths.peer, "timeout_seconds": 5,
+	})
+	if isErr {
+		t.Fatalf("install reported an error: %s", body)
+	}
+
+	body, isErr = callJSON(t, session, "outpost_builtin_status", map[string]any{
+		"name": "headlamp", "catalog": paths.catalog, "kubeconfig": paths.peer,
+	})
+	if isErr {
+		t.Fatalf("status after install reported an error: %s", body)
+	}
+	var after struct {
+		Installed bool `json:"installed"`
+		AllReady  bool `json:"all_ready"`
+	}
+	if err := json.Unmarshal([]byte(body), &after); err != nil {
+		t.Fatal(err)
+	}
+	if !after.Installed || !after.AllReady {
+		t.Fatalf("expected installed+ready after install, got %+v", after)
+	}
+
+	body, isErr = callJSON(t, session, "outpost_uninstall_builtin", map[string]any{
+		"name": "headlamp", "catalog": paths.catalog, "kubeconfig": paths.peer,
+	})
+	if isErr {
+		t.Fatalf("uninstall reported an error: %s", body)
+	}
+	var uninstalled struct {
+		OK      bool     `json:"ok"`
+		Deleted []string `json:"deleted"`
+	}
+	if err := json.Unmarshal([]byte(body), &uninstalled); err != nil {
+		t.Fatal(err)
+	}
+	if !uninstalled.OK || len(uninstalled.Deleted) != 1 {
+		t.Fatalf("unexpected uninstall result: %s", body)
+	}
+
+	body, isErr = callJSON(t, session, "outpost_builtin_status", map[string]any{
+		"name": "headlamp", "catalog": paths.catalog, "kubeconfig": paths.peer,
+	})
+	if isErr {
+		t.Fatalf("status after uninstall reported an error: %s", body)
+	}
+	var final struct {
+		Installed bool `json:"installed"`
+	}
+	if err := json.Unmarshal([]byte(body), &final); err != nil {
+		t.Fatal(err)
+	}
+	if final.Installed {
+		t.Fatalf("expected not-installed after uninstall, got %+v", final)
+	}
+}
+
+// Parity: the venue guard fires identically for the status/uninstall
+// tools — a missing or escaping built-in name fails closed with 400, and
+// the cloudbox kubeconfig is refused before any client is built.
+func TestBundleTools_BuiltinStatusAndUninstallFailClosed(t *testing.T) {
+	session, paths := connectBundleMCP(t)
+
+	for _, tool := range []string{"outpost_builtin_status", "outpost_uninstall_builtin"} {
+		body, isErr := callJSON(t, session, tool, map[string]any{
+			"name": "missing", "catalog": paths.catalog, "kubeconfig": paths.peer,
+		})
+		if !isErr {
+			t.Fatalf("%s: unknown built-in must fail closed, got %s", tool, body)
+		}
+		body, isErr = callJSON(t, session, tool, map[string]any{
+			"name": "headlamp", "catalog": paths.catalog, "kubeconfig": paths.cloudbox,
+		})
+		if !isErr || !strings.Contains(body, "cloudbox") {
+			t.Fatalf("%s: cloudbox venue must be refused, got isErr=%v body=%s", tool, isErr, body)
+		}
 	}
 }
 

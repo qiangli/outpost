@@ -715,6 +715,8 @@ surfaces converge on `admincore.BundleApply`; the standalone
 | Apply a bundle | (operation, not persisted) | `bundle apply <file-or-dir>` | — | `outpost_apply_bundle` |
 | Default OSS appstore catalog | `cluster.bundle_catalog` | `bundle install <name> --catalog … --save-catalog` | — | `outpost_install_builtin` (`catalog` + `save_catalog`) |
 | Install an OSS built-in | (operation, not persisted) | `bundle install <name>` | — | `outpost_install_builtin` |
+| Check an OSS built-in's live state | (read-only) | `bundle status <name>` | — | `outpost_builtin_status` |
+| Remove an OSS built-in | (operation, not persisted) | `bundle uninstall <name>` | — | `outpost_uninstall_builtin` |
 | List the effective catalog | (read-only) | `bundle catalog` | — | `outpost_bundle_catalog` |
 
 Save = **live**. `cluster.bundle_kubeconfig` is read on each apply; changing
@@ -756,8 +758,22 @@ Behaviours worth knowing:
   `gpu-device-plugin`, and other appstore built-ins.
 - **`--save-catalog` persists only after a successful install** and requires an
   explicit `--catalog`.
-- `--offline` runs the apply in the CLI process against the on-disk
-  `agent.json` — no running daemon required.
+- **`bundle status <name>` is read-only** — it applies nothing. It resolves
+  the same `builtin/<name>/install.yaml` `bundle install` would apply and
+  reports each object's live state (`exists`, `ready`, a short reason) using
+  the identical readiness evidence the apply's rolled-out wait uses, so
+  `installed`/`all_ready` mean exactly what a successful install would have
+  confirmed. `--allow-scale-to-zero` mirrors the apply flag.
+- **`bundle uninstall <name>` resolves the same manifest `bundle install`
+  applies** and removes every object in reverse apply order — one delete
+  failure does not stop the rest, and is reported precisely as an object the
+  operator must remove by hand. It reuses the identical deletion mechanics an
+  apply failure's own rollback uses, and the same cloudbox-kubeconfig venue
+  guard. `--timeout` optionally bounds a wait for the deleted objects to
+  actually vanish (finalizers, garbage collection); 0 (default) skips the
+  wait.
+- `--offline` runs the apply/status/uninstall in the CLI process against the
+  on-disk `agent.json` — no running daemon required.
 
 ### Networking (boot-time-bound)
 

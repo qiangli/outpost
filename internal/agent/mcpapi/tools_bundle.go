@@ -86,6 +86,52 @@ type bundleCatalogIn struct {
 	Catalog string `json:"catalog,omitempty" jsonschema:"explicit OSS appstore root; omit to use cluster.bundle_catalog or umbrella-checkout discovery"`
 }
 
+type statusBuiltinIn struct {
+	Name             string `json:"name" jsonschema:"operator-facing OSS appstore built-in name, for example core-storage, coredns, headlamp, or gpu-device-plugin"`
+	Catalog          string `json:"catalog,omitempty" jsonschema:"path to an OSS dhnt/appstore checkout or fetched/versioned appstore tree; omit to use cluster.bundle_catalog or umbrella-checkout discovery"`
+	Kubeconfig       string `json:"kubeconfig,omitempty" jsonschema:"kubeconfig path of the PEER control plane; the cloudbox kubeconfig is refused"`
+	AllowScaleToZero bool   `json:"allow_scale_to_zero,omitempty" jsonschema:"treat a spec.replicas=0 workload as ready (scaled down on purpose) instead of not-ready"`
+}
+
+type bundleObjectStatusOut struct {
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name"`
+	Exists    bool   `json:"exists"`
+	Ready     bool   `json:"ready"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+type statusBuiltinOut struct {
+	OK         bool                    `json:"ok"`
+	Name       string                  `json:"name"`
+	Catalog    string                  `json:"catalog"`
+	Manifest   string                  `json:"manifest"`
+	Kubeconfig string                  `json:"kubeconfig"`
+	Installed  bool                    `json:"installed"`
+	AllReady   bool                    `json:"all_ready"`
+	Objects    []bundleObjectStatusOut `json:"objects,omitempty"`
+}
+
+type uninstallBuiltinIn struct {
+	Name           string `json:"name" jsonschema:"operator-facing OSS appstore built-in name to remove"`
+	Catalog        string `json:"catalog,omitempty" jsonschema:"path to an OSS dhnt/appstore checkout or fetched/versioned appstore tree; omit to use cluster.bundle_catalog or umbrella-checkout discovery"`
+	Kubeconfig     string `json:"kubeconfig,omitempty" jsonschema:"kubeconfig path of the PEER control plane; the cloudbox kubeconfig is refused"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"bounded wait for the deleted objects to actually vanish; 0 skips the wait"`
+	PollSeconds    int    `json:"poll_seconds,omitempty" jsonschema:"gone-check poll interval; default 2"`
+}
+
+type uninstallBuiltinOut struct {
+	OK         bool     `json:"ok"`
+	Name       string   `json:"name"`
+	Catalog    string   `json:"catalog"`
+	Manifest   string   `json:"manifest"`
+	Kubeconfig string   `json:"kubeconfig"`
+	Deleted    []string `json:"deleted,omitempty"`
+	Failed     []string `json:"failed,omitempty"`
+	Gone       int      `json:"gone,omitempty"`
+}
+
 func (s *Server) registerBundleTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "outpost_install_builtin",
@@ -164,5 +210,48 @@ func (s *Server) registerBundleTools() {
 			return apiErrResult[bundleKubeconfigOut](err)
 		}
 		return nil, bundleKubeconfigOut{OK: view.OK, Kubeconfig: view.Kubeconfig, Default: view.Default}, nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "outpost_builtin_status",
+		Description: "Report the live install state of an operator-named OSS appstore built-in on a peer-hosted DKS plane — read-only, applies nothing. " +
+			"Resolves builtin/<name>/install.yaml exactly like outpost_install_builtin and reuses the identical readiness evidence, so " +
+			"installed=true/all_ready=true means exactly what a successful outpost_install_builtin would have confirmed.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in statusBuiltinIn) (*mcp.CallToolResult, statusBuiltinOut, error) {
+		res, err := s.core.BuiltinStatus(ctx, admincore.BuiltinStatusParams{
+			Name: in.Name, Catalog: in.Catalog, Kubeconfig: in.Kubeconfig, AllowScaleToZero: in.AllowScaleToZero,
+		})
+		if err != nil {
+			return apiErrResult[statusBuiltinOut](err)
+		}
+		out := statusBuiltinOut{
+			OK: res.OK, Name: res.Name, Catalog: res.Catalog, Manifest: res.Manifest,
+			Kubeconfig: res.Kubeconfig, Installed: res.Installed, AllReady: res.AllReady,
+		}
+		for _, o := range res.Objects {
+			out.Objects = append(out.Objects, bundleObjectStatusOut{
+				Kind: o.Kind, Namespace: o.Namespace, Name: o.Name, Exists: o.Exists, Ready: o.Ready, Reason: o.Reason,
+			})
+		}
+		return nil, out, nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "outpost_uninstall_builtin",
+		Description: "Remove an operator-named OSS appstore built-in from a peer-hosted DKS plane. " +
+			"Resolves only builtin/<name>/install.yaml — the identical resolution outpost_install_builtin uses — and reuses the same " +
+			"reverse-order, best-effort deletion mechanics an apply failure's rollback uses, and the same cloudbox-kubeconfig venue guard.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in uninstallBuiltinIn) (*mcp.CallToolResult, uninstallBuiltinOut, error) {
+		res, err := s.core.BuiltinUninstall(ctx, admincore.BuiltinUninstallParams{
+			Name: in.Name, Catalog: in.Catalog, Kubeconfig: in.Kubeconfig,
+			TimeoutSeconds: in.TimeoutSeconds, PollSeconds: in.PollSeconds,
+		})
+		if err != nil {
+			return apiErrResult[uninstallBuiltinOut](err)
+		}
+		return nil, uninstallBuiltinOut{
+			OK: res.OK, Name: res.Name, Catalog: res.Catalog, Manifest: res.Manifest,
+			Kubeconfig: res.Kubeconfig, Deleted: res.Deleted, Failed: res.Failed, Gone: res.Gone,
+		}, nil
 	})
 }

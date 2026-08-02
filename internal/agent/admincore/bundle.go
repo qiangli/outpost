@@ -104,6 +104,52 @@ func (s *Server) BundleKubeconfig() (BundleKubeconfigView, error) {
 	return out, nil
 }
 
+// resolveBundleVenue resolves the kubeconfig venue (explicit param >
+// persisted cluster.bundle_kubeconfig > conventional peer path),
+// enforces the cloudbox venue guard, and builds a ResourceClient through
+// the injected (or default dynamic) factory. Shared by BundleApply,
+// BundleStatus, and BundleUninstall so the guard, the resolution order,
+// and the safe path canonicalization can never drift between the three
+// operations that touch a peer cluster.
+func (s *Server) resolveBundleVenue(explicit string) (canonical string, client bundleapply.ResourceClient, err error) {
+	s.mu.Lock()
+	fc, err := s.loadConfig()
+	if err != nil {
+		s.mu.Unlock()
+		return "", nil, err
+	}
+	raw := strings.TrimSpace(explicit)
+	if raw == "" && fc.Cluster != nil {
+		raw = strings.TrimSpace(fc.Cluster.BundleKubeconfig)
+	}
+	if raw == "" {
+		raw = bundleapply.PeerControlPlaneKubeconfig
+	}
+	s.mu.Unlock()
+
+	// Venue guard — IN THE GO API, before any client is built, so an
+	// injected test client can't bypass it either. Canonicalizes the
+	// path (tilde, relative, .., symlinks) and refuses the cloudbox
+	// kubeconfig; a path that cannot be canonicalized fails.
+	canonical, err = bundleapply.ResolveVenue(raw)
+	if err != nil {
+		if errors.Is(err, bundleapply.ErrCloudboxVenue) {
+			return "", nil, badRequest("%s", err.Error())
+		}
+		return "", nil, badRequest("kubeconfig %q: %s", raw, err.Error())
+	}
+
+	factory := s.deps.BundleApplyClient
+	if factory == nil {
+		factory = bundleapply.NewDynamicClient
+	}
+	client, err = factory(canonical)
+	if err != nil {
+		return "", nil, internalErr("%s", err.Error())
+	}
+	return canonical, client, nil
+}
+
 // BundleApply loads a bundle, enforces the kubeconfig venue guard, applies
 // the bundle in prerequisite order with the CRD Established+discovery
 // gate, and waits — bounded — for every workload to be ROLLED OUT (updated
@@ -121,47 +167,14 @@ func (s *Server) BundleApply(ctx context.Context, p BundleApplyParams) (BundleAp
 		return BundleApplyResult{}, badRequest("save_kubeconfig needs an explicit kubeconfig to save")
 	}
 
-	// Resolve the venue source under the config mutex: explicit param >
-	// persisted cluster.bundle_kubeconfig > conventional peer path.
-	s.mu.Lock()
-	fc, err := s.loadConfig()
+	canonical, client, err := s.resolveBundleVenue(p.Kubeconfig)
 	if err != nil {
-		s.mu.Unlock()
 		return BundleApplyResult{}, err
-	}
-	raw := strings.TrimSpace(p.Kubeconfig)
-	if raw == "" && fc.Cluster != nil {
-		raw = strings.TrimSpace(fc.Cluster.BundleKubeconfig)
-	}
-	if raw == "" {
-		raw = bundleapply.PeerControlPlaneKubeconfig
-	}
-	s.mu.Unlock()
-
-	// Venue guard — IN THE GO API, before any client is built, so an
-	// injected test client can't bypass it either. Canonicalizes the
-	// path (tilde, relative, .., symlinks) and refuses the cloudbox
-	// kubeconfig; a path that cannot be canonicalized fails.
-	canonical, err := bundleapply.ResolveVenue(raw)
-	if err != nil {
-		if errors.Is(err, bundleapply.ErrCloudboxVenue) {
-			return BundleApplyResult{}, badRequest("%s", err.Error())
-		}
-		return BundleApplyResult{}, badRequest("kubeconfig %q: %s", raw, err.Error())
 	}
 
 	b, err := bundleapply.LoadBundle(p.Bundle)
 	if err != nil {
 		return BundleApplyResult{}, badRequest("%s", err.Error())
-	}
-
-	factory := s.deps.BundleApplyClient
-	if factory == nil {
-		factory = bundleapply.NewDynamicClient
-	}
-	client, err := factory(canonical)
-	if err != nil {
-		return BundleApplyResult{}, internalErr("%s", err.Error())
 	}
 
 	timeout := time.Duration(p.TimeoutSeconds) * time.Second
@@ -211,6 +224,144 @@ func (s *Server) BundleApply(ctx context.Context, p BundleApplyParams) (BundleAp
 			return out, internalErr("bundle applied, but saving bundle_kubeconfig failed: %s", err.Error())
 		}
 		out.KubeconfigSaved = true
+	}
+	return out, nil
+}
+
+// BundleStatusParams is one status request — read-only, applies nothing.
+type BundleStatusParams struct {
+	// Kubeconfig follows the same resolution and venue guard as
+	// BundleApply.
+	Kubeconfig string `json:"kubeconfig,omitempty"`
+	// Bundle is the manifest file or directory to check (required).
+	Bundle string `json:"bundle"`
+	// AllowScaleToZero mirrors BundleApply's opt-in: without it a
+	// spec.replicas: 0 workload reports not-ready with the same terminal
+	// reason an apply would have failed on, instead of "scaled to zero".
+	AllowScaleToZero bool `json:"allow_scale_to_zero,omitempty"`
+}
+
+// BundleObjectStatus is one bundle object's live state.
+type BundleObjectStatus struct {
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name"`
+	Exists    bool   `json:"exists"`
+	Ready     bool   `json:"ready"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// BundleStatusResult is the bundle-wide status snapshot.
+type BundleStatusResult struct {
+	OK bool `json:"ok"`
+	// Kubeconfig is the CANONICAL venue the check ran against.
+	Kubeconfig string `json:"kubeconfig"`
+	// Installed is true only when every object in the bundle exists.
+	Installed bool `json:"installed"`
+	// AllReady is true only when every object exists AND reports Ready —
+	// the exact bar BundleApply's readiness wait confirms.
+	AllReady bool                 `json:"all_ready"`
+	Objects  []BundleObjectStatus `json:"objects"`
+}
+
+// BundleStatus reports the live state of every object in a bundle
+// without applying or deleting anything. It reuses the same venue guard
+// and safe path resolution as BundleApply, and the same readiness
+// evidence (bundleapply.StatusBundle calls the identical evalReadiness
+// logic ApplyBundle's wait uses) — "installed and ready" here means
+// exactly what a successful BundleApply would have confirmed.
+//
+// Side-effect class: Live, read-only. Nothing is applied, deleted, or
+// persisted.
+func (s *Server) BundleStatus(ctx context.Context, p BundleStatusParams) (BundleStatusResult, error) {
+	if strings.TrimSpace(p.Bundle) == "" {
+		return BundleStatusResult{}, badRequest("bundle path required (a manifest file or a directory of manifests)")
+	}
+	canonical, client, err := s.resolveBundleVenue(p.Kubeconfig)
+	if err != nil {
+		return BundleStatusResult{}, err
+	}
+	b, err := bundleapply.LoadBundle(p.Bundle)
+	if err != nil {
+		return BundleStatusResult{}, badRequest("%s", err.Error())
+	}
+	res, err := bundleapply.StatusBundle(ctx, b, bundleapply.StatusOptions{
+		Client: client, AllowScaleToZero: p.AllowScaleToZero,
+	})
+	if err != nil {
+		return BundleStatusResult{}, internalErr("%s", err.Error())
+	}
+	out := BundleStatusResult{OK: true, Kubeconfig: canonical, Installed: res.Installed, AllReady: res.AllReady}
+	for _, o := range res.Objects {
+		out.Objects = append(out.Objects, BundleObjectStatus{
+			Kind: o.Kind, Namespace: o.Namespace, Name: o.Name, Exists: o.Exists, Ready: o.Ready, Reason: o.Reason,
+		})
+	}
+	return out, nil
+}
+
+// BundleUninstallParams is one uninstall request.
+type BundleUninstallParams struct {
+	// Kubeconfig follows the same resolution and venue guard as
+	// BundleApply.
+	Kubeconfig string `json:"kubeconfig,omitempty"`
+	// Bundle is the manifest file or directory to remove (required).
+	Bundle string `json:"bundle"`
+	// TimeoutSeconds bounds an optional wait for the deleted objects to
+	// actually vanish. 0 skips the wait (delete-and-return).
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+	// PollSeconds is the gone-check re-poll interval. Default 2.
+	PollSeconds int `json:"poll_seconds,omitempty"`
+}
+
+// BundleUninstallResult reports one uninstall run.
+type BundleUninstallResult struct {
+	OK bool `json:"ok"`
+	// Kubeconfig is the CANONICAL venue the uninstall ran against.
+	Kubeconfig string `json:"kubeconfig"`
+	// Deleted lists the objects (kind ns/name) this run removed, in
+	// reverse apply order.
+	Deleted []string `json:"deleted,omitempty"`
+	// Failed lists objects that could NOT be deleted — left behind for
+	// the operator to remove by hand.
+	Failed []string `json:"failed,omitempty"`
+	// Gone is the count confirmed absent after the wait (only meaningful
+	// when TimeoutSeconds > 0).
+	Gone int `json:"gone,omitempty"`
+}
+
+// BundleUninstall removes every object in a bundle from a peer-hosted
+// control plane. It reuses BundleApply's venue guard and safe path
+// resolution (resolveBundleVenue) and bundleapply's deletion mechanics —
+// the SAME reverse-order, best-effort delete loop ApplyBundle's own
+// failure-rollback path uses — so an operator-initiated uninstall can
+// never behave differently from an apply-triggered rollback of the same
+// objects.
+//
+// Side-effect class: Live. No restart is ever scheduled.
+func (s *Server) BundleUninstall(ctx context.Context, p BundleUninstallParams) (BundleUninstallResult, error) {
+	if strings.TrimSpace(p.Bundle) == "" {
+		return BundleUninstallResult{}, badRequest("bundle path required (a manifest file or a directory of manifests)")
+	}
+	canonical, client, err := s.resolveBundleVenue(p.Kubeconfig)
+	if err != nil {
+		return BundleUninstallResult{}, err
+	}
+	b, err := bundleapply.LoadBundle(p.Bundle)
+	if err != nil {
+		return BundleUninstallResult{}, badRequest("%s", err.Error())
+	}
+
+	timeout := time.Duration(p.TimeoutSeconds) * time.Second
+	poll := time.Duration(p.PollSeconds) * time.Second
+	res, delErr := bundleapply.DeleteBundle(ctx, b, bundleapply.DeleteOptions{
+		Client: client, Timeout: timeout, PollInterval: poll,
+	})
+	out := BundleUninstallResult{OK: delErr == nil, Kubeconfig: canonical, Deleted: res.Deleted, Failed: res.Failed, Gone: res.Gone}
+	if delErr != nil {
+		// The error already carries the deletion accounting; surface it
+		// as-is, same convention as BundleApply.
+		return out, delErr
 	}
 	return out, nil
 }

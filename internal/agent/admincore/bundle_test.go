@@ -297,6 +297,96 @@ func TestBundleApply_SaveKubeconfig(t *testing.T) {
 	}
 }
 
+// BundleStatus reuses the same venue guard as BundleApply — the cloudbox
+// kubeconfig is refused before the client factory is ever consulted.
+func TestBundleStatus_VenueGuardRefusesCloudbox(t *testing.T) {
+	fix := newBundleFixture(t)
+	_, err := fix.srv.BundleStatus(context.Background(), BundleStatusParams{
+		Kubeconfig: fix.cloudbox, Bundle: fix.bundleDir,
+	})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 400 || !strings.Contains(apiErr.Msg, "cloudbox") {
+		t.Fatalf("cloudbox venue must be refused with a 400 naming the conflation, got %v", err)
+	}
+}
+
+// Before anything is applied, status reports not-installed for every
+// object — a pure read, nothing is applied or waited on.
+func TestBundleStatus_ReportsNotInstalledBeforeApply(t *testing.T) {
+	fix := newBundleFixture(t)
+	res, err := fix.srv.BundleStatus(context.Background(), BundleStatusParams{Bundle: fix.bundleDir, Kubeconfig: fix.peer})
+	if err != nil {
+		t.Fatalf("BundleStatus: %v", err)
+	}
+	if res.Installed || res.AllReady {
+		t.Fatalf("nothing applied yet must not report installed/ready: %+v", res)
+	}
+	if len(res.Objects) != 2 {
+		t.Fatalf("expected 2 object statuses, got %+v", res.Objects)
+	}
+	if res.Kubeconfig != fix.peer {
+		t.Fatalf("status must report the canonical venue, got %q", res.Kubeconfig)
+	}
+}
+
+// After a successful apply, status reflects the identical readiness bar
+// BundleApply itself confirmed.
+func TestBundleStatus_ReflectsAppliedState(t *testing.T) {
+	fix := newBundleFixture(t)
+	if _, err := fix.srv.BundleApply(context.Background(), BundleApplyParams{
+		Bundle: fix.bundleDir, Kubeconfig: fix.peer, TimeoutSeconds: 5,
+	}); err != nil {
+		t.Fatalf("seed apply: %v", err)
+	}
+	res, err := fix.srv.BundleStatus(context.Background(), BundleStatusParams{Bundle: fix.bundleDir, Kubeconfig: fix.peer})
+	if err != nil {
+		t.Fatalf("BundleStatus: %v", err)
+	}
+	if !res.Installed || !res.AllReady {
+		t.Fatalf("applied bundle must report installed and ready: %+v", res)
+	}
+}
+
+// BundleUninstall reuses the same venue guard as BundleApply.
+func TestBundleUninstall_VenueGuardRefusesCloudbox(t *testing.T) {
+	fix := newBundleFixture(t)
+	_, err := fix.srv.BundleUninstall(context.Background(), BundleUninstallParams{
+		Kubeconfig: fix.cloudbox, Bundle: fix.bundleDir,
+	})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 400 || !strings.Contains(apiErr.Msg, "cloudbox") {
+		t.Fatalf("cloudbox venue must be refused with a 400 naming the conflation, got %v", err)
+	}
+}
+
+// Uninstall removes exactly what apply created, and a subsequent status
+// call confirms nothing is left installed — the round trip an operator
+// actually cares about.
+func TestBundleUninstall_RemovesAppliedObjects(t *testing.T) {
+	fix := newBundleFixture(t)
+	if _, err := fix.srv.BundleApply(context.Background(), BundleApplyParams{
+		Bundle: fix.bundleDir, Kubeconfig: fix.peer, TimeoutSeconds: 5,
+	}); err != nil {
+		t.Fatalf("seed apply: %v", err)
+	}
+
+	res, err := fix.srv.BundleUninstall(context.Background(), BundleUninstallParams{Bundle: fix.bundleDir, Kubeconfig: fix.peer})
+	if err != nil {
+		t.Fatalf("BundleUninstall: %v", err)
+	}
+	if !res.OK || len(res.Deleted) != 2 || res.Kubeconfig != fix.peer {
+		t.Fatalf("unexpected uninstall result: %+v", res)
+	}
+
+	status, err := fix.srv.BundleStatus(context.Background(), BundleStatusParams{Bundle: fix.bundleDir, Kubeconfig: fix.peer})
+	if err != nil {
+		t.Fatalf("BundleStatus after uninstall: %v", err)
+	}
+	if status.Installed {
+		t.Fatalf("uninstalled bundle must not report installed: %+v", status)
+	}
+}
+
 // The transactional accounting survives the surface boundary: a failed
 // apply's error text reports what was rolled back.
 func TestBundleApply_FailureCarriesRollbackAccounting(t *testing.T) {
