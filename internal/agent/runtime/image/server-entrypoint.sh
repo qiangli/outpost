@@ -129,6 +129,7 @@ EOF
 set -- server \
     --disable-agent \
     --disable=traefik,servicelb \
+    --write-kubeconfig=/etc/rancher/k3s/k3s-internal.yaml \
     --write-kubeconfig-mode=644 \
     --https-listen-port="${OUTPOST_API_PORT}" \
     --tls-san=127.0.0.1 \
@@ -175,9 +176,10 @@ if listening "${OUTPOST_API_PORT}"; then
     # publishes it on 16443 to avoid colliding with a worker's local visitor.
     # Export a host-usable kubeconfig without changing any internal component
     # kubeconfig.
-    if [ "${OUTPOST_HOST_API_PORT}" != "${OUTPOST_API_PORT}" ]; then
-        sed -i "s#server: https://127.0.0.1:${OUTPOST_API_PORT}#server: https://127.0.0.1:${OUTPOST_HOST_API_PORT}#" /etc/rancher/k3s/k3s.yaml
-    fi
+    sed "s#server: https://127.0.0.1:${OUTPOST_API_PORT}#server: https://127.0.0.1:${OUTPOST_HOST_API_PORT}#" \
+        /etc/rancher/k3s/k3s-internal.yaml > /etc/rancher/k3s/k3s.yaml.new
+    chmod 0644 /etc/rancher/k3s/k3s.yaml.new
+    mv -f /etc/rancher/k3s/k3s.yaml.new /etc/rancher/k3s/k3s.yaml
     log "publishing apiserver 127.0.0.1:${OUTPOST_API_PORT} as stcp k3s-apiserver"
     frpc -c /tmp/frpc-publish.toml &
 else
