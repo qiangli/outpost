@@ -40,6 +40,17 @@ listening() { socat -u /dev/null "TCP:127.0.0.1:$1,connect-timeout=1" 2>/dev/nul
 : "${OUTPOST_TUNNEL_PORT:=7000}"
 : "${OUTPOST_API_PORT:=6443}"
 
+# k3s needs a non-loopback advertise address for the default kubernetes
+# Service endpoint. The address is internal to this control-plane network
+# namespace; peer workers continue to use their local STCP visitor URL.
+ADVERTISE_ADDR="$(hostname -i | awk '{print $1}')"
+case "$ADVERTISE_ADDR" in
+    ""|127.*|::1)
+        log "FATAL: no non-loopback container address for k3s advertise address"
+        exit 1
+        ;;
+esac
+
 # ---------------------------------------------------------------- frps ----
 # bindAddr 0.0.0.0 so workers reach it through the container's published
 # port. Its proxies' remotePorts likewise bind 0.0.0.0, which is what makes
@@ -120,7 +131,8 @@ set -- server \
     --write-kubeconfig-mode=644 \
     --https-listen-port="${OUTPOST_API_PORT}" \
     --tls-san=127.0.0.1 \
-    --tls-san=localhost
+    --tls-san=localhost \
+    --advertise-address="$ADVERTISE_ADDR"
 [ -n "${OUTPOST_TLS_SAN:-}" ] && for s in $(echo "${OUTPOST_TLS_SAN}" | tr ',' ' '); do
     set -- "$@" --tls-san="$s"
 done

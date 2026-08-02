@@ -114,4 +114,7 @@ func TestServerEntrypointDoesNotAdvertiseLoopback(t *testing.T) {
 	if !strings.Contains(script, "--tls-san=127.0.0.1") {
 		t.Fatal("the host-published loopback apiserver still needs a loopback TLS SAN")
 	}
+	if !strings.Contains(script, `--advertise-address="$ADVERTISE_ADDR"`) {
+		t.Fatal("k3s must advertise its non-loopback container address")
+	}
 }
