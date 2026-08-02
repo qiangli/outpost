@@ -92,6 +92,18 @@ func (a *Access) Snapshot() []string {
 	return out
 }
 
+// PeerNamespacePolicy builds the FAIL-CLOSED namespace admission gate a
+// peer-joined virtual-kubelet node uses. Unlike the cloudbox plane — where the
+// allow-set is fetched from cloudbox (FetchAccess) — a peer plane has no such
+// authority, so the operator-declared list IS the policy. The returned Access
+// is ALWAYS non-nil (even for an empty or nil list), which is the whole point:
+// an empty peer policy denies every pod rather than falling through to the nil
+// "no check / allow all" behavior of a bare *Access. That closes the gap where
+// a peer node with no cloudbox pairing accepted workloads from any namespace.
+func PeerNamespacePolicy(namespaces []string) *Access {
+	return NewAccess(namespaces...)
+}
+
 // NamespaceForEmail computes the per-user workload namespace name for
 // an email — matches cloudbox/internal/cluster.userNamespace exactly.
 // Format: "user-<12-hex-chars>" where the hex is the first 6 bytes

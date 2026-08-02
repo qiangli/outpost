@@ -259,6 +259,14 @@ func (s *Server) LeavePeerPlane() (PeerPlaneResult, error) {
 	fc.Cluster.JoinToken = ""
 	fc.Cluster.NodeToken = ""
 	fc.Cluster.STCPSecret = ""
+	// The peer-only vk credential + admission policy also describe the plane
+	// being left; a stale client cert or namespace allow-list has no meaning on
+	// the cloudbox plane (whose credentials are re-fetched at boot). CA/Token
+	// are intentionally left alone — they are the shared fields the cloudbox
+	// re-fetch overwrites.
+	fc.Cluster.ClientCert = nil
+	fc.Cluster.ClientKey = nil
+	fc.Cluster.AllowedNamespaces = nil
 
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		return PeerPlaneResult{}, internalErr("%s", err.Error())

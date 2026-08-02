@@ -150,7 +150,42 @@ the client-certificate credentials k3s issues, as distinct from a
 cloudbox-minted bearer token. So this is runtime *selection*, not new runtime
 support — before these flags existed, reaching a vk Node on a peer plane meant
 hand-editing `agent.json`. It is what lets `VENUE=vk-podman` and vk-native
-workloads run on a peer plane.
+workloads run on a peer plane, and the real k3s agent and any selected virtual
+backends register concurrently as independent Nodes owned by this host.
+
+#### vk credentials and namespace policy on a peer plane
+
+The persistent daemon runs the peer vk path **without any cloudbox call**. It
+does not fetch a kubeconfig or a namespace allow-set from cloudbox and does not
+start the cloudbox token/access refreshers. Instead it derives everything
+locally:
+
+- **Peer CA identity.** The node trusts `cluster.ca` (the peer plane's CA
+  bundle, PEM) — not cloudbox's CA and not the system roots. Supply it in
+  `agent.json` when joining a peer plane whose apiserver is self-signed (the
+  k3s default).
+- **Local credential.** The vk node authenticates with a locally held
+  credential: `cluster.client_cert` + `cluster.client_key` (the client-cert
+  form k3s issues, which wins when present) or `cluster.token` (a k3s bearer
+  credential). It is materialized to `~/.cache/outpost/cluster-peer/` at mode
+  `0600`. A bearer token is written as a file so client-go re-reads a rotation
+  live; rotating it (save a new `cluster.token`) is picked up within a minute
+  with no cloudbox involvement. A client-cert rotation takes effect on the next
+  restart.
+- **Apiserver address.** The node dials `https://127.0.0.1:<k8s_api_port>`
+  (default 6443) — the same loopback visitor the k3s agent runtime binds — never
+  a cloudbox public URL.
+- **Fail-closed namespace admission.** `cluster.allowed_namespaces` is the
+  peer-local admission policy, enforced fail-closed: a pod whose namespace is
+  not listed is refused. An **empty** list denies every pod, on purpose — a peer
+  plane has no cloudbox authority to consult, so the operator must declare
+  policy rather than have the node silently accept every workload. (On the
+  cloudbox plane the allow-set is still fetched and refreshed from cloudbox.)
+
+`outpost cluster leave` clears these peer-only fields
+(`client_cert`/`client_key`/`allowed_namespaces`) along with the other peer
+membership fields; `cluster.ca` and `cluster.token` are left for the cloudbox
+re-fetch to overwrite.
 
 The two flags spell `cluster.runtimes.agent` and `cluster.runtimes.virtual`,
 the same fields `outpost builtins set --cluster-agent/--cluster-virtual`

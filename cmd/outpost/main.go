@@ -74,6 +74,7 @@ import (
 	"github.com/qiangli/outpost/internal/scheduler"
 	"github.com/qiangli/outpost/internal/telemetry"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -2751,66 +2752,147 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 		}
 	}
 
-	// Bootstrap: if we have an outpost access_token and either no
-	// persisted credentials yet or an already-expired ones, ask
-	// cloudbox to mint a fresh kubeconfig and persist it. This is the
-	// "operator flipped the toggle, never pasted anything" path.
-	//
-	// A fetch failure here is non-fatal when we already have cached
-	// credentials (even expired ones — the refresher will retry on
-	// the loop), and fatal otherwise (there's nothing to dial the
-	// apiserver with).
-	cloudboxBase := cloudboxHTTPBase(fc)
-	if shouldFetchKubeconfig(fc) && fc.AccessToken != "" && cloudboxBase != "" {
-		slog.Info("cluster: fetching shared virtual-node kubeconfig", "host", hostName, "cloudbox", cloudboxBase)
-		fetched, err := vknode.FetchKubeconfig(ctx, cloudboxBase, fc.AccessToken, hostName)
-		if err != nil {
-			if fc.Cluster == nil || fc.Cluster.Token == "" {
-				return fmt.Errorf("cluster virtual runtimes: fetch kubeconfig: %w", err)
-			}
-			slog.Warn("cluster virtual runtimes: fetch failed; falling back to cached credentials",
-				"err", err, "host", hostName)
-		} else {
-			persistClusterCredential(fc, cfgPath, fetched)
-		}
-	}
-
 	cc := fc.Cluster
-	if cc == nil || cc.APIURL == "" || cc.Token == "" {
-		return errors.New("cluster virtual runtimes: no usable credentials")
+	if cc == nil {
+		return errors.New("cluster virtual runtimes: no Cluster config")
 	}
+	cloudboxBase := cloudboxHTTPBase(fc)
+	peerJoin := cc.JoinsPeerPlane()
 
-	// Write the live bearer token to a file so client-go's transport
-	// re-reads it across rotations. Path stays under the agent's
-	// cache dir (mode 0600 — same locality as the pidfile + logs).
-	tokenFile, err := vknode.DefaultTokenFilePath()
-	if err != nil {
-		return fmt.Errorf("cluster mode: token-file path: %w", err)
-	}
-	if err := vknode.WriteTokenFile(tokenFile, cc.Token); err != nil {
-		return fmt.Errorf("cluster mode: write token-file: %w", err)
-	}
+	var (
+		kubeCfg       *rest.Config
+		access        *vknode.Access
+		tokenFile     string // cloudbox path only
+		peerRefresher *vknode.PeerCredentialRefresher
+	)
 
-	kubeCfg, err := vknode.ConfigFromCluster(cc.APIURL, tokenFile, cc.CA)
-	if err != nil {
-		return err
-	}
-
-	// Namespace-access gate. Cloudbox has already authenticated the
-	// opaque host token and owns the namespace mapping, so fetch the
-	// authoritative owner + sharee allow-set instead of decoding claims
-	// from the token locally. A paired virtual node must not start without
-	// this gate.
-	var access *vknode.Access
-	if fc.AccessToken != "" {
-		resp, err := vknode.FetchAccess(ctx, cloudboxBase, fc.AccessToken, hostName)
-		if err != nil {
-			return fmt.Errorf("cluster virtual runtimes: fetch namespace access: %w", err)
+	if peerJoin {
+		// PEER-HOSTED PLANE. There is no cloudbox authority here: no
+		// FetchKubeconfig to mint a token, no FetchAccess to hand down a
+		// namespace allow-set, no cloudbox CA to trust. Everything is derived
+		// locally — the PEER's CA identity, a credential minted or held on this
+		// host, the apiserver reached at the loopback visitor address the k3s
+		// agent runtime already uses, and a fail-closed peer-local namespace
+		// policy. None of the cloudbox-only refreshers run on this path.
+		cred := vknode.PeerCredential{
+			APIURL:     cc.LocalAPIURL(),
+			CA:         cc.CA,
+			Token:      cc.Token,
+			ClientCert: cc.ClientCert,
+			ClientKey:  cc.ClientKey,
 		}
-		access = vknode.NewAccess(resp.AllowedNamespaces...)
-		slog.Info("cluster virtual runtimes: namespace access gate",
-			"owner_namespace", resp.OwnerNamespace,
-			"namespaces", resp.AllowedNamespaces)
+		if err := cred.Validate(); err != nil {
+			return fmt.Errorf("cluster virtual runtimes (peer plane): %w", err)
+		}
+		credDir, err := vknode.DefaultPeerCredentialDir()
+		if err != nil {
+			return fmt.Errorf("cluster mode: peer credential dir: %w", err)
+		}
+		files, err := cred.Materialize(credDir)
+		if err != nil {
+			return fmt.Errorf("cluster mode: materialize peer credential: %w", err)
+		}
+		kubeCfg, err = cred.RestConfig(files)
+		if err != nil {
+			return err
+		}
+
+		// Fail-closed peer-local namespace policy. Always non-nil: an empty
+		// cluster.allowed_namespaces denies every pod rather than falling
+		// through to the nil "allow all" gate a cloudbox-less node used to get.
+		access = vknode.PeerNamespacePolicy(cc.AllowedNamespaces)
+		slog.Info("cluster virtual runtimes: peer namespace policy (fail-closed)",
+			"apiserver", cred.APIURL, "credential", cred.CredentialKind(),
+			"namespaces", access.Snapshot(), "has_peer_ca", len(cc.CA) > 0)
+		if len(cc.AllowedNamespaces) == 0 {
+			slog.Warn("cluster virtual runtimes: peer namespace policy is empty — every pod will be denied; set cluster.allowed_namespaces")
+		}
+
+		// Local (cloudbox-free) bearer-token rotation. The refresher re-reads
+		// the persisted config and rewrites the token file when an operator
+		// rotates cluster.token, so client-go picks it up without a restart.
+		if cred.Token != "" {
+			peerRefresher = vknode.NewPeerCredentialRefresher(
+				func() (vknode.PeerCredential, error) {
+					reloaded, lerr := conf.LoadFile(cfgPath)
+					if lerr != nil {
+						return vknode.PeerCredential{}, lerr
+					}
+					rc := reloaded.Cluster
+					if rc == nil {
+						return vknode.PeerCredential{}, errors.New("cluster config vanished")
+					}
+					return vknode.PeerCredential{
+						APIURL:     rc.LocalAPIURL(),
+						CA:         rc.CA,
+						Token:      rc.Token,
+						ClientCert: rc.ClientCert,
+						ClientKey:  rc.ClientKey,
+					}, nil
+				}, files, cred)
+		}
+	} else {
+		// CLOUDBOX-HOSTED PLANE (the historical default).
+		//
+		// Bootstrap: if we have an outpost access_token and either no
+		// persisted credentials yet or already-expired ones, ask cloudbox to
+		// mint a fresh kubeconfig and persist it. This is the "operator flipped
+		// the toggle, never pasted anything" path.
+		//
+		// A fetch failure here is non-fatal when we already have cached
+		// credentials (even expired ones — the refresher will retry on the
+		// loop), and fatal otherwise (there's nothing to dial the apiserver
+		// with).
+		if shouldFetchKubeconfig(fc) && fc.AccessToken != "" && cloudboxBase != "" {
+			slog.Info("cluster: fetching shared virtual-node kubeconfig", "host", hostName, "cloudbox", cloudboxBase)
+			fetched, err := vknode.FetchKubeconfig(ctx, cloudboxBase, fc.AccessToken, hostName)
+			if err != nil {
+				if cc.Token == "" {
+					return fmt.Errorf("cluster virtual runtimes: fetch kubeconfig: %w", err)
+				}
+				slog.Warn("cluster virtual runtimes: fetch failed; falling back to cached credentials",
+					"err", err, "host", hostName)
+			} else {
+				persistClusterCredential(fc, cfgPath, fetched)
+			}
+		}
+
+		if cc.APIURL == "" || cc.Token == "" {
+			return errors.New("cluster virtual runtimes: no usable credentials")
+		}
+
+		// Write the live bearer token to a file so client-go's transport
+		// re-reads it across rotations. Path stays under the agent's
+		// cache dir (mode 0600 — same locality as the pidfile + logs).
+		var err error
+		tokenFile, err = vknode.DefaultTokenFilePath()
+		if err != nil {
+			return fmt.Errorf("cluster mode: token-file path: %w", err)
+		}
+		if err := vknode.WriteTokenFile(tokenFile, cc.Token); err != nil {
+			return fmt.Errorf("cluster mode: write token-file: %w", err)
+		}
+
+		kubeCfg, err = vknode.ConfigFromCluster(cc.APIURL, tokenFile, cc.CA)
+		if err != nil {
+			return err
+		}
+
+		// Namespace-access gate. Cloudbox has already authenticated the
+		// opaque host token and owns the namespace mapping, so fetch the
+		// authoritative owner + sharee allow-set instead of decoding claims
+		// from the token locally. A paired virtual node must not start without
+		// this gate.
+		if fc.AccessToken != "" {
+			resp, err := vknode.FetchAccess(ctx, cloudboxBase, fc.AccessToken, hostName)
+			if err != nil {
+				return fmt.Errorf("cluster virtual runtimes: fetch namespace access: %w", err)
+			}
+			access = vknode.NewAccess(resp.AllowedNamespaces...)
+			slog.Info("cluster virtual runtimes: namespace access gate",
+				"owner_namespace", resp.OwnerNamespace,
+				"namespaces", resp.AllowedNamespaces)
+		}
 	}
 
 	// Locality tier label. Stamp the Node with this host's MEASURED
@@ -2879,7 +2961,7 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 		spec := spec
 		g.Go(func() error {
 			slog.Info("cluster: virtual node joining", "node", spec.node, "host", hostName,
-				"backend", spec.mode, "apiserver", cc.APIURL, "podman_socket", podmanSock)
+				"backend", spec.mode, "apiserver", kubeCfg.Host, "podman_socket", podmanSock)
 			if err := vknode.Run(ctx, vknode.RunOptions{
 				NodeName:        spec.node,
 				PodmanSocket:    podmanSock,
@@ -2895,11 +2977,18 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 		})
 	}
 
-	// Token rotation. Only spin the refresher when we have a working
-	// fetch path (access_token + cloudbox URL); when the operator
-	// pasted a kubeconfig for a non-cloudbox cluster, leave the token
-	// alone — they're responsible for replacing it before expiry.
-	if fc.AccessToken != "" && cloudboxBase != "" {
+	// Peer-plane bearer-token rotation (cloudbox-free). Re-reads the persisted
+	// config and rewrites the token file when the operator rotates it.
+	if peerRefresher != nil {
+		g.Go(func() error { return peerRefresher.Run(ctx) })
+	}
+
+	// Token rotation. Only spin the cloudbox refresher when we have a working
+	// fetch path (access_token + cloudbox URL) AND we are not on a peer plane
+	// (whose credentials cloudbox never issued); when the operator pasted a
+	// kubeconfig for a non-cloudbox cluster, leave the token alone — they're
+	// responsible for replacing it before expiry.
+	if !peerJoin && fc.AccessToken != "" && cloudboxBase != "" {
 		refresher := vknode.NewRefresher(vknode.RefreshDeps{
 			CloudboxBase:  cloudboxBase,
 			AccessToken:   fc.AccessToken,
@@ -2919,7 +3008,7 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 	// HostShare rows with app="podman"). The synchronous fetch above
 	// populated the gate before any runner started; this loop keeps it
 	// current. Refresh failures preserve the last known allow-set.
-	if access != nil && fc.AccessToken != "" && cloudboxBase != "" {
+	if !peerJoin && access != nil && fc.AccessToken != "" && cloudboxBase != "" {
 		accessRefresher := vknode.NewAccessRefresher(vknode.AccessRefreshDeps{
 			CloudboxBase: cloudboxBase,
 			AccessToken:  fc.AccessToken,

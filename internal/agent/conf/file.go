@@ -740,6 +740,29 @@ type ClusterConfig struct {
 	// want distinct cluster identities.
 	NodeName string `json:"node_name,omitempty"`
 
+	// ClientCert / ClientKey are peer-plane client-certificate credentials —
+	// the form a PEER-hosted k3s control plane issues, as distinct from the
+	// cloudbox-minted bearer Token above. A peer-joined virtual-kubelet node
+	// authenticates to the peer apiserver with these; they are materialized to
+	// 0600 files and never sent to cloudbox. Empty on a cloudbox-plane member
+	// (which uses Token). On a peer plane exactly one of (Token) or
+	// (ClientCert+ClientKey) is the effective vk credential — the client
+	// certificate wins when both are present.
+	ClientCert []byte `json:"client_cert,omitempty"`
+	ClientKey  []byte `json:"client_key,omitempty"`
+
+	// AllowedNamespaces is the peer-local namespace admission policy for
+	// virtual-kubelet nodes joined to a PEER-hosted plane. On the cloudbox
+	// plane the authoritative allow-set is fetched from cloudbox
+	// (vknode.FetchAccess); a peer plane has no such authority, so this list
+	// is the source of truth. It is enforced FAIL-CLOSED: a pod whose
+	// namespace is not listed is refused. An empty list therefore denies every
+	// pod — the safe default that forces the operator to declare policy rather
+	// than silently accepting every workload (the pre-fix behavior, where a
+	// peer node with no cloudbox pairing fell through to a nil "allow all"
+	// gate).
+	AllowedNamespaces []string `json:"allowed_namespaces,omitempty"`
+
 	// NodeToken is the k3s join token (K10…::node:…) cloudbox handed
 	// out at register time. Consumed only by the agent runtime; passed as
 	// `k3s agent --token`. Empty when cloudbox isn't running in cluster
@@ -987,6 +1010,34 @@ const CloudboxPublisherUser = "cloudbox"
 // the cloudbox-hosted one.
 func (c *ClusterConfig) JoinsPeerPlane() bool {
 	return c != nil && strings.TrimSpace(c.JoinEndpoint) != ""
+}
+
+// DefaultK8sAPIPort is the loopback port a joined worker's STCP visitor binds
+// the apiserver on — matches cloudbox's ClusterAPIServerPort so kubeconfigs
+// round-trip cleanly.
+const DefaultK8sAPIPort = 6443
+
+// K8sAPIPortOrDefault returns the configured visitor port, or the 6443 default.
+func (c *ClusterConfig) K8sAPIPortOrDefault() int {
+	if c != nil && c.K8sAPIPort > 0 {
+		return c.K8sAPIPort
+	}
+	return DefaultK8sAPIPort
+}
+
+// LocalAPIURL is the loopback apiserver URL a joined worker reaches its control
+// plane at — https://127.0.0.1:<K8sAPIPort> (default 6443), where the STCP
+// visitor binds it. A peer-joined virtual-kubelet node dials the PEER apiserver
+// here, exactly as the k3s agent runtime does, rather than at a cloudbox public
+// URL. This is the address that keeps the vk credential (peer CA + local cert /
+// token) independent of any cloudbox-issued kubeconfig.
+func (c *ClusterConfig) LocalAPIURL() string {
+	return fmt.Sprintf("https://127.0.0.1:%d", c.K8sAPIPortOrDefault())
+}
+
+// HasClientCert reports whether a peer client-certificate credential is set.
+func (c *ClusterConfig) HasClientCert() bool {
+	return c != nil && len(c.ClientCert) > 0 && len(c.ClientKey) > 0
 }
 
 // JoinTarget returns the tunnel endpoint, token and frp serverUser this host
