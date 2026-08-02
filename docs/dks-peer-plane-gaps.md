@@ -12,7 +12,7 @@ Audit and closure tracking for peer-hosted DKS control-plane functionality.
 | 4 | Stale node garbage collection | Closed | Pending |
 | 5 | Peer join runtime selection | Closed | Pending |
 | 6 | Pod networking and PodCIDR allocation | Closed: stock k3s flannel VXLAN over `tailscale0`; Kubernetes allocates `Node.spec.podCIDR` | Pending |
-| 7 | Kubelet metrics and `kubectl top` | Closed in code | Pending |
+| 7 | Kubelet metrics and `kubectl top` | Open | Failed live gate |
 | 8 | Runtime capability probe | Closed in code | Pending |
 
 “Closed in code” means the implementation and deterministic tests exist. It does
@@ -28,19 +28,14 @@ cross-node pod reachability; they do not replace Kubernetes allocation.
 
 ## Item 7: kubelet metrics
 
-k3s's packaged metrics-server remains enabled. The peer control-plane entrypoint
-writes a `HelmChartConfig` that makes metrics-server:
-
-- run with host networking so it can reach the control-plane host's loopback
-  tunnel listeners;
-- prefer `ExternalIP`, then `InternalIP`, then `Hostname`;
-- use each node's status kubelet port; and
-- tolerate the peer kubelet certificate/address mismatch with
-  `--kubelet-insecure-tls`.
-
-The `nodeaddr` reconciler supplies the derived loopback `ExternalIP` and
-kubelet port. An unreachable tunnel fails closed; no synthetic metrics are
-returned.
+The live gate disproved the earlier HelmChartConfig approach: k3s 1.36 ships
+metrics-server as raw packaged manifests, and a host-network metrics pod on a
+worker cannot reach the control-plane container's loopback FRP listeners.
+`nodeaddr` correctly publishes the derived loopback address and kubelet port,
+but metrics-server must be colocated with the peer control-plane network
+namespace (or the listener must gain a separately authenticated routable
+surface). Until that architecture lands, `kubectl top` remains an explicit
+open gap; the entrypoint does not apply the broken host-network patch.
 
 ## Item 8: runtime capability probe
 
