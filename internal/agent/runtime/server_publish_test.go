@@ -187,7 +187,6 @@ func TestPeerMetricsResourcesPreserveTunnelBoundary(t *testing.T) {
 	}
 	yaml := string(out)
 	for _, required := range []string{
-		"clusterIP: None",
 		`ip: "10.88.0.7"`,
 		"addressType: IPv4",
 		"kubernetes.io/service-name: metrics-server",
@@ -205,6 +204,9 @@ func TestPeerMetricsResourcesPreserveTunnelBoundary(t *testing.T) {
 			t.Errorf("rendered metrics resources cross the colocated-process boundary with %q", forbidden)
 		}
 	}
+	if strings.Contains(yaml, "clusterIP: None") {
+		t.Error("aggregation layer cannot route an APIService through a headless Service")
+	}
 
 	helperBody, err := os.ReadFile(helper)
 	if err != nil {
@@ -219,6 +221,9 @@ func TestPeerMetricsResourcesPreserveTunnelBoundary(t *testing.T) {
 		"CN=system:serviceaccount:kube-system:metrics-server",
 		"openssl x509 -req -days 2",
 		`-lt 8640`,
+		`ip address add "$service_ip/32" dev lo`,
+		`TCP-LISTEN:443,bind=${service_ip}`,
+		`migrating headless metrics Service`,
 	} {
 		if !strings.Contains(s, required) {
 			t.Errorf("metrics supervisor missing security/routing contract %q", required)

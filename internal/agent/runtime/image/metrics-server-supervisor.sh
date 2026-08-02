@@ -90,7 +90,6 @@ metadata:
   namespace: kube-system
   labels: {k8s-app: metrics-server}
 spec:
-  clusterIP: None
   ports:
   - appProtocol: https
     name: https
@@ -219,6 +218,19 @@ EOF
 
 render_metrics_resources "$OUTPOST_METRICS_ADDRESS" > "$work/resources.yaml"
 
+# Upgrade the failed headless prototype in place. APIService's resolver
+# refuses ClusterIP=None, and Service clusterIP is immutable, so a one-time
+# exact-name delete is required before the corrected ordinary Service can be
+# allocated. No workloads or data hang from this Service.
+old_cluster_ip="$(k3s kubectl --kubeconfig="$internal_kubeconfig" \
+    get service metrics-server -n kube-system \
+    -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+if [ "$old_cluster_ip" = "None" ]; then
+    log "migrating headless metrics Service to a private ClusterIP"
+    k3s kubectl --kubeconfig="$internal_kubeconfig" \
+        delete service metrics-server -n kube-system --wait=true >/dev/null 2>&1 || true
+fi
+
 # The apiserver may have opened its socket before admission/RBAC are ready.
 # Retry for two minutes, then fail the whole control-plane container loudly.
 i=0
@@ -227,6 +239,25 @@ until k3s kubectl --kubeconfig="$internal_kubeconfig" apply -f "$work/resources.
     [ "$i" -lt 120 ] || { log "FATAL: could not register metrics API"; exit 1; }
     sleep 1
 done
+
+# The aggregation layer insists on routing APIService traffic through an
+# ordinary Service ClusterIP. This control plane intentionally has no local
+# k3s agent/kube-proxy, so make ONLY that allocated /32 local and bridge its
+# TLS port to the unprivileged sibling process. The address exists solely in
+# this container namespace; no host/LAN port is published.
+service_ip="$(k3s kubectl --kubeconfig="$internal_kubeconfig" \
+    get service metrics-server -n kube-system \
+    -o jsonpath='{.spec.clusterIP}')"
+[ -n "$service_ip" ] && [ "$service_ip" != "None" ] || {
+    log "FATAL: metrics Service has no ordinary ClusterIP"
+    exit 1
+}
+ip address add "$service_ip/32" dev lo 2>/dev/null || true
+log "bridging private Service ${service_ip}:443 to ${OUTPOST_METRICS_ADDRESS}:${OUTPOST_METRICS_PORT}"
+socat "TCP-LISTEN:443,bind=${service_ip},reuseaddr,fork" \
+    "TCP:${OUTPOST_METRICS_ADDRESS}:${OUTPOST_METRICS_PORT}" \
+    >"$work/service-proxy.log" 2>&1 &
+service_proxy_pid=$!
 
 # Keep root only in this tiny supervisor so it can renew the client identity;
 # every network-facing metrics-server child drops to the distroless uid/gid.
@@ -238,7 +269,13 @@ stop_metrics() {
     fi
     metrics_pid=""
 }
-trap 'stop_metrics; exit 0' TERM INT
+stop_service_proxy() {
+    if [ -n "${service_proxy_pid:-}" ] && kill -0 "$service_proxy_pid" 2>/dev/null; then
+        kill -TERM "$service_proxy_pid" 2>/dev/null || true
+        wait "$service_proxy_pid" 2>/dev/null || true
+    fi
+}
+trap 'stop_metrics; stop_service_proxy; exit 0' TERM INT
 
 while :; do
     mint_credentials
