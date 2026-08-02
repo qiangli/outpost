@@ -39,12 +39,25 @@ func (f *fakeBundleClient) Apply(_ context.Context, obj *unstructured.Unstructur
 	defer f.mu.Unlock()
 	stored := obj.DeepCopy()
 	if stored.GetKind() == "HelmChart" {
-		// Simulate the k3s helm-controller reconciling a HelmChart CR
-		// far enough to stamp JobCreated=True — see the identical
-		// simulation in admincore/bundle_test.go for why.
+		// Simulate the k3s helm-controller reconciling a HelmChart CR far
+		// enough to stamp JobCreated=True + status.jobName AND create the
+		// install/upgrade Job itself, marked Succeeded — see the identical
+		// simulation in admincore/bundle_test.go for why evalHelmChart
+		// needs the Job, not just the JobCreated condition.
+		jobName := stored.GetName() + "-install"
 		_ = unstructured.SetNestedSlice(stored.Object, []any{
 			map[string]any{"type": "JobCreated", "status": "True"},
 		}, "status", "conditions")
+		_ = unstructured.SetNestedField(stored.Object, jobName, "status", "jobName")
+
+		job := &unstructured.Unstructured{Object: map[string]any{}}
+		job.SetAPIVersion("batch/v1")
+		job.SetKind("Job")
+		job.SetNamespace(stored.GetNamespace())
+		job.SetName(jobName)
+		_ = unstructured.SetNestedField(job.Object, int64(1), "spec", "completions")
+		_ = unstructured.SetNestedField(job.Object, int64(1), "status", "succeeded")
+		f.store[f.key(job)] = job
 	}
 	f.store[f.key(obj)] = stored
 	return obj, nil

@@ -1,6 +1,8 @@
 package bundleapply
 
 import (
+	"context"
+	"errors"
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -40,7 +42,7 @@ type readyState struct {
 // ServiceAccount, RBAC, …) are Ready as soon as they exist, because their
 // creation IS the evidence. CustomResourceDefinitions are Ready only once
 // the apiserver reports the Established condition.
-func evalReadiness(obj *unstructured.Unstructured, allowZero bool) readyState {
+func evalReadiness(ctx context.Context, client ResourceClient, obj *unstructured.Unstructured, allowZero bool) readyState {
 	switch obj.GetKind() {
 	case "Deployment":
 		return evalDeployment(obj, allowZero)
@@ -57,7 +59,7 @@ func evalReadiness(obj *unstructured.Unstructured, allowZero bool) readyState {
 	case "CustomResourceDefinition":
 		return evalCRD(obj)
 	case "HelmChart":
-		return evalHelmChart(obj)
+		return evalHelmChart(ctx, client, obj)
 	default:
 		// Existence is the evidence for objects without a rollout.
 		return readyState{ready: true, reason: obj.GetKind() + " exists"}
@@ -273,23 +275,48 @@ func evalCRD(obj *unstructured.Unstructured) readyState {
 // resource (see internal/agent/appcatalog). The helm-controller reports
 // two condition types on the object itself: JobCreated (the
 // install/upgrade Job was established) and Failed (the job hit an
-// error under a FailurePolicy of "abort"). There is no third condition
-// confirming the underlying Job actually SUCCEEDED — that evidence lives
-// on the Job the controller creates (named in status.jobName), which is
-// outside this object and not tracked by this bundle. JobCreated+not
-// Failed is therefore the strongest per-object evidence available; it
-// proves the controller accepted and is driving the install, not that
-// the Helm run has completed. This mirrors the same "no cluster is
-// hardware-verified" caveat the rest of this package documents (see
-// docs/peer-dks-bundle-apply.md) rather than a silent hidden guess.
-func evalHelmChart(obj *unstructured.Unstructured) readyState {
+// error under a FailurePolicy of "abort"). JobCreated only means the Job
+// was CREATED, not that the underlying Helm run succeeded — that evidence
+// lives on the Job the controller creates (named in status.jobName), so
+// this function resolves that Job in the HelmChart's own namespace via
+// client.Get and requires it to report Succeeded (evalJob) before
+// declaring the HelmChart Ready. No jobName yet, or the Job not found yet
+// (informer lag between the HelmChart update and the Job's own creation),
+// or the Job still running are all pending, never Ready. A Job reporting
+// its Failed condition is terminal, same as the HelmChart's own Failed
+// condition.
+func evalHelmChart(ctx context.Context, client ResourceClient, obj *unstructured.Unstructured) readyState {
 	if conditionTrue(obj, "Failed") {
 		return readyState{terminal: fmt.Errorf("HelmChart %s/%s reported condition Failed", obj.GetNamespace(), obj.GetName())}
 	}
-	if conditionTrue(obj, "JobCreated") {
-		return readyState{ready: true, reason: "HelmChart: helm-controller created the install/upgrade job (JobCreated)"}
+	jobName, found, _ := unstructured.NestedString(obj.Object, "status", "jobName")
+	if !found || jobName == "" {
+		return readyState{reason: "HelmChart: waiting for the helm-controller to create the install/upgrade job"}
 	}
-	return readyState{reason: "HelmChart: waiting for the helm-controller to create the install/upgrade job"}
+
+	job := &unstructured.Unstructured{Object: map[string]any{}}
+	job.SetAPIVersion("batch/v1")
+	job.SetKind("Job")
+	job.SetNamespace(obj.GetNamespace())
+	job.SetName(jobName)
+
+	live, err := client.Get(ctx, job)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return readyState{reason: fmt.Sprintf("HelmChart: install/upgrade job %s/%s not found yet", obj.GetNamespace(), jobName)}
+		}
+		return readyState{terminal: fmt.Errorf("HelmChart %s/%s: get install/upgrade job %s/%s: %w", obj.GetNamespace(), obj.GetName(), obj.GetNamespace(), jobName, err)}
+	}
+
+	jst := evalJob(live)
+	switch {
+	case jst.terminal != nil:
+		return readyState{terminal: fmt.Errorf("HelmChart %s/%s: install/upgrade job %s/%s: %w", obj.GetNamespace(), obj.GetName(), obj.GetNamespace(), jobName, jst.terminal)}
+	case jst.ready:
+		return readyState{ready: true, reason: fmt.Sprintf("HelmChart: install/upgrade job %s succeeded (%s)", jobName, jst.reason)}
+	default:
+		return readyState{reason: fmt.Sprintf("HelmChart: install/upgrade job %s not finished yet (%s)", jobName, jst.reason)}
+	}
 }
 
 // conditionTrue reports whether the object carries the named status

@@ -1,6 +1,7 @@
 package appcatalog
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -23,24 +24,28 @@ spec:
   targetNamespace: "{{.UserNamespace}}"
   rbac:
     clusterScoped: false
-  defaultValuesFile: values.yaml
+  defaultValuesFile: %s
 `
 
+// catalogFixture writes two apps: "demo" DECLARES defaultValuesFile:
+// values.yaml and ships it; "cert-manager" declares an empty
+// defaultValuesFile and ships no values.yaml at all — proving values stay
+// optional when the manifest says so, exercised through Load (the only
+// place spec.defaultValuesFile is now resolved).
 func catalogFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
+	declared := map[string]string{"demo": "values.yaml", "cert-manager": ""}
 	for _, id := range []string{"demo", "cert-manager"} {
 		dir := filepath.Join(root, "apps", id)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		manifest := strings.ReplaceAll(validAppYAML, "%s", id)
+		manifest := fmt.Sprintf(validAppYAML, id, declared[id])
 		if err := os.WriteFile(filepath.Join(dir, "app.yaml"), []byte(manifest), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// demo also ships a values.yaml override; cert-manager does not —
-	// values.yaml must stay optional.
 	if err := os.WriteFile(filepath.Join(root, "apps", "demo", "values.yaml"), []byte("replicas: 2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -56,16 +61,16 @@ func TestResolveAndList(t *testing.T) {
 	if entry.ID != "demo" || filepath.Base(entry.AppFile) != "app.yaml" {
 		t.Fatalf("unexpected entry: %+v", entry)
 	}
-	if entry.ValuesFile == "" {
-		t.Fatalf("expected demo to resolve a values.yaml, got none")
+	if _, values, err := Load(entry); err != nil || values == "" {
+		t.Fatalf("expected demo's declared values.yaml to load: values=%q err=%v", values, err)
 	}
 
 	entry2, err := Resolve(root, "cert-manager")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry2.ValuesFile != "" {
-		t.Fatalf("cert-manager ships no values.yaml, resolved %q", entry2.ValuesFile)
+	if _, values, err := Load(entry2); err != nil || values != "" {
+		t.Fatalf("cert-manager declares no defaultValuesFile, expected no values: values=%q err=%v", values, err)
 	}
 
 	_, ids, err := List(root)

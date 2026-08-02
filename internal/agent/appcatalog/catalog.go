@@ -34,15 +34,16 @@ type Entry struct {
 	Catalog string
 	// AppFile is <catalog>/apps/<id>/app.yaml — always present.
 	AppFile string
-	// ValuesFile is <catalog>/apps/<id>/values.yaml — "" when the app
-	// ships no values override (a chart with sane defaults needs none).
-	ValuesFile string
 }
 
-// Resolve maps id to <catalog>/apps/<id>/app.yaml (+ an optional sibling
-// values.yaml). catalog may be an umbrella sibling appstore checkout or a
-// fetched/versioned appstore tree. Empty catalog discovers only
-// deterministic development-checkout locations.
+// Resolve maps id to <catalog>/apps/<id>/app.yaml. catalog may be an
+// umbrella sibling appstore checkout or a fetched/versioned appstore
+// tree. Empty catalog discovers only deterministic development-checkout
+// locations.
+//
+// The values override is NOT resolved here: spec.defaultValuesFile inside
+// app.yaml is what names it (or declares none), so that resolution can
+// only happen after the manifest is parsed — see Load.
 func Resolve(catalog, id string) (Entry, error) {
 	id = strings.TrimSpace(id)
 	if !validName.MatchString(id) {
@@ -56,11 +57,7 @@ func Resolve(catalog, id string) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
-	valuesFile, err := resolveAsset(root, id, "values.yaml", false)
-	if err != nil {
-		return Entry{}, err
-	}
-	return Entry{ID: id, Catalog: root, AppFile: appFile, ValuesFile: valuesFile}, nil
+	return Entry{ID: id, Catalog: root, AppFile: appFile}, nil
 }
 
 // resolveAsset resolves <root>/apps/<id>/<filename>, refusing anything

@@ -30,4 +30,4 @@ spec:
   targetNamespace: "{{.UserNamespace}}"
   rbac:
     clusterScoped: false
-  defaultValuesFile: values.yaml
+  defaultValuesFile: ""

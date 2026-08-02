@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -78,9 +79,14 @@ type Spec struct {
 	// namespace from Target (see render.go) and never expands this string.
 	TargetNamespace string `yaml:"targetNamespace"`
 	RBAC            RBAC   `yaml:"rbac"`
-	// DefaultValuesFile names the sibling values override (conventionally
-	// "values.yaml"). Advisory here — Resolve locates the sibling
-	// values.yaml directly; see Load.
+	// DefaultValuesFile is the AUTHORITATIVE name of the sibling values
+	// override (conventionally "values.yaml"). Empty means the app takes
+	// no values override at all — a chart with sane defaults needs none.
+	// When non-empty, Load resolves it as a bare filename sibling of
+	// app.yaml (never a path — traversal and symlink escape are refused)
+	// and requires it to exist: a catalog entry that DECLARES a values
+	// file but does not ship it is a broken entry, not "no values". See
+	// loadDeclaredValues.
 	DefaultValuesFile string `yaml:"defaultValuesFile"`
 }
 
@@ -95,8 +101,9 @@ type Manifest struct {
 
 // Load reads and validates entry's app manifest (apiVersion/kind envelope,
 // id match, and chart shape — fail closed on any of them) plus the raw
-// bytes of its optional values.yaml, returned UNMODIFIED (never templated
-// or otherwise interpolated — see Render).
+// bytes of its declared values override (spec.defaultValuesFile — see
+// loadDeclaredValues), returned UNMODIFIED (never templated or otherwise
+// interpolated — see Render).
 //
 // There is deliberately no runtime license field to validate: license
 // compatibility is enforced by dhnt/appstore CURATION (a public,
@@ -116,15 +123,40 @@ func Load(entry Entry) (*Manifest, string, error) {
 		return nil, "", fmt.Errorf("app %q: %w", entry.ID, err)
 	}
 
-	var valuesYAML string
-	if entry.ValuesFile != "" {
-		vraw, err := os.ReadFile(entry.ValuesFile)
-		if err != nil {
-			return nil, "", fmt.Errorf("read values %q: %w", entry.ValuesFile, err)
-		}
-		valuesYAML = string(vraw)
+	valuesYAML, err := loadDeclaredValues(entry, &m)
+	if err != nil {
+		return nil, "", err
 	}
 	return &m, valuesYAML, nil
+}
+
+// loadDeclaredValues resolves spec.defaultValuesFile as the SOLE source of
+// truth for which values override (if any) an app takes — the convention
+// of "a file literally named values.yaml" is not consulted. Empty means
+// no values, full stop. A non-empty value must be a bare filename (no "/",
+// no ".." — never a path) and is resolved as a confined sibling of
+// app.yaml via the same traversal/symlink-escape guard resolveAsset
+// applies to app.yaml itself; required=true, so a DECLARED-but-missing
+// file is a hard error rather than silently downgrading to "no values" —
+// a catalog entry that names a file it doesn't ship is broken, not
+// optional.
+func loadDeclaredValues(entry Entry, m *Manifest) (string, error) {
+	declared := strings.TrimSpace(m.Spec.DefaultValuesFile)
+	if declared == "" {
+		return "", nil
+	}
+	if filepath.Base(declared) != declared {
+		return "", fmt.Errorf("app %q: spec.defaultValuesFile %q must be a bare filename, not a path", entry.ID, declared)
+	}
+	valuesPath, err := resolveAsset(entry.Catalog, entry.ID, declared, true)
+	if err != nil {
+		return "", fmt.Errorf("app %q: resolve spec.defaultValuesFile %q: %w", entry.ID, declared, err)
+	}
+	vraw, err := os.ReadFile(valuesPath)
+	if err != nil {
+		return "", fmt.Errorf("read values %q: %w", valuesPath, err)
+	}
+	return string(vraw), nil
 }
 
 // validateManifest fails closed on every unsupported dimension: a wrong
