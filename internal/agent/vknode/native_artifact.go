@@ -225,11 +225,25 @@ func (b *nativeProcessBackend) materializeNativeArtifactTreeWithCredential(
 	if err := os.Mkdir(treeDir, 0o700); err != nil {
 		return "", fmt.Errorf("vknode: create native artifact tree dir: %w", err)
 	}
+	// EVERY member operation runs through this *os.Root. os.Root resolves each
+	// path component in the kernel and refuses any operation that would leave
+	// treeDir — including one that chases a symlink an earlier member planted.
+	// Confinement is therefore a property of the syscall, not of a lexical path
+	// check: filepath.Join cancels ".." against components it never resolves, so
+	// a link chain such as `sub/link -> ".."` followed by `esc ->
+	// "sub/link/../.."` is lexically neutral while the kernel climbs two levels
+	// out of the tree. Every path helper below takes the root and a
+	// tree-relative name for that reason; none of them build an absolute path.
+	root, err := os.OpenRoot(treeDir)
+	if err != nil {
+		return "", fmt.Errorf("vknode: open native artifact tree root: %w", err)
+	}
+	defer root.Close()
 	switch {
 	case isZipArtifactURL(u):
-		err = extractNativeArtifactTreeZip(archivePath, treeDir)
+		err = extractNativeArtifactTreeZip(archivePath, root)
 	case isTarGzipArtifactURL(u):
-		err = extractNativeArtifactTreeTarGzip(archivePath, treeDir)
+		err = extractNativeArtifactTreeTarGzip(archivePath, root)
 	default:
 		err = errNativeArtifactKind
 	}
@@ -237,14 +251,28 @@ func (b *nativeProcessBackend) materializeNativeArtifactTreeWithCredential(
 		return "", err
 	}
 
-	stagedEntry := filepath.Join(treeDir, filepath.FromSlash(cleanEntry))
-	info, statErr := os.Stat(stagedEntry)
+	// Lstat, not Stat: an entrypoint that is itself a symlink must be refused
+	// rather than followed, chmod'ed 0700, and executed.
+	entryName := filepath.FromSlash(cleanEntry)
+	info, statErr := root.Lstat(entryName)
 	if statErr != nil || !info.Mode().IsRegular() {
 		return "", fmt.Errorf("vknode: native artifact entrypoint %q is not a regular file in the archive tree", cleanEntry)
 	}
-	if err := os.Chmod(stagedEntry, 0o700); err != nil {
-		return "", fmt.Errorf("vknode: make native artifact entrypoint executable: %w", err)
+	// Chmod the open descriptor rather than the path: Root.Chmod on unix is
+	// documented as racy against a file→symlink swap, and an fd cannot be
+	// re-pointed after it is opened.
+	entryFile, err := root.OpenFile(entryName, os.O_RDONLY, 0)
+	if err != nil {
+		return "", fmt.Errorf("vknode: open native artifact entrypoint: %w", err)
 	}
+	chmodErr := entryFile.Chmod(0o700)
+	entryFile.Close()
+	if chmodErr != nil {
+		return "", fmt.Errorf("vknode: make native artifact entrypoint executable: %w", chmodErr)
+	}
+	// Drop the root's directory handle before the rename — Windows refuses to
+	// rename a directory that still has an open handle.
+	root.Close()
 	if err := os.Rename(treeDir, finalDir); err != nil {
 		// A concurrent materialization of the same digest may have published
 		// first; a digest mismatch never lands here (download fails loudly).
@@ -549,12 +577,13 @@ func writeArchiveMember(dst string, src io.Reader) error {
 	return nil
 }
 
-// extractNativeArtifactTreeTarGzip unpacks an entire .tar.gz/.tgz into destDir,
-// preserving its relative layout. Every member is adversarial input: paths are
-// confined to destDir, symlink/hardlink members can never become a write
-// primitive outside it, output size is bounded, and file modes are sanitized to
-// owner-only permissions (never setuid/setgid/sticky, never group/other write).
-func extractNativeArtifactTreeTarGzip(archivePath, destDir string) error {
+// extractNativeArtifactTreeTarGzip unpacks an entire .tar.gz/.tgz into root,
+// preserving its relative layout. Every member is adversarial input: all writes
+// are mediated by root so no path can land outside the tree, symlink/hardlink
+// members can never become a write primitive outside it, output size is bounded,
+// and file modes are sanitized to owner-only permissions (never
+// setuid/setgid/sticky, never group/other write).
+func extractNativeArtifactTreeTarGzip(archivePath string, root *os.Root) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return err
@@ -581,17 +610,17 @@ func extractNativeArtifactTreeTarGzip(archivePath, destDir string) error {
 		if hdr.Typeflag == tar.TypeXHeader || hdr.Typeflag == tar.TypeXGlobalHeader {
 			continue
 		}
-		target, err := safeNativeArtifactTreeJoin(destDir, hdr.Name)
+		name, err := safeNativeArtifactTreeName(hdr.Name)
 		if err != nil {
 			return err
 		}
-		if target == "" {
+		if name == "" {
 			continue // the archive-root entry itself
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o700); err != nil {
-				return fmt.Errorf("vknode: create native artifact dir: %w", err)
+			if err := mkdirAllNativeArtifactTree(root, name); err != nil {
+				return err
 			}
 		case tar.TypeReg, tar.TypeRegA:
 			files++
@@ -605,13 +634,13 @@ func extractNativeArtifactTreeTarGzip(archivePath, destDir string) error {
 				return fmt.Errorf("vknode: native artifact member %q declares %d bytes, over the %d-byte limit",
 					hdr.Name, hdr.Size, nativeArtifactTreeMaxFileBytes)
 			}
-			n, err := writeNativeArtifactTreeFile(target, tr, hdr.FileInfo().Mode(), nativeArtifactTreeMaxTotalBytes-total)
+			n, err := writeNativeArtifactTreeFile(root, name, tr, hdr.FileInfo().Mode(), nativeArtifactTreeMaxTotalBytes-total)
 			if err != nil {
 				return err
 			}
 			total += n
 		case tar.TypeSymlink:
-			if err := writeNativeArtifactTreeSymlink(destDir, target, hdr.Linkname); err != nil {
+			if err := writeNativeArtifactTreeSymlink(root, name, hdr.Linkname); err != nil {
 				return err
 			}
 		case tar.TypeLink:
@@ -627,7 +656,7 @@ func extractNativeArtifactTreeTarGzip(archivePath, destDir string) error {
 	return nil
 }
 
-func extractNativeArtifactTreeZip(archivePath, destDir string) error {
+func extractNativeArtifactTreeZip(archivePath string, root *os.Root) error {
 	zr, err := zip.OpenReader(archivePath)
 	if err != nil {
 		return fmt.Errorf("vknode: open native zip artifact: %w", err)
@@ -636,11 +665,11 @@ func extractNativeArtifactTreeZip(archivePath, destDir string) error {
 	var total int64
 	var files int
 	for _, zf := range zr.File {
-		target, err := safeNativeArtifactTreeJoin(destDir, zf.Name)
+		name, err := safeNativeArtifactTreeName(zf.Name)
 		if err != nil {
 			return err
 		}
-		if target == "" {
+		if name == "" {
 			continue
 		}
 		mode := zf.Mode()
@@ -650,12 +679,12 @@ func extractNativeArtifactTreeZip(archivePath, destDir string) error {
 			if err != nil {
 				return err
 			}
-			if err := writeNativeArtifactTreeSymlink(destDir, target, link); err != nil {
+			if err := writeNativeArtifactTreeSymlink(root, name, link); err != nil {
 				return err
 			}
 		case zf.FileInfo().IsDir():
-			if err := os.MkdirAll(target, 0o700); err != nil {
-				return fmt.Errorf("vknode: create native artifact dir: %w", err)
+			if err := mkdirAllNativeArtifactTree(root, name); err != nil {
+				return err
 			}
 		case mode.IsRegular():
 			files++
@@ -670,7 +699,7 @@ func extractNativeArtifactTreeZip(archivePath, destDir string) error {
 			if err != nil {
 				return fmt.Errorf("vknode: open native zip member: %w", err)
 			}
-			n, werr := writeNativeArtifactTreeFile(target, rc, mode, nativeArtifactTreeMaxTotalBytes-total)
+			n, werr := writeNativeArtifactTreeFile(root, name, rc, mode, nativeArtifactTreeMaxTotalBytes-total)
 			rc.Close()
 			if werr != nil {
 				return werr
@@ -685,26 +714,47 @@ func extractNativeArtifactTreeZip(archivePath, destDir string) error {
 	return nil
 }
 
-// writeNativeArtifactTreeFile writes one member, bounded by remaining, with the
-// mode sanitized to owner-only. It opens O_EXCL so it will never write THROUGH a
-// path a prior member already created — in particular a symlink — which is the
-// load-bearing half of the symlink-write-through defense.
-func writeNativeArtifactTreeFile(target string, src io.Reader, mode os.FileMode, remaining int64) (int64, error) {
+// mkdirAllNativeArtifactTree creates the tree-relative directory name and its
+// parents inside root. Each component is resolved by the kernel through root, so
+// a name that traverses a symlink pointing out of the tree fails here instead of
+// silently creating directories off-tree.
+func mkdirAllNativeArtifactTree(root *os.Root, name string) error {
+	if name == "" || name == "." {
+		return nil
+	}
+	if err := root.MkdirAll(filepath.FromSlash(name), 0o700); err != nil {
+		return fmt.Errorf("vknode: create native artifact dir %q: %w", name, err)
+	}
+	return nil
+}
+
+// writeNativeArtifactTreeFile writes one member at the tree-relative name,
+// bounded by remaining, with the mode sanitized to owner-only. Both the parent
+// MkdirAll and the open go through root, so no component of the name — not just
+// the final one — can resolve outside the tree. O_EXCL additionally makes a
+// duplicate member fail rather than clobber an entry an earlier member created.
+func writeNativeArtifactTreeFile(root *os.Root, name string, src io.Reader, mode os.FileMode, remaining int64) (int64, error) {
 	if remaining <= 0 {
 		return 0, fmt.Errorf("vknode: native artifact tree exceeds %d bytes", nativeArtifactTreeMaxTotalBytes)
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-		return 0, fmt.Errorf("vknode: create native artifact dir: %w", err)
+	if err := mkdirAllNativeArtifactTree(root, path.Dir(name)); err != nil {
+		return 0, err
 	}
 	perm := sanitizeNativeArtifactFileMode(mode)
-	out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
+	out, err := root.OpenFile(filepath.FromSlash(name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
 	if err != nil {
-		return 0, fmt.Errorf("vknode: create native artifact file: %w", err)
+		return 0, fmt.Errorf("vknode: create native artifact file %q: %w", name, err)
 	}
 	n, copyErr := io.Copy(out, io.LimitReader(src, remaining+1))
+	// A umask could have masked bits at open time; set the sanitized perm on the
+	// open descriptor — never by path, which would be a second resolution.
+	chmodErr := out.Chmod(perm)
 	closeErr := out.Close()
 	if copyErr != nil {
 		return 0, fmt.Errorf("vknode: extract native artifact file: %w", copyErr)
+	}
+	if chmodErr != nil {
+		return 0, fmt.Errorf("vknode: set native artifact file mode: %w", chmodErr)
 	}
 	if closeErr != nil {
 		return 0, fmt.Errorf("vknode: close native artifact file: %w", closeErr)
@@ -712,19 +762,23 @@ func writeNativeArtifactTreeFile(target string, src io.Reader, mode os.FileMode,
 	if n > remaining {
 		return 0, fmt.Errorf("vknode: native artifact tree exceeds %d bytes", nativeArtifactTreeMaxTotalBytes)
 	}
-	// A umask could have masked bits at open time; set the sanitized perm
-	// explicitly so an executable member stays executable.
-	if err := os.Chmod(target, perm); err != nil {
-		return 0, fmt.Errorf("vknode: set native artifact file mode: %w", err)
-	}
 	return n, nil
 }
 
-// writeNativeArtifactTreeSymlink creates an in-tree symlink or refuses one whose
-// target escapes destDir. Refusing the escaping link at CREATION is what stops a
-// later member from writing through it to an out-of-tree location; a dangling
-// but in-tree link is harmless and allowed.
-func writeNativeArtifactTreeSymlink(destDir, target, linkname string) error {
+// writeNativeArtifactTreeSymlink creates a symlink member at the tree-relative
+// name. A dangling but in-tree link is harmless and allowed — an archive may
+// legitimately link to a member that appears later.
+//
+// Containment does NOT rest on inspecting the link target here. An escaping link
+// is inert because every later member that traverses it is resolved through
+// root, which refuses the traversal. The two checks below are fail-fast input
+// validation that gives the operator a precise message on the obvious cases; the
+// "escapes" check in particular cleans ".." lexically and therefore CANNOT see a
+// chain that climbs through an earlier in-tree link (`sub/link -> ".."` then
+// `esc -> "sub/link/../.."` cleans to "." while the kernel lands two levels
+// above the tree). Treating a lexical check as the boundary is precisely the
+// defect this code replaced — do not re-add one here and rely on it.
+func writeNativeArtifactTreeSymlink(root *os.Root, name, linkname string) error {
 	ln := strings.ReplaceAll(linkname, "\\", "/")
 	if ln == "" {
 		return fmt.Errorf("vknode: native artifact symlink has an empty target; refused")
@@ -732,19 +786,17 @@ func writeNativeArtifactTreeSymlink(destDir, target, linkname string) error {
 	if path.IsAbs(ln) || filepath.IsAbs(linkname) {
 		return fmt.Errorf("vknode: native artifact symlink target %q is absolute; refused", linkname)
 	}
-	// Resolve the (possibly ../-laden) link against the link's own directory and
-	// require the result to remain inside destDir.
-	resolved := filepath.Join(filepath.Dir(target), filepath.FromSlash(ln))
-	if !isWithinNativeArtifactDir(destDir, resolved) {
+	if resolved := path.Join(path.Dir(name), ln); resolved == ".." || strings.HasPrefix(resolved, "../") {
 		return fmt.Errorf("vknode: native artifact symlink %q escapes the artifact tree; refused", linkname)
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-		return fmt.Errorf("vknode: create native artifact dir: %w", err)
+	if err := mkdirAllNativeArtifactTree(root, path.Dir(name)); err != nil {
+		return err
 	}
-	// O_EXCL semantics: a duplicate member at this path makes Symlink fail rather
-	// than clobber, so a benign entry cannot be swapped for a link after the fact.
-	if err := os.Symlink(filepath.FromSlash(ln), target); err != nil {
-		return fmt.Errorf("vknode: create native artifact symlink: %w", err)
+	// Root.Symlink confines the link's own location to the tree and fails on an
+	// existing path, so a member cannot swap an already-extracted file or
+	// directory for a link.
+	if err := root.Symlink(filepath.FromSlash(ln), filepath.FromSlash(name)); err != nil {
+		return fmt.Errorf("vknode: create native artifact symlink %q: %w", name, err)
 	}
 	return nil
 }
@@ -765,16 +817,20 @@ func readNativeArtifactZipSymlink(zf *zip.File) (string, error) {
 	return string(b), nil
 }
 
-// safeNativeArtifactTreeJoin confines an archive member's path to destDir. It
-// returns ("", nil) for the archive-root entry (caller skips) and an error for
-// any absolute path, ".." escape, or result that lands outside destDir.
-func safeNativeArtifactTreeJoin(destDir, name string) (string, error) {
+// safeNativeArtifactTreeName normalizes an archive member's path to a
+// slash-separated name relative to the tree root. It returns ("", nil) for the
+// archive-root entry (caller skips) and an error for an absolute path or a ".."
+// element. os.Root would refuse both anyway; rejecting them here is what turns a
+// generic "path escapes from parent" into a member-named "refused" message.
+func safeNativeArtifactTreeName(name string) (string, error) {
 	norm := strings.TrimPrefix(strings.ReplaceAll(name, "\\", "/"), "./")
 	norm = strings.TrimSuffix(norm, "/")
 	if norm == "" || norm == "." {
 		return "", nil
 	}
-	if path.IsAbs(norm) {
+	// path.IsAbs misses Windows forms ("C:/x", "C:x"), which VolumeName catches.
+	if path.IsAbs(norm) || filepath.IsAbs(filepath.FromSlash(norm)) ||
+		filepath.VolumeName(filepath.FromSlash(norm)) != "" {
 		return "", fmt.Errorf("vknode: native artifact member %q has an absolute path; refused", name)
 	}
 	for _, el := range strings.Split(norm, "/") {
@@ -782,20 +838,7 @@ func safeNativeArtifactTreeJoin(destDir, name string) (string, error) {
 			return "", fmt.Errorf("vknode: native artifact member %q escapes the archive root; refused", name)
 		}
 	}
-	target := filepath.Join(destDir, filepath.FromSlash(norm))
-	if !isWithinNativeArtifactDir(destDir, target) {
-		return "", fmt.Errorf("vknode: native artifact member %q escapes the archive root; refused", name)
-	}
-	return target, nil
-}
-
-func isWithinNativeArtifactDir(dir, target string) bool {
-	dir = filepath.Clean(dir)
-	target = filepath.Clean(target)
-	if target == dir {
-		return true
-	}
-	return strings.HasPrefix(target, dir+string(os.PathSeparator))
+	return norm, nil
 }
 
 // sanitizeNativeArtifactFileMode reduces an archive member's mode to owner-only

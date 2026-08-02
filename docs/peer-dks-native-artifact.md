@@ -89,11 +89,31 @@ for this venue:
    member `link -> /etc/…` (or `../../…`) is created verbatim, and a later member
    written through it escapes the destination (the classic symlink-write-through
    RCE). It also has **no decompression-bomb bound** on extracted output. Those
-   are exactly the attacks the mandatory security tests here must defend against.
-   Since this run may not edit coreutils, importing that extractor would mean
-   shipping vulnerabilities it could not fix. The extractor in
-   `native_artifact.go` is written to defeat them (below), keyed off binmgr's
-   `Tree`/`Entrypoint` *concept* so the two paths stay conceptually aligned.
+   are exactly the attacks the security tests here must defend against, and since
+   this run may not edit coreutils, importing that extractor would mean shipping
+   vulnerabilities it could not fix.
+
+   **Correction (sprint 42).** As originally written, this reason also asserted
+   that the extractor in `native_artifact.go` "is written to defeat them." That
+   was not true when it was written. The sprint-41 extractor validated symlink
+   targets **lexically** with `filepath.Join`, which cleans `..` against
+   components it never resolves — so a link chaining through an earlier,
+   already-allowed in-tree link (`sub/link -> ".."`, then
+   `esc -> "sub/link/../.."`) was lexically neutral but kernel-wise escaping, and
+   a following member wrote through it **outside the tree while reporting
+   success**. It differed from binmgr's extractor in the *shape* of the hole, not
+   in whether it had one. The whole reason therefore rested on a comparison that
+   did not hold.
+
+   What makes the reason valid now is the fix, not the original claim: extraction
+   is mediated by an `*os.Root` (below), which resolves every path component in
+   the kernel and refuses anything leaving the tree. That is a different *kind* of
+   defense from target validation — it removes the class rather than enumerating
+   its instances. The honest form of this reason is: binmgr's extractor is
+   unhardened **and** hardening it correctly means the same `os.Root` treatment,
+   which a run scoped out of coreutils cannot apply there. **That fix is portable
+   and binmgr still needs it** — this document does not claim otherwise, and the
+   two paths stay conceptually aligned via binmgr's `Tree`/`Entrypoint` concept.
 
 **Why this is still one trust path, not a second one.** The single-member and
 whole-tree forms share the *same* front-end: one `prepareNativeArtifactURL`
@@ -106,26 +126,66 @@ No parallel verify/cache code exists — the prohibition the task set.
 Archive extraction is a classic RCE surface. Every member is treated as
 adversarial. The extractor lives in
 `internal/agent/vknode/native_artifact.go` and is exercised by
-`native_artifact_tree_test.go` (deterministic, network-free — archives are built
-in-test).
+`native_artifact_tree_test.go`, `native_artifact_tree_gate_test.go`, and
+`native_artifact_tree_root_test.go` (deterministic, network-free — archives are
+built in-test).
 
 - **Evidence invariant.** "Verified" means verified: the pinned sha256 is decoded
   and enforced against the streamed bytes before anything is extracted; a
   mismatch fails loudly (`checksum mismatch`) and is never repaired by fetching
   something else. An absent/short digest is refused up front.
 
-- **Path traversal / zip-slip.** `safeNativeArtifactTreeJoin` refuses any member
-  whose path is absolute, contains a `..` element, or `filepath.Join`s outside
-  the destination — for tar **and** zip.
+- **Confinement is kernel-mediated, not lexical.** Extraction opens an
+  `*os.Root` on the tree directory and performs **every** member operation
+  through it — `root.MkdirAll`, `root.OpenFile`, `root.Symlink`, `root.Lstat`.
+  `os.Root` resolves each path component in the kernel and refuses any operation
+  that would leave the root, **including one that traverses a symlink**. No
+  helper builds an absolute path; they take the root and a tree-relative name.
 
-- **Symlinks.** A symlink whose (relative-resolved or absolute) target escapes
-  the destination is **refused at creation**, so a following member can never
-  write *through* it to an out-of-tree location. Regular files are written with
-  `O_CREATE|O_EXCL`, so a member cannot overwrite a path an earlier member
-  already occupied (in particular, cannot swap a benign file for a link, or write
-  through a planted one). The tests cover the full **symlink-then-write-through**
-  sequence and assert the outside file is untouched, plus absolute links,
-  escaping relative links, and harmless in-tree dangling links (allowed).
+  This replaced a lexical `filepath.Join` check that a **chained symlink**
+  defeated: `filepath.Join` cleans `..` against components it never resolves, so
+  `sub/link -> ".."` (in-tree, allowed) followed by `esc -> "sub/link/../.."`
+  cleaned to a neutral path while the kernel climbed two levels above the tree —
+  and a member written through `esc` landed outside it while `materialize`
+  returned `nil`. Repeating the hop reached an arbitrary absolute path. Lexical
+  path checks cannot see this; enumerating more of them is not a fix. See
+  "Correction (sprint 42)" above.
+
+- **Path traversal / zip-slip.** `safeNativeArtifactTreeName` refuses any member
+  whose path is absolute (POSIX or Windows drive-qualified) or contains a `..`
+  element — for tar **and** zip. `os.Root` would refuse these regardless; the
+  check exists to turn a generic resolution error into a member-named `refused`
+  message.
+
+- **Symlinks.** In-tree symlinks are supported, including ones whose target is
+  created by a **later** member. An escaping symlink is *inert* rather than a
+  write primitive: `Root.Symlink` deliberately does not validate the link target
+  (it may not exist yet), but every later member that traverses the link is
+  resolved through the root and refused. Two fail-fast checks reject an absolute
+  target and a lexically-obvious `..` escape at creation, purely so the operator
+  gets a precise message — **they are not the containment boundary**, and the
+  code says so. Regular files are additionally written `O_CREATE|O_EXCL`, so a
+  member cannot overwrite a path an earlier member occupied, nor swap an
+  extracted file or directory for a link.
+
+  **What the tests actually cover** (this list is the claim; it is kept in step
+  with the test files): symlink-then-write-through with a *direct* escape (tar
+  and zip), asserting the outside file is untouched; absolute-target links;
+  lexically escaping relative links; harmless in-tree dangling links (allowed);
+  **chained** symlink write-through for tar and zip, chained-symlink arbitrary
+  *absolute*-path write, and chained-symlink directory creation
+  (`native_artifact_tree_gate_test.go` — the four cases that failed before the
+  `os.Root` change); a **three-hop** chain that is lexically neutral at every
+  step, asserting the refusal comes from root containment and not from an
+  incidental `ELOOP`; a link resolved against a member declared later (must
+  *succeed* — the over-blocking direction); a member replacing an already
+  extracted file or directory with a symlink (TOCTOU between members); and an
+  entrypoint that is itself a symlink.
+
+- **Entrypoint.** Resolved with `root.Lstat`, not `os.Stat`, so an entrypoint
+  that is a symlink is refused rather than followed, `chmod 0700`-ed, and
+  executed. The mode change is applied to the open **descriptor**, never by path,
+  since `Root.Chmod` on unix is documented as racy against a file→symlink swap.
 
 - **Hardlinks.** Refused outright — a hardlink to an existing host file would be a
   read/write handle on content outside the archive, and native artifacts have no
@@ -158,5 +218,5 @@ private-artifact scope/redirect/query guards — continue to pass.
 ## Gate
 
 ```
-go build ./... && go test -short ./internal/agent/vknode/...
+go build ./... && go test -short -p 1 ./internal/agent/vknode/...
 ```
