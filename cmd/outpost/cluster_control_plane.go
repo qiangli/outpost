@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 
@@ -283,7 +285,11 @@ func printControlPlane(out controlPlaneOut) {
 	}
 }
 
-func printControlPlaneStatus(status struct {
+// controlPlaneStatusResult decodes outpost_control_plane_status. Named rather
+// than the anonymous struct it used to be: the shape is written twice (decode
+// site and print site), and an anonymous type makes adding a field a
+// two-place edit that compiles happily if you forget the second one.
+type controlPlaneStatusResult struct {
 	Hosted              bool `json:"hosted"`
 	ContainerExists     bool `json:"container_exists"`
 	ContainerRunning    bool `json:"container_running"`
@@ -298,8 +304,15 @@ func printControlPlaneStatus(status struct {
 	HasJoinToken  bool   `json:"has_join_token"`
 	HasNodeToken  bool   `json:"has_node_token"`
 	HasSTCPSecret bool   `json:"has_stcp_secret"`
-	CheckedAt     int64  `json:"checked_at"`
-}) {
+
+	NodeAddrReconcilerRunning bool   `json:"nodeaddr_reconciler_running"`
+	NodeAddrLastRunAt         int64  `json:"nodeaddr_last_run_at"`
+	NodeAddrLastError         string `json:"nodeaddr_last_error"`
+
+	CheckedAt int64 `json:"checked_at"`
+}
+
+func printControlPlaneStatus(status controlPlaneStatusResult) {
 	if !status.Hosted {
 		fmt.Println("hosted: no")
 		return
@@ -316,6 +329,21 @@ func printControlPlaneStatus(status struct {
 	}
 	fmt.Printf("credentials:         join_token=%v node_token=%v stcp_secret=%v\n",
 		status.HasJoinToken, status.HasNodeToken, status.HasSTCPSecret)
+
+	// The address reconciler. Called out on its own line because its absence
+	// is invisible everywhere else: nodes report Ready and pods schedule while
+	// every kubectl logs/exec/port-forward/top fails, since no node carries
+	// the ExternalIP the apiserver dials kubelets through.
+	switch {
+	case !status.NodeAddrReconcilerRunning:
+		fmt.Println("node addressing:     NOT RUNNING — the apiserver cannot reach kubelets")
+		fmt.Println("                     (kubectl logs/exec/top will fail; see docs/cluster-peer.md)")
+	case status.NodeAddrLastError != "":
+		fmt.Printf("node addressing:     running, LAST PASS FAILED: %s\n", status.NodeAddrLastError)
+	default:
+		fmt.Println("node addressing:     running")
+	}
+
 	fmt.Printf("node count:          %d\n", status.NodeCount)
 	if len(status.Nodes) > 0 {
 		fmt.Println("nodes:")
@@ -330,11 +358,12 @@ func printControlPlaneStatus(status struct {
 }
 
 func clusterControlPlaneStatusCmd() *cobra.Command {
+	var jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Report the health and readiness of the hosted control plane",
 		Long: `Show the hosted control plane's health: container state, apiserver serving,
-and cluster node list with readiness status.
+node addressing reconciler liveness, and cluster node list with readiness status.
 
 Does not reveal credential values.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -343,30 +372,27 @@ Does not reveal credential values.`,
 				return err
 			}
 			defer session.close()
-			var status struct {
-				Hosted              bool `json:"hosted"`
-				ContainerExists     bool `json:"container_exists"`
-				ContainerRunning    bool `json:"container_running"`
-				APIServerServing    bool `json:"apiserver_serving"`
-				APIServerStatusCode int  `json:"apiserver_status_code"`
-				Nodes               []struct {
-					Name  string `json:"name"`
-					Ready bool   `json:"ready"`
-				} `json:"nodes"`
-				NodeCount     int    `json:"node_count"`
-				JoinEndpoint  string `json:"join_endpoint"`
-				HasJoinToken  bool   `json:"has_join_token"`
-				HasNodeToken  bool   `json:"has_node_token"`
-				HasSTCPSecret bool   `json:"has_stcp_secret"`
-				CheckedAt     int64  `json:"checked_at"`
-			}
+			var status controlPlaneStatusResult
 			if err := session.callTool(cmd.Context(), "outpost_control_plane_status", map[string]any{}, &status); err != nil {
 				return err
+			}
+			// --json exists for the "kubectl top nodes fails" runbook in
+			// docs/cluster-peer.md, which needs nodeaddr_reconciler_running as a
+			// value a script can branch on rather than a line to grep. Same flag
+			// name and meaning as `outpost status --json`. It re-encodes the
+			// decoded struct, so it inherits that type's redaction: fields the
+			// CLI has no member for — including any token the daemon might ever
+			// add — are dropped at decode and cannot reappear here.
+			if jsonOut {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(status)
 			}
 			printControlPlaneStatus(status)
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit JSON instead of a table")
 	return cmd
 }
 

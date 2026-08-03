@@ -457,6 +457,133 @@ the full `outpost cluster join <endpoint> ...` command on every tunnelled
 worker. Confirm the new nodes with `kubectl get nodes` through the hosted
 plane's admin kubeconfig.
 
+### `kubectl top nodes` fails; metrics-server logs "no address matched types [ExternalIP]"
+
+The symptom is a cluster that looks entirely healthy — nodes `Ready`, pods
+scheduling — while every command that requires the apiserver to *dial a
+kubelet* fails: `kubectl logs`, `kubectl exec`, `kubectl port-forward`, and
+`kubectl top nodes`. `kubectl get node <name> -o yaml` shows only an
+`InternalIP` and a `Hostname` under `status.addresses`, with no `ExternalIP`.
+
+**Do not add an `InternalIP` or `Hostname` fallback to
+`--kubelet-preferred-address-types`.** The apiserver and metrics-server are
+pinned to `ExternalIP` on purpose. The address they need is minted by the
+`nodeaddr` reconciler and is the local end of the authenticated FRP tunnel; a
+node's `InternalIP` (an overlay `100.64.x.x`) and its hostname either do not
+route from the apiserver's network namespace or bypass the tunnel's
+authentication entirely. Widening the list replaces an accurate error with a
+silent dial against an address that cannot serve, and drops a trust boundary
+to do it. The message is telling the truth: no node has an `ExternalIP`,
+because the reconciler that publishes them is not running.
+
+Diagnose on the **control-plane host**, in this order:
+
+1. **Is this host still configured to host the plane?**
+
+   ```bash
+   outpost status --json | jq '.config.cluster
+     | {control_plane, control_plane_kubeconfig, node_name}'
+   ```
+
+   `control_plane` must be `true` and `control_plane_kubeconfig` must name an
+   admin kubeconfig. A `false` here on a host that is meant to host the plane
+   means the flag was dropped by a config-write path — re-set it with
+   `outpost cluster control-plane on`, which records the flag and restarts the
+   daemon itself.
+
+   A `null` for **either** field means the daemon is too old to report them
+   (they were added alongside this runbook) — go to step 2 first.
+
+2. **Is the running daemon actually the build you think it is?** This is the
+   most common cause and the easiest to miss, because a stale daemon keeps a
+   healthy-looking cluster running indefinitely.
+
+   Compare the two provenances, and note that they come from different
+   processes — `outpost status` asks the **daemon** over MCP, while `outpost
+   version` reports the **CLI binary you just invoked**. An operator who
+   upgraded the file on disk but never restarted the daemon sees exactly the
+   mismatch this step is looking for:
+
+   ```bash
+   outpost status --json  | jq -r '.build.commit'   # the RUNNING daemon
+   outpost version --json | jq -r '.commit'         # the on-disk CLI binary
+   git -C <source> rev-parse HEAD                   # the source you expect
+   ```
+
+   Use `--json`/`.commit` rather than the plain `outpost version` line: on a
+   release build that line shows the semver tag, not a sha, so it will not
+   compare against `git rev-parse` output.
+
+   A daemon built before the peer reconcilers landed has no `nodeaddr`
+   reconciler compiled into it at all, so no amount of correct configuration
+   will produce an `ExternalIP`. Upgrade it (see below). If the daemon and CLI
+   commits differ, a new binary is already staged and only the restart is
+   missing — `outpost restart` is enough.
+
+3. **Are the reconcilers running in this daemon?**
+
+   ```bash
+   outpost cluster control-plane status --json | jq '{nodeaddr_reconciler_running,
+     nodeaddr_last_run_at, nodeaddr_last_error}'
+   ```
+
+   - `nodeaddr_reconciler_running: false` — they never started. Check the
+     daemon log for `control-plane reconcilers:`; it says which of the two
+     reasons applies (no `control_plane_kubeconfig` recorded, or still
+     waiting on the control-plane container to write one).
+   - `running: true` with a non-empty `nodeaddr_last_error` — they are
+     running and failing. The error names the cause (usually an apiserver
+     that is not serving yet, or a kubeconfig pointing at the wrong port).
+
+4. **Confirm the fix landed.** Each reconciled worker gets a node-unique
+   loopback address in `127.0.1.0`–`127.0.255.255` (never `127.0.0.1`, which
+   would collapse k3s's routing trie onto one arbitrary node):
+
+   ```bash
+   kubectl --kubeconfig ~/.kube/outpost-control-plane/k3s.yaml \
+     get nodes -o custom-columns=\
+   'NAME:.metadata.name,EXTERNAL:.status.addresses[?(@.type=="ExternalIP")].address'
+   kubectl --kubeconfig ~/.kube/outpost-control-plane/k3s.yaml top nodes
+   ```
+
+Note that virtual-kubelet nodes are skipped by design and correctly have no
+`ExternalIP` — they run no kubelet to dial.
+
+### Upgrading the control-plane host's daemon
+
+Upgrading the daemon on a control-plane host restarts a tunnel server other
+machines depend on, so it is a cluster-wide event. It does **not** destroy the
+cluster: the k3s data volume is kept across the restart, and workers reconnect
+on their own once the tunnel is back.
+
+Build from the source tree and hand the binary to the daemon's own upgrade
+path, which probes the candidate, keeps a rollback copy, swaps atomically, and
+restarts:
+
+```bash
+./scripts/build.sh                     # → ./bin/outpost
+outpost upgrade --local ./bin/outpost
+```
+
+Then confirm the new daemon reports itself and its reconcilers. Read the
+commit back from `status` (the daemon) rather than `version` (the CLI binary),
+so a swap that did not actually restart the daemon is visible:
+
+```bash
+outpost status --json | jq -r '.build.commit'
+outpost cluster control-plane status --json | jq .nodeaddr_reconciler_running
+```
+
+If the upgrade misbehaves, `outpost rollback` swaps the retained previous
+binary back over the live one.
+
+On a **cold** start the reconcilers do not come up instantly, and that is
+expected: the admin kubeconfig they need is written by the control-plane
+container only after k3s is up, so the daemon logs `control-plane
+reconcilers: waiting for the control-plane container to write its
+kubeconfig` and retries with capped backoff until it appears. Allow a minute
+or two before treating `nodeaddr_reconciler_running: false` as a fault.
+
 ### The tunnel token was rotated
 
 `outpost cluster control-plane token rotate` (or the admin UI's Rotate

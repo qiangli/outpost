@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/qiangli/outpost/internal/agent/nodeaddr"
 	"github.com/qiangli/outpost/internal/agent/runtime"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -55,6 +56,22 @@ type ControlPlaneStatus struct {
 	HasNodeToken bool `json:"has_node_token"`
 	// HasSTCPSecret reports whether an STCP secret credential exists (presence only).
 	HasSTCPSecret bool `json:"has_stcp_secret"`
+
+	// NodeAddrReconcilerRunning reports whether the apiserver→kubelet address
+	// reconciler (internal/agent/nodeaddr) has actually started in this daemon.
+	//
+	// NOT omitempty, on purpose. False is the interesting value: it is the
+	// exact state in which nodes go Ready and schedule pods while every
+	// `kubectl logs` / `exec` / `top nodes` fails, because no Node ever
+	// received the unique loopback ExternalIP the apiserver dials kubelets
+	// through. Hiding a false here would hide the diagnosis.
+	NodeAddrReconcilerRunning bool `json:"nodeaddr_reconciler_running"`
+	// NodeAddrLastRunAt is when its most recent reconcile pass completed.
+	NodeAddrLastRunAt time.Time `json:"nodeaddr_last_run_at,omitzero"`
+	// NodeAddrLastError is its most recent pass error, empty when healthy.
+	// Running-and-failing and never-started are different problems with
+	// different fixes; this is what tells them apart.
+	NodeAddrLastError string `json:"nodeaddr_last_error,omitempty"`
 
 	// CheckedAt is when this status was last measured.
 	CheckedAt time.Time `json:"checked_at,omitzero"`
@@ -127,6 +144,14 @@ func (p *defaultControlPlaneStatusProber) ProbeControlPlaneStatus(ctx context.Co
 	}
 
 	status.JoinEndpoint = p.joinEndpoint()
+
+	// Reconciler liveness, read from the reconciler itself rather than
+	// re-derived here — see nodeaddr.LastStatus for why it is a process-global.
+	if s, ok := nodeaddr.LastStatus(); ok {
+		status.NodeAddrReconcilerRunning = s.Started
+		status.NodeAddrLastRunAt = s.LastRunAt
+		status.NodeAddrLastError = s.LastError
+	}
 
 	// Query node state. A failure here is not fatal; we report what we could
 	// measure and leave nodes empty.

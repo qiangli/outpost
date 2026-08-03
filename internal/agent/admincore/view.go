@@ -57,11 +57,23 @@ type ClusterView struct {
 	// merely joining a cluster. Surfaced because it changes what the host is:
 	// a control-plane host runs a tunnel server other machines depend on, so
 	// restarting it is a cluster-wide event rather than a local one.
-	ControlPlane     bool   `json:"control_plane,omitempty"`
-	TunnelBindAddr   string `json:"tunnel_bind_addr,omitempty"`
-	TunnelBindPort   int    `json:"tunnel_bind_port,omitempty"`
-	HasTunnelToken   bool   `json:"has_tunnel_token,omitempty"`
-	TunnelLANExposed bool   `json:"tunnel_lan_exposed,omitempty"`
+	//
+	// NOT omitempty. This flag has a history of being dropped by config-write
+	// paths (see mergePairing's inverted merge), and an omitempty bool renders
+	// the dropped case and the never-hosted case identically as a missing key —
+	// so `outpost status` answered "is this host the control plane?" with null
+	// either way. An explicit false is the whole point of reporting it.
+	ControlPlane bool `json:"control_plane"`
+	// ControlPlaneKubeconfig is the path to the admin kubeconfig for the plane
+	// this host HOSTS. Reported because it is the input the control-plane
+	// reconcilers resolve at boot: an empty value means they declined to start,
+	// which is directly observable here instead of only in the daemon log. It
+	// is a path, not a credential — the file's contents never leave the host.
+	ControlPlaneKubeconfig string `json:"control_plane_kubeconfig,omitempty"`
+	TunnelBindAddr         string `json:"tunnel_bind_addr,omitempty"`
+	TunnelBindPort         int    `json:"tunnel_bind_port,omitempty"`
+	HasTunnelToken         bool   `json:"has_tunnel_token,omitempty"`
+	TunnelLANExposed       bool   `json:"tunnel_lan_exposed,omitempty"`
 	// JoinEndpoint names the PEER-hosted control plane this host joins, empty
 	// when it joins the cloudbox-hosted one. The address is reportable; the
 	// credential that goes with it is not, so only its presence appears here —
@@ -184,29 +196,30 @@ func toClusterView(fc *conf.FileConfig) ClusterView {
 		// Report the EFFECTIVE state (nil defaults on), not the raw
 		// pointer — the status row / SPA badge should show what the
 		// boot path will actually do.
-		Enabled:            fc.ClusterOn(),
-		PodNetworkMode:     string(podNet.Mode),
-		PodCIDR:            podNet.PodCIDR,
-		Agent:              fc.Cluster.Runtimes.Agent,
-		Virtual:            fc.Cluster.VirtualRuntimes(),
-		APIURL:             fc.Cluster.APIURL,
-		NodeName:           fc.ClusterNodeName(),
-		HasToken:           fc.Cluster.Token != "",
-		HasCA:              len(fc.Cluster.CA) > 0,
-		HasNodeToken:       fc.Cluster.NodeToken != "",
-		HasSTCPSecret:      fc.Cluster.STCPSecret != "",
-		K8sAPIPort:         fc.Cluster.K8sAPIPort,
-		ControlPlane:       fc.Cluster.ControlPlaneOn(),
-		TunnelBindAddr:     cpBindAddr,
-		TunnelBindPort:     cpBindPort,
-		HasTunnelToken:     fc.Cluster.TunnelToken != "",
-		TunnelLANExposed:   !isLoopbackIP(cpBindAddr),
-		JoinEndpoint:       fc.Cluster.JoinEndpoint,
-		HasJoinToken:       fc.Cluster.JoinToken != "",
-		HasCloudSTCPSecret: fc.Cluster.CloudSTCPSecret != "",
-		MetricsRemoteURL:   fc.Cluster.MetricsRemoteURL,
-		LogsRemoteURL:      fc.Cluster.LogsRemoteURL,
-		TracesRemoteURL:    fc.Cluster.TracesRemoteURL,
+		Enabled:                fc.ClusterOn(),
+		PodNetworkMode:         string(podNet.Mode),
+		PodCIDR:                podNet.PodCIDR,
+		Agent:                  fc.Cluster.Runtimes.Agent,
+		Virtual:                fc.Cluster.VirtualRuntimes(),
+		APIURL:                 fc.Cluster.APIURL,
+		NodeName:               fc.ClusterNodeName(),
+		HasToken:               fc.Cluster.Token != "",
+		HasCA:                  len(fc.Cluster.CA) > 0,
+		HasNodeToken:           fc.Cluster.NodeToken != "",
+		HasSTCPSecret:          fc.Cluster.STCPSecret != "",
+		K8sAPIPort:             fc.Cluster.K8sAPIPort,
+		ControlPlane:           fc.Cluster.ControlPlaneOn(),
+		ControlPlaneKubeconfig: fc.Cluster.ControlPlaneKubeconfig,
+		TunnelBindAddr:         cpBindAddr,
+		TunnelBindPort:         cpBindPort,
+		HasTunnelToken:         fc.Cluster.TunnelToken != "",
+		TunnelLANExposed:       !isLoopbackIP(cpBindAddr),
+		JoinEndpoint:           fc.Cluster.JoinEndpoint,
+		HasJoinToken:           fc.Cluster.JoinToken != "",
+		HasCloudSTCPSecret:     fc.Cluster.CloudSTCPSecret != "",
+		MetricsRemoteURL:       fc.Cluster.MetricsRemoteURL,
+		LogsRemoteURL:          fc.Cluster.LogsRemoteURL,
+		TracesRemoteURL:        fc.Cluster.TracesRemoteURL,
 	}
 }
 

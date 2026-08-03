@@ -49,9 +49,6 @@ import (
 	"github.com/qiangli/outpost/internal/agent/mcpapi"
 	"github.com/qiangli/outpost/internal/agent/mesh"
 	agentmirror "github.com/qiangli/outpost/internal/agent/mirror"
-	"github.com/qiangli/outpost/internal/agent/nodeaddr"
-	"github.com/qiangli/outpost/internal/agent/nodecap"
-	"github.com/qiangli/outpost/internal/agent/nodegc"
 	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/otel"
 	"github.com/qiangli/outpost/internal/agent/overlaykey"
@@ -73,9 +70,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/warm"
 	"github.com/qiangli/outpost/internal/scheduler"
 	"github.com/qiangli/outpost/internal/telemetry"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 // defaultPortal is the public ai.dhnt.io address used when the user
@@ -3170,16 +3165,10 @@ func rememberControlPlaneKubeconfig(fc *conf.FileConfig, cfgPath, path string) e
 	return conf.SaveFile(cfgPath, fc)
 }
 
-// startControlPlaneReconcilers runs the controllers a PEER-HOSTED control
-// plane needs and cloudbox would otherwise provide
-// (dhnt/docs/dks-control-plane-on-sphere.md).
-//
-// Gated on this host actually hosting the apiserver. These are
-// cluster-wide controllers: running one copy per node would have every
-// node racing to patch every other node. Idempotent, so the race is not
-// corrupting — but it is pointless API load and makes logs unreadable.
-// When cloudbox hosts the plane it runs these itself and outpost must
-// stay out of the way entirely.
+// startControlPlaneReconcilers lives in control_plane_reconcilers.go — it has
+// to survive a kubeconfig that the control-plane container has not written yet,
+// which is a story of its own.
+
 // clusterReport renders this host's Kubernetes participation for the fleet
 // inventory, or nil when it joins no cluster.
 //
@@ -3248,125 +3237,6 @@ func clusterReport(fc *conf.FileConfig, cloudboxBase string) *fleetreg.ClusterIn
 		}
 	}
 	return info
-}
-
-func startControlPlaneReconcilers(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig) {
-	if fc == nil || fc.Cluster == nil || !fc.Cluster.ControlPlaneOn() {
-		return
-	}
-	// The kubeconfig for the plane this host HOSTS — not the one cloudbox
-	// issues for the cluster it joins. Without it there is nothing these
-	// reconcilers can legitimately act on, so they stay off rather than
-	// silently managing the wrong cluster.
-	path := strings.TrimSpace(fc.Cluster.ControlPlaneKubeconfig)
-	if path == "" {
-		slog.Info("control-plane reconcilers: off (set cluster.control_plane_kubeconfig " +
-			"to an admin kubeconfig for the plane this host hosts)")
-		return
-	}
-	kubeCfg, err := clientcmd.BuildConfigFromFlags("", path)
-	if err != nil {
-		slog.Warn("control-plane reconcilers: load kubeconfig", "path", path, "err", err)
-		return
-	}
-	cs, err := kubernetes.NewForConfig(kubeCfg)
-	if err != nil {
-		slog.Warn("control-plane reconcilers: build client", "err", err)
-		return
-	}
-	slog.Info("control-plane reconcilers: starting", "kubeconfig", path)
-
-	// Runtime capability. Node Ready is a kubelet heartbeat, not proof
-	// the runtime can create a sandbox; without this the scheduler places
-	// work on nodes that cannot run it.
-	//
-	// Virtual-kubelet backends have no container runtime of their own to
-	// probe, so they are excluded — by RUNTIME LABEL, never by node name.
-	cap := &nodecap.Reconciler{
-		Client:  cs,
-		Log:     slog.Default(),
-		Include: nodecap.DefaultInclude,
-	}
-	g.Go(func() error { cap.Run(ctx); return nil })
-	slog.Info("control-plane reconcilers: runtime capability canary started")
-
-	// apiserver→kubelet addressing. Without this, nodes go Ready but
-	// `kubectl logs`, `exec`, `port-forward` and metrics all fail — the
-	// cluster looks healthy while the commands people actually use do not
-	// work.
-	//
-	// The port is DERIVED from the node name rather than allocated and
-	// distributed. Cloudbox allocates per host at pairing because it
-	// mediates every join and can hold the pool; a peer-hosted plane has
-	// no such party, so both ends compute the same number independently
-	// (nodeaddr.KubeletPortForNode). That matters because the tunnel
-	// publishes remotePort == localPort — a registry or a config push
-	// would each add a way for the two sides to disagree.
-	addr := &nodeaddr.Reconciler{
-		Client:  cs,
-		PortFor: nodeaddr.DerivedKubeletPort,
-		Log:     slog.Default(),
-	}
-	g.Go(func() error { addr.Run(ctx); return nil })
-	slog.Info("control-plane reconcilers: apiserver→kubelet addressing started")
-
-	// Stale-node garbage collection. A peer worker's `cluster leave`
-	// deliberately cannot delete its own Node object (it holds only a
-	// join token), and every k3s rejoin registers under a new node-id —
-	// so NotReady ghosts accumulate on the hosted plane unless the
-	// control-plane host reaps them. Bounded, oldest-first, 24 h grace,
-	// UID-preconditioned, mass-partition/clock-skew refusals, persisted
-	// delete ledger; see internal/agent/nodegc.
-	//
-	// OUTPOST_NODEGC gates the whole subsystem. Both switches are
-	// ALLOWLISTS, never fail-open: only "live" (or a blank/unset default,
-	// treated as live) authorizes real deletion, and only "dry-run"/
-	// "dryrun"/"dry_run" enters dry run. ANYTHING ELSE — "off", "false",
-	// "0", "no", "disabled", or a typo like "of" or "dryrunn" — disables
-	// the collector entirely. A mistyped disable must never leak into live
-	// deletions, and a mistyped dry-run must never delete for real
-	// (DEFECT 4). Env-only for now: adding a four-surface toggle (file key
-	// + REST + MCP + CLI) would mean editing admincore/mcpapi/conf, which
-	// this change is scoped out of; it is tracked to land as a
-	// cluster.node_gc field routed through admincore.SetBuiltins like
-	// every other toggle. Until then the off switch for unattended node
-	// deletion lives only here — documented in docs/cluster-peer.md.
-	gcMode := strings.ToLower(strings.TrimSpace(os.Getenv("OUTPOST_NODEGC")))
-	gcLive := gcMode == "" || gcMode == "live" || gcMode == "on" || gcMode == "enabled"
-	gcDryRun := gcMode == "dry-run" || gcMode == "dryrun" || gcMode == "dry_run"
-	switch {
-	case !gcLive && !gcDryRun:
-		slog.Info("control-plane reconcilers: stale-node garbage collection disabled",
-			"OUTPOST_NODEGC", gcMode)
-	default:
-		// Fail closed on a missing cache dir: without it there is no
-		// durable ledger, and the collector refuses to delete without one
-		// (DEFECT 3). Surface the resolve error rather than discarding it
-		// and running with a nil ledger.
-		cacheDir, cacheErr := conf.ResolveCacheDir()
-		var gcLedger *nodegc.Ledger
-		if cacheErr != nil || cacheDir == "" {
-			slog.Warn("control-plane reconcilers: no cache dir for nodegc ledger — "+
-				"collector will run READ-ONLY (fail closed, no deletions)",
-				"err", cacheErr)
-		} else {
-			gcLedger = nodegc.NewLedger(filepath.Join(cacheDir, "nodegc.log"))
-		}
-		gc := &nodegc.Collector{
-			Client: cs,
-			Log:    slog.Default(),
-			DryRun: gcDryRun,
-			// SelfHost must match the node HostLabel, which the k3s
-			// entrypoint stamps from fc.AgentName — NOT ClusterNodeName(),
-			// whose cluster.node_name override diverges from HostLabel and
-			// would leave the plane's own agent node unexcluded (DEFECT 5).
-			SelfHost: fc.AgentName,
-			Ledger:   gcLedger,
-		}
-		g.Go(func() error { gc.Run(ctx); return nil })
-		slog.Info("control-plane reconcilers: stale-node garbage collection started",
-			"dry_run", gc.DryRun, "ledger", gcLedger.Path())
-	}
 }
 
 // shouldFetchKubeconfig reports whether the boot path should ask

@@ -172,7 +172,14 @@ type controlPlaneStatusOut struct {
 	HasJoinToken        bool               `json:"has_join_token"`
 	HasNodeToken        bool               `json:"has_node_token"`
 	HasSTCPSecret       bool               `json:"has_stcp_secret"`
-	CheckedAt           int64              `json:"checked_at,omitzero"`
+	// Address-reconciler liveness. Reported because "nodes are Ready but
+	// kubectl logs/exec/top all fail" has exactly two causes with different
+	// fixes — the reconciler never started, or it started and is failing —
+	// and nothing else on this status surface tells them apart.
+	NodeAddrReconcilerRunning bool   `json:"nodeaddr_reconciler_running"`
+	NodeAddrLastRunAt         int64  `json:"nodeaddr_last_run_at,omitzero"`
+	NodeAddrLastError         string `json:"nodeaddr_last_error,omitempty"`
+	CheckedAt                 int64  `json:"checked_at,omitzero"`
 }
 
 type controlPlaneNode struct {
@@ -189,6 +196,10 @@ func toControlPlaneStatusOut(s admincore.ControlPlaneStatus) controlPlaneStatusO
 	if s.CheckedAt.IsZero() {
 		checkedAt = 0
 	}
+	var lastRun int64
+	if !s.NodeAddrLastRunAt.IsZero() {
+		lastRun = s.NodeAddrLastRunAt.Unix()
+	}
 	return controlPlaneStatusOut{
 		Hosted:              s.Hosted,
 		ContainerExists:     s.ContainerExists,
@@ -201,7 +212,12 @@ func toControlPlaneStatusOut(s admincore.ControlPlaneStatus) controlPlaneStatusO
 		HasJoinToken:        s.HasJoinToken,
 		HasNodeToken:        s.HasNodeToken,
 		HasSTCPSecret:       s.HasSTCPSecret,
-		CheckedAt:           checkedAt,
+
+		NodeAddrReconcilerRunning: s.NodeAddrReconcilerRunning,
+		NodeAddrLastRunAt:         lastRun,
+		NodeAddrLastError:         s.NodeAddrLastError,
+
+		CheckedAt: checkedAt,
 	}
 }
 

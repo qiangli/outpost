@@ -163,6 +163,16 @@ type Reconciler struct {
 // Polled rather than watched: the patch is idempotent, so a missed event
 // costs one interval of staleness and nothing else. A watch would add a
 // failure mode (silently dead informer) for no benefit at this scale.
+//
+// LOGGING IS PART OF THE CONTRACT HERE, not decoration. Every reconcile
+// failure used to be logged at Debug, which is below the daemon's default
+// level — so a reconciler that was running and failing every single pass
+// emitted NOTHING, and was indistinguishable in the logs from one that had
+// never started. That ambiguity is what made a control plane with no
+// ExternalIP on any node take far longer to diagnose than it should have. So:
+// one Info line on start (the positive evidence "it is running"), and Warn on
+// the transition into failure and on recovery (the negative evidence), with
+// the steady-state repeats kept at Debug so a long outage cannot flood the log.
 func (r *Reconciler) Run(ctx context.Context) {
 	interval := r.Interval
 	if interval <= 0 {
@@ -172,9 +182,39 @@ func (r *Reconciler) Run(ctx context.Context) {
 	if log == nil {
 		log = slog.Default()
 	}
-	if err := r.Once(ctx); err != nil {
-		log.Debug("nodeaddr: initial reconcile failed (will retry)", "err", err)
+	log.Info("nodeaddr: reconciler started", "interval", interval)
+	setStatus(func(s *Status) { s.Started = true })
+
+	fails := 0
+	pass := func() {
+		err := r.Once(ctx)
+		if err == nil {
+			if fails > 0 {
+				log.Warn("nodeaddr: reconcile recovered", "after_failures", fails)
+			}
+			fails = 0
+			setStatus(func(s *Status) {
+				s.LastRunAt = time.Now()
+				s.LastError = ""
+				s.ConsecutiveFailures = 0
+			})
+			return
+		}
+		fails++
+		if fails == 1 {
+			log.Warn("nodeaddr: reconcile failed — the apiserver cannot reach kubelets "+
+				"until this succeeds (kubectl logs/exec/top will fail)", "err", err)
+		} else {
+			log.Debug("nodeaddr: reconcile still failing", "err", err, "consecutive", fails)
+		}
+		setStatus(func(s *Status) {
+			s.LastRunAt = time.Now()
+			s.LastError = err.Error()
+			s.ConsecutiveFailures = fails
+		})
 	}
+
+	pass()
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -182,9 +222,7 @@ func (r *Reconciler) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := r.Once(ctx); err != nil {
-				log.Debug("nodeaddr: reconcile failed", "err", err)
-			}
+			pass()
 		}
 	}
 }
@@ -268,9 +306,22 @@ func hasAddr(n *corev1.Node, addr string) bool {
 // overwrites InternalIP every ~10s and outright rejects a loopback value
 // there ("nodeIP can't be loopback address"), but it does not manage
 // ExternalIP — that is cloud-controller territory — so this patch
-// sticks. The apiserver must run with
-// --kubelet-preferred-address-types=ExternalIP,InternalIP,... so it
-// prefers this over the unreachable address kubelet reports.
+// sticks.
+//
+// The apiserver and metrics-server both run with
+// --kubelet-preferred-address-types=ExternalIP — ExternalIP ONLY, with no
+// InternalIP/Hostname fallback, and that is not an oversight to be repaired
+// the next time a scrape fails. The address this reconciler publishes is the
+// only one reachable from the control plane: it is the local end of the
+// authenticated FRP tunnel. A node's InternalIP (e.g. an overlay 100.64.x.x)
+// and its Hostname resolve to paths that either do not route from the
+// apiserver's network namespace or bypass the tunnel's authentication
+// entirely. Appending a fallback therefore does not fix a missing ExternalIP;
+// it converts the loud, accurate failure "no address matched types
+// [ExternalIP]" into a silent dial against an address that cannot serve, while
+// weakening the trust boundary. When that error appears, the fix is upstream of
+// here: find out why the reconciler is not running (see cmd/outpost's
+// startControlPlaneReconcilers) — not to widen the list.
 func (r *Reconciler) patch(ctx context.Context, name, addr string, port int) error {
 	patch := map[string]any{
 		"status": map[string]any{
