@@ -114,6 +114,61 @@ func TestResolveCommandRequiresCompleteArtifactDeclaration(t *testing.T) {
 	}
 }
 
+func TestEnsureUsesExecutableAnnotationArtifactInsteadOfHostPATH(t *testing.T) {
+	payload := []byte("release-candidate")
+	archive := tarGzipFixture(t, "bashy", payload)
+	server, sum := artifactServer(t, archive)
+	defer server.Close()
+
+	raw, err := NewNativeProcessBackend(NativeProcessConfig{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	be := raw.(*nativeProcessBackend)
+	be.lookPath = func(name string) (string, error) {
+		return "", fmt.Errorf("host PATH must not resolve %q", name)
+	}
+	var launched launchSpec
+	be.launch = func(_ context.Context, spec launchSpec) (int, error) {
+		launched = spec
+		return 12345, nil
+	}
+	be.alive = func(int) bool { return false }
+
+	pod, _ := makeHelperPod(t, "executable-alias", "executable-alias-uid", "exit")
+	pod.Annotations = map[string]string{
+		NativeExecutableURLAnnotation:    server.URL + "/bashy.tar.gz",
+		NativeExecutableSHA256Annotation: sum,
+		NativeExecutablePathAnnotation:   "bashy",
+	}
+	pod.Spec.Containers[0].Command = []string{"bashy", "-c"}
+	pod.Spec.Containers[0].Args = []string{"echo peer-vk-ok"}
+
+	if err := be.Ensure(context.Background(), pod); err != nil {
+		t.Fatalf("Ensure executable alias Pod: %v", err)
+	}
+	assertArtifactContents(t, launched.Path, payload)
+	if got, want := strings.Join(launched.Args, "\x00"), "-c\x00echo peer-vk-ok"; got != want {
+		t.Fatalf("launch args = %q, want %q", launched.Args, []string{"-c", "echo peer-vk-ok"})
+	}
+}
+
+func TestResolveCommandRejectsConflictingArtifactAnnotationNames(t *testing.T) {
+	raw, err := NewNativeProcessBackend(NativeProcessConfig{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod, _ := makeHelperPod(t, "artifact-conflict", "artifact-conflict-uid", "exit")
+	pod.Annotations = map[string]string{
+		NativeArtifactURLAnnotation:   "https://example.test/one.tar.gz",
+		NativeExecutableURLAnnotation: "https://example.test/two.tar.gz",
+	}
+	_, err = raw.(*nativeProcessBackend).resolveCommand(context.Background(), pod, "bashy")
+	if err == nil || !strings.Contains(err.Error(), "conflicting") {
+		t.Fatalf("resolveCommand conflict error = %v, want conflicting annotations", err)
+	}
+}
+
 func TestResolveCommandRejectsMissingCredentialProfile(t *testing.T) {
 	raw, err := NewNativeProcessBackend(NativeProcessConfig{
 		DataDir: t.TempDir(),

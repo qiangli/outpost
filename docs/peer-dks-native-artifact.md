@@ -28,6 +28,11 @@ Four Pod annotations drive artifact delivery (unchanged names):
 | `outpost.dhnt.io/native-artifact-path` | single-member: the one file; **tree mode: the entrypoint's slash path within the tree** |
 | `outpost.dhnt.io/native-artifact-credential-profile` | optional runtime-only Secret name for a private artifact (AWS SigV4) |
 
+The DKS workload vocabulary aliases the first three names as
+`outpost.dhnt.io/executable-{url,sha256,path}`. The provider treats those as
+the same declaration. If a Pod supplies both forms, their values must agree;
+conflicting declarations are rejected instead of falling back to host PATH.
+
 New in this sprint:
 
 | annotation | meaning |

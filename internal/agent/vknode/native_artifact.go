@@ -38,6 +38,15 @@ const (
 	// slash-separated path within the extracted tree (e.g. "bin/runner").
 	NativeArtifactPathAnnotation = "outpost.dhnt.io/native-artifact-path"
 
+	// NativeExecutable*Annotation are compatibility names used by the DKS
+	// workload API.  Executable is the user-facing noun there, while
+	// native-artifact is the original vknode implementation noun.  Both name
+	// the same verified archive contract; accepting the aliases here keeps a
+	// Pod from accidentally falling back to host PATH.
+	NativeExecutableURLAnnotation    = "outpost.dhnt.io/executable-url"
+	NativeExecutableSHA256Annotation = "outpost.dhnt.io/executable-sha256"
+	NativeExecutablePathAnnotation   = "outpost.dhnt.io/executable-path"
+
 	// NativeArtifactTreeAnnotation, when "true", materializes the ENTIRE archive
 	// tree on the host (preserving its relative layout) instead of a single
 	// member. NativeArtifactPathAnnotation then names the entrypoint executable
@@ -63,9 +72,21 @@ var (
 )
 
 func (b *nativeProcessBackend) resolveCommand(ctx context.Context, pod *corev1.Pod, name string) (string, error) {
-	artifactURL := strings.TrimSpace(pod.Annotations[NativeArtifactURLAnnotation])
-	artifactSHA := strings.TrimSpace(pod.Annotations[NativeArtifactSHA256Annotation])
-	artifactPath := strings.TrimSpace(pod.Annotations[NativeArtifactPathAnnotation])
+	artifactURL, err := nativeArtifactAnnotation(pod.Annotations,
+		NativeArtifactURLAnnotation, NativeExecutableURLAnnotation)
+	if err != nil {
+		return "", err
+	}
+	artifactSHA, err := nativeArtifactAnnotation(pod.Annotations,
+		NativeArtifactSHA256Annotation, NativeExecutableSHA256Annotation)
+	if err != nil {
+		return "", err
+	}
+	artifactPath, err := nativeArtifactAnnotation(pod.Annotations,
+		NativeArtifactPathAnnotation, NativeExecutablePathAnnotation)
+	if err != nil {
+		return "", err
+	}
 	profileName := strings.TrimSpace(pod.Annotations[NativeArtifactCredentialProfileAnnotation])
 	treeMode := strings.EqualFold(strings.TrimSpace(pod.Annotations[NativeArtifactTreeAnnotation]), "true")
 	if artifactURL == "" && artifactSHA == "" && artifactPath == "" && profileName == "" && !treeMode {
@@ -95,6 +116,18 @@ func (b *nativeProcessBackend) resolveCommand(ctx context.Context, pod *corev1.P
 	return b.materializeNativeArtifactWithCredential(
 		ctx, artifactURL, artifactSHA, artifactPath, profile,
 	)
+}
+
+func nativeArtifactAnnotation(annotations map[string]string, canonical, alias string) (string, error) {
+	canonicalValue := strings.TrimSpace(annotations[canonical])
+	aliasValue := strings.TrimSpace(annotations[alias])
+	if canonicalValue != "" && aliasValue != "" && canonicalValue != aliasValue {
+		return "", fmt.Errorf("vknode: conflicting %s and %s annotations", canonical, alias)
+	}
+	if canonicalValue != "" {
+		return canonicalValue, nil
+	}
+	return aliasValue, nil
 }
 
 func (b *nativeProcessBackend) materializeNativeArtifact(ctx context.Context, rawURL, wantSHA, member string) (string, error) {
