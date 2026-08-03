@@ -986,8 +986,7 @@ func startCmd() *cobra.Command {
 				warmExec     *warm.Executor
 				hostMemTotal uint64
 			)
-			if fc.WarmServingOn() {
-				hostMemTotal = sysinfo.Collect("").MemTotalBytes
+			if fc.WarmServingOn() || (fc.ClusterOn() && len(fc.Cluster.VirtualRuntimes()) > 0) {
 				var sysloadPath string
 				if cd, _ := conf.ResolveCacheDir(); cd != "" {
 					sysloadPath = filepath.Join(cd, "sysload.json")
@@ -996,6 +995,9 @@ func startCmd() *cobra.Command {
 					Path: sysloadPath,
 					Frac: fc.WarmBudgetFracOrDefault(),
 				})
+			}
+			if fc.WarmServingOn() {
+				hostMemTotal = sysinfo.Collect("").MemTotalBytes
 				// The executor drives the local Ollama daemon (+ the shard
 				// manager, when wired) and persists the desired warm set
 				// through admincore. Only on a paired host — cloudbox is what
@@ -2134,7 +2136,7 @@ func startCmd() *cobra.Command {
 					// restarted the daemon. Runs in the background so bringing
 					// a cold runtime up never holds the tunnel or admin UI.
 					g.Go(func() error {
-						joinClusterWithRetry(gctx, g, fc, cfgPath, apps, peerPlaneSvc)
+						joinClusterWithRetry(gctx, g, fc, cfgPath, apps, peerPlaneSvc, loadProfiler)
 						return nil
 					})
 				}
@@ -2702,13 +2704,13 @@ func sandboxPrewarmImages(fc *conf.FileConfig) []string {
 //
 // Returns once the join succeeds; startClusterRunner owns the long-lived
 // goroutines from that point on.
-func joinClusterWithRetry(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service) {
+func joinClusterWithRetry(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service, loadProfiler *sysload.Profiler) {
 	const (
 		firstDelay = 5 * time.Second
 		maxDelay   = 2 * time.Minute
 	)
 	for attempt, delay := 1, firstDelay; ; attempt++ {
-		err := startClusterRunner(ctx, g, fc, cfgPath, apps, peerSvc)
+		err := startClusterRunner(ctx, g, fc, cfgPath, apps, peerSvc, loadProfiler)
 		if err == nil {
 			return
 		}
@@ -2728,7 +2730,7 @@ func joinClusterWithRetry(ctx context.Context, g *errgroup.Group, fc *conf.FileC
 	}
 }
 
-func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service) error {
+func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service, loadProfiler *sysload.Profiler) error {
 	nodeBase := fc.ClusterNodeName()
 	if nodeBase == "" {
 		return errors.New("ClusterNodeName empty (agent_name unset?)")
@@ -2967,6 +2969,15 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 				func(runCtx context.Context) error {
 					slog.Info("cluster: virtual node joining", "node", spec.node, "host", hostName,
 						"backend", spec.mode, "apiserver", kubeCfg.Host, "podman_socket", podmanSock)
+					var hostLoad func() vknode.HostLoad
+					if loadProfiler != nil {
+						hostLoad = func() vknode.HostLoad {
+							sample := loadProfiler.Current()
+							return vknode.HostLoad{
+								At: sample.At, CPUPercent: sample.CPUPercent, MemAvailFrac: sample.MemAvailFrac,
+							}
+						}
+					}
 					return vknode.Run(runCtx, vknode.RunOptions{
 						NodeName:        spec.node,
 						PodmanSocket:    podmanSock,
@@ -2975,6 +2986,7 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 						Access:          access,
 						TransientApps:   appsAsTransient{apps},
 						ExtraNodeLabels: spec.labels,
+						HostLoad:        hostLoad,
 					})
 				})
 			return nil

@@ -10,6 +10,8 @@ import (
 
 	"github.com/qiangli/outpost/internal/agent/sysinfo"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestBuildNode_BasicShape(t *testing.T) {
@@ -318,6 +320,105 @@ func TestNodeProvider_SetPinger(t *testing.T) {
 	np.SetPinger(func(_ context.Context) error { return nil })
 	if err := np.Ping(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNodeProvider_ResourceAccounting(t *testing.T) {
+	n := BuildNodeFromInfo("shared-host-vk-podman", nil, sysinfo.Info{
+		CPUCount: 10, MemTotalBytes: 1000,
+	})
+	now := time.Now()
+	np := NewNodeProvider(nil, n)
+	np.SetResourceAccounting(func() HostLoad {
+		return HostLoad{At: now, CPUPercent: 40, MemAvailFrac: 0.25}
+	}, func() corev1.ResourceList {
+		return corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("2"),
+			corev1.ResourceMemory: resource.MustParse("100"),
+		}
+	})
+
+	np.refreshAllocatable(now)
+	if got := n.Status.Allocatable.Cpu().MilliValue(); got != 8000 {
+		t.Errorf("allocatable CPU = %dm, want 8000m (6000m host-free + 2000m own requests)", got)
+	}
+	if got := n.Status.Allocatable.Memory().Value(); got != 350 {
+		t.Errorf("allocatable memory = %d, want 350 (250 host-free + 100 own requests)", got)
+	}
+	if got := n.Status.Capacity.Cpu().MilliValue(); got != 10000 {
+		t.Errorf("physical CPU capacity was mutated: %dm", got)
+	}
+	if got := n.Status.Capacity.Memory().Value(); got != 1000 {
+		t.Errorf("physical memory capacity was mutated: %d", got)
+	}
+}
+
+func TestNodeProvider_ResourceAccountingStaleFailsOpenAndClamps(t *testing.T) {
+	n := BuildNodeFromInfo("shared-host-vk-native", nil, sysinfo.Info{
+		CPUCount: 4, MemTotalBytes: 1000,
+	})
+	now := time.Now()
+	load := HostLoad{At: now.Add(-4 * staticHeartbeat), CPUPercent: 99, MemAvailFrac: 0.01}
+	np := NewNodeProvider(nil, n)
+	np.SetResourceAccounting(func() HostLoad { return load }, func() corev1.ResourceList {
+		return corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("8"),
+			corev1.ResourceMemory: resource.MustParse("2Ki"),
+		}
+	})
+
+	np.refreshAllocatable(now)
+	assertAllocatableMirrorsCapacity(t, n)
+
+	// A fresh sample activates accounting; requests larger than physical
+	// capacity are clamped instead of manufacturing resources.
+	load.At = now
+	np.refreshAllocatable(now)
+	assertAllocatableMirrorsCapacity(t, n)
+}
+
+func TestProviderRequestedResources(t *testing.T) {
+	p := NewProviderWithBackend(nil)
+	p.pods["ns/running"] = &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "running"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+					corev1.ResourceCPU: resource.MustParse("500m"), corev1.ResourceMemory: resource.MustParse("100Mi"),
+				}}},
+				{Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+					corev1.ResourceCPU: resource.MustParse("250m"), corev1.ResourceMemory: resource.MustParse("50Mi"),
+				}}},
+			},
+			InitContainers: []corev1.Container{
+				{Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+					corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("20Mi"),
+				}}},
+				{Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+					corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("200Mi"),
+				}}},
+			},
+			Overhead: corev1.ResourceList{
+				corev1.ResourceCPU: resource.MustParse("50m"), corev1.ResourceMemory: resource.MustParse("10Mi"),
+			},
+		},
+	}
+	p.pods["ns/done"] = &corev1.Pod{
+		Status: corev1.PodStatus{Phase: corev1.PodSucceeded},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("20")},
+		}}}},
+	}
+
+	got := p.RequestedResources()
+	// App sum is 750m/150Mi; init max is max PER RESOURCE = 1 CPU/200Mi;
+	// pod max is 1 CPU/200Mi, then overhead yields 1050m/210Mi.
+	if got.Cpu().MilliValue() != 1050 {
+		t.Errorf("CPU requests = %s, want 1050m", got.Cpu().String())
+	}
+	wantMemory := resource.MustParse("210Mi")
+	if got.Memory().Value() != wantMemory.Value() {
+		t.Errorf("memory requests = %s, want 210Mi", got.Memory().String())
 	}
 }
 

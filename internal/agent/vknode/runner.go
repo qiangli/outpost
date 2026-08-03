@@ -77,6 +77,11 @@ type RunOptions struct {
 	// (cluster works at the apiserver layer but no cloudbox-fronted
 	// pod URL).
 	TransientApps TransientApps
+
+	// HostLoad reports current pressure on the physical host shared by this
+	// and any sibling vk venues. When nil or stale, Allocatable falls back to
+	// static Capacity. Capacity itself is never reduced.
+	HostLoad func() HostLoad
 }
 
 // Run blocks until ctx is canceled (or any sub-controller errors out),
@@ -173,8 +178,10 @@ func Run(ctx context.Context, opts RunOptions) error {
 	rec := newEventRecorder(client.CoreV1())
 
 	nodeObj := BuildNode(opts.NodeName, opts.ExtraNodeLabels)
+	nodeProvider := NewNodeProvider(prov.Client(), nodeObj)
+	nodeProvider.SetResourceAccounting(opts.HostLoad, prov.RequestedResources)
 	nc, err := node.NewNodeController(
-		NewNodeProvider(prov.Client(), nodeObj),
+		nodeProvider,
 		nodeObj,
 		client.CoreV1().Nodes(),
 	)

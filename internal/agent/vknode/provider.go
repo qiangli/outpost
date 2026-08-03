@@ -85,6 +85,71 @@ func NewProviderWithBackend(b Backend) *Provider {
 // NodeProvider can share the same socket connection.
 func (p *Provider) Client() *Client { return p.client }
 
+// RequestedResources returns CPU and memory requested by this virtual node's
+// active pods. NodeProvider adds these quantities back to observed host-free
+// capacity before the scheduler performs its own bound-pod subtraction.
+func (p *Provider) RequestedResources() corev1.ResourceList {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	total := corev1.ResourceList{}
+	for _, pod := range p.pods {
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			continue
+		}
+		addResourceList(total, podRequests(pod))
+	}
+	return total
+}
+
+func podRequests(pod *corev1.Pod) corev1.ResourceList {
+	requests := corev1.ResourceList{}
+	for _, c := range pod.Spec.Containers {
+		addResourceList(requests, c.Resources.Requests)
+	}
+	// Init containers run sequentially, so ordinary init contribution is a
+	// maximum rather than a sum. Restartable init containers are sidecars:
+	// each remains active for later init containers and the app containers.
+	// This mirrors Kubernetes' native Pod request accounting.
+	initMax := corev1.ResourceList{}
+	restartableInit := corev1.ResourceList{}
+	for _, c := range pod.Spec.InitContainers {
+		if c.RestartPolicy != nil && *c.RestartPolicy == corev1.ContainerRestartPolicyAlways {
+			addResourceList(restartableInit, c.Resources.Requests)
+			addResourceList(requests, c.Resources.Requests)
+			maxResourceList(initMax, restartableInit)
+			continue
+		}
+		withSidecars := corev1.ResourceList{}
+		addResourceList(withSidecars, c.Resources.Requests)
+		addResourceList(withSidecars, restartableInit)
+		maxResourceList(initMax, withSidecars)
+	}
+	maxResourceList(requests, initMax)
+	if pod.Spec.Overhead != nil {
+		addResourceList(requests, pod.Spec.Overhead)
+	}
+	return requests
+}
+
+func addResourceList(dst, src corev1.ResourceList) {
+	for _, name := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
+		q := dst[name]
+		q.Add(src[name])
+		dst[name] = q
+	}
+}
+
+func maxResourceList(dst, src corev1.ResourceList) {
+	for _, name := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
+		source := src[name]
+		current := dst[name]
+		if source.Cmp(current) > 0 {
+			dst[name] = source.DeepCopy()
+		}
+	}
+}
+
 // SetAccess installs the namespace-access gate. Pass nil to disable
 // the check (dev/single-tenant mode). Called once at boot from
 // startClusterRunner with an Access built from the outpost owner's

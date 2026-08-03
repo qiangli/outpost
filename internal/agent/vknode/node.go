@@ -3,6 +3,7 @@ package vknode
 import (
 	"context"
 	"maps"
+	"math"
 	"runtime"
 	"strings"
 	"time"
@@ -56,10 +57,23 @@ const (
 // updates (capacity, conditions) that we want the apiserver to see when
 // they change.
 type NodeProvider struct {
-	client    *Client
-	node      *corev1.Node
-	pinger    func(context.Context) error
-	heartbeat time.Duration
+	client        *Client
+	node          *corev1.Node
+	pinger        func(context.Context) error
+	heartbeat     time.Duration
+	hostLoad      func() HostLoad
+	requested     func() corev1.ResourceList
+	loadFreshness time.Duration
+}
+
+// HostLoad is the current physical-host pressure used to keep a virtual
+// node's Allocatable resources honest. Negative percentages mean unknown.
+// At is mandatory: stale measurements fail open to the node's static capacity
+// rather than stranding work because a sampler stopped.
+type HostLoad struct {
+	At           time.Time
+	CPUPercent   float64
+	MemAvailFrac float64
 }
 
 // NewNodeProvider returns a NodeProvider sharing the given libpod
@@ -76,11 +90,30 @@ func NewNodeProvider(c *Client, node *corev1.Node) *NodeProvider {
 		node:      node,
 		pinger:    func(_ context.Context) error { return nil },
 		heartbeat: staticHeartbeat,
+		// Three missed samples is long enough to absorb scheduling jitter but
+		// short enough not to advertise yesterday's pressure after a sampler
+		// failure. The production sampler runs every 30 seconds.
+		loadFreshness: 3 * staticHeartbeat,
 	}
 	if c != nil {
 		np.pinger = c.Ping
 	}
 	return np
+}
+
+// SetResourceAccounting enables current-utilization-aware Allocatable
+// reporting. load describes the whole physical host; requested returns this
+// virtual node's active pod requests. Adding the latter back is essential:
+// the Kubernetes scheduler subtracts bound pod requests from Allocatable, so
+// publishing host-free resources alone would count this node's pods twice.
+//
+// Multiple vk venues on one host still have a simultaneous-placement race:
+// Kubernetes does not have a native cross-Node shared-resource primitive.
+// Once a sibling venue starts consuming resources, however, its utilization
+// is visible to every venue at the next sample and reduces their headroom.
+func (np *NodeProvider) SetResourceAccounting(load func() HostLoad, requested func() corev1.ResourceList) {
+	np.hostLoad = load
+	np.requested = requested
 }
 
 // SetPinger replaces the health-check function used by Ping. When the
@@ -115,7 +148,9 @@ func (np *NodeProvider) runStatusLoop(ctx context.Context, cb func(*corev1.Node)
 	defer tick.Stop()
 
 	push := func() {
-		now := metav1.NewTime(time.Now())
+		nowTime := time.Now()
+		now := metav1.NewTime(nowTime)
+		np.refreshAllocatable(nowTime)
 		for i := range np.node.Status.Conditions {
 			c := &np.node.Status.Conditions[i]
 			c.LastHeartbeatTime = now
@@ -135,6 +170,53 @@ func (np *NodeProvider) runStatusLoop(ctx context.Context, cb func(*corev1.Node)
 			push()
 		}
 	}
+}
+
+func (np *NodeProvider) refreshAllocatable(now time.Time) {
+	// Fail open when accounting is disabled, has not sampled yet, or stopped
+	// sampling. A dead optional profiler must never permanently strand pods.
+	if np.hostLoad == nil {
+		np.node.Status.Allocatable = maps.Clone(np.node.Status.Capacity)
+		return
+	}
+	load := np.hostLoad()
+	age := now.Sub(load.At)
+	if load.At.IsZero() || age < -np.loadFreshness || age > np.loadFreshness {
+		np.node.Status.Allocatable = maps.Clone(np.node.Status.Capacity)
+		return
+	}
+
+	alloc := maps.Clone(np.node.Status.Capacity)
+	var requested corev1.ResourceList
+	if np.requested != nil {
+		requested = np.requested()
+	}
+	if load.CPUPercent >= 0 && load.CPUPercent <= 100 {
+		total := np.node.Status.Capacity.Cpu().MilliValue()
+		free := int64(math.Floor(float64(total) * (100 - load.CPUPercent) / 100))
+		alloc[corev1.ResourceCPU] = *resource.NewMilliQuantity(
+			availableWithRequests(free, requested.Cpu().MilliValue(), total), resource.DecimalSI)
+	}
+	if load.MemAvailFrac >= 0 && load.MemAvailFrac <= 1 {
+		total := np.node.Status.Capacity.Memory().Value()
+		free := int64(math.Floor(float64(total) * load.MemAvailFrac))
+		alloc[corev1.ResourceMemory] = *resource.NewQuantity(
+			availableWithRequests(free, requested.Memory().Value(), total), resource.BinarySI)
+	}
+	np.node.Status.Allocatable = alloc
+}
+
+func availableWithRequests(free, requested, capacity int64) int64 {
+	if free < 0 {
+		free = 0
+	}
+	if free >= capacity || requested >= capacity-free {
+		return capacity
+	}
+	if requested <= 0 {
+		return free
+	}
+	return free + requested
 }
 
 // BuildNode constructs the initial *corev1.Node the NodeController
