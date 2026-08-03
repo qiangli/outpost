@@ -202,9 +202,14 @@ locally:
   bundle's token at the source: on the hosting machine
   `kubectl -n outpost-system delete secret outpost-vk-token`, re-mint,
   re-join every vk worker.
-- **Apiserver address.** The node dials `https://127.0.0.1:<k8s_api_port>`
-  (default 6443) — the same loopback visitor the k3s agent runtime binds — never
-  a cloudbox public URL.
+- **Apiserver address.** With agent and virtual runtimes enabled together, the
+  physical agent's container publishes its authenticated peer visitor only on
+  host loopback at `https://127.0.0.1:16444`; host-side virtual nodes dial that
+  bridge. This is deliberately separate from host 6443 (which may belong to a
+  cloud visitor) and the hosted-plane port 16443. The bridge is absent on the
+  cloudbox path. A virtual-only peer join continues to use
+  `https://127.0.0.1:<k8s_api_port>` and therefore requires its own host-side
+  visitor. Neither path dials a cloudbox public URL.
 - **Fail-closed namespace admission.** `cluster.allowed_namespaces` is the
   peer-local admission policy, enforced fail-closed: a pod whose namespace is
   not listed is refused. An **empty** list denies every pod, on purpose — a peer

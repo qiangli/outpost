@@ -12,6 +12,7 @@ set -eu
 : "${OUTPOST_CLOUDBOX_HOST:?required: e.g. ai.dhnt.io}"
 : "${OUTPOST_CLOUDBOX_PORT:=443}"
 : "${OUTPOST_API_PORT:=6443}"
+: "${OUTPOST_API_BIND_ADDR:=127.0.0.1}"
 # WHERE THE CONTROL PLANE LIVES is configuration, not a code path. frpc
 # always dials an frps and always binds 127.0.0.1:${OUTPOST_API_PORT} for
 # the agent; only the endpoint and transport differ:
@@ -172,7 +173,7 @@ fi
 # public URL. It now lives below, past the frpc-start + visitor-bind waits.
 
 # Matrix-tunnel client (frpc) — connects to cloudbox via WSS and
-# opens an STCP visitor that binds 127.0.0.1:${OUTPOST_API_PORT}
+# opens an STCP visitor that normally binds 127.0.0.1:${OUTPOST_API_PORT}
 # locally, tunneling each accepted TCP conn to cloudbox's embedded
 # apiserver. This is what makes k3s-agent's --server=https://127.0.0.1:6443
 # actually reach the apiserver behind cloudbox's NAT.
@@ -211,7 +212,7 @@ type = "stcp"
 serverUser = "${OUTPOST_FRP_SERVER_USER}"
 serverName = "k3s-apiserver"
 secretKey = "${OUTPOST_STCP_SECRET}"
-bindAddr = "127.0.0.1"
+bindAddr = "${OUTPOST_API_BIND_ADDR}"
 bindPort = ${OUTPOST_API_PORT}
 EOF
 

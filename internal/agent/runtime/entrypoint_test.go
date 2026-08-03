@@ -46,3 +46,17 @@ func TestEmbeddedEntrypointReconcilesIPAMBeforeK3s(t *testing.T) {
 		t.Fatal("stale IPAM must be reconciled before k3s starts")
 	}
 }
+
+func TestEmbeddedEntrypointAPIBindDefaultsToContainerLoopback(t *testing.T) {
+	data, err := fs.ReadFile(imageFS, "image/entrypoint.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(data)
+	if !strings.Contains(script, `: "${OUTPOST_API_BIND_ADDR:=127.0.0.1}"`) {
+		t.Fatal("entrypoint does not default the visitor to container loopback")
+	}
+	if !strings.Contains(script, `bindAddr = "${OUTPOST_API_BIND_ADDR}"`) {
+		t.Fatal("entrypoint does not thread the bridge-only bind override into frpc")
+	}
+}

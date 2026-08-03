@@ -108,6 +108,16 @@ type Options struct {
 	// defaults to 6443.
 	APIPort int
 
+	// APIBridgeHostPort publishes the in-container apiserver visitor on this
+	// port of the HOST's loopback interface. Peer-plane virtual-kubelet
+	// runners use it to reach the exact same authenticated visitor as the
+	// physical agent. Zero preserves the historical cloudbox behavior: no
+	// host port is published and the visitor remains container-local.
+	//
+	// The host bind address is deliberately not configurable. The peer
+	// apiserver is never a LAN service.
+	APIBridgeHostPort int
+
 	// KubeletPort is the per-outpost port cloudbox allocated at
 	// pairing time (fc.Cluster.KubeletProxyPort). Three things ride
 	// on this same number so the apiserver→kubelet hop terminates:
@@ -193,6 +203,12 @@ type Options struct {
 // find. Built by `outpost cluster build-runtime`; can be overridden
 // via Options.Image.
 const DefaultImage = "outpost-runtime:dev"
+
+// DefaultPeerAPIBridgePort is the host-loopback endpoint through which
+// host-side virtual nodes reach the peer apiserver visitor inside the agent
+// runtime container. It is distinct from both the visitor's in-container
+// 6443 and the hosted control plane's host-side 16443.
+const DefaultPeerAPIBridgePort = 16444
 
 const (
 	nodeIDVolumeSuffix          = "node-id"
@@ -305,6 +321,16 @@ func Up(ctx context.Context, opts Options) error {
 		// (the latter since the --cgroupns flag was added).
 		"--cgroupns=host",
 	}
+	if opts.APIBridgeHostPort != 0 {
+		containerAPIPort := opts.APIPort
+		if containerAPIPort == 0 {
+			containerAPIPort = 6443
+		}
+		args = append(args,
+			"-p", fmt.Sprintf("127.0.0.1:%d:%d", opts.APIBridgeHostPort, containerAPIPort),
+			"-e", "OUTPOST_API_BIND_ADDR=0.0.0.0",
+		)
+	}
 	for _, mount := range persistentVolumeMounts(opts.AgentName) {
 		args = append(args, "-v", mount)
 	}
@@ -392,21 +418,22 @@ func Up(ctx context.Context, opts Options) error {
 }
 
 type fingerprintInput struct {
-	AgentName     string
-	HostName      string
-	ImageIdentity string
-	NodeToken     string
-	APIServer     string
-	CloudboxHost  string
-	CloudboxPort  int
-	STCPSecret    string
-	MatrixToken   string
-	FRPProtocol   string
-	FRPServerUser string
-	APIPort       int
-	KubeletPort   int
-	PodCIDR       string
-	OverlayLogin  string
+	AgentName         string
+	HostName          string
+	ImageIdentity     string
+	NodeToken         string
+	APIServer         string
+	CloudboxHost      string
+	CloudboxPort      int
+	STCPSecret        string
+	MatrixToken       string
+	FRPProtocol       string
+	FRPServerUser     string
+	APIPort           int
+	APIBridgeHostPort int
+	KubeletPort       int
+	PodCIDR           string
+	OverlayLogin      string
 	// PeerFlannel is part of the fingerprint because it changes the
 	// container's CNI shape: flipping it without recreating would leave
 	// a container that still has the old mode's conflist on disk.
@@ -444,6 +471,7 @@ func runtimeFingerprint(ctx context.Context, bin, image string, opts Options) (s
 		FRPProtocol:          opts.FRPProtocol,
 		FRPServerUser:        opts.FRPServerUser,
 		APIPort:              opts.APIPort,
+		APIBridgeHostPort:    opts.APIBridgeHostPort,
 		KubeletPort:          opts.KubeletPort,
 		PodCIDR:              opts.PodCIDR,
 		OverlayLogin:         opts.OverlayLoginServer,

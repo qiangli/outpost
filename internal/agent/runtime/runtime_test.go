@@ -155,6 +155,39 @@ func TestUpFirstBootDoesNotMarkIPAMRecovery(t *testing.T) {
 	}
 }
 
+func TestUpPeerAPIBridgePublishesHostLoopbackOnly(t *testing.T) {
+	h := newRuntimeHarness(t)
+	opts := h.options()
+	opts.APIBridgeHostPort = DefaultPeerAPIBridgePort
+
+	if err := Up(context.Background(), opts); err != nil {
+		t.Fatalf("Up() error = %v", err)
+	}
+	run := commandStarting(t, h.commands(), "run ")
+	if want := "-p 127.0.0.1:16444:6443"; !strings.Contains(run, want) {
+		t.Fatalf("peer API bridge missing loopback publication %q: %s", want, run)
+	}
+	if !strings.Contains(run, "-e OUTPOST_API_BIND_ADDR=0.0.0.0") {
+		t.Fatalf("peer API visitor is not reachable from container NAT: %s", run)
+	}
+	for _, forbidden := range []string{"-p 0.0.0.0:16444:6443", "-p :16444:6443"} {
+		if strings.Contains(run, forbidden) {
+			t.Fatalf("peer API bridge escaped host loopback (%q): %s", forbidden, run)
+		}
+	}
+}
+
+func TestUpCloudPathDoesNotPublishAPIBridge(t *testing.T) {
+	h := newRuntimeHarness(t)
+	if err := Up(context.Background(), h.options()); err != nil {
+		t.Fatalf("Up() error = %v", err)
+	}
+	run := commandStarting(t, h.commands(), "run ")
+	if strings.Contains(run, "OUTPOST_API_BIND_ADDR") || strings.Contains(run, "127.0.0.1:16444") {
+		t.Fatalf("cloud runtime unexpectedly published peer API bridge: %s", run)
+	}
+}
+
 func TestUpForceRecreateMarksIPAMRecovery(t *testing.T) {
 	h := newRuntimeHarness(t)
 	opts := h.options()

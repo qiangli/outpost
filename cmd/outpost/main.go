@@ -2312,6 +2312,13 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 		OverlayAuthKey:     cc.OverlayAuthKey,
 		PeerFlannel:        cc.JoinsPeerPlane(),
 	}
+	if cc.JoinsPeerPlane() && len(cc.VirtualRuntimes()) > 0 {
+		// The authenticated peer visitor lives inside the physical agent's
+		// runtime container. Publish that exact listener back to host loopback
+		// for the host-side vk runners; host 6443 may already belong to the
+		// legacy cloud visitor, and hosted planes reserve 16443.
+		rtOpts.APIBridgeHostPort = runtime.DefaultPeerAPIBridgePort
+	}
 
 	// A peer-joined worker needs a tailnet identity, and JoinPeerPlane
 	// deliberately CLEARS the cloudbox overlay trio at join time (they
@@ -2770,7 +2777,7 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 		// agent runtime already uses, and a fail-closed peer-local namespace
 		// policy. None of the cloudbox-only refreshers run on this path.
 		cred := vknode.PeerCredential{
-			APIURL:     cc.LocalAPIURL(),
+			APIURL:     peerVirtualAPIURL(cc),
 			CA:         cc.CA,
 			Token:      cc.Token,
 			ClientCert: cc.ClientCert,
@@ -2949,25 +2956,27 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 		})
 	}
 
-	// Start only after every backend has initialized successfully. This keeps a
-	// retry from launching a second copy of an earlier runtime when a later
-	// backend fails construction.
+	// Start only after every backend has initialized successfully. Each runner
+	// owns its retry loop: setup succeeding merely means the goroutines were
+	// launched, not that a runner can never lose its apiserver connection or
+	// exit later.
 	for _, spec := range specs {
 		spec := spec
 		g.Go(func() error {
-			slog.Info("cluster: virtual node joining", "node", spec.node, "host", hostName,
-				"backend", spec.mode, "apiserver", kubeCfg.Host, "podman_socket", podmanSock)
-			if err := vknode.Run(ctx, vknode.RunOptions{
-				NodeName:        spec.node,
-				PodmanSocket:    podmanSock,
-				Backend:         spec.backend,
-				Kube:            kubeCfg,
-				Access:          access,
-				TransientApps:   appsAsTransient{apps},
-				ExtraNodeLabels: spec.labels,
-			}); err != nil && !errors.Is(err, context.Canceled) {
-				slog.Warn("cluster: virtual runner exited", "node", spec.node, "backend", spec.mode, "err", err)
-			}
+			runVirtualNodeWithRetry(ctx, spec.node, spec.mode, 5*time.Second, 2*time.Minute,
+				func(runCtx context.Context) error {
+					slog.Info("cluster: virtual node joining", "node", spec.node, "host", hostName,
+						"backend", spec.mode, "apiserver", kubeCfg.Host, "podman_socket", podmanSock)
+					return vknode.Run(runCtx, vknode.RunOptions{
+						NodeName:        spec.node,
+						PodmanSocket:    podmanSock,
+						Backend:         spec.backend,
+						Kube:            kubeCfg,
+						Access:          access,
+						TransientApps:   appsAsTransient{apps},
+						ExtraNodeLabels: spec.labels,
+					})
+				})
 			return nil
 		})
 	}
@@ -3018,6 +3027,32 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 	// cluster it HOSTS. They are started from startControlPlaneTunnel.
 
 	return nil
+}
+
+func runVirtualNodeWithRetry(ctx context.Context, node, backend string, initialBackoff, maxBackoff time.Duration, run func(context.Context) error) {
+	backoff := initialBackoff
+	for attempt := 1; ; attempt++ {
+		err := run(ctx)
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+			return
+		}
+		if err == nil {
+			err = errors.New("runner exited unexpectedly")
+		}
+		slog.Warn("cluster: virtual runner exited; will retry",
+			"node", node, "backend", backend, "err", err,
+			"attempt", attempt, "retry_in", backoff)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
+		case <-timer.C:
+		}
+		backoff = min(backoff*2, maxBackoff)
+	}
 }
 
 // startControlPlaneTunnel runs the frp SERVER on a host that is the control
@@ -4631,6 +4666,18 @@ func clusterAPIPort(cc *conf.ClusterConfig) int {
 		return cc.K8sAPIPort
 	}
 	return 6443
+}
+
+// peerVirtualAPIURL is the host-side endpoint for a peer plane. When the
+// physical agent runtime is present it owns the authenticated STCP visitor in
+// its container namespace and publishes it on a dedicated host-loopback port
+// for virtual nodes. Virtual-only configurations retain the existing local
+// visitor address until they gain a dedicated tunnel sidecar.
+func peerVirtualAPIURL(cc *conf.ClusterConfig) string {
+	if cc != nil && cc.JoinsPeerPlane() && cc.HasAgentRuntime() {
+		return fmt.Sprintf("https://127.0.0.1:%d", runtime.DefaultPeerAPIBridgePort)
+	}
+	return cc.LocalAPIURL()
 }
 
 // isLoopbackURL reports whether a URL's host is loopback — i.e. the apiserver
