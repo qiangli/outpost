@@ -29,7 +29,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
 )
 
 // Node-identity label vocabulary, matching the cloud-hosted control plane
@@ -195,11 +197,10 @@ type Reconciler struct {
 	Log      *slog.Logger
 }
 
-// Run reconciles until ctx is cancelled.
-//
-// Polled rather than watched: the patch is idempotent, so a missed event
-// costs one interval of staleness and nothing else. A watch would add a
-// failure mode (silently dead informer) for no benefit at this scale.
+// Run reconciles until ctx is cancelled. Node events trigger immediate
+// reconciliation so kubelet's status writer cannot leave ExternalIP absent
+// until the next polling interval. The informer relists/reconnects watches;
+// the ticker remains as a recovery resync if an event is ever missed.
 //
 // LOGGING IS PART OF THE CONTRACT HERE, not decoration. Every reconcile
 // failure used to be logged at Debug, which is below the daemon's default
@@ -251,6 +252,31 @@ func (r *Reconciler) Run(ctx context.Context) {
 		})
 	}
 
+	// A single-slot queue coalesces event bursts. Reconciliation lists the
+	// complete (small) node set because loopback collision resolution depends
+	// on deterministic global ordering, not on one event in isolation.
+	events := make(chan struct{}, 1)
+	enqueue := func() {
+		select {
+		case events <- struct{}{}:
+		default:
+		}
+	}
+	factory := informers.NewSharedInformerFactory(r.Client, interval)
+	informer := factory.Core().V1().Nodes().Informer()
+	_, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(any) { enqueue() },
+		UpdateFunc: func(_, _ any) {
+			enqueue()
+		},
+		DeleteFunc: func(any) { enqueue() },
+	})
+	if err != nil {
+		log.Warn("nodeaddr: could not register node event handler; periodic resync remains active", "err", err)
+	} else {
+		factory.Start(ctx.Done())
+	}
+
 	pass()
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -258,6 +284,8 @@ func (r *Reconciler) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-events:
+			pass()
 		case <-t.C:
 			pass()
 		}

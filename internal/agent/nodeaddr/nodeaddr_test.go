@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -135,6 +136,61 @@ func TestReconcile_WithNodeIDSuffixUsesWorkerRoutingName(t *testing.T) {
 	if wantPort := KubeletPortForNode("novidesign"); got.Status.DaemonEndpoints.KubeletEndpoint.Port != int32(wantPort) {
 		t.Fatalf("kubelet port = %d, want %d", got.Status.DaemonEndpoints.KubeletEndpoint.Port, wantPort)
 	}
+}
+
+func TestRun_RestoresExternalIPAfterKubeletStatusUpdate(t *testing.T) {
+	const nodeName = "novidesign-4c7adeb6"
+	n := node(nodeName, "", 0)
+	n.Annotations = map[string]string{
+		nodeArgsAnnotation: `["agent","--node-name","novidesign","--with-node-id"]`,
+	}
+	cs := fake.NewSimpleClientset(n)
+	r := &Reconciler{
+		Client:   cs,
+		PortFor:  DerivedKubeletPort,
+		Interval: time.Hour, // proves recovery is event-driven, not polling
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	wantAddr := LoopbackForNode("novidesign", map[string]string{})
+	wantPort := int32(KubeletPortForNode("novidesign"))
+	waitForNode := func(reason string, predicate func(*corev1.Node) bool) *corev1.Node {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			got, err := cs.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+			if err == nil && predicate(got) {
+				return got
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %s", reason)
+		return nil
+	}
+	waitForNode("initial tunnel address", func(got *corev1.Node) bool {
+		return hasAddr(got, wantAddr) && got.Status.DaemonEndpoints.KubeletEndpoint.Port == wantPort
+	})
+
+	// Reproduce kubelet's full status update: it owns InternalIP/Hostname and
+	// daemonEndpoint, and omits the controller-written ExternalIP.
+	cur, err := cs.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur.Status.Addresses = []corev1.NodeAddress{
+		{Type: corev1.NodeInternalIP, Address: "100.64.0.3"},
+		{Type: corev1.NodeHostName, Address: nodeName},
+	}
+	cur.Status.DaemonEndpoints.KubeletEndpoint.Port = 0
+	if _, err := cs.CoreV1().Nodes().UpdateStatus(context.Background(), cur, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	waitForNode("event-driven ExternalIP restoration", func(got *corev1.Node) bool {
+		return hasAddr(got, wantAddr) && got.Status.DaemonEndpoints.KubeletEndpoint.Port == wantPort
+	})
 }
 
 func TestReconcile_PatchesNodesAndSkipsCorrectOnes(t *testing.T) {
