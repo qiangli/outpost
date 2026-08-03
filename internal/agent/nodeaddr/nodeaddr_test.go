@@ -89,6 +89,54 @@ func node(name string, extIP string, port int32) *corev1.Node {
 	return n
 }
 
+func TestRoutingName_WithNodeIDSuffixUsesRecordedBaseName(t *testing.T) {
+	n := node("novidesign-4c7adeb6", "", 0)
+	n.Annotations = map[string]string{
+		nodeArgsAnnotation: `["agent","--node-name","novidesign","--with-node-id"]`,
+	}
+	if got := RoutingName(n); got != "novidesign" {
+		t.Fatalf("RoutingName() = %q, want novidesign", got)
+	}
+}
+
+func TestRoutingName_RejectsUnrelatedOrMalformedAnnotation(t *testing.T) {
+	for name, annotation := range map[string]string{
+		"unrelated": `["agent","--node-name","other"]`,
+		"malformed": `["agent","--node-name"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			n := node("worker-abcd1234", "", 0)
+			n.Annotations = map[string]string{nodeArgsAnnotation: annotation}
+			if got := RoutingName(n); got != n.Name {
+				t.Fatalf("RoutingName() = %q, want safe fallback %q", got, n.Name)
+			}
+		})
+	}
+}
+
+func TestReconcile_WithNodeIDSuffixUsesWorkerRoutingName(t *testing.T) {
+	n := node("novidesign-4c7adeb6", "", 0)
+	n.Annotations = map[string]string{
+		nodeArgsAnnotation: `["agent","--node-name","novidesign","--with-node-id"]`,
+	}
+	cs := fake.NewSimpleClientset(n)
+	r := &Reconciler{Client: cs, PortFor: DerivedKubeletPort}
+	if err := r.Once(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := cs.CoreV1().Nodes().Get(context.Background(), n.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAddr := LoopbackForNode("novidesign", map[string]string{})
+	if !hasAddr(got, wantAddr) {
+		t.Fatalf("addresses = %#v, want ExternalIP %s derived from worker routing name", got.Status.Addresses, wantAddr)
+	}
+	if wantPort := KubeletPortForNode("novidesign"); got.Status.DaemonEndpoints.KubeletEndpoint.Port != int32(wantPort) {
+		t.Fatalf("kubelet port = %d, want %d", got.Status.DaemonEndpoints.KubeletEndpoint.Port, wantPort)
+	}
+}
+
 func TestReconcile_PatchesNodesAndSkipsCorrectOnes(t *testing.T) {
 	// "fresh" has nothing set and must be patched. "settled" already
 	// carries the address it would be assigned, plus the right port, so

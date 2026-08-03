@@ -6,8 +6,11 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/qiangli/outpost/internal/agent/nodeaddr"
 )
 
 func TestWorkloadStorageVolumeNameIsStable(t *testing.T) {
@@ -201,6 +204,40 @@ func TestUpForceRecreateMarksIPAMRecovery(t *testing.T) {
 	run := commandStarting(t, h.commands(), "run ")
 	if !strings.Contains(run, "-e OUTPOST_RUNTIME_RECREATED=1") {
 		t.Fatalf("forced recreation did not trigger recovery: %s", run)
+	}
+}
+
+func TestUpPeerDerivesKubeletEndpointAndIgnoresStaleCloudPort(t *testing.T) {
+	h := newRuntimeHarness(t)
+	opts := h.options()
+	opts.AgentName = "novidesign"
+	opts.PeerFlannel = true
+	opts.KubeletPort = 18001 // retained cloudbox allocation; invalid on peer
+
+	if err := Up(context.Background(), opts); err != nil {
+		t.Fatalf("Up() error = %v", err)
+	}
+	run := commandStarting(t, h.commands(), "run ")
+	wantPort := nodeaddr.KubeletPortForNode(opts.AgentName)
+	if !strings.Contains(run, "-e OUTPOST_KUBELET_PORT="+strconv.Itoa(wantPort)) {
+		t.Fatalf("peer runtime did not use derived kubelet port %d: %s", wantPort, run)
+	}
+	if strings.Contains(run, "-e OUTPOST_KUBELET_PORT=18001") {
+		t.Fatalf("peer runtime reused stale cloudbox kubelet port: %s", run)
+	}
+}
+
+func TestUpCloudKeepsAllocatedKubeletPort(t *testing.T) {
+	h := newRuntimeHarness(t)
+	opts := h.options()
+	opts.KubeletPort = 18001
+
+	if err := Up(context.Background(), opts); err != nil {
+		t.Fatalf("Up() error = %v", err)
+	}
+	run := commandStarting(t, h.commands(), "run ")
+	if !strings.Contains(run, "-e OUTPOST_KUBELET_PORT=18001") {
+		t.Fatalf("cloud runtime lost its allocated kubelet port: %s", run)
 	}
 }
 

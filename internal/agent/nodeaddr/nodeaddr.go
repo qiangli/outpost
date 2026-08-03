@@ -23,6 +23,7 @@ import (
 	"hash/fnv"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -35,9 +36,45 @@ import (
 // and the peer packages (nodegc, nodecap) exactly. A virtual-kubelet node
 // carries RuntimeLabel=RuntimeVirtual.
 const (
-	RuntimeLabel   = "outpost.dhnt.io/runtime"
-	RuntimeVirtual = "virtual"
+	RuntimeLabel       = "outpost.dhnt.io/runtime"
+	RuntimeVirtual     = "virtual"
+	nodeArgsAnnotation = "k3s.io/node-args"
 )
+
+// RoutingName returns the stable node name used by the worker runtime when it
+// derives its kubelet tunnel endpoint. k3s's --with-node-id appends a
+// persisted random suffix to metadata.name, so hashing metadata.name would
+// disagree with the worker, which only knows the configured --node-name.
+// k3s records that original argument in k3s.io/node-args.
+//
+// The annotation is used only when it is structurally consistent with the
+// registered name. A malformed or unrelated annotation falls back to the
+// actual Node name instead of letting arbitrary text redirect another node's
+// kubelet route.
+func RoutingName(n *corev1.Node) string {
+	if n == nil {
+		return ""
+	}
+	raw := strings.TrimSpace(n.Annotations[nodeArgsAnnotation])
+	if raw == "" {
+		return n.Name
+	}
+	var args []string
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return n.Name
+	}
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] != "--node-name" || strings.TrimSpace(args[i+1]) == "" {
+			continue
+		}
+		base := strings.TrimSpace(args[i+1])
+		if n.Name == base || strings.HasPrefix(n.Name, base+"-") {
+			return base
+		}
+		return n.Name
+	}
+	return n.Name
+}
 
 // IsVirtualNode reports whether n is a virtual-kubelet node.
 //
@@ -258,11 +295,12 @@ func (r *Reconciler) Once(ctx context.Context) error {
 		if IsVirtualNode(n) {
 			continue // no kubelet to reach — see IsVirtualNode
 		}
-		addr := LoopbackForNode(n.Name, taken)
+		routingName := RoutingName(n)
+		addr := LoopbackForNode(routingName, taken)
 		if addr == "" {
 			continue
 		}
-		port, ok := r.PortFor(n.Name)
+		port, ok := r.PortFor(routingName)
 		if !ok || port <= 0 {
 			continue // tunnel not up for this node yet; try next pass
 		}
@@ -378,8 +416,9 @@ func (r *Reconciler) Diagnostics(ctx context.Context) ([]NodeAddressDiagnostic, 
 		if IsVirtualNode(n) {
 			continue // virtual nodes are not address-reconciled — see IsVirtualNode
 		}
-		expectedAddr := LoopbackForNode(n.Name, taken)
-		expectedPort, ok := r.PortFor(n.Name)
+		routingName := RoutingName(n)
+		expectedAddr := LoopbackForNode(routingName, taken)
+		expectedPort, ok := r.PortFor(routingName)
 		if !ok || expectedPort <= 0 {
 			expectedPort = 0
 		}
