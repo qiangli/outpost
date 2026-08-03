@@ -552,7 +552,10 @@ Diagnose on the **control-plane host**, in this order:
    ```
 
 Note that virtual-kubelet nodes are skipped by design and correctly have no
-`ExternalIP` — they run no kubelet to dial.
+`ExternalIP` — they run no kubelet to dial. The colocated metrics-server uses
+the same runtime label to exclude them from its scrape targets. Consequently
+`kubectl top nodes` reports real agent nodes only; repeatedly scraping a
+virtual node would never produce metrics and would waste control-plane CPU.
 
 ### Upgrading the control-plane host's daemon
 

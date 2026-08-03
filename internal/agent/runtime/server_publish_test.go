@@ -216,6 +216,7 @@ func TestPeerMetricsResourcesPreserveTunnelBoundary(t *testing.T) {
 	for _, required := range []string{
 		"--reuid=65532", "--clear-groups",
 		`--kubeconfig="$internal_kubeconfig"`,
+		"--node-selector='outpost.dhnt.io/runtime!=virtual'",
 		"--kubelet-preferred-address-types=ExternalIP",
 		"--kubelet-use-node-status-port", "--kubelet-insecure-tls",
 		"CN=system:serviceaccount:kube-system:metrics-server",
@@ -236,5 +237,8 @@ func TestPeerMetricsResourcesPreserveTunnelBoundary(t *testing.T) {
 	}
 	if strings.Contains(s, "kubelet-preferred-address-types=ExternalIP,") {
 		t.Error("metrics-server must fail closed rather than fall back to an unreachable/non-tunnel node address")
+	}
+	if strings.Contains(s, "--node-selector='outpost.dhnt.io/runtime=agent'") {
+		t.Error("metrics-server selector must retain unlabeled legacy real agents; use runtime!=virtual")
 	}
 }

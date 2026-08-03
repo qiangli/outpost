@@ -280,6 +280,11 @@ trap 'stop_metrics; stop_service_proxy; exit 0' TERM INT
 while :; do
     mint_credentials
     log "serving on ${OUTPOST_METRICS_ADDRESS}:${OUTPOST_METRICS_PORT}"
+    # Virtual runtimes implement Pod lifecycle, not the kubelet resource
+    # metrics endpoint. Scraping them can never succeed and otherwise wakes
+    # the control plane every metric-resolution interval just to log "no
+    # address matched types [ExternalIP]". The != selector includes unlabeled
+    # legacy real agents while excluding the canonical virtual runtime label.
     setpriv --reuid=65532 --regid=65532 --clear-groups \
         metrics-server \
         --bind-address="$OUTPOST_METRICS_ADDRESS" \
@@ -288,6 +293,7 @@ while :; do
         --kubeconfig="$work/kubeconfig" \
         --authentication-kubeconfig="$work/kubeconfig" \
         --authorization-kubeconfig="$work/kubeconfig" \
+        --node-selector='outpost.dhnt.io/runtime!=virtual' \
         --kubelet-preferred-address-types=ExternalIP \
         --kubelet-use-node-status-port \
         --kubelet-insecure-tls \
