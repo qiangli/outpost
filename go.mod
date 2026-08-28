@@ -330,4 +330,4 @@ replace github.com/filebrowser/filebrowser/v2 => ../filebrowser
 // Dependency replaces are not transitive: coreutils' embedded awk needs the
 // fork (it imports goawk/regex, which upstream v1.31.0 does not contain), and
 // coreutils' own replace does not reach this module. Same pin bashy carries.
-replace github.com/benhoyt/goawk => github.com/qiangli/goawk v0.0.0-20260826042810-88712e61a085
+replace github.com/benhoyt/goawk => ../coreutils/third_party/goawk

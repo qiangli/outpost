@@ -708,6 +708,14 @@ func startCmd() *cobra.Command {
 					return admincore.MeshLinkInfo{Class: li.Class, LAN: li.LAN}
 				}
 			}
+			// Host -> peer id the mesh actually connected with. Feeds
+			// admincore.MeshHostLink, which lets `outpost reach` prefer an
+			// already-established direct peer link over the cloudbox relay
+			// without re-deriving locality through mDNS.
+			var meshPeerIDByHost func(host string) string
+			if meshRdv != nil {
+				meshPeerIDByHost = meshRdv.PeerIDForHost
+			}
 			// Adapter so admincore can drive the forwarder (expose/listen)
 			// without importing the mesh package.
 			var meshFwd admincore.MeshForwardOps
@@ -929,6 +937,7 @@ func startCmd() *cobra.Command {
 				MeshForward:         meshFwd,
 				MeshResolver:        meshResolver,
 				MeshLinkInfoByHost:  meshLinkInfoByHost,
+				MeshPeerIDByHost:    meshPeerIDByHost,
 				ShardTrigger:        shardTrigger,
 				ShardStatus:         shardStatus,
 				ShardLog:            shardLog,
@@ -1845,6 +1854,22 @@ func startCmd() *cobra.Command {
 			// discovery. Both off by default; see discovery_wiring.go.
 			startLANSSHListener(gctx, g, fc, cfg, sshHostKey, peers, apps)
 			startLANSSHWSListener(gctx, g, fc, cfg, sshHostKey, peers, apps)
+			// Same SSH server, published to authenticated mesh peers over a
+			// loopback bind. This is what lets `outpost ssh`/`scp` take the
+			// direct peer link instead of the cloudbox relay; without it the
+			// mesh rung in `outpost reach` would be a report with nothing
+			// behind it. No LAN exposure and no new gate: unreachable until a
+			// mesh peer dials it, and still behind peer-ticket / OS password.
+			if meshHost != nil {
+				fwd := meshHost.Forwarder()
+				startMeshSSHWSListener(gctx, g, fc, cfg, sshHostKey, peers, apps,
+					func(service, addr string) { fwd.Expose(service, addr) },
+					func(service string) bool {
+						snap := fwd.Snapshot()
+						_, ok := snap.Exposed[service]
+						return ok
+					})
+			}
 			startDiscovery(gctx, g, fc, cfg, sshHostKey)
 
 			// Ollama pool watcher — only spins up when the user opted

@@ -26,6 +26,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/discovery"
 )
@@ -34,7 +35,7 @@ import (
 // scripting; any field addition must be additive.
 type ReachResult struct {
 	Host     string     `json:"host"`
-	Route    string     `json:"route"`              // "lan" | "cloudbox" | "offline"
+	Route    string     `json:"route"`              // "lan" | "mesh" | "cloudbox" | "offline"
 	RTTMs    int64      `json:"rtt_ms"`             // for lan + cloudbox; 0 on offline
 	Endpoint string     `json:"endpoint,omitempty"` // host:port for lan, scheme://host[:port] for cloudbox
 	LastSeen *time.Time `json:"last_seen,omitempty"`
@@ -47,18 +48,32 @@ const (
 	reachExitOffline  = 20
 )
 
+// reachExitMesh deliberately EQUALS reachExitLAN. Both mean "a direct path to
+// this host exists", which is the question preflights actually ask — they are
+// written as `if ! outpost reach h; then skip; fi`. Giving mesh its own
+// non-zero code would make such a preflight skip a host it can reach directly.
+// Callers that need to tell the two apart read the `route` field, which is
+// where the distinction belongs. Nothing regresses: every host that now
+// reports mesh previously reported cloudbox (exit 10), so this can only turn a
+// wrong "skip" into a correct "proceed".
+const reachExitMesh = reachExitLAN
+
 func reachCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "reach [user@]host",
-		Short: "Classify reachability to a paired host as lan|cloudbox|offline",
+		Short: "Classify reachability to a paired host as lan|mesh|cloudbox|offline",
 		Long: `outpost reach [user@]host
 
 One-shot probe; emits a single JSON line on stdout and exits with a
 stable code:
 
   exit 0   lan        — peer's announced LAN endpoint accepted TCP
-  exit 10  cloudbox   — LAN unreachable; cloudbox matrix portal is up
-  exit 20  offline    — neither LAN nor cloudbox is currently reachable
+  exit 0   mesh       — a live DIRECT peer-to-peer link to the host is up
+  exit 10  cloudbox   — no direct path; cloudbox matrix portal is up
+  exit 20  offline    — neither a direct path nor cloudbox is reachable
+
+lan and mesh share exit 0 because both mean "reachable directly"; the
+JSON route field distinguishes them.
 
 Designed for shell preflights:
 
@@ -82,6 +97,8 @@ cookie required, no side effects on the reachability ledger.`,
 			switch res.Route {
 			case "lan":
 				os.Exit(reachExitLAN)
+			case "mesh":
+				os.Exit(reachExitMesh)
 			case "cloudbox":
 				os.Exit(reachExitCloudbox)
 			default:
@@ -114,6 +131,26 @@ func ProbeReachability(ctx context.Context, host string, timeout time.Duration) 
 	// cloudbox probe.
 	if rtt, ep, ok := probeLAN(ctx, host); ok {
 		res.Route = "lan"
+		res.RTTMs = rtt
+		res.Endpoint = ep
+		return res
+	}
+
+	// Step 1b: try the mesh. The LAN rung above is an mDNS browse followed by
+	// a dial of a self-advertised endpoint, and it goes dark in three ordinary
+	// situations: the peer has discovery disabled, a router sits between the
+	// peers (mDNS does not cross subnets), or multicast simply is not
+	// delivered on the network. In every one of those the libp2p mesh may
+	// ALREADY hold a direct, hole-punched connection to the very host being
+	// probed — measured: a whole site where all three pairs held direct links
+	// and all three classified `cloudbox`, including two hosts sharing a /24.
+	//
+	// So ask the transport instead of re-deriving locality. An existing direct
+	// connection is proof of reachability that needs no discovery. Only a
+	// DIRECT link counts: a relayed mesh circuit is not a local route and must
+	// not outrank cloudbox.
+	if rtt, ep, ok := probeMesh(ctx, host); ok {
+		res.Route = "mesh"
 		res.RTTMs = rtt
 		res.Endpoint = ep
 		return res
@@ -158,6 +195,38 @@ func probeLAN(ctx context.Context, host string) (rttMs int64, endpoint string, o
 	}
 	_ = conn.Close()
 	return time.Since(start).Milliseconds(), hostPort, true
+}
+
+// probeMesh reports a live DIRECT mesh link to host, asking the local daemon
+// for state it already has. It performs no dial and no discovery, so it costs
+// one loopback MCP call and is immune to the multicast/flag/subnet conditions
+// that silence probeLAN.
+//
+// Any error — mesh off, daemon not running, tool absent on an older daemon —
+// is a negative answer, never a hard failure: reach must still classify.
+func probeMesh(ctx context.Context, host string) (rttMs int64, endpoint string, ok bool) {
+	mctx, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
+	defer cancel()
+
+	var out struct {
+		Link admincore.MeshHostLinkView `json:"link"`
+	}
+	start := time.Now()
+	if err := runMeshTool(mctx, "outpost_mesh_link", struct {
+		Host string `json:"host"`
+	}{Host: host}, &out); err != nil {
+		return 0, "", false
+	}
+	if !out.Link.Found || !out.Link.Direct {
+		return 0, "", false
+	}
+	// Report the peer id rather than a raw remote address: it is the stable
+	// identifier of the path, and it is what `outpost mesh` commands take.
+	ep := "mesh:" + out.Link.PeerID
+	if out.Link.LinkClass != "" {
+		ep += " (link=" + out.Link.LinkClass + ")"
+	}
+	return time.Since(start).Milliseconds(), ep, true
 }
 
 func probeCloudbox(ctx context.Context) (rttMs int64, endpoint string, err error) {

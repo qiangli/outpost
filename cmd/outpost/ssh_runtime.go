@@ -33,6 +33,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/discovery"
 	"github.com/qiangli/outpost/internal/agent/sshclient"
@@ -178,6 +179,20 @@ func dialPairedHost(ctx context.Context, fc *conf.FileConfig, bearer, host, user
 		slog.Info("ssh: LAN-direct attempt failed, falling back to cloudbox tunnel",
 			"host", host, "err", err)
 	}
+
+	// Mesh-direct. The LAN rung above depends on mDNS, which is silent
+	// whenever the peer has discovery off, a router sits between us, or the
+	// network does not forward multicast — while the mesh may already hold a
+	// DIRECT connection to that very host. Measured on one site: all three
+	// host pairs held direct links and every one of them fell through to the
+	// relay. Same best-effort contract as LAN-direct: any failure falls
+	// through to the tunnel, so this rung can only add reachability.
+	if client, cleanup, err := dialMeshDirect(ctx, fc, bearer, host, user, cookie); err == nil {
+		return client, cleanup, nil
+	} else if !errors.Is(err, errMeshNotAvailable) {
+		slog.Info("ssh: mesh-direct attempt failed, falling back to cloudbox tunnel",
+			"host", host, "err", err)
+	}
 	return dialCloudboxTunnel(ctx, fc, bearer, host, user, cookie)
 }
 
@@ -186,6 +201,106 @@ func dialPairedHost(ctx context.Context, fc *conf.FileConfig, bearer, host, user
 // Differentiated from a real error so the caller can fall back
 // silently.
 var errLANNotAvailable = errors.New("lan-direct not available")
+
+// errMeshNotAvailable signals that mesh-direct doesn't apply (mesh off, no
+// direct link to this host, peer not publishing the ssh service). Silent
+// fallback, same contract as errLANNotAvailable.
+var errMeshNotAvailable = errors.New("mesh-direct not available")
+
+// dialMeshDirect reaches host over an EXISTING direct mesh link: it opens a
+// local forward to the peer's published ssh service and speaks the same
+// WS+peer-ticket protocol the LAN rung uses.
+//
+// The ticket still comes from cloudbox. That is the intended split — cloudbox
+// stays the control plane that authorizes the connection, while the bytes go
+// peer-to-peer instead of through the relay.
+//
+// Only a DIRECT link qualifies. A relayed libp2p circuit would still be a hop
+// through someone else's infrastructure, so it must not displace the tunnel.
+func dialMeshDirect(
+	ctx context.Context,
+	fc *conf.FileConfig,
+	bearer, host, user, cookie string,
+) (*sshclient.Client, func(), error) {
+	cbBase := cloudboxHTTPBase(fc)
+	if cbBase == "" {
+		return nil, nil, errMeshNotAvailable
+	}
+
+	linkCtx, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
+	var link struct {
+		Link admincore.MeshHostLinkView `json:"link"`
+	}
+	lerr := runMeshTool(linkCtx, "outpost_mesh_link", struct {
+		Host string `json:"host"`
+	}{Host: host}, &link)
+	cancel()
+	if lerr != nil || !link.Link.Found || !link.Link.Direct || link.Link.PeerID == "" {
+		return nil, nil, errMeshNotAvailable
+	}
+
+	fwdCtx, cancel2 := context.WithTimeout(ctx, 3*time.Second)
+	var fwd struct {
+		Addr string `json:"addr"`
+	}
+	ferr := runMeshTool(fwdCtx, "outpost_mesh_listen", struct {
+		PeerID    string `json:"peer_id"`
+		Service   string `json:"service"`
+		LocalAddr string `json:"local_addr,omitempty"`
+	}{PeerID: link.Link.PeerID, Service: MeshServiceSSH, LocalAddr: "127.0.0.1:0"}, &fwd)
+	cancel2()
+	if ferr != nil || fwd.Addr == "" {
+		// The peer runs an older daemon that does not publish `ssh`, or the
+		// mesh refused the forward. Not an error worth shouting about.
+		return nil, nil, errMeshNotAvailable
+	}
+	// Tear the forward down on every exit path, including the failures below —
+	// otherwise a retry loop leaks one listener per attempt.
+	closeForward := func() {
+		cctx, ccancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer ccancel()
+		_ = runMeshTool(cctx, "outpost_mesh_close_listen", struct {
+			Addr string `json:"addr"`
+		}{Addr: fwd.Addr}, &struct{}{})
+	}
+
+	ticket, err := exchangePeerTicket(ctx, cbBase, bearer, cookie, host, "ssh")
+	if err != nil {
+		closeForward()
+		return nil, nil, fmt.Errorf("peer-ticket exchange: %w", err)
+	}
+
+	wsConn, werr := sshclient.DialWS(ctx, sshclient.DialOptions{
+		WSURL:      "ws://" + fwd.Addr + "/ssh",
+		PeerTicket: ticket,
+		Host:       host,
+	})
+	if werr != nil {
+		closeForward()
+		return nil, nil, fmt.Errorf("mesh-direct dial %s: %w", host, werr)
+	}
+
+	// No mDNS advertisement here, so there is no advertised fingerprint to
+	// pin against — fall through to the same TOFU known_hosts policy the LAN
+	// rung uses for a peer that advertised none. The transport itself is
+	// already authenticated by libp2p peer identity.
+	cli, err := sshclient.Dial(ctx, sshclient.Config{
+		Transport:       sshclient.AsNetConn(ctx, wsConn),
+		HostAlias:       sshclient.HostAliasForHost(host),
+		User:            user,
+		HostKeyCallback: makeFingerprintCheckingCallback(host, ""),
+	})
+	if err != nil {
+		closeForward()
+		return nil, nil, fmt.Errorf("ssh handshake to %s (mesh-direct): %w", host, err)
+	}
+
+	cleanup := func() {
+		_ = cli.Close()
+		closeForward()
+	}
+	return cli, cleanup, nil
+}
 
 // dialLANDirect attempts the LAN-direct path. Returns errLANNotAvailable
 // when the path doesn't apply (caller falls back without a warning);

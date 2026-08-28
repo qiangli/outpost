@@ -101,6 +101,15 @@ type Deps struct {
 	// is off.
 	MeshLinkInfoByHost func(host string) MeshLinkInfo
 
+	// MeshPeerIDByHost, when set, returns the libp2p peer id the mesh actually
+	// connected to <host> with, or "" if none is known. Paired with MeshStatus
+	// it answers the only question a transport chooser needs — "is there a live
+	// DIRECT connection to this host right now?" — WITHOUT mDNS, multicast, a
+	// per-host discovery flag, or a fresh dial. An existing direct connection is
+	// itself the proof of reachability. Closure so admincore doesn't import the
+	// mesh package. Nil when the mesh data plane is off.
+	MeshPeerIDByHost func(host string) string
+
 	// ShardTrigger, when set, tells <host> to LEAD a shard for <model> over
 	// the mesh (no ssh). Closure so admincore doesn't import the shard /
 	// peerplane packages; it captures the shard.Manager + host→peer-id
@@ -230,6 +239,25 @@ type MeshPeerConnView struct {
 	Remote    []string `json:"remote,omitempty"`
 }
 
+// MeshHostLinkView answers "can I reach <host> directly over the mesh right
+// now?" for a single paired host. It exists because the reachability ladder
+// used to have no way to ask: its LAN rung is an mDNS browse followed by a
+// dial of a self-advertised endpoint, which fails whenever multicast is not
+// delivered, the peer has discovery disabled, or a router sits between the
+// peers — even when a direct QUIC link to that very host is already up.
+//
+// Found is false when the mesh is off or no peer id is known for the host.
+// Direct distinguishes a real hole-punched/LAN connection from a relayed
+// circuit: a relayed mesh path is NOT a local route and must not outrank
+// cloudbox.
+type MeshHostLinkView struct {
+	Found     bool     `json:"found"`
+	PeerID    string   `json:"peer_id,omitempty"`
+	Direct    bool     `json:"direct"`
+	LinkClass string   `json:"link_class,omitempty"`
+	Remote    []string `json:"remote,omitempty"`
+}
+
 // MeshLinkInfo is the mesh direct-link class plus the LAN label of the path to
 // a paired host, fed by Deps.MeshLinkInfoByHost into PeerStatus's location
 // override. Class is "tp"/"lan"/"wan"/"" (same vocabulary as the old
@@ -278,6 +306,38 @@ func (s *Server) MeshStatus() *MeshStatusView {
 		return nil
 	}
 	return s.deps.MeshStatus()
+}
+
+// MeshHostLink reports whether this daemon currently holds a direct mesh
+// connection to host. Pure read of live state — no dial, no discovery.
+func (s *Server) MeshHostLink(host string) MeshHostLinkView {
+	if host == "" || s.deps.MeshPeerIDByHost == nil {
+		return MeshHostLinkView{}
+	}
+	peerID := s.deps.MeshPeerIDByHost(host)
+	if peerID == "" {
+		return MeshHostLinkView{}
+	}
+	st := s.MeshStatus()
+	if st == nil {
+		return MeshHostLinkView{}
+	}
+	for _, p := range st.Peers {
+		if p.ID != peerID {
+			continue
+		}
+		return MeshHostLinkView{
+			Found:     true,
+			PeerID:    p.ID,
+			Direct:    p.Direct,
+			LinkClass: p.LinkClass,
+			Remote:    p.Remote,
+		}
+	}
+	// Known peer id but not in the connected set: the mesh knows the host and
+	// is not connected to it. Report Found so the caller can tell this apart
+	// from "mesh is off", but Direct stays false so it never outranks cloudbox.
+	return MeshHostLinkView{Found: true, PeerID: peerID}
 }
 
 // Server is the stateful object that the HTTP layers share. Holds the

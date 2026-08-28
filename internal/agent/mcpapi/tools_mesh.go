@@ -73,6 +73,14 @@ type meshConsumesOut struct {
 	Consumes []admincore.MeshConsumeView `json:"consumes"`
 }
 
+type meshLinkIn struct {
+	Host string `json:"host" jsonschema:"The paired host name to check for a live direct mesh link"`
+}
+
+type meshLinkOut struct {
+	Link admincore.MeshHostLinkView `json:"link"`
+}
+
 func (s *Server) registerMeshTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "outpost_mesh_status",
@@ -83,6 +91,14 @@ func (s *Server) registerMeshTools() {
 			return apiErrResult[meshStatusOut](err)
 		}
 		return nil, meshStatusOut{Status: s.core.MeshStatus(), Forwards: fwd}, nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_mesh_link",
+		Description: "Report whether this daemon currently holds a DIRECT mesh connection to a paired host. Pure read of live link state — no dial, no mDNS, no discovery flag. Used by the reachability ladder to prefer an existing peer-to-peer link over the cloudbox relay.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in meshLinkIn) (*mcp.CallToolResult, meshLinkOut, error) {
+		v := s.core.MeshHostLink(in.Host)
+		return nil, meshLinkOut{Link: v}, nil
 	})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{

@@ -115,20 +115,46 @@ func startLANSSHWSListener(
 	peers *peerhosts.Registry,
 	apps *agent.AppRegistry,
 ) {
-	addr := strings.TrimSpace(fc.SSHWSListenAddr)
+	startSSHWSListenerOn(gctx, g, fc, cfg, sshHostKey, peers, apps,
+		strings.TrimSpace(fc.SSHWSListenAddr), "lan ssh-ws")
+}
+
+// startSSHWSListenerOn binds the WS-mounted SSH server on addr and returns the
+// bound address ("" when it did not start). Split out of
+// startLANSSHWSListener so the SAME server can also be bound on LOOPBACK and
+// published over the libp2p mesh — see startMeshSSHWSListener.
+//
+// The two bindings are deliberately different security postures. A LAN bind
+// offers /ssh to every host on the wire, which is why it is opt-in and off by
+// default. A loopback bind offers it to nothing at all until it is exposed as
+// a mesh service, and mesh peers are authenticated by libp2p peer identity
+// before a byte reaches this listener — on top of the peer-ticket/OS-password
+// gate that both bindings already enforce.
+func startSSHWSListenerOn(
+	gctx context.Context,
+	g *errgroup.Group,
+	fc *conf.FileConfig,
+	cfg *conf.Config,
+	sshHostKey ssh.Signer,
+	peers *peerhosts.Registry,
+	apps *agent.AppRegistry,
+	addr string,
+	label string,
+) string {
 	if addr == "" || !fc.SSHOn() || sshHostKey == nil {
-		return
+		return ""
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		slog.Warn("lan ssh-ws: listen failed", "addr", addr, "err", err)
-		return
+		slog.Warn(label+": listen failed", "addr", addr, "err", err)
+		return ""
 	}
-	slog.Info("lan ssh-ws: listening", "addr", ln.Addr().String())
+	bound := ln.Addr().String()
+	slog.Info(label+": listening", "addr", bound)
 
 	pubkey, perr := peerticket.LoadPubkey(fc.CloudboxTicketPubkey)
 	if perr != nil {
-		slog.Warn("lan ssh-ws: invalid CloudboxTicketPubkey — peer-ticket auth disabled",
+		slog.Warn(label+": invalid CloudboxTicketPubkey — peer-ticket auth disabled",
 			"err", perr)
 	}
 	verifier := peerticket.NewVerifier(0)
@@ -155,11 +181,56 @@ func startLANSSHWSListener(
 		if err := agent.ServeLANSSHWS(gctx, ln, lanDeps); err != nil &&
 			!errors.Is(err, context.Canceled) &&
 			!errors.Is(err, net.ErrClosed) {
-			slog.Warn("lan ssh-ws: listener exited", "err", err)
+			slog.Warn(label+": listener exited", "err", err)
 			return err
 		}
 		return nil
 	})
+	return bound
+}
+
+// MeshServiceSSH is the mesh service name under which an outpost publishes its
+// WS-mounted SSH server to authenticated peers. Clients dial it by name, so it
+// is part of the peer-to-peer contract: renaming it breaks mesh-direct ssh/scp
+// between mixed daemon versions.
+const MeshServiceSSH = "ssh"
+
+// startMeshSSHWSListener binds the WS SSH server on loopback and publishes it
+// over the mesh, so `outpost ssh`/`scp` can reach this host peer-to-peer even
+// when mDNS is useless — which is the common case, not the exotic one: mDNS
+// does not cross subnets, many networks do not forward multicast at all, and
+// LAN discovery is off by default on most hosts. The mesh, meanwhile, routinely
+// holds a direct hole-punched connection to those same peers.
+//
+// Returns the bound loopback address, or "" if it did not start.
+func startMeshSSHWSListener(
+	gctx context.Context,
+	g *errgroup.Group,
+	fc *conf.FileConfig,
+	cfg *conf.Config,
+	sshHostKey ssh.Signer,
+	peers *peerhosts.Registry,
+	apps *agent.AppRegistry,
+	expose func(service, addr string),
+	alreadyExposed func(service string) bool,
+) string {
+	if expose == nil {
+		return ""
+	}
+	// Never clobber a service the operator exposed by name in config.
+	if alreadyExposed != nil && alreadyExposed(MeshServiceSSH) {
+		slog.Info("mesh ssh-ws: service name already exposed by config — leaving it alone",
+			"service", MeshServiceSSH)
+		return ""
+	}
+	bound := startSSHWSListenerOn(gctx, g, fc, cfg, sshHostKey, peers, apps,
+		"127.0.0.1:0", "mesh ssh-ws")
+	if bound == "" {
+		return ""
+	}
+	expose(MeshServiceSSH, bound)
+	slog.Info("mesh ssh-ws: published to mesh peers", "service", MeshServiceSSH, "addr", bound)
+	return bound
 }
 
 // daemonCache is the process-wide discovery cache populated by the
