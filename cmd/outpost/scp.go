@@ -213,12 +213,35 @@ func runSCPUpload(ctx context.Context, localPath string, dst scpEndpoint, port i
 	if err != nil {
 		return fmt.Errorf("create remote %s: %w", remotePath, err)
 	}
-	defer rf.Close()
 
 	n, err := io.Copy(rf, lf)
+	// Close is NOT deferred, and its error is NOT discarded.
+	//
+	// SFTP pipelines writes: the final packets are flushed when the file is
+	// closed, so a failure there loses bytes that io.Copy already counted and
+	// returned no error for. With `defer rf.Close()` that error went nowhere and
+	// the command printed "copied N bytes" for a truncated file — a 36,443,136
+	// byte upload landed as 30,605,312 and exited 0. A copy that reports success
+	// for a short file is worse than one that refuses: the corruption is found
+	// later, by something unrelated.
+	if cerr := rf.Close(); err == nil {
+		err = cerr
+	}
 	if err != nil {
 		return fmt.Errorf("copy %s -> %s: %w", localPath, remotePath, err)
 	}
+
+	// Belt and braces: a short write that somehow reported no error is still a
+	// short write. Stat the result and compare, because the whole failure mode
+	// here is "the transport said yes and the bytes are missing".
+	if info, serr := lf.Stat(); serr == nil {
+		if ri, rerr := sftpCli.Stat(remotePath); rerr == nil && ri.Size() != info.Size() {
+			return fmt.Errorf("copy %s -> %s:%s TRUNCATED: wrote %d of %d bytes "+
+				"(use `outpost scp --safe` for a staged, sha256-verified transfer)",
+				localPath, dst.Host, remotePath, ri.Size(), info.Size())
+		}
+	}
+
 	fmt.Fprintf(os.Stderr, "outpost scp: copied %d bytes %s -> %s:%s\n", n, localPath, dst.Host, remotePath)
 	return nil
 }

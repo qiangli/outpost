@@ -33,7 +33,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.44.0
 	golang.org/x/crypto v0.53.0
 	golang.org/x/sync v0.21.0
-	golang.org/x/sys v0.46.0
+	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.44.0
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.35.0
@@ -157,6 +157,7 @@ require (
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/stangelandcl/ppmd v0.1.1 // indirect
 	github.com/tiktoken-go/tokenizer v0.8.0 // indirect
+	github.com/tklauser/ps v0.0.5-0.20260804061010-39c4acb07b31 // indirect
 	github.com/tomasen/realip v0.0.0-20180522021738-f0c99a92ddce // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
@@ -325,3 +326,8 @@ replace mvdan.cc/sh/v3 => ../sh
 replace github.com/qiangli/coreutils => ../coreutils
 
 replace github.com/filebrowser/filebrowser/v2 => ../filebrowser
+
+// Dependency replaces are not transitive: coreutils' embedded awk needs the
+// fork (it imports goawk/regex, which upstream v1.31.0 does not contain), and
+// coreutils' own replace does not reach this module. Same pin bashy carries.
+replace github.com/benhoyt/goawk => github.com/qiangli/goawk v0.0.0-20260826042810-88712e61a085
