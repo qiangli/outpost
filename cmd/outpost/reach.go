@@ -210,16 +210,27 @@ func probeMesh(ctx context.Context, host string) (rttMs int64, endpoint string, 
 	mctx, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
 	defer cancel()
 
-	var out struct {
-		Link admincore.MeshHostLinkView `json:"link"`
-	}
 	start := time.Now()
-	if err := runMeshTool(mctx, "outpost_mesh_link", struct {
-		Host string `json:"host"`
-	}{Host: host}, &out); err != nil {
-		return 0, "", false
+	out, ok := meshLinkFor(mctx, host)
+	// Retry on "the mesh does not know this NAME", which is a successful call
+	// reporting Found=false — not on !ok, which means the call itself failed.
+	if !ok || !out.Link.Found {
+		// The mesh keys on the peer's OWN agent name, while the caller may
+		// have used the name cloudbox files the host under — `reach <alias>`
+		// would then silently fall through to the relay while
+		// `reach <agent-name>` takes the direct link. Same host, opposite
+		// verdict, which is precisely the silent downgrade this rung exists
+		// to remove. Cloudbox knows both spellings; ask it once.
+		if alt := meshAliasFor(ctx, host); alt != "" {
+			// Fresh deadline: mctx has already spent its budget on the first
+			// lookup and the alias fetch, so reusing it would cancel the retry
+			// before it left the door.
+			actx, acancel := context.WithTimeout(ctx, 800*time.Millisecond)
+			out, ok = meshLinkFor(actx, alt)
+			acancel()
+		}
 	}
-	if !out.Link.Found || !out.Link.Direct {
+	if !ok || !out.Link.Found || !out.Link.Direct {
 		return 0, "", false
 	}
 	// Report the peer id rather than a raw remote address: it is the stable
@@ -229,6 +240,57 @@ func probeMesh(ctx context.Context, host string) (rttMs int64, endpoint string, 
 		ep += " (link=" + out.Link.LinkClass + ")"
 	}
 	return time.Since(start).Milliseconds(), ep, true
+}
+
+// meshLinkFor asks the local daemon for a live link to one spelling of a host.
+func meshLinkFor(ctx context.Context, host string) (struct {
+	Link admincore.MeshHostLinkView `json:"link"`
+}, bool) {
+	var out struct {
+		Link admincore.MeshHostLinkView `json:"link"`
+	}
+	if host == "" {
+		return out, false
+	}
+	if err := runMeshTool(ctx, "outpost_mesh_link", struct {
+		Host string `json:"host"`
+	}{Host: host}, &out); err != nil {
+		return out, false
+	}
+	return out, true
+}
+
+// meshAliasFor returns the OTHER spelling cloudbox knows for host — its alias
+// when given the host name, or its host name when given the alias. Empty when
+// the question cannot be answered; the caller then simply keeps its verdict.
+func meshAliasFor(ctx context.Context, host string) string {
+	cfgPath, err := conf.DefaultConfigPath()
+	if err != nil {
+		return ""
+	}
+	fc, err := conf.LoadFile(cfgPath)
+	if err != nil || fc == nil || fc.AccessToken == "" {
+		return ""
+	}
+	base := cloudboxHTTPBase(fc)
+	if base == "" {
+		return ""
+	}
+	pctx, cancel := context.WithTimeout(ctx, 700*time.Millisecond)
+	defer cancel()
+	peers, err := peerstatus.Fetch(pctx, base, fc.AccessToken, &http.Client{Timeout: 700 * time.Millisecond})
+	if err != nil {
+		return ""
+	}
+	for _, p := range peers {
+		if strings.EqualFold(p.Host, host) && p.Alias != "" {
+			return p.Alias
+		}
+		if strings.EqualFold(p.Alias, host) && p.Host != "" {
+			return p.Host
+		}
+	}
+	return ""
 }
 
 // probeCloudbox confirms the relay is up AND that cloudbox believes `host` is
