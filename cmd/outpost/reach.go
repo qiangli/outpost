@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -29,6 +30,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/discovery"
+	"github.com/qiangli/outpost/internal/agent/peerstatus"
 )
 
 // ReachResult is the JSON shape emitted on stdout. Stable for
@@ -160,7 +162,7 @@ func ProbeReachability(ctx context.Context, host string, timeout time.Duration) 
 	// `/healthz` fetch. Confirms TCP+TLS reachability, which is
 	// what every cloudbox-tunneled outpost path requires before
 	// the first byte of the wss upgrade.
-	if rtt, ep, err := probeCloudbox(ctx); err == nil {
+	if rtt, ep, err := probeCloudbox(ctx, host); err == nil {
 		res.Route = "cloudbox"
 		res.RTTMs = rtt
 		res.Endpoint = ep
@@ -229,7 +231,16 @@ func probeMesh(ctx context.Context, host string) (rttMs int64, endpoint string, 
 	return time.Since(start).Milliseconds(), ep, true
 }
 
-func probeCloudbox(ctx context.Context) (rttMs int64, endpoint string, err error) {
+// probeCloudbox confirms the relay is up AND that cloudbox believes `host` is
+// online. Confirming only the relay was a real defect: a host whose tunnel is
+// down still classified `cloudbox`, so a preflight saw a usable route and the
+// very next `outpost ssh` failed with HTTP 504. The rung reported on the wrong
+// thing — the same error the LAN rung makes with mDNS.
+//
+// The peer check DOWNGRADES only on an affirmative negative. If the peers API
+// cannot be reached or does not know the host, the verdict stays `cloudbox`:
+// this probe must not invent an outage from its own inability to ask.
+func probeCloudbox(ctx context.Context, host string) (rttMs int64, endpoint string, err error) {
 	cfgPath, perr := conf.DefaultConfigPath()
 	if perr != nil {
 		return 0, "", fmt.Errorf("locate config: %w", perr)
@@ -276,7 +287,34 @@ func probeCloudbox(ctx context.Context) (rttMs int64, endpoint string, err error
 		}
 		_ = tlsConn.Close()
 	}
-	return time.Since(start).Milliseconds(), base, nil
+	rtt := time.Since(start).Milliseconds()
+
+	if online, known := cloudboxSaysOnline(ctx, fc, base, host); known && !online {
+		return 0, base, fmt.Errorf("cloudbox is up but reports %q offline", host)
+	}
+	return rtt, base, nil
+}
+
+// cloudboxSaysOnline asks cloudbox whether host is currently connected.
+// Returns known=false whenever the question could not be answered — no token,
+// transport error, host absent from the listing — so the caller leaves its
+// verdict unchanged.
+func cloudboxSaysOnline(ctx context.Context, fc *conf.FileConfig, base, host string) (online, known bool) {
+	if fc == nil || fc.AccessToken == "" {
+		return false, false
+	}
+	pctx, cancel := context.WithTimeout(ctx, 700*time.Millisecond)
+	defer cancel()
+	peers, perr := peerstatus.Fetch(pctx, base, fc.AccessToken, &http.Client{Timeout: 700 * time.Millisecond})
+	if perr != nil {
+		return false, false
+	}
+	for _, p := range peers {
+		if strings.EqualFold(p.Host, host) {
+			return p.Online, true
+		}
+	}
+	return false, false
 }
 
 // lastSeenFromLedger scans the reachability ledger for the most
