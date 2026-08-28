@@ -9,11 +9,11 @@ import (
 	"testing"
 )
 
-// A peer ticket is 60s and SINGLE-USE (the peer replay-protects the jti), so it
-// cannot be cached and every dial must mint a fresh one. That makes this
-// exchange the single control-plane call sitting on an otherwise
-// peer-to-peer path: a momentary cloudbox 5xx denies a direct link that is up
-// and idle, which was observed live. These tests pin the mitigation.
+// A peer ticket is 60s and SINGLE-USE (the peer replay-protects the jti), and
+// that is deliberate: minting one per dial keeps authorization CURRENT, and
+// nothing durable travels with a mobile peer. The cost is that a momentary
+// cloudbox 5xx denies a direct link that is up and idle, observed live. These
+// tests pin the mitigation — survive a blip, never weaken the check.
 func TestExchangePeerTicketRetriesTransientCloudbox(t *testing.T) {
 	for _, code := range []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
 		t.Run(http.StatusText(code), func(t *testing.T) {

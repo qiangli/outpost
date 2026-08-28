@@ -707,18 +707,27 @@ type peerTicketResponse struct {
 // `host` and `scope`. The cookie itself never leaves this exchange —
 // only the derived ticket is presented to the peer.
 //
-// KNOWN COUPLING, deliberately left in place: this is a CONTROL-PLANE call on
-// the DATA-PLANE path. Tickets are 60s and single-use (the peer replay-protects
-// the jti), so they cannot be cached and every dial needs a fresh one — which
-// means a cloudbox outage denies the mesh-direct path even when a healthy
-// direct peer link is sitting idle. Removing the coupling is not a caching
-// problem, it is an authorization-model question: the mesh connection is
-// already mutually authenticated by libp2p peer identity, so a peer COULD
-// accept a mesh-arrived caller on that basis instead. That trades "cloudbox
-// attests this specific connection" for "the caller holds a known mesh
-// identity", which is a real reduction in authority and is not a change to
-// make silently. Until it is decided, the retry below is the honest mitigation:
-// it survives a blip, not an outage.
+// This is a CONTROL-PLANE call on the DATA-PLANE path, and that is the DESIGN,
+// not a wart to engineer away. Tickets are 60s and single-use — the peer
+// replay-protects the jti — so a captured one is worthless almost immediately
+// and can never be presented twice. Minting per dial is what makes the
+// authorization CURRENT: still paired, still authorized, sharing not revoked,
+// elevation cookie still valid. A cached or long-lived ticket would answer
+// those questions with stale facts.
+//
+// Peer mobility sharpens the point rather than weakening it. Laptops move
+// between networks and the node layout changes underneath, so standing
+// authority must not travel with the device. Accepting a caller purely on its
+// libp2p peer identity — the tempting "remove the dependency" fix — would do
+// exactly that: grant durable standing to a key that moves with the hardware,
+// which cloudbox could no longer revoke. The short-lived, per-connection,
+// centrally-issued ticket is the property worth keeping.
+//
+// The accepted cost is availability: a cloudbox outage denies the direct path,
+// and since the relay fallback also needs cloudbox, both fail together. The
+// retry below is the right scope of mitigation — survive a blip without
+// weakening the check. Buying more than that belongs in cloudbox's own
+// availability, never in a longer-lived or reusable credential.
 //
 // A 404 from cloudbox (endpoint not deployed yet) is treated as
 // errLANNotAvailable so the caller can fall back to the tunnel.
