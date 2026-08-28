@@ -21,11 +21,14 @@ build:  ## Build outpost for the current platform into ./bin (bootstraps ../sh s
 build-all:  ## Cross-compile every release platform into ./bin
 	@./scripts/build-all.sh
 
+# -tags fb_archives matches what outpost ships (GO_TAGS in scripts/lib.sh).
+# A bare `go test ./...` runs the UNTAGGED build and fails
+# TestFolderDownloadFormatCoverage on purpose — use these targets.
 test:  ## Run Go tests in short mode (internal/agent/shell needs a real TTY)
-	@go test -short ./...
+	@go test -tags fb_archives -short ./...
 
 test-headless:  ## Short tests minus internal/agent/shell (safe without a controlling TTY)
-	@go test -short $$(go list ./... | grep -v internal/agent/shell)
+	@go test -tags fb_archives -short $$(go list ./... | grep -v internal/agent/shell)
 
 tidy:  ## go mod tidy + go fmt + go vet (APPLIES fixes — not a gate)
 	@./scripts/tidy.sh

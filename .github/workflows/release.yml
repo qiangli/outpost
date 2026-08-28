@@ -88,7 +88,10 @@ jobs:
           if [ "${GOOS}" = "windows" ]; then
             out="${out}.exe"
           fi
+          # -tags fb_archives: keep the files builtin's nine-format folder
+          # download. Mirrors GO_TAGS in scripts/lib.sh — keep in lockstep.
           go build \
+            -tags fb_archives \
             -ldflags "-X github.com/qiangli/outpost/internal/agent.releaseTag=${BASE}" \
             -trimpath \
             -o "${out}" \

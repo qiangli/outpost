@@ -120,6 +120,7 @@ if ($goos -eq 'windows') { $out = "$out.exe" }
 New-Item -ItemType Directory -Force -Path (Join-Path $Root 'bin') | Out-Null
 
 Info "go build ($goos/$(if ($env:GOARCH) { $env:GOARCH } else { 'native' }), commit $commit, dirty=$dirty)"
-& go build -ldflags $ld -trimpath -o $out ./cmd/outpost
+# -tags fb_archives: nine-format folder download; mirrors GO_TAGS in scripts/lib.sh.
+& go build -tags fb_archives -ldflags $ld -trimpath -o $out ./cmd/outpost
 if ($LASTEXITCODE -ne 0) { Die "go build failed" }
 Ok "built $out"

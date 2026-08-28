@@ -47,8 +47,11 @@ jobs:
       - name: Test rollout SHA convergence logic
         run: ./scripts/git-sha-equivalent_test.sh
 
+      # -tags fb_archives everywhere below: CI must gate the configuration
+      # outpost actually SHIPS (see GO_TAGS in scripts/lib.sh), otherwise the
+      # nine-format download contract is untested in the build that has it.
       - name: go vet
-        run: go vet ./...
+        run: go vet -tags fb_archives ./...
 
       # The headless-safe gate: every package EXCEPT the PTY-bound shell
       # package. A failure here blocks the merge / the eventual release.
@@ -56,7 +59,7 @@ jobs:
         run: |
           set -euo pipefail
           pkgs=$(go list ./... | grep -v '/internal/agent/shell$')
-          go test -short -count=1 $pkgs
+          go test -tags fb_archives -short -count=1 $pkgs
 
       # The shell package needs a controlling TTY. `script` allocates a
       # PTY so the readline-driven tests can run in CI. Marked advisory
@@ -67,4 +70,4 @@ jobs:
       - name: go test (shell package, under a PTY — advisory)
         continue-on-error: true
         run: |
-          script -q -e -c "go test -count=1 ./internal/agent/shell/..." /dev/null
+          script -q -e -c "go test -tags fb_archives -count=1 ./internal/agent/shell/..." /dev/null

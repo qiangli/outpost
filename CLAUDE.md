@@ -38,10 +38,15 @@ outpost shell ./scripts/build.sh
 #   internal/agent/adminui/{adminui,e2e,suggestions,builtins,cluster,login_limiter}_test.go
 #   internal/agent/mcpapi/mcpapi_test.go        — end-to-end MCP protocol roundtrip
 #   cmd/outpost/docs_test.go                    — drift detector for embedded docs
-go test ./...
-go test ./internal/agent -run TestAuth
-go test ./internal/agent/adminui -run TestE2E
-go test ./internal/agent/mcpapi                 # initialize → list tools → call
+# -tags fb_archives is what outpost ships (GO_TAGS in scripts/lib.sh): the
+# files builtin's folder download offers nine formats, six of which the
+# ../filebrowser fork keeps behind that tag. A bare `go test ./...` builds
+# WITHOUT it and fails TestFolderDownloadFormatCoverage by design — the tag
+# is otherwise silent when it goes missing. `make test` passes it for you.
+make test
+go test -tags fb_archives ./internal/agent -run TestAuth
+go test -tags fb_archives ./internal/agent/adminui -run TestE2E
+go test -tags fb_archives ./internal/agent/mcpapi   # initialize → list tools → call
 
 # Run from source
 go run ./cmd/outpost register --server https://ai.dhnt.io --code <code> --name <host>

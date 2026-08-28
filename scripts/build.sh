@@ -32,4 +32,4 @@ LDFLAGS=$(compute_ldflags)
 # is what makes cross-compile work everywhere. Callers can override.
 export CGO_ENABLED="${CGO_ENABLED:-0}"
 
-go build -ldflags "$LDFLAGS" -trimpath -o "$OUT" "$PKG"
+go build -tags "$GO_TAGS" -ldflags "$LDFLAGS" -trimpath -o "$OUT" "$PKG"

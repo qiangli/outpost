@@ -26,6 +26,20 @@ PLATFORMS="${PLATFORMS:-darwin-amd64 darwin-arm64 linux-amd64 linux-arm64 window
 # binary surfaces only the commit short-sha.
 RELEASE_TAG="${RELEASE_TAG:-}"
 
+# GO_TAGS: build tags every outpost binary is built with.
+#
+# fb_archives keeps the `files` builtin's nine-format folder download
+# (zip/tar/tar.gz + bz2/xz/lz4/sz/br/zst). The ../filebrowser fork made the
+# six compressed formats opt-in so the bashy web console could drop ~50
+# packages it does not need; outpost DOES need them, because its files
+# builtin shipped that contract and a silent narrowing is a regression its
+# users would discover one download at a time.
+#
+# Keep in lockstep with .github/workflows/{release,test}.yml and the Makefile
+# test targets. TestFolderDownloadFormatCoverage fails loudly when this is
+# dropped, so the tag cannot go missing quietly.
+GO_TAGS="${GO_TAGS:-fb_archives}"
+
 # repo_root: project root regardless of where the caller cd'd from.
 # Scripts live in <root>/scripts, so this is the parent of $0's directory.
 repo_root() {

@@ -15,7 +15,7 @@ There is no Makefile — the canonical entry points are bash scripts under `scri
   defaulting to `~/.local/bin`.
 - `./scripts/tidy.sh` runs `go mod tidy`, `go fmt ./...`, and `go vet ./...`.
 - `./scripts/clean.sh` removes `./bin` and stray test/coverage artifacts.
-- `go test ./...` runs the full test suite. Use package filters while iterating, for example `go test ./internal/agent/adminui -run TestE2E`.
+- `make test` runs the full test suite in the configuration outpost SHIPS. It passes `-tags fb_archives`, which the `files` builtin needs for its nine-format folder download; a bare `go test ./...` builds without the tag and fails `TestFolderDownloadFormatCoverage` on purpose. Use package filters while iterating, for example `go test -tags fb_archives ./internal/agent/adminui -run TestE2E`.
 - `go run ./cmd/outpost start` runs the daemon from source; `go run ./cmd/outpost docs settings` checks embedded docs output.
 
 Self-rebuild from an existing outpost install (no system git, no make):
