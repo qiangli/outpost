@@ -239,6 +239,35 @@ func dialMeshDirect(
 		return nil, nil, errMeshNotAvailable
 	}
 
+	// Confirm the TARGET host actually publishes the service before committing.
+	// Forwarder.Listen binds the local listener eagerly and connects to the peer
+	// lazily, so it "succeeds" against a peer that exposes nothing and the
+	// failure surfaces late — after a wasted forward and a cloudbox ticket
+	// round-trip. Observed exactly that against a peer running an older daemon.
+	resCtx, cancelR := context.WithTimeout(ctx, 2*time.Second)
+	var res struct {
+		Peers []admincore.MeshResolvedPeer `json:"peers"`
+	}
+	rerr := runMeshTool(resCtx, "outpost_mesh_resolve", struct {
+		Service string `json:"service"`
+	}{Service: MeshServiceSSH}, &res)
+	cancelR()
+	if rerr != nil {
+		return nil, nil, errMeshNotAvailable
+	}
+	publishes := false
+	for _, p := range res.Peers {
+		if p.PeerID == link.Link.PeerID || strings.EqualFold(p.Host, host) {
+			publishes = true
+			break
+		}
+	}
+	if !publishes {
+		// Peer is directly linked but serves no ssh over the mesh — an older
+		// daemon, or ssh disabled there. Silent fallback.
+		return nil, nil, errMeshNotAvailable
+	}
+
 	fwdCtx, cancel2 := context.WithTimeout(ctx, 3*time.Second)
 	var fwd struct {
 		Addr string `json:"addr"`

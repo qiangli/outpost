@@ -81,6 +81,10 @@ type meshLinkOut struct {
 	Link admincore.MeshHostLinkView `json:"link"`
 }
 
+type meshResolveOut struct {
+	Peers []admincore.MeshResolvedPeer `json:"peers"`
+}
+
 func (s *Server) registerMeshTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "outpost_mesh_status",
@@ -99,6 +103,17 @@ func (s *Server) registerMeshTools() {
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in meshLinkIn) (*mcp.CallToolResult, meshLinkOut, error) {
 		v := s.core.MeshHostLink(in.Host)
 		return nil, meshLinkOut{Link: v}, nil
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "outpost_mesh_resolve",
+		Description: "List the peers that publish a named mesh service, from the service registry. Read-only — unlike outpost_mesh_dial it opens no forward, so a caller can check that a SPECIFIC host serves something before committing to a mesh path.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in meshServiceIn) (*mcp.CallToolResult, meshResolveOut, error) {
+		peers, err := s.core.MeshResolve(in.Service)
+		if err != nil {
+			return apiErrResult[meshResolveOut](err)
+		}
+		return nil, meshResolveOut{Peers: peers}, nil
 	})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
