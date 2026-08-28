@@ -707,6 +707,19 @@ type peerTicketResponse struct {
 // `host` and `scope`. The cookie itself never leaves this exchange —
 // only the derived ticket is presented to the peer.
 //
+// KNOWN COUPLING, deliberately left in place: this is a CONTROL-PLANE call on
+// the DATA-PLANE path. Tickets are 60s and single-use (the peer replay-protects
+// the jti), so they cannot be cached and every dial needs a fresh one — which
+// means a cloudbox outage denies the mesh-direct path even when a healthy
+// direct peer link is sitting idle. Removing the coupling is not a caching
+// problem, it is an authorization-model question: the mesh connection is
+// already mutually authenticated by libp2p peer identity, so a peer COULD
+// accept a mesh-arrived caller on that basis instead. That trades "cloudbox
+// attests this specific connection" for "the caller holds a known mesh
+// identity", which is a real reduction in authority and is not a change to
+// make silently. Until it is decided, the retry below is the honest mitigation:
+// it survives a blip, not an outage.
+//
 // A 404 from cloudbox (endpoint not deployed yet) is treated as
 // errLANNotAvailable so the caller can fall back to the tunnel.
 func exchangePeerTicket(ctx context.Context, cbBase, bearer, cookie, host, scope string) (string, error) {
@@ -723,13 +736,55 @@ func exchangePeerTicket(ctx context.Context, cbBase, bearer, cookie, host, scope
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	req.Header.Set("Cookie", "matrix_elev="+cookie)
 
+	// A ticket is SINGLE-USE — the peer consumes its jti against a replay LRU
+	// and rejects a second presentation — so it cannot be cached, and every
+	// dial needs a fresh one. That makes this one call the point where a
+	// momentary cloudbox blip denies a path that is otherwise fully
+	// peer-to-peer. Observed live: a direct mesh link was up and idle while
+	// `mesh-direct attempt failed ... cloudbox returned 504` sent the
+	// connection to the relay.
+	//
+	// Retry the transient statuses briefly before giving up. This does not
+	// remove the dependency (see the note on exchangePeerTicket), it only
+	// stops a hiccup measured in hundreds of milliseconds from costing the
+	// direct path. 4xx is a real answer and is never retried.
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	var (
+		resp     *http.Response
+		respBody []byte
+	)
+	backoff := []time.Duration{200 * time.Millisecond, 600 * time.Millisecond}
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			// Body was consumed by the previous attempt; rebuild the request.
+			req, err = http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
+			if err != nil {
+				return "", err
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+bearer)
+			req.Header.Set("Cookie", "matrix_elev="+cookie)
+		}
+		resp, err = client.Do(req)
+		if err == nil {
+			respBody, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+		}
+		retryable := err != nil || resp.StatusCode == http.StatusBadGateway ||
+			resp.StatusCode == http.StatusServiceUnavailable ||
+			resp.StatusCode == http.StatusGatewayTimeout
+		if !retryable || attempt >= len(backoff) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(backoff[attempt]):
+		}
+	}
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode == http.StatusNotFound {
 		// Endpoint not deployed yet on cloudbox; tunnel-fallback.
