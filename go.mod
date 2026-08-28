@@ -9,7 +9,7 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
 	github.com/fatedier/frp v0.68.1
-	github.com/filebrowser/filebrowser/v2 v2.0.0-00010101000000-000000000000
+	github.com/filebrowser/filebrowser/v2 v2.63.23
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/hashicorp/mdns v1.0.6
