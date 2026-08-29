@@ -477,7 +477,19 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   `peerplane.Client` (announce/connect/inbox) + the outpost's existing cloudbox
   credentials — no new scope. Constructed next to the host in `main.go`, run in
   the errgroup. cloudbox brokers the introduction; the bytes then go
-  peer-to-peer (relay only on hole-punch failure).
+  peer-to-peer (relay only on hole-punch failure). **One PeerNode row per host,
+  two announcers:** the peer-plane RTT prober (`peerplane.Service`) and this
+  rendezvous both `POST /api/v1/peer/announce`, and cloudbox overwrites
+  `peer_id` + `candidates` wholesale on every call (only `services` is
+  leave-untouched-when-omitted). So the two are cross-wired in `main.go`: the
+  prober co-announces the mesh identity (`Service.SetIdentity` → mesh peer id +
+  `Host.DialableAddrs()`) and the rendezvous folds the prober's `ip:port`
+  candidates into its own announce (`SetExtraCandidates` ← `Service.Candidates`).
+  Before that, the prober's blank peer id erased the mesh identity every 60 s
+  and `/api/v1/peer/resolve` (which skips rows with no peer id) dropped the
+  host — `outpost mesh dial ssh` flapped between "resolved" and `no reachable
+  peer exposes service "ssh"` on every host running both, even though `mesh
+  status` on the host listed `ssh` the whole time.
 - **Forwarder (`mesh/forward.go`)** — the generic loopback-TCP-over-mesh
   transport everything else rides on (stream protocol `/dhnt/mesh/forward/1.0.0`,
   owned by the host, `host.Forwarder()`). Two halves: the **exposer** (worker)
