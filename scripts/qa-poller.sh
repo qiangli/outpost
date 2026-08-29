@@ -24,7 +24,8 @@ export PATH="$HOME/bin:$PATH"
 REPO="${OUTPOST_REPO:-qiangli/outpost}"
 INTERVAL="${QA_POLL_INTERVAL:-300}"
 ONCE="${QA_POLL_ONCE:-}"                      # set to run a single pass (for testing)
-os=$(bashy uname -s | tr 'A-Z' 'a-z'); case "$os" in *darwin*) os=darwin;; *linux*) os=linux;; *) os=windows;; esac
+uname_s=$(bashy uname -s 2>/dev/null || uname -s)
+case "$uname_s" in *[Dd]arwin*) os=darwin;; *[Ll]inux*) os=linux;; *) os=windows;; esac
 export OTEL_SERVICE_NAME="${OTEL_SERVICE_NAME:-outpost-qa-$os}"
 
 gh_ok(){ bashy gh auth token >/dev/null 2>&1 || [ -n "${GITHUB_TOKEN:-}" ] || eval "$(bashy secrets env 2>/dev/null)"; [ -n "${GITHUB_TOKEN:-}$(bashy gh auth token 2>/dev/null)" ]; }
@@ -56,12 +57,12 @@ pass(){                                        # one poll pass
   # Try the variants in Discover's precedence order. Fail closed.
   got=""
   for cand in dag.md DAG.md Dag.md; do
-    if bashy gh api "/repos/$REPO/contents/$cand" -H "Accept: application/vnd.github.raw" > dag.md 2>/dev/null && [ -s dag.md ]; then
+    if bashy gh api "/repos/$REPO/contents/$cand?ref=$dev" -H "Accept: application/vnd.github.raw" > dag.md 2>/dev/null && [ -s dag.md ]; then
       got="$cand"; break
     fi
   done
   if [ -z "$got" ]; then
-    echo ">> [$os] FAIL: could not fetch dag.md harness from $REPO"; return 0
+    echo ">> [$os] FAIL: could not fetch dag.md harness from $REPO at $dev"; return 1
   fi
   if OUTPOST_TEST_VERSION="$dev" bashy dag dag.md qa 2>&1 | tee ".qa/qa-$os.log"; then
     sha=$(bashy git ls-remote "https://github.com/$REPO.git" "refs/tags/$dev" | awk '{print $1}' | head -1)
@@ -69,11 +70,13 @@ pass(){                                        # one poll pass
       echo ">> [$os] PROMOTED $ref"
     else
       echo ">> [$os] WARN: could not create $ref (token/perms?)"
+      return 1
     fi
   else
     echo ">> [$os] QA FAILED $dev — see .qa/qa-$os.log; report via OTel service=$OTEL_SERVICE_NAME"
     # TODO(otel): emit an OTLP log/span (version=$dev, os=$os, tail of the log) so the
     # dev conductor's query_logs/query_traces catches it and assigns the fleet to fix.
+    return 1
   fi
 }
 

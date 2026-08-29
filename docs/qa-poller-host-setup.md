@@ -58,6 +58,10 @@ bashy gh api /repos/<owner>/<repo> --jq .full_name   # verify repo access
 The poller then uses `bashy gh api` for every call, including creating the
 promotion ref. Nothing else is needed.
 
+The poller fetches the QA harness from the exact `vX.Y.Z-dev` tag it is
+testing, so the smoke definition and release assets come from the same versioned
+pipeline state.
+
 ### Alternative: cloudbox secrets vault (`bashy secrets`)
 
 Reference a vaulted token by name instead of storing it on the host:
@@ -98,7 +102,9 @@ Use the bashy scheduler (cross-platform; no OS-specific cron/Task Scheduler):
 # a tiny wrapper keeps the cwd + one-shot flag in one place:
 cat > ~/.outpost-qa/run-qa.sh <<'EOF'
 cd "<work-dir>" || exit 1
-QA_POLL_ONCE=1 bashy qa-poller.sh
+bashy gh api /repos/qiangli/outpost/contents/scripts/qa-poller.sh \
+  -H "Accept: application/vnd.github.raw" > qa-poller.sh 2>/dev/null || exit 1
+OUTPOST_REPO=qiangli/outpost QA_POLL_ONCE=1 bashy qa-poller.sh
 EOF
 
 bashy schedule add --every 15m --name outpost-qa-<os> -- <bashy-abs-path> <run-qa.sh-abs-path>
@@ -191,6 +197,18 @@ QA_POLL_ONCE=1 bash scripts/qa-poller-podman.sh   # one pass (authors the ref on
 ## How promotion consumes the refs
 
 `promote.yml` reads `refs/qa/<version>/<os>` for each OS in its `required_os`
-set and refuses to promote until they're all present. See
+set and refuses to promote until they're all present.
+[`scripts/promote-poller.sh`](../scripts/promote-poller.sh) completes the
+automated loop by creating the bare `vX.Y.Z` tag only after that same required
+set is green; the tag push is what fires `promote.yml`.
+
+Run one trusted promotion poller:
+
+```bash
+PROMOTE_POLL_ONCE=1 REQUIRED_OS=windows bashy scripts/promote-poller.sh
+```
+
+Schedule it the same way as the QA poller, keeping `REQUIRED_OS` aligned with
+`promote.yml`'s required OS set. See
 [`docs/cicd-strategy.md`](../../docs/cicd-strategy.md) (umbrella) for the full
 two-tag release flow (`-dev` build+QA → bare-tag byte-promote → rollout).

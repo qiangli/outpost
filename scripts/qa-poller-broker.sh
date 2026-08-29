@@ -77,7 +77,7 @@ remote_smoke(){
 }
 
 pass(){
-  local dev ver ref sha
+  local dev ver ref sha log
   dev=$(newest_dev)
   [ -n "$dev" ] || { echo "[$LANE] no -dev tag yet"; return 0; }
   ver="${dev%-dev}"; ref="refs/qa/${ver}/${LANE}"
@@ -85,15 +85,20 @@ pass(){
     echo "[$LANE] $ver already promoted"; return 0
   fi
   echo ">> [$LANE] new $dev — validating on $REMOTE ($LANE/$RARCH)"
-  if remote_smoke "$ver" 2>&1 | tee "/tmp/qa-broker-$LANE.log" | grep -q '^REMOTE-QA-PASS'; then
+  log="/tmp/qa-broker-$LANE.log"
+  if remote_smoke "$ver" >"$log" 2>&1 && awk '/^REMOTE-QA-PASS$/ { found=1 } END { exit found ? 0 : 1 }' "$log"; then
+    cat "$log"
     sha=$(bashy git ls-remote "https://github.com/$REPO.git" "refs/tags/$dev" | awk '{print $1}' | head -1)
     if bashy gh api -X POST "/repos/$REPO/git/refs" -f "ref=$ref" -f "sha=$sha" >/dev/null 2>&1; then
       echo ">> [$LANE] PROMOTED $ref (attested by $REMOTE)"
     else
       echo ">> [$LANE] WARN: QA passed but could not author $ref (token/perms?)"
+      return 1
     fi
   else
-    echo ">> [$LANE] QA FAILED $dev on $REMOTE — see /tmp/qa-broker-$LANE.log; report via OTel service=$OTEL_SERVICE_NAME"
+    cat "$log" 2>/dev/null || true
+    echo ">> [$LANE] QA FAILED $dev on $REMOTE — see $log; report via OTel service=$OTEL_SERVICE_NAME"
+    return 1
   fi
 }
 
