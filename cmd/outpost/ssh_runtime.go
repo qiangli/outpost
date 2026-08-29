@@ -207,6 +207,11 @@ var errLANNotAvailable = errors.New("lan-direct not available")
 // fallback, same contract as errLANNotAvailable.
 var errMeshNotAvailable = errors.New("mesh-direct not available")
 
+// meshToolRunner is replaceable by focused transport-selection tests. Keeping
+// the MCP boundary here lets those tests prove that an unpublished peer does
+// not open a forward or request a cloudbox ticket.
+var meshToolRunner = runMeshTool
+
 // dialMeshDirect reaches host over an EXISTING direct mesh link: it opens a
 // local forward to the peer's published ssh service and speaks the same
 // WS+peer-ticket protocol the LAN rung uses.
@@ -231,7 +236,7 @@ func dialMeshDirect(
 	var link struct {
 		Link admincore.MeshHostLinkView `json:"link"`
 	}
-	lerr := runMeshTool(linkCtx, "outpost_mesh_link", struct {
+	lerr := meshToolRunner(linkCtx, "outpost_mesh_link", struct {
 		Host string `json:"host"`
 	}{Host: host}, &link)
 	cancel()
@@ -248,7 +253,7 @@ func dialMeshDirect(
 	var res struct {
 		Peers []admincore.MeshResolvedPeer `json:"peers"`
 	}
-	rerr := runMeshTool(resCtx, "outpost_mesh_resolve", struct {
+	rerr := meshToolRunner(resCtx, "outpost_mesh_resolve", struct {
 		Service string `json:"service"`
 	}{Service: MeshServiceSSH}, &res)
 	cancelR()
@@ -272,7 +277,7 @@ func dialMeshDirect(
 	var fwd struct {
 		Addr string `json:"addr"`
 	}
-	ferr := runMeshTool(fwdCtx, "outpost_mesh_listen", struct {
+	ferr := meshToolRunner(fwdCtx, "outpost_mesh_listen", struct {
 		PeerID    string `json:"peer_id"`
 		Service   string `json:"service"`
 		LocalAddr string `json:"local_addr,omitempty"`
@@ -288,7 +293,7 @@ func dialMeshDirect(
 	closeForward := func() {
 		cctx, ccancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer ccancel()
-		_ = runMeshTool(cctx, "outpost_mesh_close_listen", struct {
+		_ = meshToolRunner(cctx, "outpost_mesh_close_listen", struct {
 			Addr string `json:"addr"`
 		}{Addr: fwd.Addr}, &struct{}{})
 	}
