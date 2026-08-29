@@ -141,6 +141,66 @@ case "$vout" in *"$BASEV"*) ;; *) echo "FAIL: version stamp is not $BASEV ($vout
 echo ">> QA PASS ${VER} ${os}/${arch}"
 ```
 
+### qa-lanes
+Drive every required-OS QA lane NOW, instead of waiting for a standing poller to
+notice the newest `-dev` tag on its own timer.
+
+The workflow is unchanged: each lane still downloads the PUBLISHED artifact for
+its OS, sha256-verifies it, runs the same minimal smoke as `qa`, and authors
+`refs/qa/<version>/<os>` on success. Only the TRIGGER moves — from a 15-minute
+schedule to this task.
+
+WHY: the scheduled pollers stopped attesting for 21 versions and nothing said
+so, because each host ran its own copy of the wrapper and one of them had had
+its self-update line deleted. Driving the lanes from the repo removes that
+failure mode entirely — there is no per-host copy left to go stale, and a lane
+that cannot run FAILS THIS TASK instead of silently producing nothing.
+
+Cheap to re-run: a lane whose ref already exists early-returns ("already
+promoted"), so this is a no-op once the version is attested.
+
+Lanes are configured by env, and each maps to the runner that already exists:
+  QA_LANES          space-separated (default "darwin windows")
+  darwin/linux/…    run here            -> scripts/qa-poller.sh
+  <lane>_REMOTE     run over ssh        -> scripts/qa-poller-broker.sh
+  linux via podman  no Linux host       -> scripts/qa-poller-podman.sh
+
+A lane needing a remote host takes `<LANE>_REMOTE` and `<LANE>_BASHY`, e.g.
+`WINDOWS_REMOTE=<host> WINDOWS_BASHY='C:/path/to/bashy.exe'`. Skipping a
+required lane is possible (drop it from QA_LANES) and is NOT recommended: it
+does not make the gate pass, it makes the gate absent — `promote` will still
+refuse, which is the point.
+Effects: write
+
+```bash
+set -e
+LANES="${QA_LANES:-darwin windows}"
+for lane in $LANES; do
+  # NOT `tr 'a-z' 'A-Z'`: tr's ranges are locale-sensitive and return EMPTY
+  # under some LC_COLLATE values, which is the exact defect that made a macOS
+  # poller call itself the windows lane. Explicit cases cannot do that.
+  case "$lane" in
+    darwin) up=DARWIN ;;
+    windows) up=WINDOWS ;;
+    linux) up=LINUX ;;
+    *) up=$(printf '%s' "$lane" | awk '{print toupper($0)}') ;;
+  esac
+  eval "remote=\${${up}_REMOTE:-}"
+  eval "rbashy=\${${up}_BASHY:-}"
+  eval "rarch=\${${up}_ARCH:-amd64}"
+  if [ -n "$remote" ]; then
+    echo ">> lane $lane: over ssh to $remote"
+    QA_LANE="$lane" QA_REMOTE="$remote" QA_REMOTE_ARCH="$rarch"       QA_REMOTE_BASHY="${rbashy:-bashy}" QA_POLL_ONCE=1       bashy scripts/qa-poller-broker.sh
+  elif [ "$lane" = linux ] && [ "$(bashy uname -s 2>/dev/null || uname -s)" != Linux ]; then
+    echo ">> lane linux: via podman on this host"
+    QA_POLL_ONCE=1 bashy scripts/qa-poller-podman.sh
+  else
+    echo ">> lane $lane: on this host"
+    QA_POLL_ONCE=1 bashy scripts/qa-poller.sh
+  fi
+done
+```
+
 ### promote
 Drive the LAST step of the two-tag release flow: check that every required-OS QA
 lane has attested the newest `vX.Y.Z-dev`, then create the bare `vX.Y.Z` tag —
@@ -159,6 +219,7 @@ It does NOT run the lanes — the standing pollers do that
 means "that lane did not attest", never "that lane was skipped".
 
 Pure-bashy like `qa`: no `grep -o`, no `sort -V`.
+Requires: qa-lanes
 Effects: write
 
 ```bash
