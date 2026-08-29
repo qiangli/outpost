@@ -183,6 +183,89 @@ jobs:
           "$bin" docs settings >/dev/null
           echo "boot smoke OK: ${{ matrix.os }}/${{ matrix.arch }}"
 
+      # The boot smoke above proves the BINARY starts. This proves it becomes
+      # a DAEMON — which is the failure the fleet cannot recover from.
+      #
+      # auto_rollback_enabled is off across the fleet by policy: the safety net
+      # is that every release is proven to start on every platform, so a bad
+      # release never reaches a host. That policy is only as strong as what
+      # this job asserts. `version --json` and `--help` would both pass on a
+      # binary that dies the moment it is asked to be a daemon — and a daemon
+      # that boots and then exits crash-loops forever under supervisord, with
+      # the watchdog in observe mode logging "WOULD auto-rollback" and starting
+      # it again. On a headless or remote host that is a dark host.
+      #
+      # Unpaired on purpose: `outpost start` with no agent.json brings up the
+      # admin listener and waits for pairing, which exercises config load,
+      # listener bind and the HTTP surface without needing a cloudbox.
+      - name: daemon smoke (starts, serves /healthz, stops)
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          base="${tag%%-*}"
+          bin="dist/outpost-${base}-${{ matrix.os }}-${{ matrix.arch }}"
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            bin="${bin}.exe"
+          fi
+
+          # A port of our own, never the 17777 default: a runner that somehow
+          # already had an outpost could otherwise make this pass for the
+          # wrong reason.
+          addr="127.0.0.1:17999"
+          export OUTPOST_ADMIN_ADDR="$addr"
+
+          "$bin" start >daemon-smoke.log 2>&1 &
+          pid=$!
+
+          # Poll rather than sleep: a fixed sleep either flakes on a slow
+          # runner or wastes time on a fast one. Exit early if the process is
+          # already gone — that IS the failure being tested for, and waiting
+          # out the full timeout to report it helps nobody.
+          ok=""
+          gone=""
+          for _ in $(seq 1 30); do
+            if curl -fsS --max-time 2 "http://$addr/healthz" >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
+            kill -0 "$pid" 2>/dev/null || { gone=1; break; }
+            sleep 1
+          done
+
+          # "gone" is a HINT, not a verdict, and it may only make this faster —
+          # never wrong. git-bash on the Windows runners does not own PIDs the
+          # way a unix shell does, so a `kill -0` that wrongly reports "gone"
+          # would turn a healthy daemon into a failed release and block every
+          # Windows build. Confirm with a bounded poll before failing: a
+          # genuinely dead daemon still fails in ~8s instead of 30.
+          if [ -z "$ok" ] && [ -n "$gone" ]; then
+            for _ in $(seq 1 8); do
+              if curl -fsS --max-time 2 "http://$addr/healthz" >/dev/null 2>&1; then
+                ok=1
+                break
+              fi
+              sleep 1
+            done
+          fi
+
+          if [ -z "$ok" ]; then
+            echo "::error::${{ matrix.os }}/${{ matrix.arch }}: daemon never served /healthz on $addr"
+            echo "--- daemon output ---"
+            cat daemon-smoke.log 2>/dev/null || true
+            "$bin" stop >/dev/null 2>&1 || kill "$pid" 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "== /healthz =="
+          curl -fsS --max-time 5 "http://$addr/healthz"
+          echo
+
+          # stop is part of the assertion: a daemon that cannot be stopped is
+          # one a supervisor cannot restart, because the port stays held.
+          "$bin" stop
+          echo "daemon smoke OK: ${{ matrix.os }}/${{ matrix.arch }}"
+
   publish:
     name: publish release + webhook
     needs: [build, smoke]
