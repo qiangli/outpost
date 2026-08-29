@@ -45,6 +45,16 @@ type Rendezvous struct {
 	mu        sync.Mutex
 	hostPeers map[string]string
 
+	// aliases maps the lower-cased ALIAS cloudbox files a paired host under
+	// to that host's REGISTERED name — the only key hostPeers is ever written
+	// with (the connect/dial loop labels peers by p.Host). Learned from the
+	// same /api/v1/peers fetch discoverAndDial already performs, so it costs
+	// no extra round-trip. Without it a hostname-keyed caller that used the
+	// alias (`outpost reach <alias>`) missed the lookup, the mesh rung
+	// reported nothing, and the caller was silently downgraded to the
+	// cloudbox relay while the registered spelling took the direct link.
+	aliases map[string]string
+
 	// dialState holds the per-peer reconnect-sweep backoff so a flapping or
 	// unreachable peer isn't force-dialed every ~30s. A same-LAN peer that
 	// reconnects and stays connected is skipped by peersToRedial (never re-dialed
@@ -82,6 +92,7 @@ func NewRendezvous(host *Host, agentName, cloudboxURL, accessToken string, log *
 		log:         log,
 		interval:    60 * time.Second,
 		hostPeers:   make(map[string]string),
+		aliases:     make(map[string]string),
 		dialState:   make(map[peer.ID]*peerDial),
 	}
 }
@@ -105,7 +116,7 @@ func (r *Rendezvous) LinkInfoForHost(host string) LinkInfo {
 		return LinkInfo{}
 	}
 	r.mu.Lock()
-	peerID := r.hostPeers[host]
+	peerID := r.hostPeers[r.canonicalHostLocked(host)]
 	r.mu.Unlock()
 	if peerID == "" {
 		return LinkInfo{}
@@ -117,14 +128,69 @@ func (r *Rendezvous) LinkInfoForHost(host string) LinkInfo {
 // or "" if none is known yet. This is the reliable host→peer-id source — the id
 // the mesh actually connected with — independent of a per-call cloudbox
 // peer/connect round-trip (which can momentarily return an empty id on a stale
-// announce).
+// announce). host may be either spelling cloudbox knows — the registered name
+// or the alias — and both resolve to the same peer id.
 func (r *Rendezvous) PeerIDForHost(host string) string {
 	if r == nil {
 		return ""
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.hostPeers[host]
+	return r.hostPeers[r.canonicalHostLocked(host)]
+}
+
+// CanonicalHost returns the registered name for either spelling of a paired
+// host (registered name or cloudbox alias). Unknown names come back unchanged,
+// so callers can use it unconditionally before a hostPeers lookup.
+func (r *Rendezvous) CanonicalHost(host string) string {
+	if r == nil {
+		return host
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.canonicalHostLocked(host)
+}
+
+// canonicalHostLocked resolves a caller-supplied host name to the registered
+// form hostPeers is keyed by. Order: exact registered name; registered name
+// case-insensitively; alias (case-insensitively). Falls through to the input
+// so an unknown name still misses the lookup honestly. Caller holds r.mu.
+func (r *Rendezvous) canonicalHostLocked(host string) string {
+	if host == "" {
+		return host
+	}
+	if _, ok := r.hostPeers[host]; ok {
+		return host
+	}
+	for registered := range r.hostPeers {
+		if strings.EqualFold(registered, host) {
+			return registered
+		}
+	}
+	if registered, ok := r.aliases[strings.ToLower(host)]; ok {
+		return registered
+	}
+	return host
+}
+
+// observePeers records, from one cloudbox peer listing, the alias → registered
+// name association for every paired host that has an alias. It runs on every
+// discover tick (online or not, dial outcome irrelevant) so the mapping is
+// present the moment hostPeers learns the peer id under the registered name.
+// A renamed alias replaces its predecessor; an alias that equals the
+// registered name is a no-op. Mappings are additive across ticks — a host
+// that momentarily drops out of the listing keeps its alias, matching how
+// hostPeers keeps its peer id.
+func (r *Rendezvous) observePeers(peers []peerstatus.Peer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, p := range peers {
+		alias := strings.TrimSpace(p.Alias)
+		if p.Host == "" || alias == "" || strings.EqualFold(alias, p.Host) {
+			continue
+		}
+		r.aliases[strings.ToLower(alias)] = p.Host
+	}
 }
 
 // rememberPeer records the host→peer-id association learned during a tick.
@@ -389,6 +455,9 @@ func (r *Rendezvous) discoverAndDial(ctx context.Context) {
 		r.log.Debug("mesh: peer list fetch failed", "err", err)
 		return
 	}
+	// The listing carries both spellings of every host; remember the alias
+	// so hostname-keyed lookups (reach / peer-status / shard) resolve either.
+	r.observePeers(peers)
 	for _, p := range peers {
 		if p.Host == r.agentName || !p.Online {
 			continue

@@ -108,6 +108,13 @@ type Deps struct {
 	// per-host discovery flag, or a fresh dial. An existing direct connection is
 	// itself the proof of reachability. Closure so admincore doesn't import the
 	// mesh package. Nil when the mesh data plane is off.
+	//
+	// Contract: host may be EITHER spelling cloudbox knows — the registered
+	// name or the alias (`outpost peers status` prints `alias (registered)`).
+	// The implementation canonicalizes before the lookup; a caller must never
+	// have to. Keying on the registered name only was a silent downgrade:
+	// `reach <alias>` fell through to the cloudbox relay while
+	// `reach <registered>` took the direct link, for the same host.
 	MeshPeerIDByHost func(host string) string
 
 	// ShardTrigger, when set, tells <host> to LEAD a shard for <model> over

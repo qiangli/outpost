@@ -215,12 +215,15 @@ func probeMesh(ctx context.Context, host string) (rttMs int64, endpoint string, 
 	// Retry on "the mesh does not know this NAME", which is a successful call
 	// reporting Found=false — not on !ok, which means the call itself failed.
 	if !ok || !out.Link.Found {
-		// The mesh keys on the peer's OWN agent name, while the caller may
-		// have used the name cloudbox files the host under — `reach <alias>`
-		// would then silently fall through to the relay while
-		// `reach <agent-name>` takes the direct link. Same host, opposite
-		// verdict, which is precisely the silent downgrade this rung exists
-		// to remove. Cloudbox knows both spellings; ask it once.
+		// The daemon's rendezvous now canonicalizes alias → registered name
+		// itself (mesh.Rendezvous.CanonicalHost, learned from the same peers
+		// listing it already fetches), so on a current daemon a single lookup
+		// answers for either spelling. This retry is the fallback for an OLDER
+		// daemon that still keys only on the registered name: there
+		// `reach <alias>` silently fell through to the relay while
+		// `reach <agent-name>` took the direct link — same host, opposite
+		// verdict, precisely the downgrade this rung exists to remove.
+		// Cloudbox knows both spellings; ask it once.
 		if alt := meshAliasFor(ctx, host); alt != "" {
 			// Fresh deadline: mctx has already spent its budget on the first
 			// lookup and the alias fetch, so reusing it would cancel the retry

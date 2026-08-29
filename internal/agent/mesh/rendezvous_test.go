@@ -1,11 +1,19 @@
 package mesh
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	"github.com/qiangli/outpost/internal/agent/peerplane"
+	"github.com/qiangli/outpost/internal/agent/peerstatus"
 )
 
 // TestPeersToRedial verifies the sweep selects exactly the known owned/shared
@@ -134,5 +142,126 @@ func TestParseMultiaddrs(t *testing.T) {
 	got := parseMultiaddrs(in)
 	if len(got) != 2 {
 		t.Fatalf("parseMultiaddrs kept %d addrs, want 2: %v", len(got), got)
+	}
+}
+
+// TestDiscoverAndDialResolvesAlias is the regression for the seventh
+// silent-downgrade defect of sprint 84: cloudbox files a paired host under
+// BOTH its registered name and an alias (`outpost peers status` prints
+// `dog (novidesign)`), but the rendezvous learned the peer id only under the
+// registered name. `outpost reach dog` then missed the mesh lookup and was
+// downgraded to the cloudbox relay while `outpost reach novidesign` took the
+// direct link — same host, opposite verdict.
+//
+// The test drives the real discovery path (discoverAndDial against a fake
+// cloudbox + a real libp2p peer) and asserts that both spellings resolve to
+// the same peer id. Before the fix the alias lookup returned "".
+func TestDiscoverAndDialResolvesAlias(t *testing.T) {
+	const (
+		registered = "novidesign"
+		alias      = "dog"
+	)
+
+	self := newTestHost(t)
+	defer self.Close()
+	peerHost := newTestHost(t)
+	defer peerHost.Close()
+
+	peerAddrs := make([]string, 0, len(peerHost.LibP2PHost().Addrs()))
+	for _, a := range peerHost.LibP2PHost().Addrs() {
+		peerAddrs = append(peerAddrs, a.String())
+	}
+
+	// Fake cloudbox: the peer listing carries both spellings; connect answers
+	// only for the REGISTERED name (that is what discoverAndDial sends).
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/peers", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"peers": []peerstatus.Peer{
+				{Host: registered, Alias: alias, Owned: true, Online: true},
+			},
+		})
+	})
+	mux.HandleFunc("/api/v1/peer/connect", func(w http.ResponseWriter, r *http.Request) {
+		var in map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		if in["to_host"] != registered {
+			http.Error(w, "unknown host "+in["to_host"], http.StatusNotFound)
+			return
+		}
+		var out peerplane.PeerTarget
+		out.Peer.Host = registered
+		out.Peer.PeerID = peerHost.PeerID()
+		out.Peer.Candidates = peerAddrs
+		_ = json.NewEncoder(w).Encode(out)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	r := NewRendezvous(self, "self", srv.URL, "tok", nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	r.discoverAndDial(ctx)
+
+	if got := r.PeerIDForHost(registered); got != peerHost.PeerID() {
+		t.Fatalf("PeerIDForHost(%q) = %q, want %q (registered name must resolve)", registered, got, peerHost.PeerID())
+	}
+	// The acceptance criterion: the alias resolves to the SAME peer id as the
+	// registered name, so `reach <alias>` and `reach <registered>` classify
+	// the same route.
+	if got := r.PeerIDForHost(alias); got != peerHost.PeerID() {
+		t.Fatalf("PeerIDForHost(%q) = %q, want %q (alias silently missed the mesh lookup)", alias, got, peerHost.PeerID())
+	}
+	if got := r.PeerIDForHost(strings.ToUpper(alias)); got != peerHost.PeerID() {
+		t.Fatalf("PeerIDForHost(%q) = %q, want %q (alias match must be case-insensitive)", strings.ToUpper(alias), got, peerHost.PeerID())
+	}
+	if got := r.CanonicalHost(alias); got != registered {
+		t.Fatalf("CanonicalHost(%q) = %q, want %q", alias, got, registered)
+	}
+	if got := r.PeerIDForHost("nobody"); got != "" {
+		t.Fatalf("PeerIDForHost(unknown) = %q, want empty", got)
+	}
+	// LinkInfoForHost rides the same key: both spellings report the same link.
+	if a, b := r.LinkInfoForHost(alias), r.LinkInfoForHost(registered); a != b {
+		t.Fatalf("LinkInfoForHost differs by spelling: alias=%+v registered=%+v", a, b)
+	}
+}
+
+// TestObservePeersAliasRules pins the alias-table edge cases: an alias equal
+// to the registered name is dropped, a renamed alias replaces the old mapping,
+// blanks are ignored, and an unknown name falls through unchanged so it still
+// misses the lookup honestly.
+func TestObservePeersAliasRules(t *testing.T) {
+	r := NewRendezvous(nil, "self", "http://unused", "", nil)
+	r.rememberPeer("novidesign", "pid-n")
+	r.rememberPeer("Mixed-Case", "pid-m")
+
+	r.observePeers([]peerstatus.Peer{
+		{Host: "novidesign", Alias: "dog"},
+		{Host: "plain", Alias: "plain"},
+		{Host: "", Alias: "orphan"},
+		{Host: "blank", Alias: "  "},
+	})
+	if got := r.PeerIDForHost("dog"); got != "pid-n" {
+		t.Fatalf("alias dog -> %q, want pid-n", got)
+	}
+	if got := r.CanonicalHost("plain"); got != "plain" {
+		t.Fatalf("self-alias should be a no-op, got %q", got)
+	}
+	if got := r.CanonicalHost("orphan"); got != "orphan" {
+		t.Fatalf("alias with no host must not map, got %q", got)
+	}
+	if got := r.PeerIDForHost("mixed-case"); got != "pid-m" {
+		t.Fatalf("registered name should match case-insensitively, got %q", got)
+	}
+
+	// Alias renamed cloud-side: the new spelling wins, the old one is gone
+	// only if cloudbox stops reporting it — mappings are additive per tick,
+	// mirroring hostPeers, so the stale key is still a hit until then. What
+	// must hold is that the NEW alias resolves.
+	r.observePeers([]peerstatus.Peer{{Host: "novidesign", Alias: "puppy"}})
+	if got := r.PeerIDForHost("puppy"); got != "pid-n" {
+		t.Fatalf("renamed alias puppy -> %q, want pid-n", got)
 	}
 }
