@@ -111,7 +111,8 @@ VER="${OUTPOST_TEST_VERSION:?set OUTPOST_TEST_VERSION to the tag to test, e.g. v
 # Download FROM the release tag (VER, e.g. v1.2.3-dev) but the asset is NAMED with
 # the base version (bytes are stamped base — see release.yml byte-promotion).
 BASEV="${VER%%-*}"
-os=$(bashy uname -s | tr 'A-Z' 'a-z'); case "$os" in *darwin*) os=darwin;; *linux*) os=linux;; *) os=windows;; esac
+uname_s=$(bashy uname -s 2>/dev/null || uname -s)
+case "$uname_s" in *[Dd]arwin*) os=darwin;; *[Ll]inux*) os=linux;; *) os=windows;; esac
 arch=$(bashy uname -m); case "$arch" in arm64|aarch64) arch=arm64;; x86_64|amd64) arch=amd64;; esac
 ext=""; [ "$os" = windows ] && ext=.exe
 base="https://github.com/${REPO}/releases/download/${VER}"
