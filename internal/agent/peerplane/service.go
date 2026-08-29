@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +43,23 @@ type Service struct {
 
 	mu    sync.Mutex
 	tiers map[string]PeerTier
+
+	// port is the echo responder's bound UDP port once Run has started it
+	// (0 before). Guarded by mu; read by Candidates().
+	port int
+
+	// identity, when set, supplies the mesh data plane's peer id + dialable
+	// multiaddrs so the RTT prober CO-ANNOUNCES them instead of publishing a
+	// blank peer id. cloudbox keeps ONE PeerNode row per host and its Announce
+	// overwrites peer_id + candidates wholesale on every call, so an announce
+	// that omits the mesh identity erases what the mesh rendezvous published a
+	// moment earlier — and /api/v1/peer/resolve drops any row whose peer_id is
+	// empty. With two independent 60s announcers racing on the same row, a
+	// host's mesh services (`ssh`, `git`, …) were resolvable only in the window
+	// between the mesh tick and the next prober tick, which is exactly the
+	// intermittent `mesh dial ssh: no reachable peer exposes service` seen on
+	// hosts running both. Guarded by mu.
+	identity func() (peerID string, candidates []string)
 }
 
 // New builds the service.
@@ -58,6 +76,78 @@ func New(cfg Config) *Service {
 	}
 }
 
+// SetIdentity installs the mesh identity provider the prober co-announces
+// (see Service.identity). nil clears it. Safe to call before or after Run.
+func (s *Service) SetIdentity(fn func() (peerID string, candidates []string)) {
+	s.mu.Lock()
+	s.identity = fn
+	s.mu.Unlock()
+}
+
+// Candidates returns this host's RTT-probe candidates ("ip:port" of the echo
+// responder) — empty until Run has bound the responder. The mesh rendezvous
+// folds these into ITS announce so the two announcers publish the same
+// candidate set instead of overwriting each other's.
+func (s *Service) Candidates() []string {
+	s.mu.Lock()
+	port := s.port
+	s.mu.Unlock()
+	if port <= 0 {
+		return nil
+	}
+	return LocalCandidates(port)
+}
+
+// announcement composes what this cycle publishes to cloudbox: the mesh peer
+// id (when a provider is installed) and the union of the mesh's dialable
+// multiaddrs + our own probe candidates, de-duplicated and sorted so a
+// steady-state announce is byte-stable.
+func (s *Service) announcement(port int) (peerID string, candidates []string) {
+	s.mu.Lock()
+	fn := s.identity
+	s.mu.Unlock()
+	var meshCands []string
+	if fn != nil {
+		peerID, meshCands = fn()
+	}
+	return peerID, MergeCandidates(meshCands, LocalCandidates(port))
+}
+
+// MergeCandidates unions candidate lists (mesh multiaddrs, probe "ip:port"s),
+// dropping blanks and duplicates, sorted for a stable wire form.
+func MergeCandidates(lists ...[]string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, l := range lists {
+		for _, c := range l {
+			c = strings.TrimSpace(c)
+			if c == "" || seen[c] {
+				continue
+			}
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// probeCandidates keeps only the "host:port" entries a UDP echo probe can
+// address. The shared PeerNode row now also carries the mesh's multiaddrs
+// ("/ip4/…/udp/…/quic-v1"); those are for libp2p, not for the prober, and
+// each would otherwise burn a full probe timeout before reporting unreached.
+func probeCandidates(cands []string) []string {
+	out := make([]string, 0, len(cands))
+	for _, c := range cands {
+		c = strings.TrimSpace(c)
+		if c == "" || strings.HasPrefix(c, "/") {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 // Run starts the responder + the announce/probe loop until ctx is done. No-op
 // (returns nil) when unpaired.
 func (s *Service) Run(ctx context.Context) error {
@@ -71,6 +161,9 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 	go resp.Run(ctx)
 	port := resp.Port()
+	s.mu.Lock()
+	s.port = port
+	s.mu.Unlock()
 	s.log.Info("peerplane: probe responder up", "port", port, "candidates", LocalCandidates(port))
 
 	interval := s.cfg.Interval
@@ -94,7 +187,10 @@ func (s *Service) Run(ctx context.Context) error {
 // probes every online peer.
 func (s *Service) cycle(ctx context.Context, port int) {
 	// nil services: the RTT prober preserves whatever the mesh announcer set.
-	if err := s.cli.Announce(ctx, s.cfg.AgentName, "", LocalCandidates(port), nil); err != nil {
+	// peer id + candidates are the COMPOSITE (mesh identity + probe addrs) for
+	// the same reason — see Service.identity.
+	peerID, cands := s.announcement(port)
+	if err := s.cli.Announce(ctx, s.cfg.AgentName, peerID, cands, nil); err != nil {
 		s.log.Debug("peerplane: announce failed", "err", err)
 	}
 
@@ -126,6 +222,7 @@ func (s *Service) cycle(ctx context.Context, port int) {
 
 // measure probes a peer's candidates and records the best (lowest-RTT) tier.
 func (s *Service) measure(host string, cands []string, sameLANHint bool) {
+	cands = probeCandidates(cands)
 	if host == "" || len(cands) == 0 {
 		return
 	}

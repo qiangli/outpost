@@ -265,3 +265,34 @@ func TestObservePeersAliasRules(t *testing.T) {
 		t.Fatalf("renamed alias puppy -> %q, want pid-n", got)
 	}
 }
+
+// TestAnnounceCandidatesIncludeExtras: the mesh announce must carry the
+// peer-plane prober's "ip:port" candidates alongside its own multiaddrs — the
+// two announcers share one cloudbox PeerNode row whose candidates column is
+// overwritten wholesale, so each side publishes the union.
+func TestAnnounceCandidatesIncludeExtras(t *testing.T) {
+	h := newTestHost(t)
+	r := NewRendezvous(h, "dragon", "http://127.0.0.1:0", "tok", nil)
+
+	base := r.announceCandidates()
+	if !reflect.DeepEqual(base, peerplane.MergeCandidates(h.dialableAddrs())) {
+		t.Fatalf("without extras announceCandidates = %v, want dialable addrs %v", base, h.dialableAddrs())
+	}
+
+	r.SetExtraCandidates(func() []string { return []string{"10.0.0.7:9000", "10.0.0.7:9000"} })
+	got := r.announceCandidates()
+	want := peerplane.MergeCandidates(h.dialableAddrs(), []string{"10.0.0.7:9000"})
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("with extras announceCandidates = %v, want %v", got, want)
+	}
+	for _, a := range h.dialableAddrs() {
+		if !strings.Contains(strings.Join(got, ","), a) {
+			t.Fatalf("mesh addr %q missing from %v", a, got)
+		}
+	}
+
+	r.SetExtraCandidates(nil)
+	if again := r.announceCandidates(); !reflect.DeepEqual(again, base) {
+		t.Fatalf("after clearing extras = %v, want %v", again, base)
+	}
+}

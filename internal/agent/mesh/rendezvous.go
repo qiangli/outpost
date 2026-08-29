@@ -63,6 +63,15 @@ type Rendezvous struct {
 	// mesh peer set stabilizes. Guarded by its own mutex, separate from mu.
 	dialMu    sync.Mutex
 	dialState map[peer.ID]*peerDial
+
+	// extraCandidates, when set, supplies the peer-plane prober's "ip:port"
+	// candidates so THIS announce carries them too. The mesh and the prober
+	// share one cloudbox PeerNode row whose candidates column is overwritten
+	// wholesale on every announce; publishing the union from both sides is what
+	// keeps either announcer from wiping out the other's addresses. The peer id
+	// side of the same collision is handled by peerplane.Service.SetIdentity.
+	// Guarded by mu.
+	extraCandidates func() []string
 }
 
 // peerDial is the reconnect-sweep backoff record for one peer: how long the
@@ -95,6 +104,27 @@ func NewRendezvous(host *Host, agentName, cloudboxURL, accessToken string, log *
 		aliases:     make(map[string]string),
 		dialState:   make(map[peer.ID]*peerDial),
 	}
+}
+
+// SetExtraCandidates installs a provider of additional candidates (the
+// peer-plane prober's "ip:port" list) folded into every announce. nil clears.
+func (r *Rendezvous) SetExtraCandidates(fn func() []string) {
+	r.mu.Lock()
+	r.extraCandidates = fn
+	r.mu.Unlock()
+}
+
+// announceCandidates is the candidate set one announce publishes: this host's
+// dialable multiaddrs plus whatever extra provider is installed, de-duplicated.
+func (r *Rendezvous) announceCandidates() []string {
+	r.mu.Lock()
+	fn := r.extraCandidates
+	r.mu.Unlock()
+	var extra []string
+	if fn != nil {
+		extra = fn()
+	}
+	return peerplane.MergeCandidates(r.host.dialableAddrs(), extra)
 }
 
 // LinkClassForHost returns the mesh link class ("tp"/"lan"/"wan"/"") of the
@@ -430,10 +460,10 @@ func (r *Rendezvous) tick(ctx context.Context) {
 // announce publishes this host's peer id + dialable multiaddrs + exposed mesh
 // service names (the service registry) to cloudbox.
 func (r *Rendezvous) announce(ctx context.Context) {
-	addrs := r.host.dialableAddrs()
-	if len(addrs) == 0 {
+	if len(r.host.dialableAddrs()) == 0 {
 		return
 	}
+	addrs := r.announceCandidates()
 	// Advertise the forwarder's exposed service names so peers can resolve
 	// them by name. Non-nil (even empty) so the registry tracks the current set.
 	exposed := r.host.Forwarder().Snapshot().Exposed

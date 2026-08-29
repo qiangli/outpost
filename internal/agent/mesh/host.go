@@ -519,6 +519,12 @@ func (m *Host) Connected(peerID string) bool {
 // are what we announce to cloudbox for peers to dial back. libp2p's host.Addrs()
 // already expands a 0.0.0.0 listen to the concrete interface addresses; this
 // just filters any residual wildcard.
+// DialableAddrs is the announce-able multiaddr set (listen addrs minus the
+// unspecified 0.0.0.0/:: binds). Exported so the peer-plane prober can
+// co-announce it — cloudbox holds ONE PeerNode row per host and every announce
+// overwrites candidates wholesale, so each announcer must publish the union.
+func (m *Host) DialableAddrs() []string { return m.dialableAddrs() }
+
 func (m *Host) dialableAddrs() []string {
 	addrs := m.h.Addrs()
 	out := make([]string, 0, len(addrs))

@@ -696,6 +696,23 @@ func startCmd() *cobra.Command {
 					meshRdv = mesh.NewRendezvous(meshHost, fc.AgentName, cb, fc.AccessToken, slog.Default())
 				}
 			}
+			// The peer-plane prober and the mesh rendezvous both announce to
+			// cloudbox, and cloudbox keeps ONE PeerNode row per host whose
+			// peer_id + candidates are overwritten wholesale on every announce.
+			// Left independent, the prober's blank peer id erased the mesh
+			// identity every 60s and `/api/v1/peer/resolve` (which skips rows
+			// without a peer id) dropped this host's mesh services — `mesh dial
+			// ssh` then flapped between "resolved" and "no reachable peer
+			// exposes service". Cross-wire the two so each publishes the same
+			// composite (mesh peer id + union of candidates).
+			if peerPlaneSvc != nil && meshHost != nil {
+				peerPlaneSvc.SetIdentity(func() (string, []string) {
+					return meshHost.PeerID(), meshHost.DialableAddrs()
+				})
+				if meshRdv != nil {
+					meshRdv.SetExtraCandidates(peerPlaneSvc.Candidates)
+				}
+			}
 			// Live mesh link class + LAN label per paired host — the accurate
 			// same-LAN signal (enriched with WHICH lan the direct link rides
 			// over) that overrides cloudbox's egress-IP location heuristic in
