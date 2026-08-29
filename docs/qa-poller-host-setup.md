@@ -198,17 +198,7 @@ QA_POLL_ONCE=1 bash scripts/qa-poller-podman.sh   # one pass (authors the ref on
 
 `promote.yml` reads `refs/qa/<version>/<os>` for each OS in its `required_os`
 set and refuses to promote until they're all present.
-[`scripts/promote-poller.sh`](../scripts/promote-poller.sh) completes the
-automated loop by creating the bare `vX.Y.Z` tag only after that same required
-set is green; the tag push is what fires `promote.yml`.
-
-Run one trusted promotion poller:
-
-```bash
-PROMOTE_POLL_ONCE=1 REQUIRED_OS=windows bashy scripts/promote-poller.sh
-```
-
-Schedule it the same way as the QA poller, keeping `REQUIRED_OS` aligned with
-`promote.yml`'s required OS set. See
+Promotion itself stays as designed: `promote.yml` is manual
+(`workflow_dispatch`), or fires on a bare `vX.Y.Z` tag push. See
 [`docs/cicd-strategy.md`](../../docs/cicd-strategy.md) (umbrella) for the full
 two-tag release flow (`-dev` build+QA → bare-tag byte-promote → rollout).
