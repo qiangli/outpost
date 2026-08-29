@@ -26,15 +26,30 @@
 #   qa-poller-broker.sh — token on broker, smoke on a REMOTE host over SSH.
 #   qa-poller-podman.sh — token on broker, smoke in a LOCAL podman container (THIS).
 #
-# The container image is alpine (busybox wget does HTTPS; the outpost binary is
-# built CGO_ENABLED=0, so the fully-static binary runs on musl unchanged — no
-# glibc dep, no apk install needed). Override with QA_PODMAN_IMAGE if you need a
-# different base (e.g. a hardened/sbom'd image); any image with wget/curl +
-# sha256sum + awk will do.
+# The container image must be GLIBC-BASED. The header here used to claim the
+# outpost binary is "fully static (CGO_ENABLED=0), runs on musl unchanged" and
+# defaulted to alpine — that premise is FALSE, and it is why this lane has never
+# passed. release.yml does set CGO_ENABLED: 0, yet the published artifact is
+#   ELF 64-bit LSB executable, dynamically linked,
+#   interpreter /lib/ld-linux-aarch64.so.1
+# so on alpine it dies as "./outpost-...: not found" AFTER the sha256 verifies —
+# which reads like a corrupt download rather than a missing loader. Measured
+# 2026-08-29 on v0.14.31-dev; the same binary passes all three assertions on a
+# glibc base. refs/qa/*/linux exists exactly once, at v0.14.7, which is what a
+# lane that cannot pass looks like from the outside.
+#
+# Default is ubi9-minimal: glibc, ships curl, small. Override with
+# QA_PODMAN_IMAGE for a hardened/sbom'd base; any GLIBC image with curl or wget
+# + sha256sum + awk will do.
+#
+# NOTE the open question this does not settle: the build ASKS for a static
+# binary and does not get one. Making the artifact genuinely static would be the
+# better fix and would let this lane run on anything, alpine included.
 #
 # Config (env):
 #   REPO            owner/repo of the release repo (default qiangli/outpost)
-#   QA_PODMAN_IMAGE container image to run the smoke in (default alpine:3)
+#   QA_PODMAN_IMAGE container image to run the smoke in (default ubi9-minimal;
+#                   MUST be glibc-based — see the header)
 #   QA_ARCH         linux arch to validate (default: auto-detected from the podman
 #                   machine — must match the machine's arch; see CAVEATS below)
 #   QA_WORK         work dir for the smoke script + logs (default $HOME/.outpost-qa;
@@ -48,7 +63,7 @@ set -uo pipefail
 export PATH="$HOME/bin:$PATH"
 REPO="${REPO:-qiangli/outpost}"
 LANE=linux                                       # the container is always Linux
-IMAGE="${QA_PODMAN_IMAGE:-alpine:3}"
+IMAGE="${QA_PODMAN_IMAGE:-redhat/ubi9-minimal:latest}"
 PODMAN="${PODMAN:-podman}"
 WORK="${QA_WORK:-$HOME/.outpost-qa}"
 INTERVAL="${QA_POLL_INTERVAL:-300}"
@@ -98,13 +113,21 @@ write_smoke(){
 # podman machine). Downloads the PUBLIC release asset (NO credential — the
 # broker holds the token; this container never sees it), sha-verifies it, and
 # runs the same minimal smoke as dag.md qa / qa-poller-broker.sh remote_smoke.
-# Prints REMOTE-QA-PASS on success. busybox wget does HTTPS on alpine; the
-# outpost binary is static (CGO_ENABLED=0) so it runs on musl unchanged.
+# Prints REMOTE-QA-PASS on success. Fetches with curl or wget, whichever the
+# image has; the base must be glibc — the published binary is dynamically
+# linked despite CGO_ENABLED=0 (see the header).
 set -e
 a="$ASSET"
 # 1. download the PUBLIC asset + its sha256 sidecar (fail closed on either).
-wget -q -O "$a"        "$BASE/$a"        || { echo "FAIL download $a"; exit 1; }
-wget -q -O "$a.sha256" "$BASE/$a.sha256" || { echo "FAIL sha sidecar"; exit 1; }
+if command -v curl >/dev/null 2>&1; then
+  fetch() { curl -fsSL -o "$1" "$2"; }
+elif command -v wget >/dev/null 2>&1; then
+  fetch() { wget -q -O "$1" "$2"; }
+else
+  echo "FAIL no curl or wget in the image"; exit 1
+fi
+fetch "$a"        "$BASE/$a"        || { echo "FAIL download $a"; exit 1; }
+fetch "$a.sha256" "$BASE/$a.sha256" || { echo "FAIL sha sidecar"; exit 1; }
 # 2. verify sha256 — empty/mismatch is a hard failure (never run unverified bytes).
 want=$(awk '{print $1}' "$a.sha256" | head -1)
 got=$(sha256sum "$a" | awk '{print $1}' | head -1)
