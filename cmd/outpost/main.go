@@ -4531,7 +4531,7 @@ func stopCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("find process %d: %w", pid, err)
 			}
-			if err := proc.Signal(syscall.SIGTERM); err != nil {
+			if err := requestStop(proc, pid); err != nil {
 				return fmt.Errorf("signal pid %d: %w", pid, err)
 			}
 			// Poll for graceful exit, up to 5 s. We treat EITHER
@@ -4555,8 +4555,8 @@ func stopCmd() *cobra.Command {
 				}
 				time.Sleep(100 * time.Millisecond)
 			}
-			// SIGTERM ignored — escalate.
-			_ = proc.Signal(syscall.SIGKILL)
+			// Graceful stop ignored — escalate.
+			_ = forceStop(proc, pid)
 			time.Sleep(200 * time.Millisecond)
 			_ = os.Remove(p)
 			fmt.Printf("Force-killed outpost (pid %d) after SIGTERM timeout.\n", pid)
