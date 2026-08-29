@@ -62,15 +62,19 @@ remote_smoke(){
   ssh -o BatchMode=yes -o ConnectTimeout=15 "$REMOTE" "
     B='$RBASHY'
     a='$asset'; base='$base'
+    # Absolute path: outpost's Windows bash cannot exec a RELATIVE ./foo.exe
+    # ('not found'), while "$(pwd)/foo.exe" runs fine. The unix lanes are
+    # unaffected by the same form, so one spelling serves every lane.
+    exe=\"\$(pwd)/\$a\"
     \$B curl -fsSL -o \$a \$base/\$a || { echo 'FAIL download'; exit 1; }
     \$B curl -fsSL -o \$a.sha256 \$base/outpost-${basev}-${LANE}-${RARCH}.sha256 || { echo 'FAIL sha download'; exit 1; }
     want=\$(awk '{print \$1}' \$a.sha256 | head -1)
     got=\$(\$B sha256sum \$a | awk '{print \$1}' | head -1)
     [ -n \"\$want\" ] && [ \"\$want\" = \"\$got\" ] || { echo \"FAIL sha256 want=\$want got=\$got\"; exit 1; }
-    v=\$(./\$a version | head -1); echo \"  version: \$v\"
+    v=\$(\"\$exe\" version | head -1); echo \"  version: \$v\"
     case \"\$v\" in *${basev#v}*) ;; *) echo 'FAIL version stamp'; exit 1;; esac
-    [ \"\$(./\$a shell -c 'echo runtime-ok')\" = runtime-ok ] || { echo 'FAIL shell'; exit 1; }
-    ./\$a git --version >/dev/null 2>&1 || { echo 'FAIL git'; exit 1; }
+    [ \"\$(\"\$exe\" shell -c 'echo runtime-ok')\" = runtime-ok ] || { echo 'FAIL shell'; exit 1; }
+    \"\$exe\" git --version >/dev/null 2>&1 || { echo 'FAIL git'; exit 1; }
     rm -f \$a \$a.sha256
     echo REMOTE-QA-PASS
   "
