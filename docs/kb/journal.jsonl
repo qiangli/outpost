@@ -1,2 +1,4 @@
 {"op":"add","slug":"persistent-file-ledgers-need-inter-process-serialization","tool":"qiangli","host":"dragon","at":"2026-07-29T16:46:32.420371Z"}
 {"op":"validate","slug":"persistent-file-ledgers-need-inter-process-serialization","tool":"qiangli","host":"dragon","at":"2026-07-29T16:46:37.101913Z"}
+{"op":"add","slug":"mesh-ssh-preflight-must-resolve-before-forwarding","tool":"codex-gpt5.6-terra-b","host":"dragon","episode":"weave-issue-2","at":"2026-08-29T11:57:29.467645Z"}
+{"op":"validate","slug":"mesh-ssh-preflight-must-resolve-before-forwarding","tool":"codex-gpt5.6-terra-b","host":"dragon","episode":"weave-issue-2","at":"2026-08-29T11:57:36.832573Z"}
