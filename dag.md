@@ -140,3 +140,66 @@ case "$vout" in *"$BASEV"*) ;; *) echo "FAIL: version stamp is not $BASEV ($vout
 "$BIN" git --version >/dev/null 2>&1 || { echo "FAIL: git surface"; exit 1; }
 echo ">> QA PASS ${VER} ${os}/${arch}"
 ```
+
+### promote
+Drive the LAST step of the two-tag release flow: check that every required-OS QA
+lane has attested the newest `vX.Y.Z-dev`, then create the bare `vX.Y.Z` tag —
+the push is what fires `promote.yml`, which byte-promotes the tested pre-release
+and notifies the fleet.
+
+This exists because the chain had no single driver. `release.yml` built, the
+standing pollers attested, and `promote.yml` waited — but nothing joined them, so
+when a lane stopped attesting nobody noticed for 21 versions. One command with a
+visible failure is the fix; it invents no new mechanism and replaces nothing.
+
+`REQUIRED_OS` MUST stay aligned with `promote.yml`'s required set (default
+`windows`). Loosening it here would silently turn a real gate into an absent one.
+It does NOT run the lanes — the standing pollers do that
+(`docs/qa-poller-host-setup.md`); this only reads their verdict, so a missing ref
+means "that lane did not attest", never "that lane was skipped".
+
+Pure-bashy like `qa`: no `grep -o`, no `sort -V`.
+Effects: write
+
+```bash
+set -e
+REPO="${OUTPOST_REPO:-qiangli/outpost}"
+REQUIRED_OS="${REQUIRED_OS:-windows}"
+
+# newest vX.Y.Z-dev (awk, not sort -V — the target userland has neither)
+dev=$(bashy git ls-remote --tags "https://github.com/$REPO.git" 2>/dev/null | awk -F/ '
+  /refs\/tags\/v[0-9]+\.[0-9]+\.[0-9]+-dev$/ {
+    t=$NF; sub(/-dev$/,"",t); sub(/^v/,"",t); split(t,p,".")
+    n=p[1]*1000000+p[2]*1000+p[3]; if (n>best) { best=n; tag=$NF }
+  } END { print tag }')
+[ -n "$dev" ] || { echo "promote: no vX.Y.Z-dev tag found in $REPO"; exit 1; }
+ver="${dev%-dev}"
+echo "promote: newest pre-release is $dev"
+
+# Already promoted? The bare tag IS the promotion baton, so its existence is the
+# answer — do not re-push it (that would re-fire promote.yml for nothing).
+if bashy gh api "/repos/$REPO/git/ref/tags/$ver" >/dev/null 2>&1; then
+  echo "promote: $ver already promoted"; exit 0
+fi
+
+# The gate. A missing ref is a lane that did NOT attest; say which, and stop.
+missing=""
+for os in $REQUIRED_OS; do
+  bashy gh api "/repos/$REPO/git/ref/qa/$ver/$os" >/dev/null 2>&1 || missing="$missing $os"
+done
+if [ -n "$missing" ]; then
+  echo "promote: $ver BLOCKED — no QA attestation from:$missing"
+  echo "  the standing poller for that lane has not passed these bytes;"
+  echo "  see docs/qa-poller-host-setup.md before overriding anything."
+  exit 1
+fi
+echo "promote: $ver gate green for [$REQUIRED_OS]"
+
+# Point the bare tag at the SAME commit the pre-release was built from, so the
+# promoted tag can never name different bytes than the ones QA ran.
+sha=$(bashy git ls-remote "https://github.com/$REPO.git" "refs/tags/$dev" | awk '{print $1}' | head -1)
+[ -n "$sha" ] || { echo "promote: could not resolve $dev to a commit"; exit 1; }
+bashy gh api -X POST "/repos/$REPO/git/refs" -f "ref=refs/tags/$ver" -f "sha=$sha" >/dev/null \
+  || { echo "promote: could not create refs/tags/$ver (token needs Contents: write)"; exit 1; }
+echo ">> PROMOTED $ver ($sha) — promote.yml will byte-promote and notify the fleet"
+```
