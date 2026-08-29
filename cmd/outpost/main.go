@@ -3722,27 +3722,6 @@ func effectiveBashyServices(fc *conf.FileConfig) []conf.BashyService {
 			svc.TrustCloudIdentity = true
 			byName["meet"] = svc
 		}
-		if fc.ConsoleOn() {
-			svc := byName["console"]
-			svc.Name = "console"
-			svc.Enabled = true
-			svc.AppName = "console"
-			svc.AppPort = fc.ConsolePortOrDefault()
-			svc.RequireLogin = true
-			svc.TrustCloudIdentity = true
-			// Panels the operator turned off are passed to the server, so the
-			// disable is enforced by the console itself rather than by hiding a
-			// tile. HostShare is per app name, so publishing `console` publishes
-			// every panel it routes — including a Terminal that spawns a real
-			// shell as this host's OS user.
-			svc.Args = nil
-			for _, p := range fc.ConsoleDisable {
-				if p = strings.TrimSpace(p); p != "" {
-					svc.Args = append(svc.Args, "--disable", p)
-				}
-			}
-			byName["console"] = svc
-		}
 	}
 	out := make([]conf.BashyService, 0, len(byName))
 	for _, svc := range byName {
@@ -3856,28 +3835,11 @@ func startBashyService(ctx context.Context, fc *conf.FileConfig, svc conf.BashyS
 	if svc.Name == "loom" && svc.AppPort > 0 && svc.AppPort != 31880 {
 		args = append(args, "--port", strconv.Itoa(svc.AppPort))
 	}
-	args = append(args, bashyServicePortArgs(svc)...)
 	return runBashyServiceCommand(ctx, svc, "start", args)
 }
 
-// bashyServicePortArgs returns the port flag for services whose lifecycle verbs
-// take one, and it is applied to BOTH start and status.
-//
-// That symmetry is the whole point. The console's `status` decides liveness by
-// PROBING A PORT, so a status that checks a different port than start bound
-// reads "stopped" forever — and the supervisor then restarts a healthy console
-// every 30 seconds. loom is deliberately left on its existing start-only,
-// non-default-only flag above: its status is state-based, and this is not the
-// change to alter a working path.
-func bashyServicePortArgs(svc conf.BashyService) []string {
-	if svc.AppPort <= 0 || svc.Name != "console" {
-		return nil
-	}
-	return []string{"--port", strconv.Itoa(svc.AppPort)}
-}
-
 func bashyServiceRunning(ctx context.Context, svc conf.BashyService) (bool, error) {
-	out, err := outputBashyServiceCommand(ctx, svc, "status", bashyServicePortArgs(svc))
+	out, err := outputBashyServiceCommand(ctx, svc, "status", nil)
 	if err != nil {
 		return false, err
 	}

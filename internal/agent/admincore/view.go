@@ -277,9 +277,6 @@ type SafeView struct {
 	LoomPort                int                 `json:"loom_port,omitempty"`
 	MeetEnabled             bool                `json:"meet_enabled"`
 	MeetPort                int                 `json:"meet_port,omitempty"`
-	ConsoleEnabled          bool                `json:"console_enabled"`
-	ConsolePort             int                 `json:"console_port,omitempty"`
-	ConsoleDisable          []string            `json:"console_disable,omitempty"`
 	ZotEnabled              bool                `json:"zot_enabled"`
 	ZotPort                 int                 `json:"zot_port,omitempty"`
 	SeaweedfsEnabled        bool                `json:"seaweedfs_enabled"`
@@ -402,9 +399,6 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		LoomPort:               fc.LoomPort,
 		MeetEnabled:            fc.MeetOn(),
 		MeetPort:               fc.MeetPort,
-		ConsoleEnabled:         fc.ConsoleOn(),
-		ConsolePort:            fc.ConsolePort,
-		ConsoleDisable:         fc.ConsoleDisable,
 		ZotEnabled:             fc.ZotOn(),
 		ZotPort:                fc.ZotPort,
 		SeaweedfsEnabled:       fc.SeaweedfsOn(),

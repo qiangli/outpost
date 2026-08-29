@@ -351,32 +351,6 @@ type FileConfig struct {
 	// MeetPort is meet's loopback HTTP port (default 8637).
 	MeetPort int `json:"meet_port,omitempty"`
 
-	// ConsoleEnabled opts this outpost into running `bashy apps` — the browser
-	// console: one launcher with Terminal, Files, Relay, Messages and Board
-	// deep-linked beneath it — as a supervised bashy service, published as a
-	// cloudbox app named `console`. Lifecycle lives under a subcommand, so the
-	// supervisor drives `bashy apps service {start,status,stop}`; bare
-	// `bashy apps` serves in the FOREGROUND and is a human verb.
-	//
-	// outpost is the host's daemon and bashy is the userland; the console is a
-	// TOOL, and supervising it does not make it a service. What outpost supplies
-	// is the one thing a userland tool cannot supply itself — something always up
-	// to keep it up. Default OFF.
-	ConsoleEnabled *bool `json:"console_enabled,omitempty"`
-
-	// ConsolePort is the console's loopback HTTP port (default 8639).
-	ConsolePort int `json:"console_port,omitempty"`
-
-	// ConsoleDisable names console panels to leave out entirely — neither listed
-	// nor routed (terminal, files, relay, mb, board).
-	//
-	// It exists because HostShare grants are per APP NAME and the console is one
-	// app. Without it, sharing `console` would also share the Terminal, which
-	// spawns a real bashy as this host's OS user — strictly more authority than
-	// sharing outpost's own `shell` app grants. An operator publishing a console
-	// to a wider audience sets this.
-	ConsoleDisable []string `json:"console_disable,omitempty"`
-
 	// ZotEnabled opts this outpost into running the Zot OCI registry as a managed
 	// external binary (coreutils/external/zot via pkg/binmgr — not compiled in)
 	// on a loopback port, auto-exposed over the mesh as the `registry` service.
@@ -2028,20 +2002,6 @@ func (fc *FileConfig) MeetPortOrDefault() int {
 	return 8637
 }
 
-// ConsoleOn reports whether this outpost runs the bashy web console as a
-// supervised bashy service (default OFF).
-func (fc *FileConfig) ConsoleOn() bool {
-	return fc != nil && fc.ConsoleEnabled != nil && *fc.ConsoleEnabled
-}
-
-// ConsolePortOrDefault returns the configured console port, or 8639.
-func (fc *FileConfig) ConsolePortOrDefault() int {
-	if fc != nil && fc.ConsolePort > 0 {
-		return fc.ConsolePort
-	}
-	return 8639
-}
-
 func (fc *FileConfig) ZotOn() bool {
 	return fc != nil && fc.ZotEnabled != nil && *fc.ZotEnabled
 }
@@ -2222,21 +2182,6 @@ func DefaultBashyServices() []BashyService {
 		// MeshService: a personal chat room has no peer consumer. Opt-in
 		// (Enabled:false until fc.MeetOn() flips it in effectiveBashyServices).
 		{Name: "meet", Command: []string{"meet", "service"}, AppName: "meet", AppPort: 8637, RequireLogin: true, TrustCloudIdentity: true},
-		// The bashy web console — one launcher with every bashy web surface
-		// deep-linked beneath it. Published as `console`, not `apps`: outpost
-		// already serves an unrelated GET /apps, and the package has always been
-		// `webconsole` because that is what the thing IS — `apps` is what the
-		// user types. Same subcommand trap as meet: the supervisor must drive
-		// `bashy apps service ...`, because bare `bashy apps` serves in the
-		// foreground.
-		//
-		// TrustCloudIdentity is deliberate and its guard is the point:
-		// registerBashyServiceApps REFUSES to register a trust-cloud-identity app
-		// with an empty sso_secret, so the console can only be published where
-		// the vouch is HMAC-verified. Without a secret coopauth admits on the
-		// header alone — and this app can hand out a shell. Opt-in
-		// (Enabled:false until fc.ConsoleOn()).
-		{Name: "console", Command: []string{"apps", "service"}, AppName: "console", AppPort: 8639, RequireLogin: true, TrustCloudIdentity: true},
 		// The always-on SDLC loop (the durable trigger daemon). Opt-in
 		// (Enabled:false): a host running unattended agent work sets Enabled +
 		// Args (repo/config paths) in agent.json. No AppPort/mesh — it is a
