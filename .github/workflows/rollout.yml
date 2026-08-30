@@ -197,6 +197,43 @@ jobs:
             echo "commit=$commit"
           } >> "$GITHUB_OUTPUT"
 
+      # The SAME gate promote.yml enforces, applied BEFORE anything ships.
+      #
+      # Without it the gate was bypassable: rollout fires on release.yml
+      # success and resolves the artifact by tag, ignoring the prerelease
+      # flag — so on 2026-08-29 the whole fleet self-upgraded to v0.14.31
+      # while `dag promote` had REFUSED that exact version for a failing
+      # windows lane. A gate that refuses while the fleet upgrades anyway is
+      # worse than one that merely fails quietly: it reports safety it is not
+      # providing.
+      #
+      # Same check, same default, same failure mode as promote.yml — one
+      # definition of "attested", enforced at both exits.
+      - name: Require the per-OS QA gate before shipping
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.cfg.outputs.tag }}
+          REQUIRED: ${{ vars.ROLLOUT_REQUIRED_OS || 'windows' }}
+        run: |
+          ver="${TAG%%-*}"
+          missing=""
+          for os in $REQUIRED; do
+            if gh api "repos/${REPO}/git/refs/qa/${ver}/${os}" >/dev/null 2>&1; then
+              echo "  qa-${os}: green"
+            else
+              echo "::error::qa gate NOT met — missing refs/qa/${ver}/${os}"
+              missing="${missing} ${os}"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::refusing to roll out ${TAG}: no QA attestation from:${missing}"
+            echo "  the per-OS lanes have not passed these bytes. Run them"
+            echo "  (bashy dag dag.md qa-lanes) and re-dispatch."
+            exit 1
+          fi
+          echo "all required OS gates green for ${ver}"
+
       - name: Preview envelope (dry run)
         if: steps.cfg.outputs.dry_run == 'true'
         env:
