@@ -3436,6 +3436,34 @@ func tryReattach(ctx context.Context, fc *conf.FileConfig, cfgPath string) (*con
 		fc.Protocol = refreshed.Protocol
 		changed = true
 	}
+	// THE PEER-TICKET PUBKEY MUST BE MERGED HERE, NOT ONLY AT FIRST PAIRING.
+	//
+	// portal.Reattach decodes `cloudbox_ticket_pubkey` on every reattach —
+	// its own doc comment says it is re-published "so a re-pair after a
+	// cloudbox key rotation picks up the new key without an explicit
+	// migration step". That promise was not kept: this merge dropped the
+	// field on the floor, so the value could only ever be written by the
+	// FIRST-PAIRING path in portal.Exchange.
+	//
+	// The consequence is silent and total. Any host paired BEFORE cloudbox
+	// had a ticket signer keeps an empty pubkey forever, no matter how many
+	// times it reattaches. sshHandler gates the whole peer-ticket branch on
+	// `len(deps.TicketPubkey) > 0`, so an empty key means the ticket is never
+	// even examined: cloudboxVouched stays false, NoClientAuth is never set,
+	// and a LAN-direct or mesh-direct client that legitimately holds a valid
+	// ticket is rejected with `ssh: unable to authenticate, attempted methods
+	// [none]`. That error names the CLIENT, which is why it reads as a client
+	// bug and cost real time to localize.
+	//
+	// Overwrite-if-non-empty (not merge-if-absent): a rotation must be able to
+	// REPLACE an existing key, which is the case the doc comment describes.
+	// An empty value from cloudbox is ignored so a signer-less deployment
+	// cannot erase a working key.
+	if refreshed.CloudboxTicketPubkey != "" &&
+		refreshed.CloudboxTicketPubkey != fc.CloudboxTicketPubkey {
+		fc.CloudboxTicketPubkey = refreshed.CloudboxTicketPubkey
+		changed = true
+	}
 	if refreshed.Cluster != nil {
 		if fc.Cluster == nil {
 			fc.Cluster = &conf.ClusterConfig{}
