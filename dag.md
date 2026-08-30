@@ -174,7 +174,30 @@ Effects: write
 
 ```bash
 set -e
+REPO="${OUTPOST_REPO:-qiangli/outpost}"
 LANES="${QA_LANES:-darwin windows}"
+
+# Which OS is THIS host? A lane may only run here if it IS our lane. See the
+# refusal below for why that check is the whole point of this task.
+case "$(bashy uname -s 2>/dev/null || uname -s)" in
+  Darwin)                          hostlane=darwin ;;
+  Linux)                           hostlane=linux ;;
+  Windows_NT|MINGW*|MSYS*|CYGWIN*) hostlane=windows ;;
+  *)                               hostlane=unknown ;;
+esac
+
+# Newest vX.Y.Z-dev — same awk as `promote` (no sort -V on the target userland).
+# Needed HERE so a lane can ask "am I already attested?" BEFORE a runner is
+# chosen; the ref is the verdict, and asking first is what lets `promote`
+# re-run this task as a dependency without every lane's remote env.
+dev=$(bashy git ls-remote --tags "https://github.com/$REPO.git" 2>/dev/null | awk -F/ '
+  /refs\/tags\/v[0-9]+\.[0-9]+\.[0-9]+-dev$/ {
+    t=$NF; sub(/-dev$/,"",t); sub(/^v/,"",t); split(t,p,".")
+    n=p[1]*1000000+p[2]*1000+p[3]; if (n>best) { best=n; tag=$NF }
+  } END { print tag }')
+[ -n "$dev" ] || { echo "qa-lanes: no vX.Y.Z-dev tag found in $REPO"; exit 1; }
+ver="${dev%-dev}"
+
 for lane in $LANES; do
   # NOT `tr 'a-z' 'A-Z'`: tr's ranges are locale-sensitive and return EMPTY
   # under some LC_COLLATE values, which is the exact defect that made a macOS
@@ -188,12 +211,36 @@ for lane in $LANES; do
   eval "remote=\${${up}_REMOTE:-}"
   eval "rbashy=\${${up}_BASHY:-}"
   eval "rarch=\${${up}_ARCH:-amd64}"
+
+  if bashy gh api "/repos/$REPO/git/ref/qa/$ver/$lane" >/dev/null 2>&1; then
+    echo ">> lane $lane: $ver already attested"
+    continue
+  fi
+
   if [ -n "$remote" ]; then
     echo ">> lane $lane: over ssh to $remote"
     QA_LANE="$lane" QA_REMOTE="$remote" QA_REMOTE_ARCH="$rarch"       QA_REMOTE_BASHY="${rbashy:-bashy}" QA_POLL_ONCE=1       bashy scripts/qa-poller-broker.sh
-  elif [ "$lane" = linux ] && [ "$(bashy uname -s 2>/dev/null || uname -s)" != Linux ]; then
+  elif [ "$lane" = linux ] && [ "$hostlane" != linux ]; then
     echo ">> lane linux: via podman on this host"
     QA_POLL_ONCE=1 bashy scripts/qa-poller-podman.sh
+  elif [ "$lane" != "$hostlane" ]; then
+    # THE FAILURE THIS REFUSAL EXISTS FOR — it happened, on v0.14.32.
+    # Without it a lane with no <LANE>_REMOTE fell through to the LOCAL
+    # poller, which self-identifies by the HOST's OS. So `promote`, which
+    # re-runs this task as a dependency WITHOUT any remote env, printed
+    #     >> lane windows: on this host
+    #     [darwin] v0.14.32 already promoted
+    # and exited 0. It announced the windows lane and executed the darwin
+    # one. The windows platform was never touched and the task reported
+    # success — the exact silent non-attestation this task was built to
+    # remove, and which previously went unnoticed for 21 versions.
+    echo "qa-lanes: REFUSING lane '$lane' — no ${up}_REMOTE and this host is '$hostlane'." >&2
+    echo "  A lane must run on its own OS, or its attestation would be a lie." >&2
+    echo "  Set ${up}_REMOTE=<ssh-host> (plus ${up}_BASHY=<abs path> when bashy is" >&2
+    echo "  not the first match on that host's PATH, and ${up}_ARCH when not amd64)." >&2
+    echo "  Dropping '$lane' from QA_LANES does NOT make the gate pass — it makes" >&2
+    echo "  the gate ABSENT, and promote will still refuse. That is the point." >&2
+    exit 1
   else
     echo ">> lane $lane: on this host"
     QA_POLL_ONCE=1 bashy scripts/qa-poller.sh
