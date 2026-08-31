@@ -3,3 +3,4 @@
 {"op":"add","slug":"mesh-ssh-preflight-must-resolve-before-forwarding","tool":"codex-gpt5.6-terra-b","host":"dragon","episode":"weave-issue-2","at":"2026-08-29T11:57:29.467645Z"}
 {"op":"validate","slug":"mesh-ssh-preflight-must-resolve-before-forwarding","tool":"codex-gpt5.6-terra-b","host":"dragon","episode":"weave-issue-2","at":"2026-08-29T11:57:36.832573Z"}
 {"op":"add","slug":"qa-pollers-must-avoid-locale-sensitive-evidence-filters","tool":"codex-gpt-5.5-b","host":"dragon","episode":"weave-issue-2","at":"2026-08-29T18:45:21.632144Z"}
+{"op":"add","slug":"default-on-bashy-services-need-explicit-enabled-tracking","tool":"codex-gpt-5.5-a","host":"dragon","episode":"weave-issue-1","at":"2026-08-31T08:11:16.715771Z"}

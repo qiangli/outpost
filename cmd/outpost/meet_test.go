@@ -146,6 +146,7 @@ func TestEffectiveBashyServicesMeetDefaultOff(t *testing.T) {
 	if got := findBashyService(fc, "meet"); got != nil && got.Enabled {
 		t.Fatalf("meet must default OFF, got enabled entry: %+v", got)
 	}
+	provisionBashyServiceSecrets(t, fc)
 	reg := agent.NewAppRegistry()
 	if err := registerBashyServiceApps(fc, reg); err != nil {
 		t.Fatalf("registerBashyServiceApps: %v", err)

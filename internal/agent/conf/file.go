@@ -322,6 +322,18 @@ type FileConfig struct {
 	// shutdown, and can publish it as both a cloudbox app and a mesh service.
 	BashyServices []BashyService `json:"bashy_services,omitempty"`
 
+	// BashyAppsEnabled opts the bashy Apps service in/out of the zero-config
+	// default. nil means "default it on only when bashy_services is absent";
+	// explicit false is a durable operator opt-out. The service itself is still
+	// capability-gated by bashy at runtime: a missing binary or missing Apps
+	// command logs an actionable status and the daemon continues.
+	BashyAppsEnabled *bool `json:"bashy_apps_enabled,omitempty"`
+
+	// BashyAppsPort is the loopback HTTP port for bashy Apps. Default 22749
+	// ("BASHY" on a telephone keypad). Legacy configs that already carried an
+	// app_port such as 8639 in bashy_services keep that explicit value.
+	BashyAppsPort int `json:"bashy_apps_port,omitempty"`
+
 	// BashyVersion pins the bashy release the daemon auto-installs when bashy
 	// is missing (the self-heal path for supervised services). Empty or
 	// "latest" fetches the newest release; a tag (e.g. "v0.3.0") pins it. In
@@ -2002,6 +2014,47 @@ func (fc *FileConfig) MeetPortOrDefault() int {
 	return 8637
 }
 
+// BashyAppsPortOrDefault returns the configured bashy Apps loopback port, or
+// 22749 ("BASHY" on a telephone keypad).
+func (fc *FileConfig) BashyAppsPortOrDefault() int {
+	if fc != nil && fc.BashyAppsPort > 0 {
+		return fc.BashyAppsPort
+	}
+	if fc != nil {
+		for _, svc := range fc.BashyServices {
+			if svc.Name == "apps" && svc.AppPort > 0 {
+				return svc.AppPort
+			}
+		}
+	}
+	return DefaultBashyAppsPort
+}
+
+// BashyAppsOn reports whether the bashy Apps service is intended to run.
+// Missing bashy_services means fresh/legacy default-on; a present list without
+// apps is treated as an operator-curated intent and stays off unless the
+// top-level bashy_apps_enabled knob explicitly opts in.
+func (fc *FileConfig) BashyAppsOn() bool {
+	if fc == nil {
+		return false
+	}
+	if fc.BashyAppsEnabled != nil {
+		return *fc.BashyAppsEnabled
+	}
+	if fc.BashyServices == nil {
+		return true
+	}
+	for _, svc := range fc.BashyServices {
+		if svc.Name == "apps" {
+			if svc.EnabledSet {
+				return svc.Enabled
+			}
+			return true
+		}
+	}
+	return false
+}
+
 func (fc *FileConfig) ZotOn() bool {
 	return fc != nil && fc.ZotEnabled != nil && *fc.ZotEnabled
 }
@@ -2135,10 +2188,12 @@ type MeshConsume struct {
 // as a cloudbox app and as an outpost mesh service.
 type BashyService struct {
 	Name               string `json:"name"`
-	Enabled            bool   `json:"enabled,omitempty"`
+	Enabled            bool   `json:"enabled"`
+	EnabledSet         bool   `json:"-"`
 	AppName            string `json:"app_name,omitempty"`
 	AppPort            int    `json:"app_port,omitempty"`
 	RequireLogin       bool   `json:"require_login,omitempty"`
+	ElevationRequired  bool   `json:"elevation_required,omitempty"`
 	TrustCloudIdentity bool   `json:"trust_cloud_identity,omitempty"`
 	// SSOSecret is the per-service HMAC key used by the existing trusted-header
 	// SSO contract. It must be non-empty whenever TrustCloudIdentity is true;
@@ -2164,13 +2219,37 @@ type BashyService struct {
 	SecretsEnv *bool `json:"secrets_env,omitempty"`
 }
 
+func (s *BashyService) UnmarshalJSON(data []byte) error {
+	type alias BashyService
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*s = BashyService(a)
+	_, s.EnabledSet = raw["enabled"]
+	return nil
+}
+
 // SecretsEnvOn reports whether the supervisor should inject `bashy secrets env`
 // into this service at start. Default ON (nil), opt out with secrets_env:false.
 func (s BashyService) SecretsEnvOn() bool { return s.SecretsEnv == nil || *s.SecretsEnv }
 
+const DefaultBashyAppsPort = 22749
+
 func DefaultBashyServices() []BashyService {
 	return []BashyService{
-		{Name: "loom", AppName: "loom", AppPort: 31880, RequireLogin: true, MeshService: "git"},
+		{Name: "loom", EnabledSet: true, AppName: "loom", AppPort: 31880, RequireLogin: true, MeshService: "git"},
+		// bashy Apps is the cooperative web app matrix for bashy-managed local
+		// tools. It binds only on loopback and is published through Outpost's
+		// existing app tunnel with OS-password elevation required. The default-on
+		// entry is applied only when bashy_services is absent or the top-level
+		// bashy_apps toggle opts in, so an existing curated bashy_services list is
+		// not broadened silently.
+		{Name: "apps", Enabled: true, EnabledSet: true, Command: []string{"apps", "service"}, AppName: "apps", AppPort: DefaultBashyAppsPort, RequireLogin: true, ElevationRequired: true, TrustCloudIdentity: true},
 		// The meet web chat room (a Slack-style browser UI over `bashy meet`,
 		// served by bashy on a loopback port) as a supervised service, published
 		// as a cloudbox app named `meet`. TRAP: the service lifecycle lives under
@@ -2181,13 +2260,13 @@ func DefaultBashyServices() []BashyService {
 		// the argv still gets the daemon, not an accidental meeting. No
 		// MeshService: a personal chat room has no peer consumer. Opt-in
 		// (Enabled:false until fc.MeetOn() flips it in effectiveBashyServices).
-		{Name: "meet", Command: []string{"meet", "service"}, AppName: "meet", AppPort: 8637, RequireLogin: true, TrustCloudIdentity: true},
+		{Name: "meet", EnabledSet: true, Command: []string{"meet", "service"}, AppName: "meet", AppPort: 8637, RequireLogin: true, TrustCloudIdentity: true},
 		// The always-on SDLC loop (the durable trigger daemon). Opt-in
 		// (Enabled:false): a host running unattended agent work sets Enabled +
 		// Args (repo/config paths) in agent.json. No AppPort/mesh — it is a
 		// background loop, not a proxied app. Supervised via
 		// `bashy sdlc service {start,status,stop}`.
-		{Name: "sdlc", Command: []string{"sdlc", "service"}},
+		{Name: "sdlc", EnabledSet: true, Command: []string{"sdlc", "service"}},
 		// The scheduler daemon (bashy's modern cron). Opt-in (Enabled:false):
 		// a host that runs scheduled jobs — e.g. the GitHub→loom issue mirror
 		// (`bashy schedule add --every 5m -- bashy sdlc mirror …`) — sets
@@ -2196,7 +2275,7 @@ func DefaultBashyServices() []BashyService {
 		// conductor service, which is the sandboxed agent loop. No AppPort/mesh
 		// — a background loop, not a proxied app. Supervised via
 		// `bashy schedule {start,status,stop}`.
-		{Name: "schedule", Command: []string{"schedule"}},
+		{Name: "schedule", EnabledSet: true, Command: []string{"schedule"}},
 	}
 }
 
@@ -2596,6 +2675,8 @@ func EnsureBashyServiceSSOSecrets(path string, fc *FileConfig, services []BashyS
 		} else {
 			fc.BashyServices = append(fc.BashyServices, BashyService{
 				Name:               svc.Name,
+				Enabled:            svc.Enabled,
+				EnabledSet:         svc.EnabledSet,
 				TrustCloudIdentity: true,
 				SSOSecret:          secret,
 			})

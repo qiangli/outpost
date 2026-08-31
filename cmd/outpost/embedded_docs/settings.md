@@ -115,6 +115,8 @@ tool, or wipe `agent.json` by hand.
 | Warm desired set (persisted) | `warm_desired` | — (managed by `/admin/warm`) | — | — | Live |
 | Same-LAN direct inference | `lan_inference_enabled` | `builtins set --lan-inference` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Same-LAN direct inference port | `lan_inference_port` | `builtins set --lan-inference-port` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
+| Bashy Apps service | `bashy_apps_enabled` / `bashy_services[name=apps]` | `builtins set --bashy-apps` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
+| Bashy Apps service port | `bashy_apps_port` / `bashy_services[name=apps].app_port` | `builtins set --bashy-apps-port` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Meet web chat room | `meet_enabled` | `builtins set --meet` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Meet web chat room port | `meet_port` | `builtins set --meet-port` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Cluster join | `cluster.enabled` | `builtins set --cluster` | Inbound > Cluster | `outpost_set_builtins` | Restart |
@@ -128,11 +130,13 @@ tool, or wipe `agent.json` by hand.
 All built-in toggles default to ON when the JSON key is absent (old
 configs) so an upgrade doesn't silently disable features. That now
 includes the o3 proxies — `podman_enabled`, `ollama_enabled` and
-`otel_enabled` — so a freshly paired host is useful with zero
-configuration. They are *detection-gated*: outpost registers each mount
-only when the backing daemon is actually reachable, and a host without
-podman / Ollama / an observability proxy logs one line and carries on.
-o3 is never a dependency; nothing fails to start because it is missing.
+`otel_enabled` — plus bashy Apps when `bashy_services` is missing, so a
+freshly paired host is useful with zero configuration. They are
+*detection/capability-gated*: outpost registers each mount only when the
+backing daemon or service is actually reachable, and a host without
+podman / Ollama / an observability proxy / bashy Apps logs a visible status
+and carries on. o3 and bashy Apps are never dependencies; nothing fails to
+start because they are missing.
 
 The remaining opt-ins (default OFF, explicit choice required) are
 `sandbox_enabled` (widens *who* may run containers on the host),
@@ -146,6 +150,39 @@ is written literally and survives every later config write. Do not
 "simplify" them to plain `bool`: with `omitempty` a false marshals to
 absent, and the next load would read absent as the default and turn the
 service back on.
+
+### Bashy Apps service (supervised bashy service)
+
+`bashy_apps_enabled` controls **bashy Apps**, the cooperative app matrix
+served by bashy through `bashy apps service`. Safe fresh installs default
+it **ON** when `bashy_services` is missing, and outpost publishes it as a
+Cloudbox app named `apps` at `/matrix/h/<host>/app/apps/`. The upstream is
+always loopback (`http://127.0.0.1:<port>`); Outpost never creates a direct
+public listener for it.
+
+The default port is `22749` (`BASHY` on a telephone keypad). Set
+`bashy_apps_port` or the generic `bashy_services` row's `app_port` to
+override it. Legacy configs that explicitly used `8639` keep that value;
+to migrate, set `builtins set --bashy-apps-port 22749` or edit the
+`apps` service row to `app_port:22749`, then restart outpost and bashy
+Apps. Do not change `31415`: that is the unrelated bashy/ycode OTel proxy
+port and remains owned by the observability stack.
+
+Access is intentionally gated. Cloudbox sees `require_login:true` and
+`elevation_required:true`, so off-loopback access requires the host OS
+user/password elevation; QR pairing is separate and remains default-off.
+The cooperative identity path is also on: outpost generates a per-service
+`sso_secret`, stamps `Remote-User` / `Remote-Email` and
+`X-Outpost-Identity-Sig`, and passes the full Cloudbox matrix prefix as
+`--root-url`. A missing bashy binary or a bashy without `apps service`
+does not crash-loop outpost: the supervisor logs an actionable command
+failure and retries, while the daemon continues serving its other surfaces.
+
+If an existing config already has a `bashy_services` array, outpost treats
+that array as operator intent. A list that omits `apps` does not silently
+gain it; add `bashy_apps_enabled:true` or an enabled `apps` service row to
+opt in. An explicit `{"name":"apps","enabled":false}` remains a durable
+opt-out.
 
 ### Meet web chat room (supervised bashy service)
 

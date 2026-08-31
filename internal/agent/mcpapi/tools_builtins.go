@@ -50,6 +50,8 @@ type builtinsIn struct {
 	Meet                   *bool               `json:"meet,omitempty" jsonschema:"Toggle the meet web chat room (a Slack-style browser UI over 'bashy meet') as a supervised bashy service on a loopback port, published as a cloudbox app named 'meet'. Supervised via 'bashy meet service {start,status,stop}' (NOT 'bashy meet start', which starts a deliberation session). No mesh service. Default off."`
 	MeetPort               *int                `json:"meet_port,omitempty" jsonschema:"meet's loopback HTTP port (0 = default 8637)"`
 	BashyServices          []conf.BashyService `json:"bashy_services,omitempty" jsonschema:"Generic bashy-managed services. Each enabled row is supervised by outpost through 'bashy <name> start|status|stop' and may publish a cloudbox app and mesh service."`
+	BashyApps              *bool               `json:"bashy_apps,omitempty" jsonschema:"Toggle the supervised bashy Apps service. Default on only when bashy_services is absent; explicit false opts out. Published through the existing Cloudbox matrix app tunnel against a loopback upstream and requires OS-password elevation."`
+	BashyAppsPort          *int                `json:"bashy_apps_port,omitempty" jsonschema:"bashy Apps loopback HTTP port (0 = default 22749, telephone keypad BASHY). Explicit legacy app_port values such as 8639 in bashy_services are preserved."`
 	BashyVersion           *string             `json:"bashy_version,omitempty" jsonschema:"Pin the bashy release the daemon auto-installs when bashy is missing (empty/'latest' = newest; e.g. v0.3.0). Pin in production so a restart can't silently pull a new bashy."`
 	Zot                    *bool               `json:"zot,omitempty" jsonschema:"Toggle running the Zot OCI registry as a managed external binary on a loopback port, auto-exposed over the mesh as the 'registry' service (serves container images + Ollama models). Downloaded/verified/cached by binmgr — not compiled in."`
 	ZotPort                *int                `json:"zot_port,omitempty" jsonschema:"zot's loopback HTTP port (0 = default 5000)"`
@@ -121,6 +123,8 @@ func (s *Server) registerBuiltinsTools() {
 			Meet:                   in.Meet,
 			MeetPort:               in.MeetPort,
 			BashyServices:          in.BashyServices,
+			BashyApps:              in.BashyApps,
+			BashyAppsPort:          in.BashyAppsPort,
 			BashyVersion:           in.BashyVersion,
 			Zot:                    in.Zot,
 			ZotPort:                in.ZotPort,

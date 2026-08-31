@@ -96,6 +96,10 @@ type BuiltinsParams struct {
 	MeetPort *int  `json:"meet_port,omitempty"`
 	// BashyServices replaces the whole generic service set when non-nil.
 	BashyServices []conf.BashyService `json:"bashy_services,omitempty"`
+	// BashyApps toggles the supervised bashy Apps service. nil = leave
+	// unchanged; a fresh/missing bashy_services config defaults on at boot.
+	BashyApps     *bool `json:"bashy_apps,omitempty"`
+	BashyAppsPort *int  `json:"bashy_apps_port,omitempty"`
 	// BashyVersion pins the bashy release the self-heal auto-install fetches
 	// when bashy is missing ("" / "latest" = newest; a tag pins it). Takes
 	// effect on the next restart. nil = leave unchanged.
@@ -283,6 +287,12 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	if p.BashyServices != nil {
 		fc.BashyServices = normalizeBashyServices(p.BashyServices)
 	}
+	if p.BashyApps != nil {
+		fc.BashyAppsEnabled = p.BashyApps
+	}
+	if p.BashyAppsPort != nil {
+		fc.BashyAppsPort = *p.BashyAppsPort
+	}
 	if p.Zot != nil {
 		fc.ZotEnabled = p.Zot
 	}
@@ -394,7 +404,7 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterAgent == nil && p.ClusterVirtual == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.Loom == nil && p.LoomPort == nil && p.Meet == nil && p.MeetPort == nil && p.BashyServices == nil && p.BashyVersion == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil && p.ActrunnerSandbox == nil && p.ActrunnerSandboxImage == nil && p.ActrunnerDockerHost == nil && p.CloudDOEnabled == nil && p.CloudDOToken == nil && p.Headlamp == nil && p.HeadlampPort == nil
+	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterAgent == nil && p.ClusterVirtual == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.Loom == nil && p.LoomPort == nil && p.Meet == nil && p.MeetPort == nil && p.BashyServices == nil && p.BashyApps == nil && p.BashyAppsPort == nil && p.BashyVersion == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil && p.ActrunnerSandbox == nil && p.ActrunnerSandboxImage == nil && p.ActrunnerDockerHost == nil && p.CloudDOEnabled == nil && p.CloudDOToken == nil && p.Headlamp == nil && p.HeadlampPort == nil
 	if p.UpdateMode != nil {
 		if !conf.ValidUpdateMode(*p.UpdateMode) {
 			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")
@@ -473,6 +483,7 @@ func normalizeBashyServices(in []conf.BashyService) []conf.BashyService {
 		if svc.AppName == "" {
 			svc.AppName = svc.Name
 		}
+		svc.EnabledSet = true
 		out = append(out, svc)
 	}
 	return out

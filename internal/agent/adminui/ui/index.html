@@ -1165,6 +1165,45 @@ function buildFilesSubBlock(parent, cfg, status) {
   parent.append(scopeHint, scopeInput, el('div', {style: 'margin-top:0.4rem'}, scopeBtn));
 }
 
+function buildBashyAppsSubBlock(parent, cfg, status) {
+  const appsOn = !!cfg.bashy_apps_enabled;
+  const portIn = el('input', {
+    type: 'number',
+    min: '1',
+    max: '65535',
+    value: cfg.bashy_apps_port || 22749,
+    disabled: !appsOn,
+    style: 'width:7rem',
+  });
+  const save = el('button', {type: 'button', disabled: !appsOn}, 'Save port');
+  save.addEventListener('click', async () => {
+    const port = parseInt(portIn.value, 10);
+    if (!Number.isFinite(port) || port < 1 || port > 65535) {
+      msg('err', 'Port must be 1-65535.');
+      return;
+    }
+    save.disabled = true;
+    try {
+      const res = await api('POST', '/api/config/builtins', {bashy_apps_port: port});
+      msg('ok', 'Bashy Apps port saved.');
+      noteRestartPending(res);
+    } catch (e) {
+      msg('err', e.message || 'Save failed');
+    } finally {
+      save.disabled = !appsOn;
+    }
+  });
+  parent.append(
+    el('div', {class: 'item-row' + (!appsOn ? ' dim' : '')},
+      el('span', {class: 'label'}, 'Loopback port ', el('code', {class: 'key-hint'}, 'bashy_apps_port')),
+      portIn,
+      save,
+    ),
+    el('p', {class: 'hint', style: 'margin:0.2rem 0 0'},
+      'Default 22749 (BASHY). Legacy explicit 8639 is preserved. This is not the OTel proxy port 31415.'),
+  );
+}
+
 // buildClusterSubBlock populates the top-level Cluster section:
 // cluster status, concurrent runtime selection, join toggle, and
 // kubeconfig readiness.
@@ -2693,6 +2732,8 @@ function renderMain(status, cfg) {
     // POST {meet: bool} reaches the same BuiltinsParams surface as
     // --meet / the MCP meet arg. The Command base (["meet","service"]) is
     // pinned in DefaultBashyServices, so the toggle alone is enough.
+    {key: 'bashy_apps', fileKey: 'bashy_apps_enabled', label: 'Bashy Apps', enabled: cfg.bashy_apps_enabled,
+     subBlock: buildBashyAppsSubBlock},
     {key: 'meet',      fileKey: 'meet_enabled',      label: 'Meet chat',   enabled: cfg.meet_enabled},
   ];
   const agenticRows = [

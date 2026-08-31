@@ -3724,12 +3724,33 @@ func effectiveBashyServices(fc *conf.FileConfig) []conf.BashyService {
 		byName[svc.Name] = svc
 	}
 	if fc != nil {
+		hasAppsServiceOverride := false
 		for _, svc := range fc.BashyServices {
 			if strings.TrimSpace(svc.Name) == "" {
 				continue
 			}
+			if svc.Name == "apps" {
+				hasAppsServiceOverride = true
+			}
 			if svc.AppName == "" {
 				svc.AppName = svc.Name
+			}
+			if def, ok := byName[svc.Name]; ok {
+				if !svc.EnabledSet && !svc.Enabled {
+					svc.Enabled = def.Enabled
+				}
+				if svc.AppPort == 0 {
+					svc.AppPort = def.AppPort
+				}
+				if svc.AppName == svc.Name && def.AppName != "" {
+					svc.AppName = def.AppName
+				}
+				if def.RequireLogin {
+					svc.RequireLogin = true
+				}
+				if def.MeshService != "" && svc.MeshService == "" {
+					svc.MeshService = def.MeshService
+				}
 			}
 			// Inherit the default Command base (e.g. sdlc → ["sdlc","service"]) so
 			// an operator can enable a service without re-declaring its argv.
@@ -3745,7 +3766,30 @@ func effectiveBashyServices(fc *conf.FileConfig) []conf.BashyService {
 			if def, ok := byName[svc.Name]; ok && def.TrustCloudIdentity {
 				svc.TrustCloudIdentity = true
 			}
+			if def, ok := byName[svc.Name]; ok && def.ElevationRequired {
+				svc.ElevationRequired = true
+			}
 			byName[svc.Name] = svc
+		}
+		if fc.BashyServices != nil && !hasAppsServiceOverride && fc.BashyAppsEnabled == nil {
+			svc := byName["apps"]
+			svc.Enabled = false
+			byName["apps"] = svc
+		}
+		if fc.BashyAppsEnabled != nil {
+			svc := byName["apps"]
+			svc.Name = "apps"
+			svc.Enabled = *fc.BashyAppsEnabled
+			svc.Command = []string{"apps", "service"}
+			svc.AppName = "apps"
+			svc.AppPort = fc.BashyAppsPortOrDefault()
+			svc.RequireLogin = true
+			svc.ElevationRequired = true
+			svc.TrustCloudIdentity = true
+			byName["apps"] = svc
+		} else if svc := byName["apps"]; svc.Enabled && svc.AppPort == conf.DefaultBashyAppsPort && fc.BashyAppsPort > 0 {
+			svc.AppPort = fc.BashyAppsPort
+			byName["apps"] = svc
 		}
 		if fc.LoomOn() {
 			svc := byName["loom"]
@@ -3792,6 +3836,7 @@ func registerBashyServiceApps(fc *conf.FileConfig, reg *agent.AppRegistry) error
 		}
 		if err := reg.RegisterWithMeta(name, fmt.Sprintf("http://127.0.0.1:%d", svc.AppPort), agent.AppMeta{
 			RequireLogin:       svc.RequireLogin,
+			ElevationRequired:  svc.ElevationRequired,
 			TrustCloudIdentity: svc.TrustCloudIdentity,
 			SSOSecret:          svc.SSOSecret,
 		}); err != nil {
@@ -3844,7 +3889,7 @@ func superviseBashyService(ctx context.Context, fc *conf.FileConfig, svc conf.Ba
 	if err := startBashyService(ctx, fc, svc); err != nil {
 		slog.Warn("bashy service: start failed", "service", svc.Name, "err", err)
 	}
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(bashyServicePollInterval)
 	defer ticker.Stop()
 	defer func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -3868,16 +3913,21 @@ func superviseBashyService(ctx context.Context, fc *conf.FileConfig, svc conf.Ba
 	}
 }
 
+var bashyServicePollInterval = 30 * time.Second
+
 func startBashyService(ctx context.Context, fc *conf.FileConfig, svc conf.BashyService) error {
 	args := append([]string{}, svc.Args...)
 	if svc.RootURL != "" {
 		args = append(args, "--root-url", svc.RootURL)
-	} else if svc.Name == "loom" {
+	} else if svc.Name == "loom" || svc.Name == "apps" {
 		if root := bashyServiceCloudboxRoot(fc, svc); root != "" {
 			args = append(args, "--root-url", root)
 		}
 	}
 	if svc.Name == "loom" && svc.AppPort > 0 && svc.AppPort != 31880 {
+		args = append(args, "--port", strconv.Itoa(svc.AppPort))
+	}
+	if svc.Name == "apps" && svc.AppPort > 0 {
 		args = append(args, "--port", strconv.Itoa(svc.AppPort))
 	}
 	return runBashyServiceCommand(ctx, svc, "start", args)
@@ -3934,7 +3984,11 @@ func outputBashyServiceCommand(ctx context.Context, svc conf.BashyService, verb 
 			cmd.Env = append(os.Environ(), extraEnv...)
 		}
 	}
-	return cmd.CombinedOutput()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return out, fmt.Errorf("bashy service command %q failed: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return out, nil
 }
 
 // bashyServiceSecretsEnv runs `bashy secrets env` and returns "NAME=value"

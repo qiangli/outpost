@@ -77,6 +77,52 @@ func TestBuiltinsTogglePodmanOllama(t *testing.T) {
 	}
 }
 
+func TestBuiltinsToggleBashyAppsREST(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "agent.json")
+	if err := conf.SaveFile(configPath, &conf.FileConfig{AgentName: "h"}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	user, err := hostauth.CurrentUser()
+	if err != nil || user == "" {
+		t.Skip("cannot determine OS user")
+	}
+	s := newTestServer(t, configPath, map[string]string{user: "secret"}, nil)
+	w := doJSON(s, http.MethodPost, "/api/login", map[string]string{"user": user, "password": "secret"}, "")
+	cookie := extractCookie(w, cookieName)
+	if cookie == "" {
+		t.Fatal("missing session cookie after login")
+	}
+
+	w = doJSON(s, http.MethodPost, "/api/config/builtins",
+		map[string]any{"bashy_apps": false, "bashy_apps_port": 24000}, cookie)
+	if w.Code != http.StatusOK {
+		t.Fatalf("toggle bashy apps: %d %s", w.Code, w.Body.String())
+	}
+	fc, err := conf.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if fc.BashyAppsEnabled == nil || *fc.BashyAppsEnabled || fc.BashyAppsPort != 24000 {
+		t.Fatalf("bashy apps config not persisted: enabled=%v port=%d", fc.BashyAppsEnabled, fc.BashyAppsPort)
+	}
+
+	w = doJSON(s, http.MethodGet, "/api/config", nil, cookie)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get config: %d %s", w.Code, w.Body.String())
+	}
+	var view struct {
+		BashyAppsEnabled bool `json:"bashy_apps_enabled"`
+		BashyAppsPort    int  `json:"bashy_apps_port"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if view.BashyAppsEnabled || view.BashyAppsPort != 24000 {
+		t.Fatalf("view = enabled:%v port:%d, want false/24000", view.BashyAppsEnabled, view.BashyAppsPort)
+	}
+}
+
 // TestBuiltinsToggleOllamaPool — pool participation is a separate
 // toggle from Ollama itself. Default-on when Ollama is on, but a user
 // can explicitly opt out to keep their local Ollama private.
