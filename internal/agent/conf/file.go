@@ -2249,7 +2249,7 @@ func DefaultBashyServices() []BashyService {
 		// entry is applied only when bashy_services is absent or the top-level
 		// bashy_apps toggle opts in, so an existing curated bashy_services list is
 		// not broadened silently.
-		{Name: "apps", Enabled: true, EnabledSet: true, Command: []string{"apps", "service"}, AppName: "apps", AppPort: DefaultBashyAppsPort, RequireLogin: true, ElevationRequired: true, TrustCloudIdentity: true},
+		{Name: "apps", Enabled: true, EnabledSet: true, Command: []string{"apps", "service"}, Args: []string{"--pair"}, AppName: "apps", AppPort: DefaultBashyAppsPort, RequireLogin: true, ElevationRequired: true, TrustCloudIdentity: true},
 		// The meet web chat room (a Slack-style browser UI over `bashy meet`,
 		// served by bashy on a loopback port) as a supervised service, published
 		// as a cloudbox app named `meet`. TRAP: the service lifecycle lives under

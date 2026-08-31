@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -247,8 +248,21 @@ func TestStartBashyAppsPassesPortAndLANBind(t *testing.T) {
 	if !strings.Contains(got, "--bind 192.168.50.12") {
 		t.Fatalf("apps start args missing exact private LAN bind: %q", got)
 	}
+	if !strings.Contains(got, "--pair") {
+		t.Fatalf("apps start args do not arm phone pairing: %q", got)
+	}
 	if strings.Contains(got, "--root-url") {
 		t.Fatalf("apps start args contain unsupported --root-url: %q", got)
+	}
+}
+
+func TestBashyAppsOverrideStillArmsPairing(t *testing.T) {
+	fc := &conf.FileConfig{BashyServices: []conf.BashyService{{
+		Name: "apps", Enabled: true, EnabledSet: true,
+	}}}
+	svc := findBashyService(fc, "apps")
+	if svc == nil || !slices.Contains(svc.Args, "--pair") {
+		t.Fatalf("apps override args = %v, want inherited --pair", svc)
 	}
 }
 

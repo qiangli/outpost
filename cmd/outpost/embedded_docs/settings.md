@@ -178,7 +178,10 @@ port and remains owned by the observability stack.
 
 Access is intentionally gated. Cloudbox sees `require_login:true` and
 `elevation_required:true`, so off-loopback access requires the host OS
-user/password elevation; QR pairing is separate and remains default-off.
+user/password elevation. The managed service is armed with `--pair`, but QR
+pairing remains default-off: no ticket or device exists until the signed-in
+operator enables phone pairing in Bashy Apps Settings. A short-lived ticket
+opens the LAN pairing listener only for redemption/paired-device access.
 The cooperative identity path is also on: outpost generates a per-service
 `sso_secret`, stamps `Remote-User` / `Remote-Email` and
 `X-Outpost-Identity-Sig`. Cloudbox supplies `X-Forwarded-Prefix` on proxied

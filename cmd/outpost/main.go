@@ -3759,6 +3759,11 @@ func effectiveBashyServices(fc *conf.FileConfig) []conf.BashyService {
 					svc.Command = def.Command
 				}
 			}
+			if len(svc.Args) == 0 {
+				if def, ok := byName[svc.Name]; ok {
+					svc.Args = append([]string{}, def.Args...)
+				}
+			}
 			// Security properties required by a built-in are not optional
 			// defaults. In particular, meet's coopauth guard requires the
 			// signed identity contract even when the operator enables it through
