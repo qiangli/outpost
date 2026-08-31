@@ -227,6 +227,9 @@ func TestStartBashyAppsPassesPortAndCloudboxRoot(t *testing.T) {
 	}
 	t.Setenv("OUTPOST_BASHY_BIN", bin)
 	bashyResolver = &bashyBinaryResolver{}
+	oldLANBind := bashyAppsLANBind
+	bashyAppsLANBind = func() string { return "192.168.50.12" }
+	t.Cleanup(func() { bashyAppsLANBind = oldLANBind })
 
 	fc := &conf.FileConfig{AgentName: "dragon", ServerAddr: "ai.dhnt.io", ServerPort: 443, Protocol: "wss"}
 	svc := *findBashyService(fc, "apps")
@@ -241,8 +244,30 @@ func TestStartBashyAppsPassesPortAndCloudboxRoot(t *testing.T) {
 	if !strings.Contains(got, "apps service start") || !strings.Contains(got, "--port 22749") {
 		t.Fatalf("apps start args missing service/port: %q", got)
 	}
+	if !strings.Contains(got, "--bind 192.168.50.12") {
+		t.Fatalf("apps start args missing exact private LAN bind: %q", got)
+	}
 	if !strings.Contains(got, "--root-url https://ai.dhnt.io/matrix/h/dragon/app/apps/") {
 		t.Fatalf("apps start args missing Cloudbox matrix root: %q", got)
+	}
+}
+
+type testNetAddr string
+
+func (a testNetAddr) Network() string { return "ip+net" }
+func (a testNetAddr) String() string  { return string(a) }
+
+func TestFirstPrivateLANIPv4RejectsPublicAndLoopback(t *testing.T) {
+	got := firstPrivateLANIPv4([]net.Addr{
+		testNetAddr("127.0.0.1/8"),
+		testNetAddr("203.0.113.40/24"),
+		testNetAddr("192.168.44.9/24"),
+	})
+	if got != "192.168.44.9" {
+		t.Fatalf("firstPrivateLANIPv4 = %q, want 192.168.44.9", got)
+	}
+	if got := firstPrivateLANIPv4([]net.Addr{testNetAddr("203.0.113.40/24")}); got != "" {
+		t.Fatalf("public-only interfaces produced bind %q; want no LAN listener", got)
 	}
 }
 

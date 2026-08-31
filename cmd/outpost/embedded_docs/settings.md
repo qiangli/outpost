@@ -153,6 +153,14 @@ service back on.
 
 ### Bashy Apps service (supervised bashy service)
 
+On a host with a private RFC1918 IPv4 address, Outpost starts Bashy Apps on
+that exact LAN address as well as loopback. Bashy refuses the LAN bind unless
+host-OS password authentication is available and requires login for every
+off-loopback request. Outpost never defaults this listener to `0.0.0.0`: when
+no private address exists, it keeps only loopback plus the authenticated
+Cloudbox matrix route and logs the LAN omission. QR pairing remains off until
+an operator enables it separately.
+
 `bashy_apps_enabled` controls **bashy Apps**, the cooperative app matrix
 served by bashy through `bashy apps service`. Safe fresh installs default
 it **ON** when `bashy_services` is missing, and outpost publishes it as a
