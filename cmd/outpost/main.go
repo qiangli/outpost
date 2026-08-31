@@ -3943,9 +3943,9 @@ func firstPrivateLANIPv4(addrs []net.Addr) string {
 
 func startBashyService(ctx context.Context, fc *conf.FileConfig, svc conf.BashyService) error {
 	args := append([]string{}, svc.Args...)
-	if svc.RootURL != "" {
+	if svc.Name != "apps" && svc.RootURL != "" {
 		args = append(args, "--root-url", svc.RootURL)
-	} else if svc.Name == "loom" || svc.Name == "apps" {
+	} else if svc.Name == "loom" {
 		if root := bashyServiceCloudboxRoot(fc, svc); root != "" {
 			args = append(args, "--root-url", root)
 		}

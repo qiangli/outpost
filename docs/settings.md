@@ -181,8 +181,9 @@ Access is intentionally gated. Cloudbox sees `require_login:true` and
 user/password elevation; QR pairing is separate and remains default-off.
 The cooperative identity path is also on: outpost generates a per-service
 `sso_secret`, stamps `Remote-User` / `Remote-Email` and
-`X-Outpost-Identity-Sig`, and passes the full Cloudbox matrix prefix as
-`--root-url`. A missing bashy binary or a bashy without `apps service`
+`X-Outpost-Identity-Sig`. Cloudbox supplies `X-Forwarded-Prefix` on proxied
+requests, and Bashy derives its external base paths from that header. A
+missing bashy binary or a bashy without `apps service`
 does not crash-loop outpost: the supervisor logs an actionable command
 failure and retries, while the daemon continues serving its other surfaces.
 

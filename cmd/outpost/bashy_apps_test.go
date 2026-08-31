@@ -214,7 +214,7 @@ func TestBashyAppsCloudboxAndLANAuthGate(t *testing.T) {
 	}
 }
 
-func TestStartBashyAppsPassesPortAndCloudboxRoot(t *testing.T) {
+func TestStartBashyAppsPassesPortAndLANBind(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses a POSIX fake bashy script")
 	}
@@ -247,8 +247,8 @@ func TestStartBashyAppsPassesPortAndCloudboxRoot(t *testing.T) {
 	if !strings.Contains(got, "--bind 192.168.50.12") {
 		t.Fatalf("apps start args missing exact private LAN bind: %q", got)
 	}
-	if !strings.Contains(got, "--root-url https://ai.dhnt.io/matrix/h/dragon/app/apps/") {
-		t.Fatalf("apps start args missing Cloudbox matrix root: %q", got)
+	if strings.Contains(got, "--root-url") {
+		t.Fatalf("apps start args contain unsupported --root-url: %q", got)
 	}
 }
 
