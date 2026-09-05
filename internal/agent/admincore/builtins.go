@@ -261,8 +261,21 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	}
 	if p.Loom != nil || p.LoomPort != nil {
 		upsertBashyService(&fc.BashyServices, conf.BashyService{
-			Name:         "loom",
-			Enabled:      p.Loom == nil || *p.Loom,
+			Name: "loom",
+			// EXPLICIT OPT-IN ONLY — an absent toggle means OFF for loom, unlike
+			// the other builtins.
+			//
+			// The shared shape is `p.X == nil || *p.X`, which reads "absent means
+			// on". That is right for a service you are configuring because you
+			// want it, but for loom it meant setting ONLY `loom_port` — naming a
+			// port, not asking for a forge — silently started a git server and
+			// published it on the mesh as the `git` service.
+			//
+			// loom is a forge for p2p/sphere work; a single-host workflow is
+			// served by `bashy weave` and needs no forge at all. So it turns on
+			// when someone says so, and never as a side effect of an adjacent
+			// setting.
+			Enabled:      p.Loom != nil && *p.Loom,
 			AppName:      "loom",
 			AppPort:      fc.LoomPortOrDefault(),
 			RequireLogin: true,
