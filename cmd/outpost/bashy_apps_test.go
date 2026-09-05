@@ -332,7 +332,10 @@ func TestBashyAppsSupervisorRestartsStoppedService(t *testing.T) {
 	go func() {
 		done <- superviseBashyService(ctx, &conf.FileConfig{}, conf.BashyService{Name: "apps", Enabled: true, Command: []string{"apps", "service"}}, nil)
 	}()
-	deadline := time.After(500 * time.Millisecond)
+	// Package-level test parallelism can delay the first subprocess launch on a
+	// loaded builder. Keep this bounded, but give the supervisor enough time to
+	// demonstrate two starts without turning scheduler contention into a flake.
+	deadline := time.After(5 * time.Second)
 	for {
 		raw, _ := os.ReadFile(count)
 		if strings.TrimSpace(string(raw)) >= "2" {
