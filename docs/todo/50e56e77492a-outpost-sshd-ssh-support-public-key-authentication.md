@@ -6,7 +6,6 @@ seq: 11
 status: todo
 priority: p1
 created: 2026-09-06T21:25:20.156982Z
-sprint: 96
 ---
 
 Sprint 96 (Bashy Hop) names SSH as one of the two first-slice transport
