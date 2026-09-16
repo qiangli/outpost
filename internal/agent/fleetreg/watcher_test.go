@@ -52,6 +52,11 @@ func TestSnapshotReportsBindings(t *testing.T) {
 	if err := cat.SaveAgent(fleet.Agent{Name: "007", Tool: "claude", Model: "fable"}); err != nil {
 		t.Fatal(err)
 	}
+	wantAgent, ok := cat.Agent("007")
+	if !ok {
+		t.Fatal("saved agent did not resolve")
+	}
+	wantDetail := wantAgent.MatrixKey()
 
 	got := w.Snapshot()
 	byKind := map[string][]Asset{}
@@ -67,11 +72,11 @@ func TestSnapshotReportsBindings(t *testing.T) {
 		if a.Name == "007" {
 			found = true
 			// The binding is canonicalized to the version-explicit model name:
-			// the family alias "fable" resolves to the highest version "fable5",
+			// the family alias "fable" resolves to the highest shipped version,
 			// so a peer receives the address it can route to, not a floating
 			// pointer. (See coreutils/pkg/fleet family-alias derivation.)
-			if a.Detail != "claude:fable5" {
-				t.Fatalf("agent detail = %q, want the canonicalized binding claude:fable5", a.Detail)
+			if a.Detail != wantDetail {
+				t.Fatalf("agent detail = %q, want the canonicalized binding %q", a.Detail, wantDetail)
 			}
 		}
 	}
