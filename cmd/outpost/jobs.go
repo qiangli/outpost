@@ -14,7 +14,7 @@ package main
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/qiangli/coreutils/pkg/jobs"
+	"github.com/qiangli/yoke/pkg/jobs"
 )
 
 // Preserve the on-disk jobs directory (<UserCacheDir>/outpost/jobs) that hosts

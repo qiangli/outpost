@@ -36,7 +36,7 @@ jobs:
         with:
           fetch-depth: 0   # full history so vcs.revision stamps in version tests
 
-      - name: Bootstrap sibling deps (../sh, ../coreutils)
+      - name: Bootstrap sibling deps (../sh, ../coreutils, ../yoke)
         run: ./scripts/bootstrap-siblings.sh
 
       - uses: actions/setup-go@v6

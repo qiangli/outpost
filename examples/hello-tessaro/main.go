@@ -15,8 +15,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/qiangli/coreutils/pkg/coopauth"
 	"github.com/qiangli/outpost/examples/hello-tessaro/internal/config"
+	"github.com/qiangli/yoke/pkg/coopauth"
 )
 
 // Build metadata, injected via -ldflags "-X main.Version=... -X main.Commit=...".

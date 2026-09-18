@@ -1,5 +1,5 @@
 // hello-tessaro is a reference cooperative-app module. It consumes the shared
-// cooperative-app SDK, github.com/qiangli/coreutils/pkg/coopauth, exactly the
+// cooperative-app SDK, github.com/qiangli/yoke/pkg/coopauth, exactly the
 // way a real third-party app would — the identity + admin-allowlist model lives
 // in ONE place (coopauth) so a security fix there reaches every app at once.
 // Inside the dhnt umbrella the SDK resolves via the sibling replace below; a

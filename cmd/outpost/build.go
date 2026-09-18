@@ -30,7 +30,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	outgit "github.com/qiangli/coreutils/git"
+	outgit "github.com/qiangli/yoke/git"
 )
 
 // siblingRepoURLs mirrors repo_url() in scripts/bootstrap-siblings.sh.

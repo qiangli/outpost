@@ -21,8 +21,8 @@ import (
 	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/interp"
 
-	_ "github.com/qiangli/coreutils/cmds/all" // register the full tool inventory
 	"github.com/qiangli/coreutils/tool"
+	_ "github.com/qiangli/yoke/cmds/all" // register the full tool inventory
 )
 
 // CoreutilsExec is an interp.ExecHandlers middleware: when the command

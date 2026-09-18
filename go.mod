@@ -44,13 +44,11 @@ require (
 )
 
 require (
-	cyphar.com/go-pathrs v0.2.4 // indirect
 	filippo.io/bigmod v0.1.1-0.20260103110540-f8a47775ebe5 // indirect
 	filippo.io/keygen v0.0.0-20260114151900-8e2790ea4c5b // indirect
 	github.com/JohannesKaufmann/dom v0.3.1 // indirect
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2 // indirect
 	github.com/STARRY-S/zip v0.2.3 // indirect
-	github.com/a2aproject/a2a-go/v2 v2.3.1 // indirect
 	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/asticode/go-astikit v0.59.0 // indirect
 	github.com/asticode/go-astisub v0.40.0 // indirect
@@ -65,8 +63,6 @@ require (
 	github.com/chromedp/chromedp v0.15.1 // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
-	github.com/coder/acp-go-sdk v0.13.5 // indirect
-	github.com/creack/pty/v2 v2.0.1 // indirect
 	github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
 	github.com/disintegration/imaging v1.6.2 // indirect
@@ -130,7 +126,6 @@ require (
 	github.com/multiformats/go-varint v0.0.7 // indirect
 	github.com/nwaples/rardecode/v2 v2.2.3 // indirect
 	github.com/odvcencio/gotreesitter v0.16.0 // indirect
-	github.com/opencontainers/selinux v1.13.1 // indirect
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58 // indirect
 	github.com/pierrec/lz4/v4 v4.1.27 // indirect
 	github.com/pion/datachannel v1.5.10 // indirect
@@ -161,10 +156,6 @@ require (
 	github.com/tomasen/realip v0.0.0-20180522021738-f0c99a92ddce // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.40.0 // indirect
-	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.40.0 // indirect
-	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.43.0 // indirect
-	go.opentelemetry.io/otel/sdk/metric v1.44.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/dig v1.19.0 // indirect
 	go.uber.org/fx v1.24.0 // indirect
@@ -266,6 +257,7 @@ require (
 	github.com/prometheus/common v0.67.4 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/qiangli/coreutils v0.0.0
+	github.com/qiangli/yoke v0.0.0
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.1 // indirect
 	github.com/sean-/seed v0.0.0-20170313163322-e2103e2c3529 // indirect
@@ -324,6 +316,10 @@ require (
 replace mvdan.cc/sh/v3 => ../sh
 
 replace github.com/qiangli/coreutils => ../coreutils
+
+// yoke is the agentic userland split out of coreutils (Sprint 208); same
+// flat-sibling rule.
+replace github.com/qiangli/yoke => ../yoke
 
 replace github.com/filebrowser/filebrowser/v2 => ../filebrowser
 

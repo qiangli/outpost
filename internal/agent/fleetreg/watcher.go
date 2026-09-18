@@ -28,8 +28,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qiangli/coreutils/pkg/assetring"
-	"github.com/qiangli/coreutils/pkg/fleet"
+	"github.com/qiangli/yoke/pkg/assetring"
+	"github.com/qiangli/yoke/pkg/fleet"
 )
 
 const (

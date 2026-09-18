@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	enginemirror "github.com/qiangli/coreutils/pkg/mirror"
+	enginemirror "github.com/qiangli/yoke/pkg/mirror"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 )

@@ -31,7 +31,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qiangli/coreutils/pkg/binmgr"
+	"github.com/qiangli/yoke/pkg/binmgr"
 )
 
 // ErrPodmanNotFound is returned by Up when neither `podman` nor `docker`

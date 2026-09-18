@@ -16,7 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/qiangli/coreutils/pkg/binmgr"
+	"github.com/qiangli/yoke/pkg/binmgr"
 )
 
 const defaultBashyRepo = "qiangli/bashy"

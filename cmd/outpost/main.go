@@ -30,11 +30,11 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sync/errgroup"
 
-	actrunner "github.com/qiangli/coreutils/external/actrunner"
-	kopia "github.com/qiangli/coreutils/external/kopia"
-	seaweedfs "github.com/qiangli/coreutils/external/seaweedfs"
-	zot "github.com/qiangli/coreutils/external/zot"
-	"github.com/qiangli/coreutils/pkg/secrets"
+	actrunner "github.com/qiangli/yoke/external/actrunner"
+	kopia "github.com/qiangli/yoke/external/kopia"
+	seaweedfs "github.com/qiangli/yoke/external/seaweedfs"
+	zot "github.com/qiangli/yoke/external/zot"
+	"github.com/qiangli/yoke/pkg/secrets"
 
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/admincore"

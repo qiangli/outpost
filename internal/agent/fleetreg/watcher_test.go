@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qiangli/coreutils/pkg/fleet"
+	"github.com/qiangli/yoke/pkg/fleet"
 )
 
 // testWatcher pins the watcher to a scratch registry and a fake skill store.

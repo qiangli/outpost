@@ -25,7 +25,7 @@ import (
 	"mvdan.cc/sh/v3/interp"
 	"mvdan.cc/sh/v3/syntax"
 
-	"github.com/qiangli/coreutils/pkg/jobs"
+	"github.com/qiangli/yoke/pkg/jobs"
 )
 
 // ptyFile is one end of the session's terminal pair: a real PTY *os.File

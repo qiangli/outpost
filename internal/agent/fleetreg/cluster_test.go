@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qiangli/coreutils/pkg/fleet"
+	"github.com/qiangli/yoke/pkg/fleet"
 )
 
 const testCA = `-----BEGIN CERTIFICATE-----
