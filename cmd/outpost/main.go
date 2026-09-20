@@ -678,6 +678,7 @@ func startCmd() *cobra.Command {
 						Direct:    p.Direct,
 						LinkClass: p.LinkClass,
 						Remote:    p.Remote,
+						Name:      p.Name,
 					})
 				}
 				return &admincore.MeshStatusView{

@@ -244,6 +244,7 @@ type MeshPeerConnView struct {
 	Direct    bool     `json:"direct"`
 	LinkClass string   `json:"link_class"`
 	Remote    []string `json:"remote,omitempty"`
+	Name      string   `json:"name,omitempty"` // the peer's announced outpost name (mesh.PeerConn.Name)
 }
 
 // MeshHostLinkView answers "can I reach <host> directly over the mesh right
