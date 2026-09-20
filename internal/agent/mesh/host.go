@@ -491,12 +491,52 @@ func classifyConnAddr(maddr ma.Multiaddr) string {
 	switch {
 	case ip.IsLinkLocalUnicast():
 		return "tp"
-	case ip.IsPrivate():
+	case ip.IsPrivate(), onLinkGlobal(ip):
 		return "lan"
 	default:
 		return "wan"
 	}
 }
+
+// onLinkGlobal reports whether a GLOBAL address is on one of this host's own
+// subnets — the IPv6 case IsPrivate cannot see. A dual-stack LAN hands every
+// host a global-unicast IPv6 from the same delegated /64, and a peer that
+// happens to dial over that address instead of its RFC-1918 IPv4 is still
+// the machine in the next room; classing it "wan" drops it from the
+// Neighborhood and from every LAN-gated decision. Interface addresses are
+// re-read at most every 10 s: the classification runs per connection per
+// status call.
+func onLinkGlobal(ip net.IP) bool {
+	onLinkMu.Lock()
+	defer onLinkMu.Unlock()
+	if time.Since(onLinkAt) > 10*time.Second {
+		onLinkNets = onLinkNets[:0]
+		if addrs, err := net.InterfaceAddrs(); err == nil {
+			for _, a := range addrs {
+				n, ok := a.(*net.IPNet)
+				if !ok || n.IP.IsLoopback() || n.IP.IsLinkLocalUnicast() || n.IP.IsPrivate() {
+					continue
+				}
+				if ones, bits := n.Mask.Size(); bits == 128 && ones >= 48 && ones <= 64 {
+					onLinkNets = append(onLinkNets, n)
+				}
+			}
+		}
+		onLinkAt = time.Now()
+	}
+	for _, n := range onLinkNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	onLinkMu   sync.Mutex
+	onLinkAt   time.Time
+	onLinkNets []*net.IPNet
+)
 
 func strongerLinkClass(a, b string) string {
 	rank := map[string]int{"": 0, "wan": 1, "lan": 2, "tp": 3}

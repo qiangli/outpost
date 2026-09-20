@@ -1,7 +1,9 @@
 package mesh
 
 import (
+	"net"
 	"testing"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
 	ma "github.com/multiformats/go-multiaddr"
@@ -75,13 +77,14 @@ func TestPeerLinkClassDerivation(t *testing.T) {
 
 func TestClassifyConnAddr(t *testing.T) {
 	cases := []struct{ addr, want string }{
-		{"/ip4/10.0.0.5/tcp/4001", "lan"},            // RFC-1918 wifi LAN
-		{"/ip4/192.168.1.9/udp/4001/quic-v1", "lan"}, // RFC-1918 LAN
-		{"/ip4/172.16.4.4/tcp/4001", "lan"},          // RFC-1918 LAN
-		{"/ip4/169.254.110.47/tcp/4001", "tp"},       // APIPA / link-local = direct wired link
-		{"/ip6/fe80::1/tcp/4001", "tp"},              // IPv6 link-local
-		{"/ip4/203.0.113.10/tcp/16690", "wan"},       // public (RFC 5737 TEST-NET-3 doc range)
-		{"/ip4/127.0.0.1/tcp/4001", ""},              // loopback ignored
+		{"/ip4/10.0.0.5/tcp/4001", "lan"},                // RFC-1918 wifi LAN
+		{"/ip4/192.168.1.9/udp/4001/quic-v1", "lan"},     // RFC-1918 LAN
+		{"/ip4/172.16.4.4/tcp/4001", "lan"},              // RFC-1918 LAN
+		{"/ip4/169.254.110.47/tcp/4001", "tp"},           // APIPA / link-local = direct wired link
+		{"/ip6/fe80::1/tcp/4001", "tp"},                  // IPv6 link-local
+		{"/ip4/203.0.113.10/tcp/16690", "wan"},           // public (RFC 5737 TEST-NET-3 doc range)
+		{"/ip4/127.0.0.1/tcp/4001", ""},                  // loopback ignored
+		{"/ip6/2001:db8:1:2::9/udp/4001/quic-v1", "wan"}, // global v6, not one of our prefixes
 	}
 	for _, c := range cases {
 		m, err := ma.NewMultiaddr(c.addr)
@@ -90,6 +93,34 @@ func TestClassifyConnAddr(t *testing.T) {
 		}
 		if got := classifyConnAddr(m); got != c.want {
 			t.Errorf("%s → %q, want %q", c.addr, got, c.want)
+		}
+	}
+}
+
+// A global IPv6 address inside one of this host's own /64s is on-link — the
+// dual-stack LAN case IsPrivate cannot see. Pin the prefix table rather than
+// the machine's interfaces so the test means the same thing everywhere.
+func TestClassifyConnAddrOnLinkGlobalV6(t *testing.T) {
+	onLinkMu.Lock()
+	prevNets, prevAt := onLinkNets, onLinkAt
+	_, n, _ := net.ParseCIDR("2001:db8:aaaa:bbbb::/64")
+	onLinkNets, onLinkAt = []*net.IPNet{n}, time.Now()
+	onLinkMu.Unlock()
+	t.Cleanup(func() {
+		onLinkMu.Lock()
+		onLinkNets, onLinkAt = prevNets, prevAt
+		onLinkMu.Unlock()
+	})
+	for addr, want := range map[string]string{
+		"/ip6/2001:db8:aaaa:bbbb:1:2:3:4/udp/1/quic-v1": "lan", // same /64 as one of our addresses
+		"/ip6/2001:db8:aaaa:cccc:1:2:3:4/udp/1/quic-v1": "wan", // a different /64
+	} {
+		m, err := ma.NewMultiaddr(addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := classifyConnAddr(m); got != want {
+			t.Errorf("%s → %q, want %q", addr, got, want)
 		}
 	}
 }
