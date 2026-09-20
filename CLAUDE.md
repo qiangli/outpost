@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**`bashy sprint` is the source of requests, plans and details for every agent** — every todo is tracked and accounted for as a STORY in a sprint: read the sprint card (spec-ref, acceptance, continuity) for what to do, and never pick up a todo without a story in a `bashy sprint` (file one first). Delivery commits carry `Sprint:` / `Story:` / `Story-ID:` trailers.
+
 ## Overview
 
 `outpost` is the home-host agent for the cloud portal at `ai.dhnt.io` (the **cloudbox** service). One binary runs on each machine the user wants to surface through the portal: it `register`s once with a one-time code, then `start` dials back through the matrix tunnel and serves local apps (HTTP reverse-proxy, PTY shell, VNC desktop, clipboard, /auth) so portal users can reach them at `https://ai.dhnt.io/matrix/h/<host>/app/<name>/`.

@@ -1,5 +1,7 @@
 # Repository Guidelines
 
+
+**`bashy sprint` is the source of requests, plans and details for every agent** — every todo is tracked and accounted for as a STORY in a sprint: read the sprint card (spec-ref, acceptance, continuity) for what to do, and never pick up a todo without a story in a `bashy sprint` (file one first). Delivery commits carry `Sprint:` / `Story:` / `Story-ID:` trailers.
 ## Project Structure & Module Organization
 
 This is a Go 1.25 module for the `outpost` host agent. CLI entry points live in `cmd/outpost/`; `cmd/outpost-vk/` is a standalone virtual-kubelet PoC runner. The Phase-3 CNI plugin source lives at `internal/agent/runtime/image/cni/` and is compiled inside the runtime container by the multi-stage Dockerfile that `outpost cluster build-runtime` drives. Core agent code is under `internal/agent/`, with focused subpackages including `admincore`, `adminui`, `mcpapi`, `shell`, `upgrade`, `vkpodman`, `runtime`, `userkube`, `peerhosts`, `ollama`, `sysinfo`, `osversion`, and `ycode`. Operator docs are in `docs/`; embedded copies for `outpost docs` live in `cmd/outpost/embedded_docs/` and must stay synced. The shell runner depends on a fork of `mvdan.cc/sh/v3` resolved via the sibling-path directive `replace mvdan.cc/sh/v3 => ../sh` in `go.mod`. Inside the dhnt umbrella `../sh` points at the `dhnt/sh` submodule; standalone clones run `./scripts/bootstrap-siblings.sh` to clone it into `../sh` at the SHA pinned in `.sibling-pins`.
