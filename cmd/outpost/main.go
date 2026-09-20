@@ -3920,31 +3920,17 @@ func superviseBashyService(ctx context.Context, fc *conf.FileConfig, svc conf.Ba
 
 var bashyServicePollInterval = 30 * time.Second
 
-// bashyAppsLANBind resolves the exact private interface address used for the
-// direct LAN listener. It is a seam for deterministic tests. Binding an exact
-// RFC1918 address avoids accidentally publishing the console on a public
-// interface, while bashy Apps itself keeps the loopback listener used by the
-// Cloudbox tunnel.
-var bashyAppsLANBind = discoverPrivateLANIPv4
-
-func discoverPrivateLANIPv4() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return ""
-	}
-	return firstPrivateLANIPv4(addrs)
-}
-
-func firstPrivateLANIPv4(addrs []net.Addr) string {
-	for _, addr := range addrs {
-		ip, _, err := net.ParseCIDR(addr.String())
-		if err != nil || ip == nil || ip.To4() == nil || ip.IsLoopback() || !ip.IsPrivate() {
-			continue
-		}
-		return ip.String()
-	}
-	return ""
-}
+// bashyAppsLANBind is the --bind outpost hands the bashy Apps console. It is
+// the SYMBOLIC "lan", never an address outpost guessed: bashy resolves it to
+// the host's primary (default-route) private IPv4 every time the pair-gated
+// listener decides where to open, so the phone listener follows Wi-Fi/DHCP/
+// VPN transitions on its own. The previous shape — outpost picking the first
+// private IPv4 in interface-enumeration order at boot and passing it as a
+// literal — pinned the console to a secondary wired link whenever that
+// interface came up before Wi-Fi, and bashy then preserved the address
+// faithfully because the host still owned it. bashy Apps keeps its loopback
+// listener regardless, which is what the Cloudbox tunnel uses.
+const bashyAppsLANBind = "lan"
 
 func startBashyService(ctx context.Context, fc *conf.FileConfig, svc conf.BashyService) error {
 	args := append([]string{}, svc.Args...)
@@ -3960,11 +3946,7 @@ func startBashyService(ctx context.Context, fc *conf.FileConfig, svc conf.BashyS
 	}
 	if svc.Name == "apps" && svc.AppPort > 0 {
 		args = append(args, "--port", strconv.Itoa(svc.AppPort))
-		if bind := bashyAppsLANBind(); bind != "" {
-			args = append(args, "--bind", bind)
-		} else {
-			slog.Warn("bashy Apps: no private LAN IPv4; keeping Cloudbox/loopback access only")
-		}
+		args = append(args, "--bind", bashyAppsLANBind)
 	}
 	return runBashyServiceCommand(ctx, svc, "start", args)
 }
