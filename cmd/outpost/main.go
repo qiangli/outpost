@@ -666,6 +666,7 @@ func startCmd() *cobra.Command {
 					meshHost = mh
 				}
 			}
+			var meshRdv *mesh.Rendezvous
 			meshStatus := func() *admincore.MeshStatusView {
 				if meshHost == nil {
 					return nil
@@ -673,12 +674,20 @@ func startCmd() *cobra.Command {
 				s := meshHost.Status()
 				peers := make([]admincore.MeshPeerConnView, 0, len(s.Peers))
 				for _, p := range s.Peers {
+					name := p.Name
+					if name == "" {
+						// The wire name (identify user-agent) first; the
+						// rendezvous' paired-host map as the fallback for a
+						// peer whose identify record is not in the peerstore.
+						name = meshRdv.HostForPeer(p.ID)
+					}
 					peers = append(peers, admincore.MeshPeerConnView{
 						ID:        p.ID,
 						Direct:    p.Direct,
 						LinkClass: p.LinkClass,
 						Remote:    p.Remote,
-						Name:      p.Name,
+						Name:      name,
+						Agent:     p.Agent,
 					})
 				}
 				return &admincore.MeshStatusView{
@@ -690,8 +699,7 @@ func startCmd() *cobra.Command {
 			}
 			// Mesh rendezvous client — uses cloudbox's peer-signal surface to
 			// announce this host + discover/dial paired peers. Started in the
-			// errgroup below.
-			var meshRdv *mesh.Rendezvous
+			// errgroup below. (Declared before meshStatus, which reads it.)
 			if meshHost != nil {
 				if cb := cloudboxHTTPBase(fc); cb != "" {
 					meshRdv = mesh.NewRendezvous(meshHost, fc.AgentName, cb, fc.AccessToken, slog.Default())

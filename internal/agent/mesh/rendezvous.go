@@ -172,6 +172,22 @@ func (r *Rendezvous) PeerIDForHost(host string) string {
 // CanonicalHost returns the registered name for either spelling of a paired
 // host (registered name or cloudbox alias). Unknown names come back unchanged,
 // so callers can use it unconditionally before a hostPeers lookup.
+// HostForPeer is the reverse of PeerIDForHost: the paired host name the
+// rendezvous learned for a peer id, or "" when it has not met that peer.
+func (r *Rendezvous) HostForPeer(peerID string) string {
+	if r == nil || peerID == "" {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for host, id := range r.hostPeers {
+		if id == peerID {
+			return host
+		}
+	}
+	return ""
+}
+
 func (r *Rendezvous) CanonicalHost(host string) string {
 	if r == nil {
 		return host

@@ -575,6 +575,9 @@ type PeerConn struct {
 	// from this view works on an unpaired host too (bashy's apps console,
 	// sprint 220). Empty for a peer that is not an outpost.
 	Name string `json:"name,omitempty"`
+	// Agent is the raw user-agent string the peer announced, for a reader
+	// that wants to know WHAT is on the other end when Name is empty.
+	Agent string `json:"agent,omitempty"`
 }
 
 // Status returns a live snapshot of the mesh host.
@@ -601,7 +604,8 @@ func (m *Host) peerConns() []PeerConn {
 		if len(conns) == 0 {
 			continue
 		}
-		pc := PeerConn{ID: pid.String(), Name: peerNameFromAgent(m.h.Peerstore(), pid)}
+		pc := PeerConn{ID: pid.String()}
+		pc.Agent, pc.Name = peerAgent(m.h.Peerstore(), pid)
 		for _, c := range conns {
 			raddr := c.RemoteMultiaddr()
 			pc.Remote = append(pc.Remote, raddr.String())
@@ -619,16 +623,23 @@ func (m *Host) peerConns() []PeerConn {
 // peerNameFromAgent reads the name an outpost peer put in its libp2p
 // user-agent (the "outpost-mesh/<name>" this host also announces).
 func peerNameFromAgent(ps peerstore.Peerstore, pid peer.ID) string {
+	_, name := peerAgent(ps, pid)
+	return name
+}
+
+// peerAgent returns the peer's announced user-agent and the outpost name in
+// it, if any.
+func peerAgent(ps peerstore.Peerstore, pid peer.ID) (agent, name string) {
 	v, err := ps.Get(pid, "AgentVersion")
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	ua, _ := v.(string)
 	const prefix = "outpost-mesh/"
 	if !strings.HasPrefix(ua, prefix) {
-		return ""
+		return ua, ""
 	}
-	return strings.TrimSpace(strings.TrimPrefix(ua, prefix))
+	return ua, strings.TrimSpace(strings.TrimPrefix(ua, prefix))
 }
 
 // isRelayed reports whether a connection rides the circuit relay (i.e. it is
