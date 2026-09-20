@@ -1888,13 +1888,19 @@ func startCmd() *cobra.Command {
 			// mesh peer dials it, and still behind peer-ticket / OS password.
 			if meshHost != nil {
 				fwd := meshHost.Forwarder()
-				startMeshSSHWSListener(gctx, g, fc, cfg, sshHostKey, peers, apps,
-					func(service, addr string) { fwd.Expose(service, addr) },
-					func(service string) bool {
-						snap := fwd.Snapshot()
-						_, ok := snap.Exposed[service]
-						return ok
-					})
+				exposeFn := func(service, addr string) { fwd.Expose(service, addr) }
+				exposedFn := func(service string) bool {
+					snap := fwd.Snapshot()
+					_, ok := snap.Exposed[service]
+					return ok
+				}
+				startMeshSSHWSListener(gctx, g, fc, cfg, sshHostKey, peers, apps, exposeFn, exposedFn)
+				// The /desktop VNC relay, published the same way so a peer's
+				// bashy app can open this host's screen over the mesh — the
+				// VNC server's own credential handshake gates each session.
+				if fc.DesktopOn() {
+					startMeshDesktopListener(gctx, g, cfg.VNCAddr, exposeFn, exposedFn)
+				}
 			}
 			startDiscovery(gctx, g, fc, cfg, sshHostKey)
 

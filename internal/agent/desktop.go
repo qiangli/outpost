@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/coder/websocket"
@@ -11,9 +12,10 @@ import (
 )
 
 // vncCreds is the first WebSocket frame the browser sends — a JSON object
-// with the user's macOS account credentials. The agent uses them to perform
-// the RFB auth handshake against the local VNC server; the browser-facing
-// half of the WebSocket then runs as auth-type None. Doing it this way
+// with the credentials for the local VNC server: an OS account (user +
+// password → Apple ARD) or a plain VNC password (empty user → VNC
+// Authentication). The agent performs the RFB auth handshake with them; the
+// browser-facing half of the WebSocket then runs as auth-type None. Doing it this way
 // means the browser never needs window.crypto.subtle, so Periscope works
 // over plain-HTTP / LAN-IP origins (where isSecureContext is false).
 type vncCreds struct {
@@ -53,8 +55,10 @@ func desktopHandler(vncAddr string) gin.HandlerFunc {
 			_ = ws.Close(websocket.StatusPolicyViolation, "missing credentials")
 			return
 		}
+		// An empty password is legal only for a server offering None;
+		// vncDialAuth refuses it against anything that asks for a secret.
 		var creds vncCreds
-		if err := json.Unmarshal(raw, &creds); err != nil || creds.Password == "" {
+		if err := json.Unmarshal(raw, &creds); err != nil {
 			_ = ws.Close(websocket.StatusPolicyViolation, "bad credentials frame")
 			return
 		}
@@ -108,4 +112,18 @@ func desktopHandler(vncAddr string) gin.HandlerFunc {
 			}
 		}
 	}
+}
+
+// MeshDesktopHandler is the desktop relay alone — GET /desktop and nothing
+// else — for the loopback listener outpost publishes to mesh peers as service
+// "desktop". It is deliberately NOT the main engine: /shell and /clipboard
+// carry no authentication of their own (they trust the cloudbox tunnel as the
+// boundary), so exposing the whole engine to a peer would hand it a shell.
+// The relay is safe to publish because the VNC server's own credential
+// handshake gates every session.
+func MeshDesktopHandler(vncAddr string) http.Handler {
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.GET("/desktop", desktopHandler(vncAddr))
+	return r
 }

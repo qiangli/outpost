@@ -3,30 +3,64 @@ package agent
 import (
 	"context"
 	"crypto/aes"
+	"crypto/des"
 	"crypto/md5"
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"math/big"
+	"math/bits"
 	"net"
 	"strings"
 
 	"github.com/coder/websocket"
 )
 
-// RFB security types we care about. macOS Screen Sharing always offers ARD
-// (Apple Authentication, type 30); other types are rejected here. The
-// browser path is gated separately on auth=None — see vncServeNoAuth.
+// RFB security types we speak. macOS Screen Sharing offers ARD (Apple
+// Authentication, type 30) and, when "VNC viewers may control screen with
+// password" is on, VNC Authentication (type 2). Every other server the relay
+// meets — TightVNC/UltraVNC on Windows, x11vnc/TigerVNC on Linux — offers
+// type 2 or None (1). The browser path is gated separately on auth=None —
+// see vncServeNoAuth.
 const (
 	rfbSecurityNone = 1
+	rfbSecurityVNC  = 2
 	rfbSecurityARD  = 30
 )
 
+// pickSecurityType chooses among the server's offered types from what the
+// browser sent: a non-empty user means an OS account → ARD when offered;
+// an empty user means a plain VNC password → type 2, else None. 0 = nothing
+// usable.
+func pickSecurityType(offered []byte, user string) byte {
+	has := func(t byte) bool {
+		for _, o := range offered {
+			if o == t {
+				return true
+			}
+		}
+		return false
+	}
+	if user != "" && has(rfbSecurityARD) {
+		return rfbSecurityARD
+	}
+	switch {
+	case has(rfbSecurityVNC):
+		return rfbSecurityVNC
+	case has(rfbSecurityNone):
+		return rfbSecurityNone
+	case has(rfbSecurityARD):
+		return rfbSecurityARD
+	}
+	return 0
+}
+
 // vncDialAuth opens a TCP connection to addr (a local VNC server, typically
-// macOS Screen Sharing on 127.0.0.1:5900), completes the RFB ProtocolVersion
-// exchange and Apple/ARD authentication using user+password, and returns
-// the live conn plus the buffered ServerInit blob. After this returns the
+// on 127.0.0.1:5900), completes the RFB ProtocolVersion exchange and the
+// security handshake — Apple/ARD with user+password, VNC Authentication with
+// the password alone, or None — and returns the live conn plus the buffered
+// ServerInit blob. After this returns the
 // caller speaks RFB to the browser via vncServeNoAuth and then splices.
 //
 // Auth termination happens here (not in the browser) so the browser side
@@ -67,22 +101,28 @@ func vncDialAuth(ctx context.Context, addr, user, password string) (net.Conn, []
 	if _, err := io.ReadFull(conn, types); err != nil {
 		return nil, nil, err
 	}
-	picked := byte(0)
-	for _, t := range types {
-		if t == rfbSecurityARD {
-			picked = t
-			break
-		}
-	}
+	picked := pickSecurityType(types, user)
 	if picked == 0 {
-		return nil, nil, fmt.Errorf("server does not offer Apple Authentication (got %v); enable Screen Sharing for macOS users", types)
+		return nil, nil, fmt.Errorf("server offers no security type this relay speaks (got %v; want ARD, VNC Authentication or None)", types)
 	}
 	if _, err := conn.Write([]byte{picked}); err != nil {
 		return nil, nil, err
 	}
 
-	if err := doARDAuth(conn, user, password); err != nil {
-		return nil, nil, err
+	if picked != rfbSecurityNone && password == "" {
+		return nil, nil, fmt.Errorf("server requires a password (security type %d) and none was given", picked)
+	}
+	switch picked {
+	case rfbSecurityARD:
+		if err := doARDAuth(conn, user, password); err != nil {
+			return nil, nil, err
+		}
+	case rfbSecurityVNC:
+		if err := doVNCAuth(conn, password); err != nil {
+			return nil, nil, err
+		}
+	case rfbSecurityNone:
+		// RFB 3.8 still sends a SecurityResult for None.
 	}
 
 	var sr [4]byte
@@ -188,6 +228,42 @@ func doARDAuth(conn net.Conn, user, password string) error {
 		return err
 	}
 	return nil
+}
+
+// doVNCAuth performs RFB VNC Authentication (security type 2): the server
+// sends a 16-byte challenge, the client returns it DES-encrypted in two ECB
+// blocks under a key made from the first eight bytes of the password — with
+// each key byte's bits REVERSED, the historical VNC quirk every server and
+// client reproduces. Passwords longer than eight bytes are truncated, as the
+// servers themselves do.
+func doVNCAuth(conn net.Conn, password string) error {
+	var challenge [16]byte
+	if _, err := io.ReadFull(conn, challenge[:]); err != nil {
+		return fmt.Errorf("read vnc challenge: %w", err)
+	}
+	resp := vncAuthResponse(challenge, password)
+	if _, err := conn.Write(resp[:]); err != nil {
+		return err
+	}
+	return nil
+}
+
+// vncAuthResponse is the pure half of doVNCAuth, kept separate so a test can
+// pin the response against a fixed challenge.
+func vncAuthResponse(challenge [16]byte, password string) [16]byte {
+	var key [8]byte
+	copy(key[:], password)
+	for i := range key {
+		key[i] = bits.Reverse8(key[i])
+	}
+	var out [16]byte
+	block, err := des.NewCipher(key[:])
+	if err != nil { // only an 8-byte key is possible here; keep the signature total
+		return out
+	}
+	block.Encrypt(out[:8], challenge[:8])
+	block.Encrypt(out[8:], challenge[8:])
+	return out
 }
 
 func leftPad(b []byte, n int) []byte {

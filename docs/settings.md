@@ -914,6 +914,15 @@ Defaults:
 - `vnc_addr`   → `127.0.0.1:5900`
 - `admin_addr` → `127.0.0.1:17777`
 
+`/desktop` speaks to whatever VNC server answers at `vnc_addr`: macOS Screen
+Sharing (Apple ARD — the browser sends the OS user + password), or any server
+offering VNC Authentication or None (TightVNC/UltraVNC on Windows, x11vnc/
+TigerVNC on Linux — the browser sends an empty user + the VNC password). When
+Desktop is on and the mesh is up, the relay is also published to authenticated
+mesh peers as mesh service `desktop` (a loopback listener serving `/desktop`
+alone), so a peer's bashy app can open this screen over the direct link with
+`outpost mesh listen <peer-id> desktop` — no cloudbox on that path.
+
 Binding `admin_addr` to `0.0.0.0:17777` makes the admin UI / MCP
 reachable from the LAN; outpost logs a warning at startup and the
 session-cookie gate is enforced on every `/api/*` call (no first-run
