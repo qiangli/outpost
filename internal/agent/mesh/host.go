@@ -15,6 +15,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/peerstore"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
@@ -568,6 +569,12 @@ type PeerConn struct {
 	Direct    bool     `json:"direct"`     // at least one non-relayed connection
 	LinkClass string   `json:"link_class"` // strongest of its direct conns: tp>lan>wan; "" if relayed/none
 	Remote    []string `json:"remote"`     // remote multiaddr string(s)
+	// Name is the peer's own outpost name, read from the libp2p user-agent
+	// it announced at identify ("outpost-mesh/<name>") — learned on the wire
+	// from the peer itself, never from cloudbox, so a neighbour list built
+	// from this view works on an unpaired host too (bashy's apps console,
+	// sprint 220). Empty for a peer that is not an outpost.
+	Name string `json:"name,omitempty"`
 }
 
 // Status returns a live snapshot of the mesh host.
@@ -594,7 +601,7 @@ func (m *Host) peerConns() []PeerConn {
 		if len(conns) == 0 {
 			continue
 		}
-		pc := PeerConn{ID: pid.String()}
+		pc := PeerConn{ID: pid.String(), Name: peerNameFromAgent(m.h.Peerstore(), pid)}
 		for _, c := range conns {
 			raddr := c.RemoteMultiaddr()
 			pc.Remote = append(pc.Remote, raddr.String())
@@ -607,6 +614,21 @@ func (m *Host) peerConns() []PeerConn {
 		out = append(out, pc)
 	}
 	return out
+}
+
+// peerNameFromAgent reads the name an outpost peer put in its libp2p
+// user-agent (the "outpost-mesh/<name>" this host also announces).
+func peerNameFromAgent(ps peerstore.Peerstore, pid peer.ID) string {
+	v, err := ps.Get(pid, "AgentVersion")
+	if err != nil {
+		return ""
+	}
+	ua, _ := v.(string)
+	const prefix = "outpost-mesh/"
+	if !strings.HasPrefix(ua, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(ua, prefix))
 }
 
 // isRelayed reports whether a connection rides the circuit relay (i.e. it is
