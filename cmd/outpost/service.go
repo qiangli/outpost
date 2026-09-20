@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -23,6 +24,14 @@ import (
 //   - USER (`--user`): the no-admin fallback — per-login-session registration
 //     (systemd --user / launchd LaunchAgent / Task Scheduler `-AtLogOn`). Starts
 //     when the user logs in, NOT at boot. For hosts where admin isn't available.
+//
+// macOS is the exception: USER is the default there and SYSTEM needs `--system`.
+// A LaunchDaemon runs in the system session, where the user's login Keychain is
+// locked, so every agent CLI that keeps its credential in the Keychain (Claude
+// Code's OAuth login) answers "Not logged in" the moment outpost — or the bashy
+// console it supervises — launches it. That is the home host's whole job, so a
+// boot-time daemon that cannot run the fleet is the wrong default on a Mac;
+// starting at login (or with auto-login, at boot) is what actually works.
 //
 // The per-platform install/uninstall/status live in service_{darwin,linux,
 // windows}.go; the pure render helpers below are shared + unit-tested.
@@ -52,7 +61,7 @@ func serviceCmd() *cobra.Command {
 }
 
 func serviceInstallCmd() *cobra.Command {
-	var dryRun, userMode, force bool
+	var dryRun, userMode, systemMode, force bool
 	var runAs string
 	cmd := &cobra.Command{
 		Use:   "install",
@@ -66,16 +75,35 @@ sudo (macOS/Linux) or from an elevated prompt (Windows).
 --user: no-admin fallback. Registers under your login session; starts when you
 log in, not at boot.
 
+macOS: the per-user LaunchAgent is the DEFAULT. A system LaunchDaemon runs where
+the login Keychain is locked, so agent CLIs that keep their credential there
+(Claude Code) cannot authenticate from it or from the bashy console it
+supervises. --system registers the boot-time daemon anyway.
+
 If an outpost daemon is already running, install takes over a prior registration
 made by this binary; if a daemon survives under a launcher it can't manage (a
 manual ` + "`outpost start`" + `, an ` + "`outpost run`" + ` job, etc.) it refuses rather than
 create two managers fighting over the pidfile — pass --force to override.`,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			return installService(installOpts{System: !userMode, DryRun: dryRun, Force: force, RunAs: runAs})
+			if userMode && systemMode {
+				return fmt.Errorf("--user and --system are mutually exclusive")
+			}
+			system := !userMode
+			if runtime.GOOS == "darwin" && !systemMode {
+				// See the package comment: a LaunchDaemon cannot reach the
+				// login Keychain, and Keychain-backed agent CLIs are what this
+				// host exists to run.
+				system = false
+				if !userMode {
+					fmt.Println("macOS: registering a per-user LaunchAgent (starts at login; the login Keychain is only unlocked there, and Claude Code keeps its credential in it). Pass --system for a boot-time daemon that cannot run Keychain-backed agents.")
+				}
+			}
+			return installService(installOpts{System: system, DryRun: dryRun, Force: force, RunAs: runAs})
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the service definition + the commands that would run, without applying")
-	cmd.Flags().BoolVar(&userMode, "user", false, "Per-user mode (no admin): start at login instead of boot. Default is a system service that starts at boot.")
+	cmd.Flags().BoolVar(&userMode, "user", false, "Per-user mode (no admin): start at login instead of boot. Default is a system service that starts at boot (except macOS, see --system).")
+	cmd.Flags().BoolVar(&systemMode, "system", false, "macOS: register a boot-time LaunchDaemon anyway — agent CLIs whose credential lives in the login Keychain (Claude Code) cannot authenticate from it")
 	cmd.Flags().BoolVar(&force, "force", false, "Install even if a daemon under a launcher this command can't manage is still running")
 	cmd.Flags().StringVar(&runAs, "run-as", "", "OS user the system service runs as (default: the invoking non-root user)")
 	return cmd

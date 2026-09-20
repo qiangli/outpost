@@ -113,16 +113,21 @@ func uninstallService(opts installOpts) error {
 // serviceDoctor reports the launchd boot-service state for `outpost doctor`.
 func serviceDoctor() []doctorCheck {
 	if exec.Command("launchctl", "print", "system/"+launchdLabel).Run() == nil {
-		return []doctorCheck{{"boot-service", "ok", "launchd system daemon " + launchdLabel + " loaded — starts at boot"}}
+		// Loaded, and that is the problem to report: a system daemon has no
+		// access to the user's login Keychain, so Claude Code (and any other
+		// agent CLI that keeps its credential there) answers "Not logged in"
+		// when outpost or the bashy console launches it. Seen live as every
+		// sprint-manager DM from the Apps console failing within a second.
+		return []doctorCheck{{"boot-service", "warn", "launchd SYSTEM daemon " + launchdLabel + " loaded — starts at boot, but the login Keychain is locked in that session, so Keychain-backed agent CLIs (Claude Code) cannot authenticate from it; migrate with `sudo launchctl bootout system/" + launchdLabel + " && sudo rm " + launchDaemonPath() + "` then `outpost service install`"}}
 	}
 	if _, err := os.Stat(launchDaemonPath()); err == nil {
 		return []doctorCheck{{"boot-service", "warn", "system plist present but not loaded: " + launchDaemonPath() + " — `sudo launchctl bootstrap system " + launchDaemonPath() + "`"}}
 	}
 	uid := strconv.Itoa(os.Getuid())
 	if exec.Command("launchctl", "print", "gui/"+uid+"/"+launchdLabel).Run() == nil {
-		return []doctorCheck{{"boot-service", "warn", "only the --user LaunchAgent is loaded — starts at LOGIN, not boot; `sudo outpost service install` for boot persistence"}}
+		return []doctorCheck{{"boot-service", "ok", "launchd LaunchAgent " + launchdLabel + " loaded — starts at login, in the session whose Keychain the agent CLIs need (enable auto-login for boot persistence)"}}
 	}
-	return []doctorCheck{{"boot-service", "warn", "no launchd registration — `sudo outpost service install`"}}
+	return []doctorCheck{{"boot-service", "warn", "no launchd registration — `outpost service install`"}}
 }
 
 // removeManagedRegistrations tears down BOTH launchd registrations this binary
