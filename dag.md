@@ -1,6 +1,7 @@
 ---
 name: outpost
 description: Build/test/lint targets for outpost as a bashy dag pipeline (dogfood of the new Makefile)
+type: dag
 ---
 
 # outpost — DAG task file
