@@ -57,8 +57,9 @@ const defaultSSHDAddr = ":2222"
 
 func sshdCmd() *cobra.Command {
 	var (
-		addr   string
-		noMDNS bool
+		addr           string
+		noMDNS         bool
+		authorizedKeys string
 	)
 	cmd := &cobra.Command{
 		Use:   "sshd",
@@ -68,9 +69,9 @@ func sshdCmd() *cobra.Command {
 Serves outpost's in-process SSH server (shell, exec, SFTP/scp, port
 forwarding) on a plain TCP port, in the foreground, until Ctrl-C.
 Works on a completely unconfigured machine: no daemon, no pairing,
-no internet. Authentication is the OS-password gate — the username
-must be the OS user running this command, verified via PAM (Linux),
-dscl (macOS), or LogonUserW (Windows).
+no internet. Authentication accepts either the OS password or an
+install-time public key from ~/.ssh/authorized_keys (or --authorized-keys).
+The username must always be the OS user running this command.
 
 From another machine on the LAN:
 
@@ -96,17 +97,22 @@ always-on LAN listener managed by the daemon, set ssh_listen_addr
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runSSHD(cmd.Context(), addr, !noMDNS)
+			return runSSHDWithAuthorizedKeys(cmd.Context(), addr, !noMDNS, authorizedKeys)
 		},
 	}
 	cmd.Flags().StringVar(&addr, "addr", defaultSSHDAddr,
 		"TCP listen address (host:port or :port). Binds all interfaces by default — this server exists to be reached over the LAN.")
 	cmd.Flags().BoolVar(&noMDNS, "no-mdns", false,
 		"Skip the mDNS (_outpost._tcp) advertisement; the server is then reachable by address only.")
+	cmd.Flags().StringVar(&authorizedKeys, "authorized-keys", "", "authorized_keys file for LAN public-key authentication (default: ~/.ssh/authorized_keys)")
 	return cmd
 }
 
 func runSSHD(ctx context.Context, addr string, mdnsOn bool) error {
+	return runSSHDWithAuthorizedKeys(ctx, addr, mdnsOn, "")
+}
+
+func runSSHDWithAuthorizedKeys(ctx context.Context, addr string, mdnsOn bool, authorizedKeys string) error {
 	addr = strings.TrimSpace(addr)
 	if addr == "" {
 		addr = defaultSSHDAddr
@@ -169,6 +175,7 @@ func runSSHD(ctx context.Context, addr string, mdnsOn bool) error {
 		SSHAllowAgentForward:  fc.SSHAllowAgentForwardOn(),
 		SFTPEnabled:           fc.SFTPOn(),
 		SSHHostKey:            hostKey,
+		SSHAuthorizedKeysFile: authorizedKeys,
 		PeerHosts:             peers,
 		SSHForwardSockets:     fc.SSHForwardSockets,
 		CloudboxBase:          cloudboxBase,

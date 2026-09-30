@@ -115,6 +115,50 @@ func dialSSHOverWS(t *testing.T, wsURL string, hostKey ssh.Signer, user, pass st
 	return ssh.NewClient(c, chans, reqs), nil
 }
 
+func TestLANPublicKeyAuthUsesSecureAuthorizedKeysAndSameUser(t *testing.T) {
+	currentUser, err := hostauth.CurrentUser()
+	if err != nil || currentUser == "" {
+		t.Skipf("no current OS user: %v", err)
+	}
+	_, hostPrivate, _ := ed25519.GenerateKey(rand.Reader)
+	hostKey, _ := ssh.NewSignerFromKey(hostPrivate)
+	_, clientPrivate, _ := ed25519.GenerateKey(rand.Reader)
+	clientKey, _ := ssh.NewSignerFromKey(clientPrivate)
+	keyFile := filepath.Join(t.TempDir(), "authorized_keys")
+	if err := os.WriteFile(keyFile, ssh.MarshalAuthorizedKey(clientKey.PublicKey()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = ServeLANSSH(ctx, ln, Deps{SSHHostKey: hostKey, SSHAuthorizedKeysFile: keyFile}) }()
+	dial := func(user string) error {
+		c, err := ssh.Dial("tcp", ln.Addr().String(), &ssh.ClientConfig{
+			User: user, Auth: []ssh.AuthMethod{ssh.PublicKeys(clientKey)},
+			HostKeyCallback: ssh.FixedHostKey(hostKey.PublicKey()), Timeout: 2 * time.Second,
+		})
+		if c != nil {
+			_ = c.Close()
+		}
+		return err
+	}
+	if err := dial(currentUser); err != nil {
+		t.Fatalf("known key rejected: %v", err)
+	}
+	if err := dial("definitely-a-different-user"); err == nil {
+		t.Fatal("different user accepted key")
+	}
+	if err := os.Chmod(keyFile, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := dial(currentUser); err == nil {
+		t.Fatal("world-writable authorized_keys accepted")
+	}
+}
+
 // TestSSHHandlerShellGreets confirms the interactive-shell wiring works
 // far enough that the server emits the qiangli/sh greeting banner over
 // the SSH channel. We don't try to drive the shell to a clean exit

@@ -79,6 +79,12 @@ type Deps struct {
 	// LoadOrCreateHostKey() at boot.
 	SSHHostKey ssh.Signer
 
+	// SSHAuthorizedKeysFile is the install-time authorized_keys file for
+	// the LAN SSH listener. Empty selects ~/.ssh/authorized_keys of the
+	// daemon user. It is deliberately a file, rather than an admin API:
+	// enrollment stays an operator-controlled install action.
+	SSHAuthorizedKeysFile string
+
 	// PeerHosts widens the SSH `direct-tcpip` destination allowlist to
 	// any hostname registered as a paired outpost in this cloudbox
 	// account, on top of the always-allowed loopback set. Nil → only
