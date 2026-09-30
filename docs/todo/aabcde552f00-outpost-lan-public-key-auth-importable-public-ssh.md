@@ -3,11 +3,13 @@ id: aabcde552f00
 kind: feature
 title: outpost LAN public-key auth + importable public SSH client package (prerequisite for bashy peer channel)
 seq: 12
-status: todo
+status: assigned
 priority: p0
 labels:
     - remote
 created: 2026-09-30T19:39:21.042906Z
+weave: 3
+assignee: codex-gpt5.6-terra
 sprint: 342
 sprint_id: bdacb510-6448-5851-acf3-7a19f6ccccb2
 sprint_title: 'bashy dag remote: run any target on another host as if it were local (self-bootstrap, sync, run, fetch back)'
