@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -269,4 +272,69 @@ func TestServerEmbeddedUI(t *testing.T) {
 	if !bytes.Contains(body, []byte("outpost admin")) {
 		t.Errorf("served body missing the admin title — embed broken? first 200 bytes: %s", body[:min(200, len(body))])
 	}
+}
+
+func TestIndexCarriesTheForwardedPrefixAsBase(t *testing.T) {
+	body := serveIndex(t, "/host")
+	if !strings.Contains(body, `<base href="/host/">`) {
+		t.Fatalf("served index missing forwarded base: %q", body[:min(200, len(body))])
+	}
+}
+
+func TestIndexDefaultsToRootWithoutAPrefix(t *testing.T) {
+	body := serveIndex(t, "")
+	if !strings.Contains(body, defaultBaseTag) {
+		t.Fatalf("served index missing root base: %q", body[:min(200, len(body))])
+	}
+	want, err := fs.ReadFile(uiFS, "ui/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body != string(want) {
+		t.Fatal("served index without a forwarded prefix differs from the embedded index")
+	}
+}
+
+func TestNoRootRelativeAPILiteralsRemain(t *testing.T) {
+	body := serveIndex(t, "/host")
+	for _, literal := range []string{
+		`'/api`, `"/api`, "`/api",
+		`'/healthz`, `"/healthz`, "`/healthz",
+	} {
+		if strings.Contains(body, literal) {
+			t.Fatalf("served index still contains root-relative literal %q", literal)
+		}
+	}
+}
+
+func TestForwardedPrefixIsSanitised(t *testing.T) {
+	body := serveIndex(t, `/host/" autofocus onfocus="alert(1)`)
+	if !strings.Contains(body, defaultBaseTag) {
+		t.Fatalf("hostile prefix should fall back to root base: %q", body[:min(200, len(body))])
+	}
+	if strings.Contains(body, `autofocus`) || strings.Contains(body, `alert(1)`) {
+		t.Fatal("hostile forwarded prefix leaked into the served index")
+	}
+}
+
+func serveIndex(t *testing.T, forwardedPrefix string) string {
+	t.Helper()
+	s, err := New(Deps{
+		ConfigPath: filepath.Join(t.TempDir(), "agent.json"),
+		ListenAddr: "127.0.0.1:0",
+		Auth:       hostauth.StubAuth{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	if forwardedPrefix != "" {
+		req.Header.Set("X-Forwarded-Prefix", forwardedPrefix)
+	}
+	rec := httptest.NewRecorder()
+	s.engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	return rec.Body.String()
 }
