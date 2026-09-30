@@ -38,6 +38,7 @@ import (
 // hook, agent-config booleans, plus the streamlocal allowlist.
 type sshHandlerDeps struct {
 	HostKey            ssh.Signer
+	AuthorizedKeysFile string
 	Auth               hostauth.Authenticator
 	AuthURL            string
 	AllowLocalForward  bool
@@ -301,6 +302,20 @@ func handleSSHConn(
 			}
 			return nil, nil
 		},
+		PublicKeyCallback: func(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			// Keys authenticate the daemon account only. They never turn a
+			// valid key into authority to run as some other local account.
+			if authURL != "" || currentUser == "" || !hostauth.SameUser(strings.TrimSpace(meta.User()), currentUser) {
+				slog.Warn("ssh: public-key rejected", "remote", remoteAddr, "fingerprint", ssh.FingerprintSHA256(key))
+				return nil, fmt.Errorf("public-key authentication rejected")
+			}
+			if !authorizedKeyAllowed(deps.AuthorizedKeysFile, key) {
+				slog.Warn("ssh: public-key rejected", "remote", remoteAddr, "fingerprint", ssh.FingerprintSHA256(key))
+				return nil, fmt.Errorf("public-key authentication rejected")
+			}
+			slog.Info("ssh: public-key accepted", "remote", remoteAddr, "fingerprint", ssh.FingerprintSHA256(key))
+			return nil, nil
+		},
 	}
 	serverConfig.AddHostKey(deps.HostKey)
 
@@ -428,6 +443,7 @@ func ServeLANSSH(ctx context.Context, ln net.Listener, deps Deps) error {
 	}
 	handlerDeps := sshHandlerDeps{
 		HostKey:            deps.SSHHostKey,
+		AuthorizedKeysFile: deps.SSHAuthorizedKeysFile,
 		Auth:               auth,
 		AuthURL:            deps.AuthURL,
 		AllowLocalForward:  deps.SSHAllowLocalForward,
