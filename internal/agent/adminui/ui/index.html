@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<base href="/">
 <title>outpost admin</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
@@ -403,7 +404,7 @@ async function api(method, path, body) {
     //   - skip when the login form is already mounted (the form's
     //     own /api/status prefill triggers this path on a stale
     //     session; re-rendering mid-mount would steal focus)
-    if (resp.status === 401 && !path.startsWith('/api/login') && !document.querySelector('#app form.login-form')) {
+    if (resp.status === 401 && !path.startsWith('api/login') && !document.querySelector('#app form.login-form')) {
       renderLogin();
     }
     const err = new Error(data.error || resp.statusText);
@@ -448,7 +449,7 @@ async function fetchWithRetry(method, path, body, opts) {
 async function render() {
   let status;
   try {
-    status = await fetchWithRetry('GET', '/api/status', undefined, {tries: 6, delayMs: 500});
+    status = await fetchWithRetry('GET', 'api/status', undefined, {tries: 6, delayMs: 500});
   } catch (e) {
     // api() already triggered renderLogin() on 401 (and guards against
     // re-rendering the form on top of itself). Just bail out — calling
@@ -460,7 +461,7 @@ async function render() {
   }
   let cfg;
   try {
-    cfg = await fetchWithRetry('GET', '/api/config', undefined, {tries: 6, delayMs: 500});
+    cfg = await fetchWithRetry('GET', 'api/config', undefined, {tries: 6, delayMs: 500});
   } catch (e) {
     if (e.status === 401) return;
     return renderFatal(e);
@@ -519,7 +520,7 @@ function renderRestartBanner() {
         ev.target.disabled = true;
         ev.target.textContent = 'Restarting…';
         try {
-          await api('POST', '/api/restart');
+          await api('POST', 'api/restart');
           restartNeeded = false;
           await pollUntilUp();
         } catch (e) {
@@ -553,7 +554,7 @@ function renderLogin() {
     ev.preventDefault();
     const fd = new FormData(form);
     try {
-      await api('POST', '/api/login', { user: fd.get('user'), password: fd.get('password') });
+      await api('POST', 'api/login', { user: fd.get('user'), password: fd.get('password') });
       msg('ok', 'Signed in');
       render();
     } catch (e) {
@@ -619,7 +620,7 @@ function buildPairSection(status, cfg) {
     const btn = pf.querySelector('button');
     btn.disabled = true;
     try {
-      await api('POST', '/api/config/register', {
+      await api('POST', 'api/config/register', {
         server: portalURL,
         code: fd.get('code'),
         name: fd.get('name'),
@@ -719,7 +720,7 @@ function buildMCPCredentialsSection() {
     });
     if (!ok) return;
     try {
-      const res = await api('POST', '/api/mcp/token/rotate');
+      const res = await api('POST', 'api/mcp/token/rotate');
       liveToken = res.token || '';
       endpointVal.textContent = res.endpoint || endpointVal.textContent;
       setRevealed(true);
@@ -755,7 +756,7 @@ function buildMCPCredentialsSection() {
   // hint rather than blanking out the snippet.
   (async () => {
     try {
-      const res = await api('GET', '/api/mcp/credentials');
+      const res = await api('GET', 'api/mcp/credentials');
       liveToken = res.token || '';
       if (res.endpoint) endpointVal.textContent = res.endpoint;
       updateSnippet();
@@ -810,7 +811,7 @@ function buildAdvancedSettingsSection(cfg) {
     };
     netBtn.disabled = true;
     try {
-      const res = await api('POST', '/api/config/networking', payload);
+      const res = await api('POST', 'api/config/networking', payload);
       msg('ok', 'Networking saved.');
       noteRestartPending(res);
     } catch (e) {
@@ -839,7 +840,7 @@ function buildAdvancedSettingsSection(cfg) {
     if (clKeyIn.value !== '') payload.cluster_llm_api_key = clKeyIn.value.trim();
     clBtn.disabled = true;
     try {
-      const res = await api('POST', '/api/config/networking', payload);
+      const res = await api('POST', 'api/config/networking', payload);
       msg('ok', 'Cluster LLM saved.');
       noteRestartPending(res);
     } catch (e) {
@@ -857,7 +858,7 @@ function buildAdvancedSettingsSection(cfg) {
   bvBtn.addEventListener('click', async () => {
     bvBtn.disabled = true;
     try {
-      const res = await api('POST', '/api/config/builtins', {bashy_version: bvIn.value.trim()});
+      const res = await api('POST', 'api/config/builtins', {bashy_version: bvIn.value.trim()});
       msg('ok', 'Bashy version saved.');
       noteRestartPending(res);
     } catch (e) {
@@ -875,7 +876,7 @@ function buildAdvancedSettingsSection(cfg) {
     const users = adminUsersIn.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
     adminUsersBtn.disabled = true;
     try {
-      const res = await api('POST', '/api/config/networking', {set_admin_users: true, admin_users: users});
+      const res = await api('POST', 'api/config/networking', {set_admin_users: true, admin_users: users});
       msg('ok', 'Admin users saved.');
       noteRestartPending(res);
     } catch (e) {
@@ -962,9 +963,9 @@ function renderSuggestions(host, suggestions, cfg) {
               require_login: true,
               mesh_service: s.name === 'loom' ? 'git' : '',
             });
-            await api('POST', '/api/config/builtins', {bashy_services: services});
+            await api('POST', 'api/config/builtins', {bashy_services: services});
           } else {
-            await api('POST', '/api/apps', {
+            await api('POST', 'api/apps', {
               name: s.name,
               scheme: s.scheme,
               host: s.host || '',
@@ -1016,7 +1017,7 @@ function populateProvSubBlock(parent, a) {
     });
     if (!ok) return;
     try {
-      await api('POST', '/api/apps/' + encodeURIComponent(a.name) + '/provisioning-token/rotate');
+      await api('POST', 'api/apps/' + encodeURIComponent(a.name) + '/provisioning-token/rotate');
       msg('ok', 'Token rotated.');
       render();
     } catch (e) { msg('err', e.message || 'Rotate failed'); }
@@ -1056,7 +1057,7 @@ function buildSSHSubBlock(parent, cfg, status) {
       const newVal = sw.input.checked;
       sw.input.disabled = true;
       try {
-        const res = await api('POST', '/api/config/builtins', {[item.key]: newVal});
+        const res = await api('POST', 'api/config/builtins', {[item.key]: newVal});
         msg('ok', `${item.label} ${newVal ? 'on' : 'off'}.`);
         noteRestartPending(res);
         sw.input.disabled = !sshOn;
@@ -1091,7 +1092,7 @@ function buildSSHSubBlock(parent, cfg, status) {
     const sockets = sockInput.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
     sockBtn.disabled = true;
     try {
-      const res = await api('POST', '/api/config/builtins', {ssh_forward_sockets: sockets});
+      const res = await api('POST', 'api/config/builtins', {ssh_forward_sockets: sockets});
       msg('ok', 'Forward-sockets saved.');
       noteRestartPending(res);
     } catch (e) {
@@ -1119,7 +1120,7 @@ function buildFilesSubBlock(parent, cfg, status) {
     const newVal = wsw.input.checked;
     wsw.input.disabled = true;
     try {
-      const res = await api('POST', '/api/config/builtins', {files_allow_write: newVal});
+      const res = await api('POST', 'api/config/builtins', {files_allow_write: newVal});
       msg('ok', `File editing ${newVal ? 'enabled' : 'disabled'}.`);
       noteRestartPending(res);
       wsw.input.disabled = !filesOn;
@@ -1153,7 +1154,7 @@ function buildFilesSubBlock(parent, cfg, status) {
   scopeBtn.addEventListener('click', async () => {
     scopeBtn.disabled = true;
     try {
-      const res = await api('POST', '/api/config/builtins', {files_scope: scopeInput.value.trim()});
+      const res = await api('POST', 'api/config/builtins', {files_scope: scopeInput.value.trim()});
       msg('ok', 'Scope saved.');
       noteRestartPending(res);
     } catch (e) {
@@ -1184,7 +1185,7 @@ function buildBashyAppsSubBlock(parent, cfg, status) {
     }
     save.disabled = true;
     try {
-      const res = await api('POST', '/api/config/builtins', {bashy_apps_port: port});
+      const res = await api('POST', 'api/config/builtins', {bashy_apps_port: port});
       msg('ok', 'Bashy Apps port saved.');
       noteRestartPending(res);
     } catch (e) {
@@ -1232,7 +1233,7 @@ function buildClusterSubBlock(parent, cfg, status) {
       if (!ok) return;
       leave.disabled = true;
       try {
-        const res = await api('DELETE', '/api/cluster/kubeconfig');
+        const res = await api('DELETE', 'api/cluster/kubeconfig');
         msg('ok', 'Cluster credentials cleared.');
         noteRestartPending(res);
       } catch (e) {
@@ -1277,7 +1278,7 @@ function buildClusterSubBlock(parent, cfg, status) {
     }
     saveRuntimes.disabled = true;
     try {
-      const res = await api('POST', '/api/config/builtins', {
+      const res = await api('POST', 'api/config/builtins', {
         cluster_agent: agentInput.checked,
         cluster_virtual: virtual,
       });
@@ -1313,7 +1314,7 @@ function buildClusterSubBlock(parent, cfg, status) {
     const newVal = csw.input.checked;
     csw.input.disabled = true;
     try {
-      const res = await api('POST', '/api/config/builtins', {cluster: newVal});
+      const res = await api('POST', 'api/config/builtins', {cluster: newVal});
       msg('ok', `Cluster ${newVal ? 'on' : 'off'}.`);
       noteRestartPending(res);
       csw.input.disabled = !clusterGateOK;
@@ -1356,7 +1357,7 @@ function buildClusterSubBlock(parent, cfg, status) {
       body.innerHTML = '';
       let st;
       try {
-        st = await api('GET', '/api/cluster/user-kubeconfig');
+        st = await api('GET', 'api/cluster/user-kubeconfig');
       } catch (e) {
         body.append(el('p', {class: 'error'}, e.message || 'Failed to load kubeconfig status.'));
         return;
@@ -1394,7 +1395,7 @@ function buildClusterSubBlock(parent, cfg, status) {
     refreshBtn.addEventListener('click', async () => {
       refreshBtn.disabled = true;
       try {
-        await api('POST', '/api/cluster/user-kubeconfig/refresh', {});
+        await api('POST', 'api/cluster/user-kubeconfig/refresh', {});
         msg('ok', 'Kubeconfig refreshed.');
       } catch (e) {
         msg('err', e.message || 'Refresh failed');
@@ -1438,7 +1439,7 @@ function buildPeerJoinBlock(parent, paired) {
     body.innerHTML = '';
     let st;
     try {
-      st = await api('GET', '/api/cluster/join');
+      st = await api('GET', 'api/cluster/join');
     } catch (e) {
       body.append(el('p', {class: 'error'}, e.message || 'Failed to load join status.'));
       return;
@@ -1477,7 +1478,7 @@ function buildPeerJoinBlock(parent, paired) {
       if (stcpIn.value) payload.stcp_secret = stcpIn.value;
       if (nodeIn.value) payload.node_token = nodeIn.value;
       try {
-        const res = await api('POST', '/api/cluster/join', payload);
+        const res = await api('POST', 'api/cluster/join', payload);
         msg('ok', 'Joining the peer plane.');
         noteRestartPending({restarting: res.restart_pending});
         render();
@@ -1501,7 +1502,7 @@ function buildPeerJoinBlock(parent, paired) {
         if (!ok) return;
         clearBtn.disabled = true;
         try {
-          const res = await api('DELETE', '/api/cluster/join');
+          const res = await api('DELETE', 'api/cluster/join');
           msg('ok', 'Reverted to the cloudbox-hosted plane.');
           noteRestartPending({restarting: res.restart_pending});
           render();
@@ -1559,7 +1560,7 @@ function buildControlPlaneBlock(parent, cv, paired) {
     body.innerHTML = '';
     let st;
     try {
-      st = await api('GET', '/api/cluster/control-plane');
+      st = await api('GET', 'api/cluster/control-plane');
     } catch (e) {
       body.append(el('p', {class: 'error'}, e.message || 'Failed to load control-plane status.'));
       return;
@@ -1571,7 +1572,7 @@ function buildControlPlaneBlock(parent, cv, paired) {
       const newVal = sw.input.checked;
       sw.input.disabled = true;
       try {
-        const res = await api('POST', '/api/cluster/control-plane', {enabled: newVal});
+        const res = await api('POST', 'api/cluster/control-plane', {enabled: newVal});
         msg('ok', `Control plane ${newVal ? 'on' : 'off'}.`);
         noteRestartPending({restarting: res.restart_pending});
         render();
@@ -1597,7 +1598,7 @@ function buildControlPlaneBlock(parent, cv, paired) {
     bindBtn.addEventListener('click', async () => {
       bindBtn.disabled = true;
       try {
-        const res = await api('POST', '/api/cluster/control-plane', {
+        const res = await api('POST', 'api/cluster/control-plane', {
           bind_addr: addrIn.value.trim(),
           bind_port: parseInt(portIn.value, 10) || 0,
         });
@@ -1635,7 +1636,7 @@ function buildControlPlaneBlock(parent, cv, paired) {
       revealBtn.addEventListener('click', async () => {
         revealBtn.disabled = true;
         try {
-          const t = await api('GET', '/api/cluster/control-plane/token');
+          const t = await api('GET', 'api/cluster/control-plane/token');
           tokOut.textContent = t.tunnel_token || '(empty)';
           tokOut.style.display = '';
         } catch (e) {
@@ -1655,7 +1656,7 @@ function buildControlPlaneBlock(parent, cv, paired) {
         if (!ok) return;
         rotateBtn.disabled = true;
         try {
-          const t = await api('POST', '/api/cluster/control-plane/token/rotate', {});
+          const t = await api('POST', 'api/cluster/control-plane/token/rotate', {});
           tokOut.textContent = t.tunnel_token || '(empty)';
           tokOut.style.display = '';
           msg('ok', 'Token rotated. ' + (t.worker_rejoin_hint || 'Reconfigure every worker with the new token.'));
@@ -1691,7 +1692,7 @@ function buildYcodeSubBlock(parent, cfg, status) {
     const newVal = sw.input.checked;
     sw.input.disabled = true;
     try {
-      const res = await api('POST', '/api/config/builtins', {ycode_share: newVal});
+      const res = await api('POST', 'api/config/builtins', {ycode_share: newVal});
       msg('ok', `ycode share ${newVal ? 'on' : 'off'}.`);
       noteRestartPending(res);
       sw.input.disabled = !y.enabled;
@@ -1720,7 +1721,7 @@ function buildYcodeSubBlock(parent, cfg, status) {
     const newVal = lsw.input.checked;
     lsw.input.disabled = true;
     try {
-      const res = await api('POST', '/api/config/builtins', {ycode_share_require_login: newVal});
+      const res = await api('POST', 'api/config/builtins', {ycode_share_require_login: newVal});
       msg('ok', `ycode require-login ${newVal ? 'on' : 'off'}.`);
       noteRestartPending(res);
       lsw.input.disabled = !shareOn;
@@ -1753,7 +1754,7 @@ function buildYcodeSubBlock(parent, cfg, status) {
         const newVal = ssw.input.checked;
         ssw.input.disabled = true;
         try {
-          const res = await api('POST', '/api/config/builtins', {ycode_share_surfaces: {[surf.name]: newVal}});
+          const res = await api('POST', 'api/config/builtins', {ycode_share_surfaces: {[surf.name]: newVal}});
           msg('ok', `${surf.label} ${newVal ? 'on' : 'off'}.`);
           noteRestartPending(res);
           ssw.input.disabled = !shareOn;
@@ -1825,7 +1826,7 @@ function buildOllamaSubBlock(parent, cfg, status) {
     const newVal = sw.input.checked;
     sw.input.disabled = true;
     try {
-      const res = await api('POST', '/api/config/builtins', {ollama_pool: newVal});
+      const res = await api('POST', 'api/config/builtins', {ollama_pool: newVal});
       msg('ok', `Ollama pool ${newVal ? 'on' : 'off'}.`);
       noteRestartPending(res);
       sw.input.disabled = !ollamaOn;
@@ -1898,7 +1899,7 @@ function buildOtelSubBlock(parent, cfg, status) {
     const newVal = sw.input.checked;
     sw.input.disabled = true;
     try {
-      const res = await api('POST', '/api/config/builtins', {otel_pool: newVal});
+      const res = await api('POST', 'api/config/builtins', {otel_pool: newVal});
       msg('ok', `OTel pool ${newVal ? 'on' : 'off'}.`);
       noteRestartPending(res);
       sw.input.disabled = !otelOn;
@@ -2033,7 +2034,7 @@ async function buildUpdateSection(parent) {
   parent.innerHTML = '';
   let data;
   try {
-    data = await api('GET', '/api/upgrade');
+    data = await api('GET', 'api/upgrade');
   } catch (e) {
     parent.append(el('p', {class: 'error'}, e.message || 'Failed to load upgrade overview.'));
     return;
@@ -2112,7 +2113,7 @@ async function buildUpdateSection(parent) {
     const newVal = updateSelect.value;
     updateSelect.disabled = true;
     try {
-      await api('POST', '/api/config/builtins', {update_mode: newVal});
+      await api('POST', 'api/config/builtins', {update_mode: newVal});
       msg('ok', `Update mode → ${newVal}`);
     } catch (e) {
       updateSelect.value = currentMode;
@@ -2149,7 +2150,7 @@ async function buildUpdateSection(parent) {
       if (!confirm(`Apply ${env.release_id}? The daemon will swap + restart.`)) return;
       applyBtn.disabled = true;
       try {
-        const r = await api('POST', '/api/upgrade/apply', {});
+        const r = await api('POST', 'api/upgrade/apply', {});
         msg('ok', `Apply: ${r.status || 'queued'} — restarting…`);
         pollUntilUp();
         setTimeout(() => buildUpdateSection(parent), 4000);
@@ -2177,7 +2178,7 @@ async function buildUpdateSection(parent) {
       if (!confirm('Roll back to the previous outpost binary? The daemon will restart.')) return;
       rbBtn.disabled = true;
       try {
-        const r = await api('POST', '/api/upgrade/rollback', {});
+        const r = await api('POST', 'api/upgrade/rollback', {});
         if (r.status === '' || !r.status) {
           msg('ok', `Rolled back: ${r.from_commit||''} → ${r.to_commit||''}`);
         } else {
@@ -2230,7 +2231,7 @@ async function buildBackupSection(parent) {
   parent.innerHTML = '';
   let cfg = {enabled: false, schedule: '', folders: []};
   try {
-    cfg = await api('GET', '/api/backup/config') || cfg;
+    cfg = await api('GET', 'api/backup/config') || cfg;
   } catch (e) {
     parent.append(el('p', {class: 'error'}, e.message || 'Failed to load backup config.'));
     return;
@@ -2300,7 +2301,7 @@ async function buildBackupSection(parent) {
     statusEl.textContent = 'Saving…';
     const folders = folInput.value.split('\n').map(s => s.trim()).filter(s => s.length > 0);
     try {
-      const saved = await api('POST', '/api/backup/config', {
+      const saved = await api('POST', 'api/backup/config', {
         enabled: enabledInput.checked,
         schedule: schedInput.value.trim(),
         folders: folders,
@@ -2322,7 +2323,7 @@ async function buildBackupSection(parent) {
     runBtn.disabled = true;
     statusEl.textContent = 'Running…';
     try {
-      const out = await api('POST', '/api/backup/run', {});
+      const out = await api('POST', 'api/backup/run', {});
       const n = (out.candidates || []).length;
       const skipped = (out.candidates || []).filter(c => c.skipped).length;
       const errs = (out.candidates || []).filter(c => c.error).length;
@@ -2351,7 +2352,7 @@ async function buildBackupHistoryInto(parent) {
   parent.innerHTML = '';
   let data;
   try {
-    data = await api('GET', '/api/backup/history?limit=50');
+    data = await api('GET', 'api/backup/history?limit=50');
   } catch (e) {
     parent.append(el('p', {class: 'error'}, e.message || 'Failed to load history.'));
     return;
@@ -2486,7 +2487,7 @@ function renderBuiltinRows(parent, items, cfg, status) {
       const newVal = sw.input.checked;
       sw.input.disabled = true;
       try {
-        const res = await api('POST', '/api/config/builtins', {[item.key]: newVal});
+        const res = await api('POST', 'api/config/builtins', {[item.key]: newVal});
         msg('ok', `${item.label} ${newVal ? 'on' : 'off'}.`);
         noteRestartPending(res);
         sw.input.disabled = disabled;
@@ -2597,7 +2598,7 @@ function buildCloudSection(cfg) {
   sw.input.addEventListener('change', async () => {
     const newVal = sw.input.checked;
     try {
-      await api('POST', '/api/config/builtins', {cloud_do_enabled: newVal});
+      await api('POST', 'api/config/builtins', {cloud_do_enabled: newVal});
       msg('ok', `Digital Ocean ${newVal ? 'enabled' : 'disabled'}.`);
     } catch (e) {
       sw.input.checked = !newVal;
@@ -2616,7 +2617,7 @@ function buildCloudSection(cfg) {
   tokBtn.addEventListener('click', async () => {
     if (tokIn.value === '') { msg('err', 'Enter a token first.'); return; }
     try {
-      await api('POST', '/api/config/builtins', {cloud_do_token: tokIn.value.trim()});
+      await api('POST', 'api/config/builtins', {cloud_do_token: tokIn.value.trim()});
       tokIn.value = '';
       msg('ok', 'Digital Ocean token saved.');
     } catch (e) {
@@ -2849,7 +2850,7 @@ function renderMain(status, cfg) {
       try {
         // Resend the full AppConfig with the new enabled flag — upsert
         // semantics, no restart needed (AppRegistry is hot-swappable).
-        await api('POST', '/api/apps', {...a, enabled: newVal});
+        await api('POST', 'api/apps', {...a, enabled: newVal});
         msg('ok', `${a.name} ${newVal ? 'on' : 'off'}.`);
         sw.input.disabled = false;
       } catch (e) {
@@ -2877,7 +2878,7 @@ function renderMain(status, cfg) {
           confirmText: 'Remove',
         });
         if (!ok) return;
-        try { await api('DELETE', '/api/apps/' + encodeURIComponent(a.name)); render(); }
+        try { await api('DELETE', 'api/apps/' + encodeURIComponent(a.name)); render(); }
         catch (e) { msg('err', e.message); }
       }}, 'Remove'),
     );
@@ -2996,7 +2997,7 @@ function renderMain(status, cfg) {
     }
     body.port = p;
     try {
-      await api('POST', '/api/apps', body);
+      await api('POST', 'api/apps', body);
       msg('ok', 'App added.');
       render();
     } catch (e) {
@@ -3029,7 +3030,7 @@ function renderMain(status, cfg) {
     if (suggLoaded) return;
     suggLoaded = true;
     try {
-      const res = await api('GET', '/api/apps/suggestions');
+      const res = await api('GET', 'api/apps/suggestions');
       renderSuggestions(suggList, res.suggestions || [], cfg);
     } catch (e) {
       suggList.append(el('p', {class: 'hint'}, 'Suggestions unavailable: ' + (e.message || 'fetch failed')));
@@ -3092,7 +3093,7 @@ function renderMain(status, cfg) {
       ob.connected
         ? el('button', {class: 'secondary', onclick: async () => {
             try {
-              await api('POST', `/api/outbound/${encodeURIComponent(ob.path)}/disconnect`);
+              await api('POST', `api/outbound/${encodeURIComponent(ob.path)}/disconnect`);
               msg('ok', `${ob.path} disconnected.`);
               render();
             } catch (e) { msg('err', e.message); }
@@ -3106,7 +3107,7 @@ function renderMain(status, cfg) {
               description: `Enter the OS password for ${ob.user}@${ob.host}.`,
               submitText: 'Connect',
               onSubmit: async (pw) => {
-                await api('POST', `/api/outbound/${encodeURIComponent(ob.path)}/connect`,
+                await api('POST', `api/outbound/${encodeURIComponent(ob.path)}/connect`,
                   {password: pw});
               },
             });
@@ -3125,7 +3126,7 @@ function renderMain(status, cfg) {
         });
         if (!ok) return;
         try {
-          await api('DELETE', `/api/outbound/${encodeURIComponent(ob.path)}`);
+          await api('DELETE', `api/outbound/${encodeURIComponent(ob.path)}`);
           render();
         } catch (e) { msg('err', e.message); }
       }}, 'Remove'),
@@ -3218,7 +3219,7 @@ function renderMain(status, cfg) {
   // dropdown in place.
   (async () => {
     try {
-      const r = await api('GET', '/api/outbound/suggestions');
+      const r = await api('GET', 'api/outbound/suggestions');
       const list = (r && r.suggestions) || [];
       remoteSel.innerHTML = '';
       if (list.length === 0) {
@@ -3302,7 +3303,7 @@ function renderMain(status, cfg) {
     }
     if (ttl > 0) body.ttl_seconds = ttl;
     try {
-      await api('POST', '/api/outbound', body);
+      await api('POST', 'api/outbound', body);
       msg('ok', 'Outbound added.');
       render();
     } catch (e) {
@@ -3343,11 +3344,11 @@ function renderMain(status, cfg) {
   ha.innerHTML = '';
   ha.append(
     el('button', {onclick: async () => {
-      try { await api('POST', '/api/restart'); restartNeeded = false; msg('ok', 'Restarting…'); pollUntilUp(); }
+      try { await api('POST', 'api/restart'); restartNeeded = false; msg('ok', 'Restarting…'); pollUntilUp(); }
       catch (e) { msg('err', e.message); }
     }}, 'Restart outpost'),
     el('button', {onclick: async () => {
-      try { await api('POST', '/api/logout'); render(); }
+      try { await api('POST', 'api/logout'); render(); }
       catch (e) { msg('err', e.message); }
     }}, 'Sign out'),
   );
@@ -3365,7 +3366,7 @@ async function pollUntilUp() {
   for (let i = 0; i < 8 && !sawDown; i++) {
     await new Promise(r => setTimeout(r, 250));
     try {
-      const r = await fetch('/healthz', { cache: 'no-store' });
+      const r = await fetch('healthz', { cache: 'no-store' });
       if (!r.ok) sawDown = true;
     } catch (_) { sawDown = true; }
   }
@@ -3373,7 +3374,7 @@ async function pollUntilUp() {
   for (let i = 0; i < 60; i++) {
     await new Promise(r => setTimeout(r, 500));
     try {
-      const r = await fetch('/healthz', { cache: 'no-store' });
+      const r = await fetch('healthz', { cache: 'no-store' });
       if (r.ok) {
         // Give the API routes a beat to bind too, then reload.
         setTimeout(() => render(), 250);
