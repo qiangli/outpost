@@ -30,6 +30,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -615,6 +617,123 @@ func (c *Client) LocalForward(ctx context.Context, listener net.Listener, destHo
 			close(watchDone)
 		}(conn)
 	}
+}
+
+// RemoteForward asks the SSH server to listen on remoteAddr and bridges every
+// forwarded-tcpip channel it receives to localTarget. Both addresses use
+// host:port form. remoteAddr must name a loopback address; port 0 asks the
+// server to choose a free port.
+//
+// The returned address contains the actual remote port, including the
+// server-selected port when remoteAddr used port 0. The forward remains live
+// until ctx is canceled or the SSH connection closes. Canceling ctx closes the
+// remote listener with cancel-tcpip-forward and tears down active bridges.
+func (c *Client) RemoteForward(ctx context.Context, remoteAddr, localTarget string) (net.Addr, error) {
+	if c == nil || c.ssh == nil {
+		return nil, errors.New("sshclient: nil Client")
+	}
+	if ctx == nil {
+		return nil, errors.New("sshclient: nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	bindHost, bindPort, err := splitForwardAddr(remoteAddr, true)
+	if err != nil {
+		return nil, fmt.Errorf("sshclient: invalid remote address: %w", err)
+	}
+	if !isLoopbackHost(bindHost) {
+		return nil, fmt.Errorf("sshclient: remote forward bind must be loopback: %q", bindHost)
+	}
+	if _, _, err := splitForwardAddr(localTarget, false); err != nil {
+		return nil, fmt.Errorf("sshclient: invalid local target: %w", err)
+	}
+
+	listener, err := c.ssh.Listen("tcp", net.JoinHostPort(bindHost, strconv.Itoa(bindPort)))
+	if err != nil {
+		return nil, fmt.Errorf("remote forward listen on %s: %w", remoteAddr, err)
+	}
+	addr := listener.Addr()
+	go runRemoteForward(ctx, listener, localTarget)
+	return addr, nil
+}
+
+func splitForwardAddr(addr string, allowZeroPort bool) (string, int, error) {
+	host, portText, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return "", 0, err
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 0 || port > 65535 || (!allowZeroPort && port == 0) {
+		return "", 0, fmt.Errorf("invalid port %q", portText)
+	}
+	return strings.TrimSpace(host), port, nil
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func runRemoteForward(ctx context.Context, listener net.Listener, localTarget string) {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var closeOnce sync.Once
+	closeListener := func() { closeOnce.Do(func() { _ = listener.Close() }) }
+	done := make(chan struct{})
+	defer close(done)
+	defer closeListener()
+	go func() {
+		select {
+		case <-ctx.Done():
+			closeListener()
+		case <-done:
+		}
+	}()
+
+	var bridges sync.WaitGroup
+	for {
+		forwarded, err := listener.Accept()
+		if err != nil {
+			cancel()
+			bridges.Wait()
+			return
+		}
+		bridges.Add(1)
+		go func() {
+			defer bridges.Done()
+			bridgeRemoteForward(runCtx, forwarded, localTarget)
+		}()
+	}
+}
+
+func bridgeRemoteForward(ctx context.Context, forwarded net.Conn, localTarget string) {
+	defer forwarded.Close()
+	local, err := (&net.Dialer{}).DialContext(ctx, "tcp", localTarget)
+	if err != nil {
+		return
+	}
+	defer local.Close()
+
+	watchDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = forwarded.Close()
+			_ = local.Close()
+		case <-watchDone:
+		}
+	}()
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(local, forwarded); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(forwarded, local); done <- struct{}{} }()
+	<-done
+	close(watchDone)
 }
 
 // SFTP opens an SFTP subsystem channel and wraps it with pkg/sftp's

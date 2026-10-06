@@ -14,4 +14,4 @@ type ShellOptions = internal.ShellOptions
 
 var Dial = internal.Dial
 
-// Exec, SFTP, DirectTCPIP, and LocalForward are methods on Client.
+// Exec, SFTP, DirectTCPIP, LocalForward, and RemoteForward are methods on Client.
