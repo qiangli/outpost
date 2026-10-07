@@ -19,6 +19,10 @@ func newTestServer(t *testing.T) *Server {
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 	t.Setenv("XDG_CACHE_HOME", tmp)
 	t.Setenv("HOME", tmp)
+	// os.UserConfigDir uses APPDATA on Windows; isolate the real target store.
+	t.Setenv("APPDATA", tmp)
+	t.Setenv("LOCALAPPDATA", tmp)
+	t.Setenv("USERPROFILE", tmp)
 	s, err := New(Deps{ConfigPath: filepath.Join(tmp, "agent.json")})
 	if err != nil {
 		t.Fatalf("admincore.New: %v", err)

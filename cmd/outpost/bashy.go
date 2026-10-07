@@ -404,23 +404,11 @@ func bashyArchiveMember() string {
 }
 
 func matchBashyReleaseAsset(name, goos, goarch string) bool {
-	n := strings.ToLower(name)
-	if !strings.HasPrefix(n, "bashy-") {
-		return false
+	extension := ".tar.gz"
+	if strings.EqualFold(goos, "windows") {
+		extension = ".zip"
 	}
-	// Non-product variants share the bashy- prefix: the scratch profile
-	// ships as a raw binary (bashy-scratch-<os>-<arch>) and engine blobs
-	// publish raw/OCI artifacts. None of those is the released shell
-	// archive — never resolve one as bashy.
-	for _, variant := range []string{"scratch", "raw", "oci"} {
-		if strings.Contains(n, variant) {
-			return false
-		}
-	}
-	if !strings.Contains(n, strings.ToLower(goos)) {
-		return false
-	}
-	return strings.Contains(n, strings.ToLower(goarch))
+	return strings.EqualFold(name, "bashy-"+goos+"-"+goarch+extension)
 }
 
 func bashyInstallTarget(dir string) (string, error) {
