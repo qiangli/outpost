@@ -13,11 +13,18 @@ import (
 // Reads the outpost://status and outpost://config resources; renders
 // either a human table or JSON.
 func statusCmd() *cobra.Command {
-	var jsonOut bool
+	var jsonOut, localPresence bool
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show outpost pairing, built-ins, and outbound state",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if localPresence {
+				running, addr, err := localDaemonPresence()
+				if err != nil {
+					return err
+				}
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"running": running, "addr": addr})
+			}
 			session, err := dialMCP(cmd.Context())
 			if err != nil {
 				return err
@@ -116,5 +123,6 @@ func statusCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit JSON instead of a table")
+	cmd.Flags().BoolVar(&localPresence, "local-presence", false, "Report local daemon presence without authentication (installer probe)")
 	return cmd
 }

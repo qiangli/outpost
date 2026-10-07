@@ -49,14 +49,15 @@ var (
 // PendingConfirm is the marker an in-flight upgrade leaves on disk so the
 // new binary can be confirmed healthy — or reverted if it never is.
 type PendingConfirm struct {
-	ReleaseID       string    `json:"release_id"`
-	FromSHA         string    `json:"from_sha"`    // short commit we upgraded FROM (== <binary>.previous)
-	ToSHA           string    `json:"to_sha"`      // short commit we upgraded TO (the new binary)
-	PrevPath        string    `json:"prev_path"`   // <binary>.previous, the revert target
-	BinaryPath      string    `json:"binary_path"` // live binary
-	SwappedAt       time.Time `json:"swapped_at"`
-	ConfirmDeadline time.Time `json:"confirm_deadline"`
-	BootCount       int       `json:"boot_count"` // supervised respawns observed still-unconfirmed
+	Companions      []RollbackMember `json:"companions,omitempty"`
+	ReleaseID       string           `json:"release_id"`
+	FromSHA         string           `json:"from_sha"`    // short commit we upgraded FROM (== <binary>.previous)
+	ToSHA           string           `json:"to_sha"`      // short commit we upgraded TO (the new binary)
+	PrevPath        string           `json:"prev_path"`   // <binary>.previous, the revert target
+	BinaryPath      string           `json:"binary_path"` // live binary
+	SwappedAt       time.Time        `json:"swapped_at"`
+	ConfirmDeadline time.Time        `json:"confirm_deadline"`
+	BootCount       int              `json:"boot_count"` // supervised respawns observed still-unconfirmed
 }
 
 // PendingConfirmPath is where the marker lives — next to the ledger, with a
@@ -119,9 +120,15 @@ func ClearPendingConfirm(path string) error {
 
 // NewPendingConfirm builds the marker an upgrade leaves after a swap.
 func NewPendingConfirm(releaseID, fromSHA, toSHA, binaryPath, prevPath string) PendingConfirm {
+	for _, m := range PairRollbackMembers(binaryPath) {
+		if m.BinaryPath == binaryPath {
+			prevPath = m.PrevPath
+		}
+	}
 	now := time.Now().UTC()
 	return PendingConfirm{
 		ReleaseID:       releaseID,
+		Companions:      PairRollbackMembers(binaryPath),
 		FromSHA:         shortCommit(fromSHA),
 		ToSHA:           shortCommit(toSHA),
 		PrevPath:        prevPath,

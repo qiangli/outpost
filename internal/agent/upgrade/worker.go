@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -248,7 +249,7 @@ func (w *Worker) Apply(ctx context.Context, env Envelope) Result {
 	// Normalize both sides to short commit, same as Probe: envelopes
 	// legitimately carry either shape (short from the CLI, full
 	// 40-char from the GH-Action release webhook).
-	if st.CurrentCommit != "" && shortCommit(env.Commit) == shortCommit(st.CurrentCommit) {
+	if st.CurrentCommit != "" && shortCommit(env.Commit) == shortCommit(st.CurrentCommit) && len(env.Companions) == 0 && !IsPairedReleaseURL(env.URL) {
 		w.mu.Unlock()
 		return Result{Status: StatusSameCommit, Detail: "daemon is already at " + env.Commit, ReleaseID: env.ReleaseID, Commit: env.Commit}
 	}
@@ -349,6 +350,36 @@ func (w *Worker) run(ctx context.Context, env Envelope, binaryPath, fromSHA, pen
 		return
 	}
 
+	defer os.Remove(candidate)
+	companions := map[string]string{}
+	if len(env.Companions) > 0 {
+		dir, err := os.MkdirTemp(filepath.Dir(binaryPath), ".companions-*")
+		if err != nil {
+			w.fail(env, "stage_failed", fromSHA, err)
+			return
+		}
+		defer os.RemoveAll(dir)
+		for _, c := range env.Companions {
+			path := filepath.Join(dir, c.Name)
+			if err := StageFromURL(ctx, path, c.URL, c.SHA256, w.client); err != nil {
+				w.fail(env, "stage_failed", fromSHA, err)
+				return
+			}
+			companions[c.Name] = path
+		}
+	} else {
+		paired, members, cleanup, err := StageReleasePair(ctx, env.URL, binaryPath, w.client)
+		if err != nil {
+			w.fail(env, "stage_failed", fromSHA, err)
+			return
+		}
+		defer cleanup()
+		if paired != "" {
+			candidate = paired
+			companions = members
+		}
+	}
+
 	build, err := Probe(candidate, env.Commit)
 	if err != nil {
 		_ = os.Remove(candidate)
@@ -364,22 +395,21 @@ func (w *Worker) run(ctx context.Context, env Envelope, binaryPath, fromSHA, pen
 
 	previous := binaryPath + ".previous"
 	retained := true
-	if err := RetainPrevious(binaryPath, previous); err != nil {
-		// Rollback won't be available for this upgrade — but the
-		// upgrade itself can still proceed. The ledger records why.
-		retained = false
-		_ = w.appendLedger(LedgerEntry{
-			ReleaseID: env.ReleaseID,
-			Step:      "previous_unavailable",
-			FromSHA:   fromSHA,
-			Error:     err.Error(),
-		})
-	}
-
-	if err := SwapAtomic(binaryPath, candidate); err != nil {
-		_ = os.Remove(candidate)
-		w.fail(env, "swap_failed", fromSHA, err)
-		return
+	if len(companions) > 0 {
+		if _, err := ApplyPair(ctx, binaryPath, candidate, companions, PairOptions{ConfirmPath: w.confirmPath, ReleaseID: env.ReleaseID, FromSHA: fromSHA}); err != nil {
+			w.fail(env, "swap_failed", fromSHA, err)
+			return
+		}
+	} else {
+		if err := RetainPrevious(binaryPath, previous); err != nil {
+			retained = false
+			_ = w.appendLedger(LedgerEntry{ReleaseID: env.ReleaseID, Step: "previous_unavailable", FromSHA: fromSHA, Error: err.Error()})
+		}
+		if err := SwapAtomic(binaryPath, candidate); err != nil {
+			w.fail(env, "swap_failed", fromSHA, err)
+			return
+		}
+		_ = os.Remove(pairRecordPath(binaryPath))
 	}
 	// The swap landed — this release IS now applied, so the replay guard
 	// (set in Apply) must STICK to defend the restart window (v0.7.0). The
@@ -437,7 +467,15 @@ func RetainPrevious(binary, previous string) error {
 	_ = os.Remove(previous)
 
 	if err := os.Link(binary, previous); err == nil {
-		return nil
+		if runtime.GOOS == "windows" {
+			return nil
+		}
+		f, err := os.Open(previous)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		return f.Sync()
 	}
 
 	src, err := os.Open(binary)
@@ -454,7 +492,7 @@ func RetainPrevious(binary, previous string) error {
 		_ = os.Remove(previous)
 		return err
 	}
-	return nil
+	return dst.Sync()
 }
 
 // fail emits a ledger entry for an upgrade that died mid-flow. The

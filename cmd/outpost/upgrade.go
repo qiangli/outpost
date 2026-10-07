@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/qiangli/yoke/pkg/binmgr"
 	"github.com/spf13/cobra"
 
 	"github.com/qiangli/outpost/internal/agent/admincore"
@@ -91,6 +92,7 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.
 				return errors.New("--from, --local, and --direct are mutually exclusive")
 			}
 			ctx := cmd.Context()
+			expectedCommit := ""
 
 			// Phase 1: ask the daemon what it is and where it lives.
 			before, err := readStatus(ctx)
@@ -127,9 +129,10 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.
 					return fmt.Errorf("resolve latest release: %w", rerr)
 				}
 				fmt.Printf("latest:   %s (%s)\n", env.ReleaseID, env.Commit)
-				if !force && env.Commit != "" && env.Commit == before.Build.ShortCommit() {
+				if !force && env.Commit != "" && env.Commit == before.Build.ShortCommit() && !upgrade.IsPairedReleaseURL(env.URL) {
 					return fmt.Errorf("already at the latest release %s (%s) — pass --force to re-install", env.ReleaseID, env.Commit)
 				}
+				expectedCommit = env.Commit
 				fromURL = env.URL
 				sha256Hex = env.SHA256
 			}
@@ -141,6 +144,7 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.
 				_ = os.Remove(candidate)
 				return err
 			}
+			defer os.Remove(candidate)
 			// From here on, remove the candidate on any error.
 			swapped := false
 			defer func() {
@@ -149,39 +153,55 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.
 				}
 			}()
 
+			companions := map[string]string{}
+			if binmgr.IsArchive(candidate) {
+				paired, members, cleanup, err := upgrade.StageArchive(candidate, before.BinaryPath)
+				if err != nil {
+					return err
+				}
+				defer cleanup()
+				candidate = paired
+				companions = members
+			} else if fromURL != "" {
+				paired, members, cleanup, err := upgrade.StageReleasePair(ctx, fromURL, before.BinaryPath, nil)
+				if err != nil {
+					return err
+				}
+				defer cleanup()
+				if paired != "" {
+					candidate = paired
+					companions = members
+				}
+			}
+
 			// Phase 3: probe the candidate. This is the gate that keeps a
 			// cross-arch or wholly unrelated binary from clobbering the live
 			// one. CLI doesn't pre-commit to a sha, so pass "".
-			newBuild, err := upgrade.Probe(candidate, "")
+			newBuild, err := upgrade.Probe(candidate, expectedCommit)
 			if err != nil {
 				return fmt.Errorf("verify candidate: %w", err)
 			}
 			fmt.Printf("candidate: %s (%s)\n", newBuild.Short(), newBuild.GoVersion)
 
-			if newBuild.Commit != "" && newBuild.Commit == before.Build.Commit && !force {
+			if newBuild.Commit != "" && newBuild.Commit == before.Build.Commit && !force && len(companions) == 0 {
 				return fmt.Errorf("candidate is the same commit as the running daemon (%s) — pass --force to upgrade anyway", before.Build.Short())
 			}
 
-			// Phase 3.5: hardlink current → outpost.previous for rollback.
-			// Same retention contract the daemon Worker uses; keeping the
-			// CLI consistent so `outpost rollback` works after either path.
 			previous := before.BinaryPath + ".previous"
-			if err := upgrade.RetainPrevious(before.BinaryPath, previous); err != nil {
-				// Non-fatal — log and proceed. Rollback won't be available
-				// for this upgrade, but the upgrade itself can still
-				// complete. Mirrors the daemon Worker's behavior.
-				fmt.Printf("previous: WARN couldn't retain rollback target: %v\n", err)
+			if len(companions) > 0 {
+				if _, err := upgrade.ApplyPair(ctx, before.BinaryPath, candidate, companions, upgrade.PairOptions{ConfirmPath: func() string { cache, _ := conf.ResolveCacheDir(); return upgrade.PendingConfirmPath(cache) }(), ReleaseID: newBuild.Version, FromSHA: before.Build.Commit}); err != nil {
+					return err
+				}
+			} else {
+				if err := upgrade.RetainPrevious(before.BinaryPath, previous); err != nil {
+					fmt.Printf("previous: WARN couldn't retain rollback target: %v\n", err)
+				}
+				if err := upgrade.SwapAtomic(before.BinaryPath, candidate); err != nil {
+					return fmt.Errorf("swap binary into place: %w", err)
+				}
+				_ = os.Remove(before.BinaryPath + ".pair-rollback.json")
 			}
 
-			// Phase 4: atomic swap. SwapAtomic is one rename on Unix (the
-			// kernel allows overwriting the running binary's path) and
-			// rename-old-out-then-new-in on Windows (which doesn't allow
-			// the one-shot variant). After this point os.Executable() on
-			// the daemon still resolves to the same path; subsequent
-			// execs (via the self-restart path) pick up the new binary.
-			if err := upgrade.SwapAtomic(before.BinaryPath, candidate); err != nil {
-				return fmt.Errorf("swap binary into place: %w", err)
-			}
 			swapped = true
 			fmt.Printf("swapped:  %s → %s\n", before.Build.Short(), newBuild.Short())
 
@@ -189,6 +209,9 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.
 			// CLI-driven swaps alongside cloudbox-pushed ones. Cache dir
 			// resolution mirrors the daemon's wiring in main.go.
 			if cacheDir, err := conf.ResolveCacheDir(); err == nil && cacheDir != "" {
+				if err := upgrade.WritePendingConfirm(upgrade.PendingConfirmPath(cacheDir), upgrade.NewPendingConfirm(newBuild.Version, before.Build.Commit, newBuild.Commit, before.BinaryPath, previous)); err != nil {
+					return fmt.Errorf("write upgrade confirmation marker: %w", err)
+				}
 				_ = upgrade.NewLedger(filepath.Join(cacheDir, "upgrade.log")).Append(upgrade.LedgerEntry{
 					Step:    "swap_done",
 					FromSHA: before.Build.Short(),
@@ -209,7 +232,7 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.
 			fmt.Println("restart:  scheduled")
 
 			// Phase 6: poll until the daemon comes back on the new build.
-			after, err := waitForBuild(ctx, newBuild.Commit, waitFor)
+			after, err := waitForBuildVersion(ctx, newBuild.Commit, newBuild.Version, waitFor)
 			if err != nil {
 				return fmt.Errorf("waiting for daemon to come back: %w (binary is swapped — investigate with `outpost status`)", err)
 			}
@@ -218,7 +241,7 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.
 		},
 	}
 	cmd.Flags().StringVar(&fromURL, "from", "", "HTTPS URL to download the candidate binary from")
-	cmd.Flags().StringVar(&localPath, "local", "", "Local path to a candidate outpost binary")
+	cmd.Flags().StringVar(&localPath, "local", "", "Local path to a paired release archive or legacy outpost binary")
 	cmd.Flags().StringVar(&sha256Hex, "sha256", "", "Expected sha256 (hex) of the candidate — required-recommended for --from")
 	cmd.Flags().BoolVar(&direct, "direct", false, "Resolve + download the latest GitHub release for this platform (default on an unpaired host)")
 	cmd.Flags().StringVar(&repo, "repo", "", "GitHub owner/name to resolve --direct releases from (default "+upgrade.DefaultRepo+")")
@@ -344,6 +367,9 @@ func stageCLICandidate(ctx context.Context, dst, fromURL, localPath, expectedSHA
 // matches `want` or the deadline elapses. Errors and connection
 // refusals during the restart window are expected — we keep retrying.
 func waitForBuild(ctx context.Context, want string, max time.Duration) (admincore.StatusView, error) {
+	return waitForBuildVersion(ctx, want, "", max)
+}
+func waitForBuildVersion(ctx context.Context, want, version string, max time.Duration) (admincore.StatusView, error) {
 	deadline := time.Now().Add(max)
 	// Brief grace period so the parent has time to start the child
 	// before we probe — saves a couple of noisy retries.
@@ -353,7 +379,7 @@ func waitForBuild(ctx context.Context, want string, max time.Duration) (admincor
 			return admincore.StatusView{}, fmt.Errorf("timed out after %s", max)
 		}
 		st, err := readStatus(ctx)
-		if err == nil && st.Build.Commit == want {
+		if err == nil && st.Build.Commit == want && (version == "" || st.Build.Version == version) {
 			return st, nil
 		}
 		select {

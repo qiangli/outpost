@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 // SwapAtomic on Windows can't do the one-step rename Unix supports —
@@ -16,19 +15,35 @@ import (
 // renaming a running .exe to a sibling name (the file stays in-use
 // under the new path; the original path becomes free). The pattern:
 //
-//  1. Rename current → current+".replaced-<ts>". Frees the original
+//  1. Rename current → current+".replaced-<unique>". Frees the original
 //     path. The running process keeps executing from the renamed file
 //     just fine.
 //  2. Rename candidate → current. Places the new binary at the path
 //     that the next exec / service-restart will pick up.
 //
 // On any error in step 2 we rename .replaced back to current so the
-// daemon isn't left binaryless. The .replaced-<ts> sibling file can't
+// daemon isn't left binaryless. The .replaced-<unique> sibling file can't
 // be deleted while the process is still running (Windows refuses
 // unlink on in-use files); CleanupStaleSwaps drops it on the next
 // daemon start after the prior PID has exited.
 func SwapAtomic(current, candidate string) error {
-	replaced := current + ".replaced-" + time.Now().UTC().Format("20060102-150405")
+	if _, err := os.Stat(current); os.IsNotExist(err) {
+		return os.Rename(candidate, current)
+	}
+	// Unique names let a failed paired update restore a member immediately,
+	// even while an earlier replaced image remains open in the same second.
+	parked, err := os.CreateTemp(filepath.Dir(current), filepath.Base(current)+".replaced-*")
+	if err != nil {
+		return err
+	}
+	replaced := parked.Name()
+	if err := parked.Close(); err != nil {
+		os.Remove(replaced)
+		return err
+	}
+	if err := os.Remove(replaced); err != nil {
+		return err
+	}
 	if err := os.Rename(current, replaced); err != nil {
 		return fmt.Errorf("rename old binary out of the way: %w", err)
 	}

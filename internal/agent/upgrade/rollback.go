@@ -83,6 +83,17 @@ func (w *Worker) Rollback(ctx context.Context) (RollbackResult, error) {
 // error without swapping) when the probe rejects a truncated / wrong-platform
 // .previous, so a broken rollback target can't brick the host.
 func RevertToPrevious(binaryPath, prevPath string, ledger *Ledger, entry LedgerEntry) (agent.BuildInfo, error) {
+	rec, err := readPairRecord(binaryPath)
+	if err != nil {
+		return agent.BuildInfo{}, err
+	}
+	if rec != nil {
+		for _, m := range rec.Members {
+			if m.BinaryPath == binaryPath {
+				prevPath = m.PrevPath
+			}
+		}
+	}
 	if _, err := os.Stat(prevPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return agent.BuildInfo{}, ErrNoPrevious
@@ -93,7 +104,11 @@ func RevertToPrevious(binaryPath, prevPath string, ledger *Ledger, entry LedgerE
 	if err != nil {
 		return agent.BuildInfo{}, fmt.Errorf("verify rollback candidate: %w", err)
 	}
-	if err := os.Rename(prevPath, binaryPath); err != nil {
+	if rec != nil {
+		if err := restorePair(*rec); err != nil {
+			return agent.BuildInfo{}, fmt.Errorf("restore pair: %w", err)
+		}
+	} else if err := SwapAtomic(binaryPath, prevPath); err != nil {
 		return agent.BuildInfo{}, fmt.Errorf("swap rollback: %w", err)
 	}
 	if ledger != nil {

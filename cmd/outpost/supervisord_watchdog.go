@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -38,6 +39,18 @@ func watchdogPreStart(cacheDir string) func() error {
 // injected so tests can drive it against a temp dir without the real config.
 func newWatchdogHook(confirmPath string, ledger *upgrade.Ledger, quarantine *upgrade.Quarantine, enabled func() bool) func() error {
 	return func() error {
+		if exe, err := os.Executable(); err == nil {
+			if real, err := filepath.EvalSymlinks(exe); err == nil {
+				exe = real
+			}
+			if recovered, err := upgrade.RecoverInterruptedPair(exe); err != nil {
+				return fmt.Errorf("recover interrupted pair: %w", err)
+			} else if recovered {
+				if err := upgrade.ClearPendingConfirm(confirmPath); err != nil {
+					return err
+				}
+			}
+		}
 		pc, err := upgrade.ReadPendingConfirm(confirmPath)
 		if err != nil {
 			return fmt.Errorf("read confirm marker: %w", err)

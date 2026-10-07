@@ -26,6 +26,7 @@ import (
 // except MinFrom is required; the daemon returns 400 if any of
 // {release_id, url, sha256, commit} is empty.
 type Envelope struct {
+	Companions []Companion `json:"companions,omitempty"`
 	// ReleaseID is cloudbox's opaque identifier for this artifact
 	// (e.g. "v0.42.1-abc1234"). Used purely for dedup + ledger
 	// correlation — the daemon doesn't parse it.
@@ -76,6 +77,16 @@ func (e Envelope) Validate() error {
 	}
 	if strings.TrimSpace(e.Commit) == "" {
 		return errors.New("commit is required")
+	}
+	seen := map[string]bool{}
+	for _, c := range e.Companions {
+		if !allowedCompanion(c.Name) || seen[c.Name] {
+			return fmt.Errorf("invalid companion name %q", c.Name)
+		}
+		seen[c.Name] = true
+		if !strings.HasPrefix(c.URL, "https://") || len(c.SHA256) != 64 {
+			return fmt.Errorf("companion %s requires HTTPS and sha256", c.Name)
+		}
 	}
 	return nil
 }
