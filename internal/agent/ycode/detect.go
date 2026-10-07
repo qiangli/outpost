@@ -1,9 +1,7 @@
 // Package ycode discovers and lifecycle-manages a `ycode serve`
 // process running side-by-side with outpost on the same OS user
-// account. ycode is the under-the-hood agentic engine outpost
-// delegates to for inference (Ollama embedded), container management
-// (podman embedded), Gitea, OTel, and similar; it's optional and
-// distributed as a separate binary.
+// account. ycode is the YAML-driven agent engine; outpost only detects
+// a running instance and does not depend on it, so it is optional.
 //
 // Discovery model matches ycode's own TUI: a running `ycode serve`
 // publishes a manifest at $HOME/.agents/ycode/manifest.json + a
