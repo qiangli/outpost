@@ -3,6 +3,7 @@ module github.com/qiangli/outpost
 go 1.26.5
 
 require (
+	github.com/aymanbagabas/go-pty v0.2.3
 	filippo.io/age v1.3.1
 	github.com/GehirnInc/crypt v0.0.0-20230320061759-8cc1b52080c5
 	github.com/Microsoft/go-winio v0.6.2

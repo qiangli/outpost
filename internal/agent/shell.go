@@ -25,7 +25,7 @@ type shellSizeMsg struct {
 //
 // Per-connection lifecycle:
 //  1. Upgrade the WS.
-//  2. Open a PTY + qiangli/sh runner (shell.NewSession).
+//  2. Open a PTY + paired Bashy child (shell.NewSession).
 //  3. Goroutine A: read PTY master → write WS binary frames.
 //  4. Goroutine B: read WS frames → text JSON = resize, binary = stdin.
 //  5. Runner exits or client disconnects → cancel ctx, close everything.
@@ -45,16 +45,21 @@ func shellHandler() gin.HandlerFunc {
 		sess, err := shell.NewSession(shell.SessionOptions{})
 		if err != nil {
 			slog.Error("shell session", "err", err)
-			_ = ws.Close(websocket.StatusInternalError, "session")
+			_ = ws.Write(c.Request.Context(), websocket.MessageBinary, []byte(err.Error()+"\r\n"))
+			_ = ws.Close(websocket.StatusInternalError, "bashy shell unavailable")
 			return
 		}
 		defer sess.Close()
 
 		ctx, cancel := context.WithCancel(c.Request.Context())
 		defer cancel()
+		stopClose := context.AfterFunc(ctx, func() { _ = sess.Close() })
+		defer stopClose()
 
 		// Goroutine: PTY master → WS binary frames.
+		outputDone := make(chan struct{})
 		go func() {
+			defer close(outputDone)
 			defer cancel()
 			buf := make([]byte, 4096)
 			for {
@@ -75,6 +80,13 @@ func shellHandler() gin.HandlerFunc {
 			defer cancel()
 			if err := sess.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				slog.Info("shell runner exit", "err", err)
+			}
+			if ctx.Err() == nil {
+				_ = sess.CloseSlave()
+				select {
+				case <-outputDone:
+				case <-ctx.Done():
+				}
 			}
 		}()
 

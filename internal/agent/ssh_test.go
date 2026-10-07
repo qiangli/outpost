@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -151,6 +152,14 @@ func TestLANPublicKeyAuthUsesSecureAuthorizedKeysAndSameUser(t *testing.T) {
 	if err := dial("definitely-a-different-user"); err == nil {
 		t.Fatal("different user accepted key")
 	}
+	// Unix permission bits do not express Windows ACLs (Go synthesizes
+	// 0666 for ordinary files), so a chmod-based writability refusal is
+	// unenforceable there; Windows key-file hardening stays with the
+	// deferred ACL work noted in yoke's authorized_keys_windows.go.
+	if runtime.GOOS == "windows" {
+		t.Log("skipping world-writable refusal: not expressible in Windows ACLs")
+		return
+	}
 	if err := os.Chmod(keyFile, 0o666); err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +240,12 @@ func TestSSHHandlerShellGreets(t *testing.T) {
 			}
 		}
 	}()
+	// A cold Bashy start behind ConPTY takes seconds on Windows; the old
+	// in-process shell greeted instantly. Poll longer there.
 	deadline := time.Now().Add(2 * time.Second)
+	if runtime.GOOS == "windows" {
+		deadline = time.Now().Add(15 * time.Second)
+	}
 	for time.Now().Before(deadline) {
 		gotMu.Lock()
 		got := gotBuf.String()
@@ -442,7 +456,12 @@ func TestSSHHandlerExecPTY(t *testing.T) {
 		t.Fatalf("exec: %v\noutput: %q", err, out)
 	}
 	s := string(out)
-	if !strings.Contains(s, "/dev/") {
+	// Under ConPTY the console device is CON, not a /dev/tty path.
+	if runtime.GOOS == "windows" {
+		if !strings.Contains(s, "CON") {
+			t.Errorf("tty output should name the CON console device, got: %q", s)
+		}
+	} else if !strings.Contains(s, "/dev/") {
 		t.Errorf("tty output should name a /dev/tty path, got: %q", s)
 	}
 	if !strings.Contains(s, "MARKER=0") {
@@ -760,31 +779,6 @@ func TestSSH_DirectTCPIP_NonLoopbackRejected(t *testing.T) {
 	if !strings.Contains(err.Error(), "loopback") &&
 		!strings.Contains(strings.ToLower(err.Error()), "prohibit") {
 		t.Errorf("expected rejection message to mention loopback/prohibit, got %v", err)
-	}
-}
-
-// TestAllowTCPIPForwardBind exercises the bind-address allowlist used by
-// `tcpip-forward` (ssh -R). Loopback only; empty string ("") matches
-// openssh's default-to-127.0.0.1 behavior.
-func TestAllowTCPIPForwardBind(t *testing.T) {
-	cases := []struct {
-		in   string
-		want bool
-	}{
-		{"", true},
-		{"localhost", true},
-		{"LOCALHOST", true},
-		{"127.0.0.1", true},
-		{"::1", true},
-		{"  127.0.0.1  ", true},
-		{"0.0.0.0", false},
-		{"192.168.1.10", false},
-		{"example.com", false},
-	}
-	for _, tc := range cases {
-		if got := allowTCPIPForwardBind(tc.in); got != tc.want {
-			t.Errorf("allowTCPIPForwardBind(%q) = %v, want %v", tc.in, got, tc.want)
-		}
 	}
 }
 
@@ -1167,7 +1161,13 @@ func TestSSH_DirectStreamlocal_Disabled(t *testing.T) {
 // rejects, traversal forms canonicalize and match the same allowlist
 // entry, near-misses don't match.
 func TestAllowStreamlocalDest(t *testing.T) {
-	allow := []string{"/run/podman/podman.sock", "/var/run/docker.sock"}
+	// Production allowlists go through filepath.Clean in the builder;
+	// Clean here too so the entries match on Windows, where Clean
+	// rewrites forward slashes to backslashes.
+	allow := []string{
+		filepath.Clean("/run/podman/podman.sock"),
+		filepath.Clean("/var/run/docker.sock"),
+	}
 	cases := []struct {
 		path string
 		want bool

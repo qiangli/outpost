@@ -3,17 +3,15 @@ package shell
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
-
-	"mvdan.cc/sh/v3/expand"
 )
 
-// pathFromEnviron pulls PATH out of an expand.Environ.
-func pathFromEnviron(t *testing.T, env expand.Environ) string {
+// pathFromEnviron pulls PATH out of an environment list.
+func pathFromEnviron(t *testing.T, env []string) string {
 	t.Helper()
-	v := env.Get("PATH")
-	return v.String()
+	return envValue(env, "PATH", runtime.GOOS)
 }
 
 func TestBuildEnv_PrependsExeDir(t *testing.T) {
@@ -61,8 +59,10 @@ func TestBuildEnv_NoDuplicatesOnRepeatExtras(t *testing.T) {
 	}
 	exeDir := filepath.Dir(exe)
 	// Pre-set PATH so exeDir is ALREADY there; helper should not add
-	// it a second time.
-	t.Setenv("PATH", exeDir+":/usr/bin")
+	// it a second time. Use the platform separator so the entry splits
+	// into a real PATH element on Windows too (a Unix ":" would leave
+	// the whole value as one unsplittable blob).
+	t.Setenv("PATH", exeDir+string(os.PathListSeparator)+"/usr/bin")
 
 	env := BuildEnv()
 	got := pathFromEnviron(t, env)
@@ -91,7 +91,7 @@ func TestBuildEnvWith_AppendsNewKey(t *testing.T) {
 	os.Unsetenv("TERM")
 
 	env := BuildEnvWith(map[string]string{"TERM": "xterm-256color"})
-	if got := env.Get("TERM").String(); got != "xterm-256color" {
+	if got := envValue(env, "TERM", runtime.GOOS); got != "xterm-256color" {
 		t.Errorf("TERM=%q, want %q", got, "xterm-256color")
 	}
 }
@@ -103,7 +103,7 @@ func TestBuildEnvWith_ReplacesExistingKey(t *testing.T) {
 	t.Setenv("PATH", "/usr/bin")
 
 	env := BuildEnvWith(map[string]string{"TERM": "xterm-256color"})
-	if got := env.Get("TERM").String(); got != "xterm-256color" {
+	if got := envValue(env, "TERM", runtime.GOOS); got != "xterm-256color" {
 		t.Errorf("TERM=%q, want %q (override should win over inherited)", got, "xterm-256color")
 	}
 }
@@ -112,8 +112,8 @@ func TestBuildEnvWith_NilEqualsBuildEnv(t *testing.T) {
 	t.Setenv("PATH", "/usr/bin")
 	t.Setenv("TERM", "dumb")
 
-	base := BuildEnv().Get("TERM").String()
-	got := BuildEnvWith(nil).Get("TERM").String()
+	base := envValue(BuildEnv(), "TERM", runtime.GOOS)
+	got := envValue(BuildEnvWith(nil), "TERM", runtime.GOOS)
 	if base != got {
 		t.Errorf("BuildEnvWith(nil) diverged from BuildEnv: %q vs %q", got, base)
 	}
@@ -200,5 +200,15 @@ func TestWindowsPathExtras_UsesWindowsEnvCaseInsensitive(t *testing.T) {
 	}
 	if got[0] != `D:\WinDir\System32` {
 		t.Fatalf("first Windows PATH extra = %q, want %q", got[0], `D:\WinDir\System32`)
+	}
+}
+
+func TestBuildEnvWithForwardsExplicitShellHistory(t *testing.T) {
+	t.Setenv("OUTPOST_SHELL_HISTORY", "history-from-outpost")
+	if got := envValue(BuildEnvWith(nil), "HISTFILE", runtime.GOOS); got != "history-from-outpost" {
+		t.Fatalf("HISTFILE=%q", got)
+	}
+	if got := envValue(BuildEnvWith(map[string]string{"HISTFILE": "session-history"}), "HISTFILE", runtime.GOOS); got != "session-history" {
+		t.Fatalf("HISTFILE=%q", got)
 	}
 }

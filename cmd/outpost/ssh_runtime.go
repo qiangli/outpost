@@ -36,7 +36,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/discovery"
-	"github.com/qiangli/outpost/internal/agent/sshclient"
+	"github.com/qiangli/yoke/pkg/sshclient"
 )
 
 // runSSHHost is the entry point for `outpost ssh [user@]<host> [cmd...]`.

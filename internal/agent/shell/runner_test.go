@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -18,7 +19,7 @@ import (
 // only watched the error return, but `exit` with code 0 returns nil — the
 // session stayed alive until the PTY was closed externally.
 func TestSession_ExitBuiltinEndsSession(t *testing.T) {
-	testSessionTerminatesAfter(t, "exit\n")
+	testSessionTerminatesAfter(t, "exit\r\n")
 }
 
 // TestSession_ExitWithCodeEndsSession covers `exit 42`. Previously this
@@ -26,7 +27,7 @@ func TestSession_ExitBuiltinEndsSession(t *testing.T) {
 // ExitStatus error), so the same code path also killed the session on
 // every command failure. Locks in that exit-with-code still ends things.
 func TestSession_ExitWithCodeEndsSession(t *testing.T) {
-	testSessionTerminatesAfter(t, "exit 42\n")
+	testSessionTerminatesAfter(t, "exit 42\r\n")
 }
 
 // TestSession_RunOncePTYTty proves that RunOnce attaches the command
@@ -58,7 +59,7 @@ func TestSession_RunOncePTYTty(t *testing.T) {
 		t.Fatalf("tty did not finish; output so far:\n%s", out.snapshot())
 	}
 	snap := out.snapshot()
-	if !strings.Contains(snap, "/dev/") {
+	if runtime.GOOS != "windows" && !strings.Contains(snap, "/dev/") {
 		t.Fatalf("tty output should name a /dev/tty path, got:\n%s", snap)
 	}
 }
@@ -91,6 +92,20 @@ func TestSession_RunOnceExitCode(t *testing.T) {
 }
 
 // TestSession_InvalidCommandKeepsSessionAlive is the regression test for
+// waitShellPrompt waits for an interactive shell prompt. Unix PTYs render
+// the prompt with a trailing space ("$ " or "# "); ConPTY renders the same
+// Bashy prompt with cursor movement instead of the literal space, so on
+// Windows a bare "$" also counts. The banner's $HOME path can satisfy the
+// bare needle on the first wait; either way the shell is alive and queuing
+// input, which is all these readiness gates need. Unix matching stays
+// strict so a weakened needle cannot mask a broken prompt there.
+func waitShellPrompt(out *ptyDrain, timeout time.Duration) bool {
+	if runtime.GOOS == "windows" {
+		return out.waitFor("$", timeout) || out.waitFor("# ", timeout)
+	}
+	return out.waitFor("$ ", timeout) || out.waitFor("# ", timeout)
+}
+
 // the "shell blowup" bug: typing a non-existent command used to terminate
 // the entire session because the loop treated ExitStatus(127) as an exit
 // signal.
@@ -112,24 +127,25 @@ func TestSession_InvalidCommandKeepsSessionAlive(t *testing.T) {
 	go func() { runErrCh <- s.Run(ctx) }()
 
 	// Wait for the greeting + first prompt.
-	if !out.waitFor("$ ", 2*time.Second) && !out.waitFor("# ", 2*time.Second) {
+	if !waitShellPrompt(out, 2*time.Second) {
 		t.Fatalf("never saw first prompt; output so far:\n%s", out.snapshot())
 	}
 
-	if _, err := io.WriteString(s.Master(), "no_such_command_zzzzz\n"); err != nil {
+	// Consoles submit input lines on CR; see child_test.go.
+	if _, err := io.WriteString(s.Master(), "no_such_command_zzzzz\r\n"); err != nil {
 		t.Fatalf("write bad command: %v", err)
 	}
 
 	// Session must still be alive: a second prompt must appear after the
 	// error message. We strip what we've seen so far and wait for a fresh
-	// "$ " / "# ".
+	// prompt.
 	out.discardSnapshot()
-	if !out.waitFor("$ ", 2*time.Second) && !out.waitFor("# ", 2*time.Second) {
+	if !waitShellPrompt(out, 2*time.Second) {
 		t.Fatalf("session ended after bad command; output so far:\n%s", out.snapshot())
 	}
 
 	// Now end it cleanly so the test exits.
-	if _, err := io.WriteString(s.Master(), "exit\n"); err != nil {
+	if _, err := io.WriteString(s.Master(), "exit\r\n"); err != nil {
 		t.Fatalf("write exit: %v", err)
 	}
 	select {
@@ -173,7 +189,7 @@ func TestSession_ArrowKeyHistory(t *testing.T) {
 
 	waitPrompt := func(label string) {
 		t.Helper()
-		if !out.waitFor("$ ", 3*time.Second) && !out.waitFor("# ", 3*time.Second) {
+		if !waitShellPrompt(out, 3*time.Second) {
 			t.Fatalf("never saw prompt after %s; output so far:\n%s", label, out.snapshot())
 		}
 	}
@@ -190,14 +206,14 @@ func TestSession_ArrowKeyHistory(t *testing.T) {
 	// stderr noise after each line. The history tokens are what we'll
 	// search for when we navigate back to them.
 	out.discardSnapshot()
-	writeAll("first command", "true alpha-token-1\n")
+	writeAll("first command", "true alpha-token-1\r\n")
 	if !out.waitFor("alpha-token-1", 3*time.Second) {
 		t.Fatalf("first command did not echo; output:\n%s", out.snapshot())
 	}
 	waitPrompt("first command")
 
 	out.discardSnapshot()
-	writeAll("second command", "true beta-token-2\n")
+	writeAll("second command", "true beta-token-2\r\n")
 	if !out.waitFor("beta-token-2", 3*time.Second) {
 		t.Fatalf("second command did not echo; output:\n%s", out.snapshot())
 	}
@@ -223,7 +239,7 @@ func TestSession_ArrowKeyHistory(t *testing.T) {
 	// Ctrl-U kills the recalled line (so we don't re-execute it),
 	// then exit to end the session cleanly.
 	writeAll("ctrl-u", "\x15")
-	writeAll("exit", "exit\n")
+	writeAll("exit", "exit\r\n")
 	select {
 	case <-s.Done():
 	case <-time.After(3 * time.Second):
@@ -251,7 +267,7 @@ func testSessionTerminatesAfter(t *testing.T, line string) {
 	runErrCh := make(chan error, 1)
 	go func() { runErrCh <- s.Run(ctx) }()
 
-	if !out.waitFor("$ ", 2*time.Second) && !out.waitFor("# ", 2*time.Second) {
+	if !waitShellPrompt(out, 2*time.Second) {
 		t.Fatalf("never saw first prompt; output so far:\n%s", out.snapshot())
 	}
 
@@ -284,14 +300,10 @@ type ptyDrain struct {
 	buf    strings.Builder
 	done   chan struct{}
 	master io.ReadWriter
-	closer io.Closer
 }
 
 func newPtyDrain(master io.ReadWriter) *ptyDrain {
 	d := &ptyDrain{done: make(chan struct{}), master: master}
-	if closer, ok := master.(io.Closer); ok {
-		d.closer = closer
-	}
 	go d.pump()
 	return d
 }
@@ -358,9 +370,11 @@ func (d *ptyDrain) waitFor(needle string, timeout time.Duration) bool {
 }
 
 func (d *ptyDrain) stop() {
-	if d.closer != nil {
-		_ = d.closer.Close()
-	}
+	// The session owns the PTY handle and closes it exactly once via its
+	// own Close (go-pty replacement for the retired in-process vpty). Closing
+	// the raw handle here as well raced the terminal's abort drain and killed
+	// the test binary with heap corruption on Windows. Just join the pump;
+	// the session Close that releases the PTY always runs alongside stop.
 	select {
 	case <-d.done:
 	case <-time.After(time.Second):

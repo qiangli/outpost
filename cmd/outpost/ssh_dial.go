@@ -27,7 +27,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/discovery"
-	"github.com/qiangli/outpost/internal/agent/sshclient"
+	"github.com/qiangli/yoke/pkg/sshclient"
 )
 
 // dialSSHTargetChain walks the (possibly hop-laden) chain rooted at

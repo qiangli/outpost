@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
-	"github.com/qiangli/outpost/internal/agent/sshclient"
+	"github.com/qiangli/yoke/pkg/sshclient"
 )
 
 // SSHTargetView is the wire shape returned by list / upsert / show.

@@ -23,13 +23,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
-	"mvdan.cc/sh/v3/interp"
-	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
 	"github.com/qiangli/outpost/internal/agent/peerticket"
 	outshell "github.com/qiangli/outpost/internal/agent/shell"
+	"github.com/qiangli/yoke/pkg/sshserver"
 )
 
 // sshHandlerDeps bundles the per-handler configuration sshHandler needs.
@@ -309,7 +308,7 @@ func handleSSHConn(
 				slog.Warn("ssh: public-key rejected", "remote", remoteAddr, "fingerprint", ssh.FingerprintSHA256(key))
 				return nil, fmt.Errorf("public-key authentication rejected")
 			}
-			if !authorizedKeyAllowed(deps.AuthorizedKeysFile, key) {
+			if !sshserver.AuthorizedKeyAllowed(deps.AuthorizedKeysFile, key) {
 				slog.Warn("ssh: public-key rejected", "remote", remoteAddr, "fingerprint", ssh.FingerprintSHA256(key))
 				return nil, fmt.Errorf("public-key authentication rejected")
 			}
@@ -319,76 +318,35 @@ func handleSSHConn(
 	}
 	serverConfig.AddHostKey(deps.HostKey)
 
-	serverConn, chans, reqs, err := ssh.NewServerConn(conn, serverConfig)
-	if err != nil {
-		// After MaxAuthTries rejections the client disconnects, which
-		// surfaces here as EOF / "no auth passed yet" — i.e. usually a
-		// rejected login, not a transport fault. The PasswordCallback
-		// above logs the specific reason (wrong user vs. bad password).
-		slog.Info("ssh handshake failed (if EOF, likely an auth rejection — see the 'auth rejected' log above)",
-			"err", err, "remote", remoteAddr)
-		return
-	}
-	defer serverConn.Close()
-
-	// Route global requests: `tcpip-forward` / `cancel-tcpip-forward`
-	// (the `ssh -R` mechanism) get real handlers; everything else
-	// (keepalive, no-more-sessions@openssh.com, …) is rejected or
-	// silently consumed in the default branch.
-	fwds := newForwardRegistry()
-	defer fwds.closeAll()
-	go func() {
-		for req := range reqs {
-			switch req.Type {
-			case "tcpip-forward":
-				handleTCPIPForward(ctx, serverConn, fwds, deps.AllowRemoteForward, req)
-			case "cancel-tcpip-forward":
-				handleCancelTCPIPForward(fwds, req)
-			default:
-				if req.WantReply {
-					_ = req.Reply(false, nil)
+	err := sshserver.ServeConn(ctx, conn, serverConfig, sshserver.Handlers{
+		AllowRemoteForward: deps.AllowRemoteForward,
+		Session: func(ctx context.Context, sc *ssh.ServerConn, ch ssh.Channel, reqs <-chan *ssh.Request) {
+			handleSSHSession(ctx, sc, ch, reqs, deps.SFTPEnabled, deps.AllowAgentForward)
+		},
+		Channel: func(ctx context.Context, newCh ssh.NewChannel) {
+			switch newCh.ChannelType() {
+			case "direct-tcpip":
+				if !deps.AllowLocalForward {
+					_ = newCh.Reject(ssh.Prohibited, "local port forwarding disabled by agent config")
+					return
 				}
+				handleDirectTCPIP(ctx, newCh, deps.Peers, peerDial{
+					cloudboxBase: deps.CloudboxBase, cloudboxProtocol: deps.CloudboxProtocol,
+					accessToken: deps.AccessToken, selfName: deps.SelfName,
+				})
+			case "direct-streamlocal@openssh.com":
+				if !deps.AllowLocalForward {
+					_ = newCh.Reject(ssh.Prohibited, "local port forwarding disabled by agent config")
+					return
+				}
+				handleDirectStreamlocal(ctx, newCh, streamlocalAllow)
+			default:
+				_ = newCh.Reject(ssh.UnknownChannelType, "unsupported channel")
 			}
-		}
-	}()
-
-	for newCh := range chans {
-		switch newCh.ChannelType() {
-		case "session":
-			ch, chReqs, aerr := newCh.Accept()
-			if aerr != nil {
-				slog.Warn("ssh channel accept", "err", aerr)
-				continue
-			}
-			go handleSSHSession(ctx, serverConn, ch, chReqs, deps.SFTPEnabled, deps.AllowAgentForward)
-		case "direct-tcpip":
-			if !deps.AllowLocalForward {
-				_ = newCh.Reject(ssh.Prohibited,
-					"local port forwarding disabled by agent config")
-				continue
-			}
-			go handleDirectTCPIP(ctx, newCh, deps.Peers, peerDial{
-				cloudboxBase:     deps.CloudboxBase,
-				cloudboxProtocol: deps.CloudboxProtocol,
-				accessToken:      deps.AccessToken,
-				selfName:         deps.SelfName,
-			})
-		case "direct-streamlocal@openssh.com":
-			// Podman's `ssh://` transport opens this channel type to
-			// forward an SSH channel onto a remote unix socket — i.e.
-			// `podman --connection=<host>` against a paired outpost.
-			// Same gate as direct-tcpip (`ssh -L`): both are
-			// client-driven local forwards.
-			if !deps.AllowLocalForward {
-				_ = newCh.Reject(ssh.Prohibited,
-					"local port forwarding disabled by agent config")
-				continue
-			}
-			go handleDirectStreamlocal(ctx, newCh, streamlocalAllow)
-		default:
-			_ = newCh.Reject(ssh.UnknownChannelType,
-				"only session, direct-tcpip, and direct-streamlocal@openssh.com channels are supported")
-		}
+		},
+	})
+	if err != nil {
+		slog.Info("ssh connection ended", "err", err, "remote", remoteAddr)
 	}
 }
 
@@ -944,245 +902,6 @@ func handleDirectStreamlocal(ctx context.Context, newCh ssh.NewChannel, allowlis
 // tcpipForwardMsg is the wire format of an SSH "tcpip-forward" global
 // request payload (RFC 4254 §7.1) — the `ssh -R` primitive. The same
 // shape is reused for "cancel-tcpip-forward".
-type tcpipForwardMsg struct {
-	BindAddr string
-	BindPort uint32
-}
-
-// tcpipForwardReplyMsg is the success reply payload when the client asked
-// for BindPort == 0 (let the server pick) — we tell it which port we
-// actually bound. RFC 4254 §7.1.
-type tcpipForwardReplyMsg struct {
-	BoundPort uint32
-}
-
-// forwardedTCPIPMsg is the channel-open payload the agent sends when a
-// `tcpip-forward` listener accepts a connection and we push it back to
-// the client as a `forwarded-tcpip` channel. RFC 4254 §7.2.
-type forwardedTCPIPMsg struct {
-	DestAddr string
-	DestPort uint32
-	OrigAddr string
-	OrigPort uint32
-}
-
-// allowTCPIPForwardBind restricts which bind addresses the agent will
-// accept for a `tcpip-forward` listener. Loopback only, mirroring the
-// `allowDirectTCPIPDest` posture for `direct-tcpip`. Empty BindAddr is
-// treated as "127.0.0.1" — that's what openssh's sshd does too, and a
-// 0.0.0.0 bind on the home host would expose the operator's laptop to
-// the agent's LAN, which is outside the trust model.
-func allowTCPIPForwardBind(host string) bool {
-	h := strings.ToLower(strings.TrimSpace(host))
-	switch h {
-	case "", "localhost", "127.0.0.1", "::1":
-		return true
-	}
-	return false
-}
-
-// canonicalBindAddr maps the loopback-equivalent inputs to a single
-// representation so listener-registry keys are stable across a
-// `tcpip-forward` / `cancel-tcpip-forward` pair that uses different
-// spellings.
-func canonicalBindAddr(host string) string {
-	h := strings.ToLower(strings.TrimSpace(host))
-	if h == "" || h == "localhost" {
-		return "127.0.0.1"
-	}
-	return h
-}
-
-// forwardRegistry tracks listeners spawned by `tcpip-forward` requests on
-// one SSH connection. Keyed by "addr:port" of the bound listener. Lifetime
-// is per-SSH-conn — the dispatcher's deferred closeAll() in sshHandler
-// covers serverConn teardown.
-type forwardRegistry struct {
-	mu  sync.Mutex
-	lns map[string]net.Listener
-}
-
-func newForwardRegistry() *forwardRegistry {
-	return &forwardRegistry{lns: make(map[string]net.Listener)}
-}
-
-func (r *forwardRegistry) add(key string, ln net.Listener) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.lns[key] = ln
-}
-
-func (r *forwardRegistry) remove(key string) net.Listener {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	ln := r.lns[key]
-	delete(r.lns, key)
-	return ln
-}
-
-func (r *forwardRegistry) closeAll() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for k, ln := range r.lns {
-		_ = ln.Close()
-		delete(r.lns, k)
-	}
-}
-
-func fwdKey(addr string, port uint32) string {
-	return net.JoinHostPort(addr, strconv.Itoa(int(port)))
-}
-
-// handleTCPIPForward services one `tcpip-forward` global request: bind a
-// loopback listener at the requested port (or one picked by the OS when
-// BindPort == 0), register it, and run an accept loop that pushes each
-// accepted connection back to the SSH client as a `forwarded-tcpip`
-// channel.
-//
-// Trust model: same OS-password gate that already protects session and
-// direct-tcpip channels. The bind is loopback-only by policy regardless
-// of `allowRemoteForward`, so widening reach to the LAN is impossible
-// from this surface.
-func handleTCPIPForward(ctx context.Context, sc *ssh.ServerConn, fwds *forwardRegistry, allowRemoteForward bool, req *ssh.Request) {
-	if !allowRemoteForward {
-		_ = req.Reply(false, nil)
-		return
-	}
-	var msg tcpipForwardMsg
-	if err := ssh.Unmarshal(req.Payload, &msg); err != nil {
-		slog.Warn("tcpip-forward: bad payload", "err", err)
-		_ = req.Reply(false, nil)
-		return
-	}
-	if !allowTCPIPForwardBind(msg.BindAddr) {
-		slog.Info("tcpip-forward: refused non-loopback bind",
-			"bind_addr", msg.BindAddr, "bind_port", msg.BindPort)
-		_ = req.Reply(false, nil)
-		return
-	}
-	bindAddr := canonicalBindAddr(msg.BindAddr)
-
-	ln, err := net.Listen("tcp", net.JoinHostPort(bindAddr, strconv.Itoa(int(msg.BindPort))))
-	if err != nil {
-		slog.Info("tcpip-forward: listen failed", "bind", bindAddr, "port", msg.BindPort, "err", err)
-		_ = req.Reply(false, nil)
-		return
-	}
-	boundPort := uint32(ln.Addr().(*net.TCPAddr).Port)
-	key := fwdKey(bindAddr, boundPort)
-	fwds.add(key, ln)
-
-	// RFC 4254 §7.1: reply payload carries the bound port only when the
-	// client asked the server to pick (BindPort == 0). Replying with no
-	// payload when BindPort != 0 keeps openssh-clients happy.
-	if msg.BindPort == 0 {
-		_ = req.Reply(true, ssh.Marshal(tcpipForwardReplyMsg{BoundPort: boundPort}))
-	} else {
-		_ = req.Reply(true, nil)
-	}
-	slog.Info("tcpip-forward: listening", "bind", bindAddr, "port", boundPort)
-
-	// clientDestAddr / clientDestPort are what we'll stuff into the
-	// `forwarded-tcpip` channel-open payload when a connection arrives.
-	// They must match what the client recorded at tcpip-forward time —
-	// OpenSSH's client looks up its forward table with a `strcmp` on
-	// listen_address and `==` on listen_port. So we echo the ORIGINAL
-	// bind_addr the client sent (NOT canonicalBindAddr — that would
-	// turn "" into "127.0.0.1" and the lookup would fail with the
-	// `WARNING: Server requests forwarding for unknown listen_port`
-	// noise that breaks the channel). For BindPort, the only time
-	// boundPort can differ from msg.BindPort is the ephemeral-port
-	// case (BindPort == 0) — in which case the client recorded the
-	// port we echoed back via tcpipForwardReplyMsg, so we send that.
-	clientDestAddr := msg.BindAddr
-	clientDestPort := msg.BindPort
-	if clientDestPort == 0 {
-		clientDestPort = boundPort
-	}
-
-	go func() {
-		defer func() {
-			_ = ln.Close()
-			// Remove from registry whether we got here via cancel
-			// (registry already empty for this key) or via accept-loop
-			// error — keeps the map from leaking on accept failures.
-			fwds.remove(key)
-		}()
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go bridgeForwardedTCPIP(ctx, sc, c, clientDestAddr, clientDestPort)
-		}
-	}()
-}
-
-// handleCancelTCPIPForward services `cancel-tcpip-forward` by closing the
-// matching listener (which trips its accept loop's exit path).
-func handleCancelTCPIPForward(fwds *forwardRegistry, req *ssh.Request) {
-	var msg tcpipForwardMsg
-	if err := ssh.Unmarshal(req.Payload, &msg); err != nil {
-		_ = req.Reply(false, nil)
-		return
-	}
-	bindAddr := canonicalBindAddr(msg.BindAddr)
-	key := fwdKey(bindAddr, msg.BindPort)
-	if ln := fwds.remove(key); ln != nil {
-		_ = ln.Close()
-		_ = req.Reply(true, nil)
-		return
-	}
-	_ = req.Reply(false, nil)
-}
-
-// bridgeForwardedTCPIP opens a `forwarded-tcpip` channel back to the SSH
-// client and byte-bridges it to the accepted local connection. Mirror
-// image of handleDirectTCPIP — the io.Copy pattern is identical.
-//
-// destAddr/destPort MUST be the original values the client requested in
-// its tcpip-forward — the client uses them as the lookup key into its
-// remote-forward table (`strcmp` on address, `==` on port). See
-// handleTCPIPForward for the reasoning.
-func bridgeForwardedTCPIP(ctx context.Context, sc *ssh.ServerConn, c net.Conn, destAddr string, destPort uint32) {
-	_ = ctx // matches handleDirectTCPIP's signature; the io.Copy pair drives teardown
-	defer c.Close()
-	origHost, origPortStr, _ := net.SplitHostPort(c.RemoteAddr().String())
-	origPort, _ := strconv.Atoi(origPortStr)
-	payload := ssh.Marshal(forwardedTCPIPMsg{
-		DestAddr: destAddr,
-		DestPort: destPort,
-		OrigAddr: origHost,
-		OrigPort: uint32(origPort),
-	})
-	ch, chReqs, err := sc.OpenChannel("forwarded-tcpip", payload)
-	if err != nil {
-		slog.Info("forwarded-tcpip: channel open rejected",
-			"dest", destAddr, "port", destPort, "err", err)
-		return
-	}
-	defer ch.Close()
-	// `forwarded-tcpip` channels never carry channel requests — drain to
-	// keep the crypto/ssh request goroutine from piling up.
-	go ssh.DiscardRequests(chReqs)
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(c, ch)
-		if tc, ok := c.(*net.TCPConn); ok {
-			_ = tc.CloseWrite()
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(ch, c)
-		_ = ch.CloseWrite()
-	}()
-	wg.Wait()
-}
-
 // ptyReqMsg is the wire format of an SSH "pty-req" channel request payload
 // (RFC 4254 §6.2). We consume Term + Columns/Rows; Modelist (termios
 // opcodes per RFC 4254 §8 — ECHO, ISIG, ICRNL, …) is intentionally
@@ -1229,6 +948,8 @@ type exitStatusMsg struct {
 // stream of channel requests (pty-req, window-change, env, shell, exec,
 // subsystem) terminated by the channel close.
 func handleSSHSession(ctx context.Context, sc *ssh.ServerConn, ch ssh.Channel, reqs <-chan *ssh.Request, sftpEnabled bool, allowAgentForward bool) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	defer ch.Close()
 
 	// A single SSH session must never be able to strand the whole daemon. An
@@ -1321,11 +1042,13 @@ func handleSSHSession(ctx context.Context, sc *ssh.ServerConn, ch ssh.Channel, r
 			})
 			if err != nil {
 				slog.Error("ssh shell session", "err", err)
+				_, _ = io.WriteString(ch.Stderr(), err.Error()+"\n")
 				_ = req.Reply(false, nil)
 				return
 			}
 			session = s
 			_ = req.Reply(true, nil)
+			go watchSSHSessionRequests(reqs, session, cancel)
 			runInteractiveShell(ctx, ch, session)
 			return
 
@@ -1355,12 +1078,15 @@ func handleSSHSession(ctx context.Context, sc *ssh.ServerConn, ch ssh.Channel, r
 				})
 				if err != nil {
 					slog.Error("ssh exec session", "err", err)
+					_, _ = io.WriteString(ch.Stderr(), err.Error()+"\n")
 					status = 1
 				} else {
 					session = s
+					go watchSSHSessionRequests(reqs, session, cancel)
 					status = runExecCommandPTY(ctx, ch, session, msg.Command)
 				}
 			} else {
+				go watchSSHSessionRequests(reqs, nil, cancel)
 				status = runExecCommand(ctx, ch, msg.Command, agentForwardEnv(af))
 			}
 			_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(exitStatusMsg{Status: status}))
@@ -1394,13 +1120,35 @@ func handleSSHSession(ctx context.Context, sc *ssh.ServerConn, ch ssh.Channel, r
 	}
 }
 
-// runInteractiveShell wires the qiangli/sh PTY session to the SSH channel
+// watchSSHSessionRequests keeps resize and disconnect handling live while the
+// child is running. Closing one channel cancels only that channel's child.
+func watchSSHSessionRequests(reqs <-chan *ssh.Request, session *outshell.Session, cancel context.CancelFunc) {
+	defer cancel()
+	for req := range reqs {
+		if req.Type == "window-change" && session != nil {
+			var msg windowChangeMsg
+			if ssh.Unmarshal(req.Payload, &msg) == nil {
+				_ = session.Resize(uint16(msg.Columns), uint16(msg.Rows))
+				continue
+			}
+		}
+		if req.WantReply {
+			_ = req.Reply(false, nil)
+		}
+	}
+}
+
+// runInteractiveShell wires the Bashy PTY session to the SSH channel
 // and blocks until either the runner finishes (e.g. `exit`) or the
 // client closes its channel. Both teardown paths converge on closing
 // session + channel so neither I/O goroutine is left blocked.
 func runInteractiveShell(ctx context.Context, ch ssh.Channel, session *outshell.Session) {
+	stopClose := context.AfterFunc(ctx, func() { _ = session.Close() })
+	defer stopClose()
+	outputDone := make(chan struct{})
 	// PTY master → SSH channel.
 	go func() {
+		defer close(outputDone)
 		_, _ = io.Copy(ch, session.Master())
 	}()
 	// SSH channel → PTY master.
@@ -1409,8 +1157,7 @@ func runInteractiveShell(ctx context.Context, ch ssh.Channel, session *outshell.
 		defer close(clientGone)
 		_, _ = io.Copy(session.Master(), ch)
 	}()
-	// Runner; returns when the in-process shell hits its exit builtin
-	// or when its PTY slave is closed under it.
+	// The Bashy child exits on its shell exit builtin or terminal hangup.
 	runErr := make(chan error, 1)
 	go func() {
 		runErr <- session.Run(ctx)
@@ -1418,9 +1165,22 @@ func runInteractiveShell(ctx context.Context, ch ssh.Channel, session *outshell.
 
 	select {
 	case err := <-runErr:
+		status := uint32(0)
 		if err != nil {
+			status = 1
+			var exit interface{ ExitCode() int }
+			if errors.As(err, &exit) && exit.ExitCode() >= 0 {
+				status = uint32(exit.ExitCode())
+			}
 			slog.Info("ssh shell runner exit", "err", err)
 		}
+		_ = session.CloseSlave()
+		select {
+		case <-outputDone:
+		case <-ctx.Done():
+		case <-time.After(2 * time.Second):
+		}
+		_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(exitStatusMsg{Status: status}))
 	case <-clientGone:
 		// Client disconnected first. Closing the session below will
 		// trip the runner's next PTY read.
@@ -1440,6 +1200,8 @@ func runInteractiveShell(ctx context.Context, ch ssh.Channel, session *outshell.
 // ↔ SSH channel, the runner runs in its own goroutine, and we wait for
 // whichever side finishes first.
 func runExecCommandPTY(ctx context.Context, ch ssh.Channel, session *outshell.Session, command string) uint32 {
+	stopClose := context.AfterFunc(ctx, func() { _ = session.Close() })
+	defer stopClose()
 	// outputDone closes when the PTY→channel goroutine has drained
 	// everything the kernel had buffered for us — closing the master
 	// before then would lose in-flight bytes (which is exactly the
@@ -1472,7 +1234,12 @@ func runExecCommandPTY(ctx context.Context, ch ssh.Channel, session *outshell.Se
 		// output goroutine then drains and exits on EOF; only then is
 		// it safe to close the master.
 		_ = session.CloseSlave()
-		<-outputDone
+		select {
+		case <-outputDone:
+		case <-ctx.Done():
+			status = 130
+		case <-time.After(2 * time.Second): // A detached child retained the terminal.
+		}
 	case <-ctx.Done():
 		status = 130
 	}
@@ -1492,69 +1259,19 @@ func agentForwardEnv(af *agentForward) map[string]string {
 }
 
 // runExecCommand executes a one-shot shell command (the SSH "exec"
-// request: `ssh host -- cmd`) through the qiangli/sh interpreter without
-// a PTY. Stdout and stderr are merged onto the channel — same convention
-// as openssh's default exec mode without -t.
+// request: `ssh host -- cmd`) through the paired Bashy executable without
+// a PTY. Stdout and stderr use their separate SSH channel streams.
 //
 // Used by scp and rsync (which both invoke the remote side via exec).
 // envOverrides carries SSH_AUTH_SOCK when `ssh -A` is in effect; nil
 // otherwise.
 func runExecCommand(ctx context.Context, ch ssh.Channel, command string, envOverrides map[string]string) uint32 {
-	parser := syntax.NewParser()
-	file, err := parser.Parse(strings.NewReader(command), "")
-	if err != nil {
-		_, _ = io.WriteString(ch.Stderr(), err.Error()+"\n")
-		return 127
-	}
-	stdout, stdoutDone := execOutputPipe(ch)
-	stderr, stderrDone := execOutputPipe(ch.Stderr())
-	defer func() {
-		_ = stdout.Close()
-		_ = stderr.Close()
-		<-stdoutDone
-		<-stderrDone
-	}()
-	runner, err := interp.New(
-		interp.StdIO(ch, stdout, stderr),
-		interp.Env(outshell.BuildEnvWith(envOverrides)),
-		interp.ExecHandlers(outshell.CoreutilsExec), // PATH misses fall back to embedded coreutils (Windows!)
-	)
+	code, err := outshell.RunCommand(ctx, command, ch, ch, ch.Stderr(), envOverrides)
 	if err != nil {
 		_, _ = io.WriteString(ch.Stderr(), err.Error()+"\n")
 		return 1
 	}
-	if err := runner.Run(ctx, file); err != nil {
-		var ec interp.ExitStatus
-		if errors.As(err, &ec) {
-			return uint32(ec)
-		}
-		_, _ = io.WriteString(ch.Stderr(), err.Error()+"\n")
-		return 1
-	}
-	return 0
-}
-
-// execOutputPipe gives a non-PTY SSH exec request a closeable stdout/stderr
-// boundary. Detached/background commands launched by the shell may inherit
-// the runner's writers; they must not inherit the SSH channel writer itself,
-// or a long-lived child can keep the exec channel's output side alive after
-// the requested command has returned. Closing the pipe writer below cuts off
-// any late detached output while still draining foreground output produced
-// before runner.Run completes.
-func execOutputPipe(dst io.Writer) (*io.PipeWriter, <-chan struct{}) {
-	pr, pw := io.Pipe()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("ssh exec: recovered from pipe-copy panic", "panic", r)
-			}
-		}()
-		_, _ = io.Copy(dst, pr)
-		_ = pr.Close()
-	}()
-	return pw, done
+	return uint32(code)
 }
 
 // serveSFTP runs an SFTP server over the SSH channel. Filesystem access

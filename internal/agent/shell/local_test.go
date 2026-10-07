@@ -45,13 +45,13 @@ func TestRunLocalCommand_NonZeroFromFailedCmd(t *testing.T) {
 
 func TestRunLocalCommand_ParseError(t *testing.T) {
 	var out bytes.Buffer
-	// Unmatched quote → parse error → code 127.
+	// Parse diagnostics and status now come from the Bashy child.
 	code, err := RunLocalCommand(context.Background(), `echo "unclosed`, nil, &out, &out)
-	if err == nil {
-		t.Fatalf("expected parse error, got nil")
+	if err != nil {
+		t.Fatalf("child launch failed: %v", err)
 	}
-	if code != 127 {
-		t.Errorf("expected exit 127 on parse error, got %d", code)
+	if code != 2 {
+		t.Errorf("expected Bashy syntax-error exit 2, got %d", code)
 	}
 }
 

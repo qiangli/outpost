@@ -8,11 +8,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-
-	"mvdan.cc/sh/v3/expand"
 )
 
-// BuildEnv returns the env that the in-process matrix shell should run in.
+// BuildEnv returns the env that the Bashy child should run in.
 //
 // Starts from the outpost daemon's own process env (os.Environ()) and
 // **prepends** to PATH a small fixed set of "user-shell-style" directories
@@ -36,8 +34,8 @@ import (
 // running this on a host with a fully-correct PATH is a no-op. Dedup is
 // case-insensitive on Windows to match PATH semantics there.
 //
-// Returns an expand.Environ suitable for passing to interp.Env(...).
-func BuildEnv() expand.Environ {
+// Returns an environment suitable for exec.Cmd.Env.
+func BuildEnv() []string {
 	return BuildEnvWith(nil)
 }
 
@@ -47,7 +45,16 @@ func BuildEnv() expand.Environ {
 // stamp TERM (from the SSH client's pty-req) so vim/htop/less know what
 // escape sequences the terminal understands. Pass nil for no overrides
 // (equivalent to BuildEnv).
-func BuildEnvWith(overrides map[string]string) expand.Environ {
+func BuildEnvWith(overrides map[string]string) []string {
+	// Keep the existing explicit history location when delegating to Bashy.
+	// A session-specific HISTFILE still wins over the compatibility variable.
+	if history := os.Getenv("OUTPOST_SHELL_HISTORY"); history != "" {
+		merged := map[string]string{"HISTFILE": history}
+		for k, v := range overrides {
+			merged[k] = v
+		}
+		overrides = merged
+	}
 	env := os.Environ()
 
 	// Locate (or stub in) the PATH= entry. There's one in 99% of cases;
@@ -95,10 +102,9 @@ func BuildEnvWith(overrides map[string]string) expand.Environ {
 
 	for k, v := range overrides {
 		kv := k + "=" + v
-		prefix := k + "="
 		replaced := false
 		for i, existing := range env {
-			if strings.HasPrefix(existing, prefix) {
+			if name, _, ok := strings.Cut(existing, "="); ok && envKeyEqual(name, k, runtime.GOOS) {
 				env[i] = kv
 				replaced = true
 				break
@@ -108,7 +114,7 @@ func BuildEnvWith(overrides map[string]string) expand.Environ {
 			env = append(env, kv)
 		}
 	}
-	return expand.ListEnviron(env...)
+	return env
 }
 
 func augmentPathEntries(paths, extras []string, goos string, exists func(string) bool) []string {

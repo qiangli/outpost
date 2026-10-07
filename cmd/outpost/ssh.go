@@ -23,7 +23,7 @@ import (
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
-	"github.com/qiangli/outpost/internal/agent/sshclient"
+	"github.com/qiangli/yoke/pkg/sshclient"
 )
 
 func sshProxyCmd() *cobra.Command {

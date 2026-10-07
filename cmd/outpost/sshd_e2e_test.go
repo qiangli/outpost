@@ -16,7 +16,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
-	"github.com/qiangli/outpost/internal/agent/sshclient"
+	"github.com/qiangli/yoke/pkg/sshclient"
 )
 
 // TestSSHDirectE2E drives the full LAN-direct drop-in pair end to end,

@@ -23,7 +23,7 @@ import (
 	"github.com/pkg/sftp"
 	"github.com/spf13/cobra"
 
-	"github.com/qiangli/outpost/internal/agent/sshclient"
+	"github.com/qiangli/yoke/pkg/sshclient"
 )
 
 func sshConnectCmd() *cobra.Command {
