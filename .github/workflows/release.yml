@@ -1,3 +1,4 @@
+# Legacy standalone recovery only. Product releases are built in qiangli/bashy.
 # Triggered by pushing a vX.Y.Z tag. Builds outpost for the platforms
 # we ship (darwin + linux × arm64 + amd64 + windows × amd64 + arm64),
 # sha256s each artifact, uploads them to a GitHub Release, and POSTs a
@@ -22,13 +23,6 @@
 name: release
 
 on:
-  push:
-    tags:
-      # Build + publish a PRE-RELEASE only for -dev tags. A bare vX.Y.Z tag is a
-      # PROMOTION of already-tested bytes (see .github/workflows/promote.yml) and
-      # must NOT rebuild from source — prod ships exactly what QA tested, byte for
-      # byte. So the promotion tag is deliberately excluded from this trigger.
-      - 'v*-dev'
   workflow_dispatch: {} # manual escape hatch: build the checked-out ref on demand
 
 permissions:

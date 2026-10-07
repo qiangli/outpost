@@ -1,3 +1,4 @@
+# Legacy standalone recovery only. Product releases are built in qiangli/bashy.
 # Canary-then-fan-out for outpost releases.
 #
 # Fires automatically after `release.yml` succeeds on a tag push, OR can
@@ -55,9 +56,6 @@
 name: rollout
 
 on:
-  workflow_run:
-    workflows: ["release"]
-    types: [completed]
   workflow_dispatch:
     inputs:
       tag:

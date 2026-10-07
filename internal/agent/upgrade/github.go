@@ -2,18 +2,21 @@ package upgrade
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
 
 // DefaultRepo is the GitHub repository the direct-from-GitHub upgrade
 // path resolves releases from when GitHubSource.Repo is empty.
-const DefaultRepo = "qiangli/outpost"
+const DefaultRepo = "qiangli/bashy"
 
 const (
 	githubAPIBase     = "https://api.github.com"
@@ -22,7 +25,7 @@ const (
 	githubResolveTOut = 20 * time.Second
 )
 
-// GitHubSource resolves the latest published release of an outpost repo
+// GitHubSource resolves the latest published product release
 // into an Envelope the Worker / CLI swap flow can apply WITHOUT a
 // cloudbox in the loop.
 //
@@ -54,8 +57,8 @@ type GitHubSource struct {
 	// Repo is "owner/name"; empty → DefaultRepo.
 	Repo string
 	// Platform is "<goos>_<goarch>" (e.g. "darwin_arm64"), matching the
-	// release asset naming `outpost-<tag>-<goos>-<goarch>[.exe]` from
-	// .github/workflows/release.yml.
+	// raw asset naming `outpost-<base-tag>-<goos>-<goarch>[.exe]` from
+	// bashy's release workflow.
 	Platform string
 	// HTTPClient for api.github.com calls + the sidecar download; nil →
 	// http.DefaultClient.
@@ -114,14 +117,17 @@ func (g GitHubSource) Resolve(ctx context.Context) (Envelope, error) {
 		return Envelope{}, errors.New("latest release has no tag_name")
 	}
 
-	// Asset naming mirrors .github/workflows/release.yml:
-	//   outpost-<tag>-<goos>-<goarch>[.exe]      (the binary)
-	//   outpost-<tag>-<goos>-<goarch>.sha256     (its sidecar)
-	binName := fmt.Sprintf("outpost-%s-%s-%s", rel.TagName, goos, goarch)
+	// Asset naming mirrors bashy's release workflow. The raw executable keeps
+	// the base version when candidate bytes move from -dev to stable.
+	baseTag := strings.TrimSuffix(rel.TagName, "-dev")
+	binName := fmt.Sprintf("outpost-%s-%s-%s", baseTag, goos, goarch)
 	if goos == "windows" {
 		binName += ".exe"
 	}
-	shaName := fmt.Sprintf("outpost-%s-%s-%s.sha256", rel.TagName, goos, goarch)
+	shaName := binName + ".sha256"
+	if rel.assetURL(shaName) == "" {
+		shaName = fmt.Sprintf("outpost-%s-%s-%s.sha256", baseTag, goos, goarch) // legacy Windows sidecar
+	}
 
 	binURL := rel.assetURL(binName)
 	if binURL == "" {
@@ -137,11 +143,14 @@ func (g GitHubSource) Resolve(ctx context.Context) (Envelope, error) {
 		return Envelope{}, fmt.Errorf("resolve sha256 for %s: %w", binName, err)
 	}
 
-	// The release binary is built from the tagged commit (release.yml is
-	// tag-triggered and checks out that tag), so its BuildInfo.Commit ==
-	// the tag's commit. Resolving it here lets Probe enforce an exact
-	// match and lets Apply's same-commit guard no-op when already current.
-	commit, err := g.resolveTagCommit(ctx, repo, rel.TagName)
+	// A product tag belongs to bashy; the outpost source identity is its pinned
+	// sibling, never the tag's bashy commit. Explicit legacy repos retain tag lookup.
+	var commit string
+	if repo == DefaultRepo {
+		commit, err = g.resolveOutpostPin(ctx, repo, rel.TagName)
+	} else {
+		commit, err = g.resolveTagCommit(ctx, repo, rel.TagName)
+	}
 	if err != nil {
 		return Envelope{}, fmt.Errorf("resolve commit for tag %s: %w", rel.TagName, err)
 	}
@@ -156,6 +165,42 @@ func (g GitHubSource) Resolve(ctx context.Context) (Envelope, error) {
 		return Envelope{}, err
 	}
 	return env, nil
+}
+
+func (g GitHubSource) resolveOutpostPin(ctx context.Context, repo, tag string) (string, error) {
+	var file struct {
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+	}
+	if err := g.getJSON(ctx, g.base()+"/repos/"+repo+"/contents/.sibling-pins?ref="+url.QueryEscape(tag), &file); err != nil {
+		return "", err
+	}
+	if file.Encoding != "base64" {
+		return "", errors.New("unexpected sibling pins encoding")
+	}
+	data, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(file.Content, "\n", ""))
+	if err != nil {
+		return "", fmt.Errorf("decode sibling pins: %w", err)
+	}
+	pin := ""
+	for line := range strings.SplitSeq(string(data), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || key != "outpost" {
+			continue
+		}
+		if pin != "" {
+			return "", errors.New("duplicate outpost source pin")
+		}
+		pin = strings.TrimSpace(value)
+		raw, err := hex.DecodeString(pin)
+		if err != nil || len(raw) != 20 {
+			return "", errors.New("invalid outpost source pin")
+		}
+	}
+	if pin == "" {
+		return "", errors.New("release has no outpost source pin")
+	}
+	return shortCommit(pin), nil
 }
 
 func (g GitHubSource) fetchLatest(ctx context.Context, repo string) (ghRelease, error) {

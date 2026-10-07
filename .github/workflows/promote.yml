@@ -1,3 +1,4 @@
+# Legacy standalone recovery only. Product releases are built in qiangli/bashy.
 # promote — the PROD gate of the tag-driven pipeline.
 #
 # release.yml builds a PRE-RELEASE from a `vX.Y.Z-dev` tag (assets stamped + named
@@ -16,15 +17,6 @@
 name: promote
 
 on:
-  # Primary trigger: push a BARE vX.Y.Z tag (the promotion baton). release.yml only
-  # fires on `v*-dev`, so this tag never rebuilds — it byte-promotes the tested
-  # pre-release. `!v*-*` excludes -dev / -rc / any hyphenated pre-release tag.
-  push:
-    tags:
-      - 'v*'
-      - '!v*-*'
-  # Manual fallback (e.g. re-run after a transient webhook failure, or promote a
-  # version whose tag already exists).
   workflow_dispatch:
     inputs:
       version:

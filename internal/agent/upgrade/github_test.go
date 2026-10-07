@@ -2,6 +2,7 @@ package upgrade
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -59,7 +60,7 @@ func fakeGitHub(t *testing.T, tag, goos, goarch, commit string, annotated bool) 
 
 func TestGitHubResolveLightweightTag(t *testing.T) {
 	srv, sum := fakeGitHub(t, "v0.8.0", "darwin", "arm64", "abc1234def5678", false)
-	env, err := GitHubSource{Platform: "darwin_arm64", apiBase: srv.URL, HTTPClient: srv.Client()}.Resolve(context.Background())
+	env, err := GitHubSource{Repo: "qiangli/outpost", Platform: "darwin_arm64", apiBase: srv.URL, HTTPClient: srv.Client()}.Resolve(context.Background())
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -82,7 +83,7 @@ func TestGitHubResolveLightweightTag(t *testing.T) {
 
 func TestGitHubResolveAnnotatedTagDeref(t *testing.T) {
 	srv, _ := fakeGitHub(t, "v1.0.0", "linux", "amd64", "deadbeefcafe", true)
-	env, err := GitHubSource{Platform: "linux_amd64", apiBase: srv.URL, HTTPClient: srv.Client()}.Resolve(context.Background())
+	env, err := GitHubSource{Repo: "qiangli/outpost", Platform: "linux_amd64", apiBase: srv.URL, HTTPClient: srv.Client()}.Resolve(context.Background())
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -93,7 +94,7 @@ func TestGitHubResolveAnnotatedTagDeref(t *testing.T) {
 
 func TestGitHubResolveWindowsAsset(t *testing.T) {
 	srv, _ := fakeGitHub(t, "v0.8.0", "windows", "amd64", "0011223344", false)
-	env, err := GitHubSource{Platform: "windows_amd64", apiBase: srv.URL, HTTPClient: srv.Client()}.Resolve(context.Background())
+	env, err := GitHubSource{Repo: "qiangli/outpost", Platform: "windows_amd64", apiBase: srv.URL, HTTPClient: srv.Client()}.Resolve(context.Background())
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -105,7 +106,7 @@ func TestGitHubResolveWindowsAsset(t *testing.T) {
 func TestGitHubResolveMissingPlatform(t *testing.T) {
 	// Server only publishes darwin/arm64; ask for linux/arm64.
 	srv, _ := fakeGitHub(t, "v0.8.0", "darwin", "arm64", "abc1234", false)
-	_, err := GitHubSource{Platform: "linux_arm64", apiBase: srv.URL, HTTPClient: srv.Client()}.Resolve(context.Background())
+	_, err := GitHubSource{Repo: "qiangli/outpost", Platform: "linux_arm64", apiBase: srv.URL, HTTPClient: srv.Client()}.Resolve(context.Background())
 	if err == nil {
 		t.Fatal("expected error for unpublished platform, got nil")
 	}
@@ -115,7 +116,7 @@ func TestGitHubResolveMissingPlatform(t *testing.T) {
 }
 
 func TestGitHubResolveBadPlatform(t *testing.T) {
-	_, err := GitHubSource{Platform: "garbage"}.Resolve(context.Background())
+	_, err := GitHubSource{Repo: "qiangli/outpost", Platform: "garbage"}.Resolve(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "malformed platform") {
 		t.Errorf("error = %v, want malformed platform", err)
 	}
@@ -163,8 +164,44 @@ func TestGitHubRateLimited(t *testing.T) {
 	mux.HandleFunc("/repos/qiangli/outpost/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	})
-	_, err := GitHubSource{Platform: "darwin_arm64", apiBase: srv.URL}.Resolve(context.Background())
+	_, err := GitHubSource{Repo: "qiangli/outpost", Platform: "darwin_arm64", apiBase: srv.URL}.Resolve(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "rate limited") {
 		t.Errorf("error = %v, want rate-limited hint", err)
+	}
+}
+
+func TestGitHubProductReleaseUsesOutpostPin(t *testing.T) {
+	for _, pin := range []string{strings.Repeat("a", 40), "bad", ""} {
+		t.Run(pin, func(t *testing.T) {
+			mux := http.NewServeMux()
+			srv := httptest.NewTLSServer(mux)
+			defer srv.Close()
+			sum := strings.Repeat("b", 64)
+			mux.HandleFunc("/repos/qiangli/bashy/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintf(w, `{"tag_name":"v1.2.3","assets":[{"name":"outpost-v1.2.3-windows-amd64.exe","browser_download_url":%q},{"name":"outpost-v1.2.3-windows-amd64.exe.sha256","browser_download_url":%q}]}`, srv.URL+"/outpost.exe", srv.URL+"/sum")
+			})
+			mux.HandleFunc("/sum", func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintf(w, "%s  outpost-v1.2.3-windows-amd64.exe\n", sum)
+			})
+			mux.HandleFunc("/repos/qiangli/bashy/contents/.sibling-pins", func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("ref") != "v1.2.3" {
+					t.Errorf("wrong pin ref: %s", r.URL)
+				}
+				fmt.Fprintf(w, `{"encoding":"base64","content":%q}`, base64.StdEncoding.EncodeToString([]byte("outpost="+pin+"\n")))
+			})
+			env, err := (GitHubSource{Platform: "windows_amd64", apiBase: srv.URL, HTTPClient: srv.Client()}).Resolve(context.Background())
+			if len(pin) != 40 {
+				if err == nil {
+					t.Fatal("invalid pin accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if env.Commit != "aaaaaaa" {
+				t.Fatalf("commit=%s, want outpost pin", env.Commit)
+			}
+		})
 	}
 }
