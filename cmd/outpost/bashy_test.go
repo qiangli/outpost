@@ -23,6 +23,11 @@ func TestMatchBashyReleaseAsset(t *testing.T) {
 		{"bash-windows-amd64.zip", "windows", "amd64", false},
 		{"bashy-linux-arm64.tar.gz", "windows", "amd64", false},
 		{"checksums.txt", "windows", "amd64", false},
+		{"bashy-scratch-windows-amd64", "windows", "amd64", false},
+		{"bashy-scratch-linux-amd64", "linux", "amd64", false},
+		{"bashy-scratch-windows-amd64.zip", "windows", "amd64", false},
+		{"bashy-windows-amd64.raw", "windows", "amd64", false},
+		{"bashy-darwin-arm64.oci", "darwin", "arm64", false},
 	}
 	for _, tt := range tests {
 		if got := matchBashyReleaseAsset(tt.name, tt.goos, tt.goarch); got != tt.want {
@@ -150,16 +155,29 @@ func TestBashyResolverOverride(t *testing.T) {
 func TestBashyResolverBackoff(t *testing.T) {
 	// Force local resolution to miss: no override, empty PATH, isolated HOME.
 	empty := t.TempDir()
+	cache := t.TempDir()
 	t.Setenv("OUTPOST_BASHY_BIN", "")
 	t.Setenv("PATH", empty)
 	t.Setenv("HOME", empty)
-	// Guard against a system-wide bashy in a hardcoded candidate dir.
-	for _, sys := range []string{"/usr/local/bin/bashy", "/opt/homebrew/bin/bashy"} {
-		if isExecutableFile(sys) {
-			t.Skipf("system bashy present at %s; backoff path not exercised here", sys)
+	// os.UserHomeDir/os.UserCacheDir/os.UserConfigDir ignore HOME and XDG on
+	// windows (%USERPROFILE% / %LOCALAPPDATA% / %APPDATA%) — isolate those too
+	// or a previously self-healed bashy is found and no backoff error occurs.
+	t.Setenv("USERPROFILE", empty)
+	t.Setenv("LOCALAPPDATA", cache)
+	t.Setenv("APPDATA", cache)
+	t.Setenv("BASHY_BIN_CACHE", t.TempDir())
+	// Pin the sibling seam inside the isolated dir: the default seam is the
+	// test binary's own directory, which this test does not control.
+	r := &bashyBinaryResolver{
+		lastFetch:  time.Now(), // within backoff window
+		executable: func() (string, error) { return filepath.Join(empty, "outpost"), nil },
+	}
+	// Guard against a bashy in any location the resolver actually searches.
+	for _, p := range append(bashyCandidatePaths(), filepath.Join(empty, bashyArchiveMember())) {
+		if isExecutableFile(p) {
+			t.Skipf("bashy present at %s; backoff path not exercised here", p)
 		}
 	}
-	r := &bashyBinaryResolver{lastFetch: time.Now()} // within backoff window
 	_, err := r.Path(context.Background())
 	if err == nil {
 		t.Fatal("expected an error when bashy is absent and auto-install is backing off")
@@ -181,5 +199,83 @@ func TestBashyCmdRejectsInstallConflict(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBashySiblingWins(t *testing.T) {
+	dir, stale := t.TempDir(), t.TempDir()
+	sibling := filepath.Join(dir, bashyArchiveMember())
+	for _, p := range []string{sibling, filepath.Join(stale, bashyArchiveMember())} {
+		if err := os.WriteFile(p, []byte("never execute fixture"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", stale)
+	t.Setenv("OUTPOST_BASHY_BIN", filepath.Join(stale, bashyArchiveMember()))
+	r := &bashyBinaryResolver{reconciled: true, executable: func() (string, error) { return filepath.Join(dir, "outpost"), nil }}
+	got, err := r.Path(context.Background())
+	if err != nil || got != sibling {
+		t.Fatalf("sibling = %q, %v", got, err)
+	}
+}
+
+func TestPairedBashyVersionRetainsChannel(t *testing.T) {
+	for _, tc := range []struct{ stamp, want string }{{"v1.2.3-dev", "v1.2.3-dev"}, {"1.2.3", "v1.2.3"}, {"", DefaultBashyVersion}, {"dev", DefaultBashyVersion}} {
+		if got := pairedBashyVersion(tc.stamp); got != tc.want {
+			t.Errorf("%q -> %q, want %q", tc.stamp, got, tc.want)
+		}
+	}
+	if !sameBashyVersion("1.2.3", "v1.2.3-dev") {
+		t.Fatal("product versions should match")
+	}
+}
+
+func TestReplaceBashyAsideRestoresOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "bashy.exe")
+	if err := os.WriteFile(dst, []byte("old"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceBashyAside(filepath.Join(dir, "missing"), dst); err == nil {
+		t.Fatal("expected missing source error")
+	}
+	body, err := os.ReadFile(dst)
+	if err != nil || string(body) != "old" {
+		t.Fatalf("original not restored: %q %v", body, err)
+	}
+}
+
+func TestBashyCmdForwardsExplicitShellArguments(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses /bin/sh; Windows is covered by install matrix")
+	}
+	path := filepath.Join(t.TempDir(), "bashy")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	old := bashyResolver
+	bashyResolver = &bashyBinaryResolver{cached: path, reconciled: true}
+	t.Cleanup(func() { bashyResolver = old })
+	cmd := bashyCmd()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{"--", "-c", "echo paired"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "-c\necho paired\n" {
+		t.Fatalf("forwarded %q", output.String())
+	}
+}
+
+func TestBashyResolverInvalidOverrideDoesNotFetch(t *testing.T) {
+	t.Setenv("OUTPOST_BASHY_BIN", filepath.Join(t.TempDir(), "missing"))
+	r := &bashyBinaryResolver{executable: func() (string, error) { return filepath.Join(t.TempDir(), "outpost"), nil }}
+	if _, err := r.Path(context.Background()); err == nil || !strings.Contains(err.Error(), "OUTPOST_BASHY_BIN") {
+		t.Fatalf("override error: %v", err)
+	}
+	if !r.lastFetch.IsZero() {
+		t.Fatal("invalid override attempted a download")
 	}
 }

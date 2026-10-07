@@ -16,20 +16,16 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/qiangli/outpost/internal/agent"
+	"github.com/qiangli/outpost/internal/bashypath"
 	"github.com/qiangli/yoke/pkg/binmgr"
 )
 
 const defaultBashyRepo = "qiangli/bashy"
 
-// DefaultBashyVersion is the bashy release this outpost was BUILT AND TESTED
-// against — the two are versioned as a matched pair. When no explicit
-// bashy_version pin is set, the supervisor reconciles the outpost-managed bashy
-// to THIS version on boot. Because outpost itself auto-rolls across the fleet
-// (fleet-upgrade push/pull), bumping this constant + releasing outpost is what
-// rolls the matched bashy out to every host: outpost upgrades, restarts, and its
-// first supervisor tick installs the matching bashy. Bump it whenever outpost is
-// validated against a new bashy release.
-const DefaultBashyVersion = "v0.22.0"
+// DefaultBashyVersion is used only by untagged development builds. Releases
+// derive the paired bashy tag from their own build stamp, including channel.
+const DefaultBashyVersion = "latest"
 
 // bashyAutoInstallBackoff throttles the self-heal download so an offline or
 // rate-limited host doesn't re-hit GitHub on every supervisor tick.
@@ -37,8 +33,8 @@ const bashyAutoInstallBackoff = 5 * time.Minute
 
 // bashyBinaryResolver locates the bashy executable used to run
 // outpost-supervised services (`bashy <svc> start|status|stop`), self-healing
-// when it is missing. Resolution order: an explicit $OUTPOST_BASHY_BIN, then
-// PATH, then the outpost binary's own dir and the common install locations
+// when it is missing. Resolution order: executable sibling, then
+// $OUTPOST_BASHY_BIN, PATH, and the common install locations
 // (a daemon's PATH is narrow — launchd/systemd strip ~/bin), and finally —
 // when bashy is genuinely absent — a download+verify+cache of the latest
 // release via binmgr (the same path `outpost bashy` uses). The resolved path
@@ -58,6 +54,8 @@ type bashyBinaryResolver struct {
 	// operator's existing install). Pin it in production so an outpost restart
 	// can't silently pull a new bashy.
 	version string
+	// executable is a test seam; production resolves os.Executable.
+	executable func() (string, error)
 }
 
 // SetVersion pins the bashy release the self-heal auto-install fetches. Called
@@ -87,18 +85,9 @@ func (r *bashyBinaryResolver) Path(ctx context.Context) (string, error) {
 	// Find an existing bashy. `override` (OUTPOST_BASHY_BIN) and a plain PATH hit
 	// are treated as operator-owned and never auto-rolled; an outpost-managed
 	// install (outpost-adjacent / cache) is reconciled to the matched version.
-	found, managed := "", false
-	if p := strings.TrimSpace(os.Getenv("OUTPOST_BASHY_BIN")); p != "" && isExecutableFile(p) {
-		found = p // 1. operator override — used as-is
-	} else if p, err := exec.LookPath("bashy"); err == nil {
-		found, managed = p, r.isManaged(p) // 2. PATH
-	} else {
-		for _, cand := range bashyCandidatePaths() { // 3. common install locations
-			if isExecutableFile(cand) {
-				found, managed = cand, r.isManaged(cand)
-				break
-			}
-		}
+	found, managed, localErr := bashypath.Find(r.executable)
+	if localErr != nil && !errors.Is(localErr, bashypath.ErrNotFound) {
+		return "", localErr
 	}
 	if found != "" {
 		// Reconcile the outpost-managed bashy to the matched version, ONCE per
@@ -141,7 +130,15 @@ func (r *bashyBinaryResolver) effectiveVersion() string {
 	if v != "" && !strings.EqualFold(v, "latest") {
 		return v
 	}
-	return DefaultBashyVersion
+	return pairedBashyVersion(agent.ReadBuildInfo().Version)
+}
+
+func pairedBashyVersion(stamp string) string {
+	stamp = strings.TrimSpace(stamp)
+	if stamp == "" || stamp == "dev" || stamp == "(devel)" {
+		return DefaultBashyVersion
+	}
+	return "v" + strings.TrimPrefix(stamp, "v")
 }
 
 // reconcile reinstalls bashy at path to effectiveVersion when the installed
@@ -201,14 +198,7 @@ func (r *bashyBinaryResolver) ReconcileExisting(ctx context.Context) {
 // (outpost-adjacent dir or the outpost cache) — the only bashy the resolver will
 // auto-roll. A bashy the operator installed elsewhere on PATH is left untouched.
 func (r *bashyBinaryResolver) isManaged(path string) bool {
-	dir := filepath.Clean(filepath.Dir(path))
-	if exe, err := os.Executable(); err == nil && dir == filepath.Clean(filepath.Dir(exe)) {
-		return true
-	}
-	if cache, err := os.UserCacheDir(); err == nil && dir == filepath.Clean(filepath.Join(cache, "outpost", "bin")) {
-		return true
-	}
-	return false
+	return bashypath.Managed(path, r.executable)
 }
 
 // bashyInstalledVersion runs `<path> --version` and extracts the bashy release
@@ -239,47 +229,30 @@ func parseBashyBanner(s string) string {
 	return strings.TrimSpace(rest)
 }
 
-// sameBashyVersion compares release strings ignoring a leading "v" (the tag is
-// "v0.13.0"; the banner reports "0.13.0").
+// sameBashyVersion compares the product version (v and -dev are display/channel
+// differences). Download selection always retains the exact release channel.
 func sameBashyVersion(have, want string) bool {
-	return strings.TrimPrefix(strings.TrimSpace(have), "v") == strings.TrimPrefix(strings.TrimSpace(want), "v")
+	normalize := func(v string) string {
+		return strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(v), "v"), "-dev")
+	}
+	return normalize(have) == normalize(want)
+}
+
+// sibling returns the paired executable beside this outpost, following install links.
+func (r *bashyBinaryResolver) sibling() string {
+	return bashypath.Sibling(r.executable)
 }
 
 // bashyCandidatePaths lists the usual bashy install locations, checked when it
 // is not on the daemon's (often narrow) PATH.
 func bashyCandidatePaths() []string {
-	name := bashyArchiveMember() // bashy or bashy.exe
-	var dirs []string
-	if exe, err := os.Executable(); err == nil {
-		dirs = append(dirs, filepath.Dir(exe)) // installed alongside outpost
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		dirs = append(dirs, filepath.Join(home, "bin"), filepath.Join(home, ".local", "bin"))
-	}
-	dirs = append(dirs, "/usr/local/bin", "/opt/homebrew/bin")
-	if cache, err := os.UserCacheDir(); err == nil {
-		dirs = append(dirs, filepath.Join(cache, "outpost", "bin"))
-	}
-	out := make([]string, 0, len(dirs))
-	for _, d := range dirs {
-		if strings.TrimSpace(d) != "" {
-			out = append(out, filepath.Join(d, name))
-		}
-	}
-	return out
+	return bashypath.Candidates()
 }
 
 // isExecutableFile reports whether path is a runnable file (regular file, and
 // on unix carrying an execute bit).
 func isExecutableFile(path string) bool {
-	fi, err := os.Stat(path)
-	if err != nil || fi.IsDir() {
-		return false
-	}
-	if runtime.GOOS == "windows" {
-		return true // executability is by extension, not a mode bit
-	}
-	return fi.Mode().Perm()&0o111 != 0
+	return bashypath.Executable(path)
 }
 
 // outpost bashy is the bootstrap bridge for machines that have outpost but not
@@ -295,7 +268,7 @@ func bashyCmd() *cobra.Command {
 		installDir string
 	)
 	cmd := &cobra.Command{
-		Use:   "bashy",
+		Use:   "bashy [-- shell-args...]",
 		Short: "Download, verify, and cache the bashy system shell",
 		Long: `outpost bashy seeds bashy onto a machine that already has outpost.
 
@@ -306,16 +279,55 @@ location after verification.
 
 This command intentionally does not use system git, system bash, or system
 coreutils. Once bashy exists, use bashy git / bashy dag / bashy self for the
-rest of the build and update workflow.`,
-		Args:         cobra.NoArgs,
+rest of the build and update workflow.
+
+Run the resolved shell with outpost bashy -- <args>, for example:
+  outpost bashy -- -c 'echo hello'
+Bare --version reports the paired shell; --version=TAG selects a bootstrap tag.`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			// Preserve the historical --version TAG bootstrap spelling as well as
+			// --version=TAG, while bare --version now reports the installed pair.
+			if version == "__report__" && len(args) == 1 && cmd.ArgsLenAtDash() < 0 {
+				version = args[0]
+				return nil
+			}
+			return nil
+		},
 		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
+			forward := cmd.ArgsLenAtDash() >= 0 || (len(args) > 0 && version == "")
+			if forward {
+				if install != "" || installDir != "" || (version != "" && version != "__report__") || cmd.Flags().Changed("repo") {
+					return errors.New("shell arguments cannot be combined with bootstrap flags")
+				}
+				path, err := bashyResolver.Path(cmd.Context())
+				if err != nil {
+					return err
+				}
+				child := exec.CommandContext(cmd.Context(), path, args...)
+				child.Stdin, child.Stdout, child.Stderr = cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()
+				return child.Run()
+			}
+			if version == "__report__" {
+				path, err := bashyResolver.Path(cmd.Context())
+				if err != nil {
+					return err
+				}
+				child := exec.CommandContext(cmd.Context(), path, "--version")
+				child.Stdin, child.Stdout, child.Stderr = cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()
+				return child.Run()
+			}
 			if install != "" && installDir != "" {
 				return errors.New("--install and --install-dir are mutually exclusive")
 			}
 			path, err := ensureBashy(cmd.Context(), bashyResolveOptions{
-				Repo:    repo,
-				Version: version,
+				Repo: repo,
+				Version: func() string {
+					if version != "" {
+						return version
+					}
+					return bashyResolver.effectiveVersion()
+				}(),
 			})
 			if err != nil {
 				return err
@@ -344,7 +356,9 @@ rest of the build and update workflow.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&version, "version", "latest", "bashy release tag to fetch")
+	cmd.Flags().StringVar(&version, "version", "", "Report bashy version, or fetch the specified release tag")
+	cmd.Flags().Lookup("version").NoOptDefVal = "__report__"
+
 	cmd.Flags().StringVar(&repo, "repo", defaultBashyRepo, "GitHub owner/name for bashy releases")
 	cmd.Flags().StringVar(&install, "install", "", "Install bashy to this exact executable path after caching")
 	cmd.Flags().StringVar(&installDir, "install-dir", "", "Install bashy as bashy[.exe] in this directory after caching")
@@ -393,6 +407,15 @@ func matchBashyReleaseAsset(name, goos, goarch string) bool {
 	n := strings.ToLower(name)
 	if !strings.HasPrefix(n, "bashy-") {
 		return false
+	}
+	// Non-product variants share the bashy- prefix: the scratch profile
+	// ships as a raw binary (bashy-scratch-<os>-<arch>) and engine blobs
+	// publish raw/OCI artifacts. None of those is the released shell
+	// archive — never resolve one as bashy.
+	for _, variant := range []string{"scratch", "raw", "oci"} {
+		if strings.Contains(n, variant) {
+			return false
+		}
 	}
 	if !strings.Contains(n, strings.ToLower(goos)) {
 		return false
@@ -445,8 +468,38 @@ func installBashyExecutable(src, dst string) error {
 		return err
 	}
 	if err := os.Rename(tmpName, dst); err != nil {
-		return err
+		if runtime.GOOS != "windows" {
+			return err
+		}
+		if err := replaceBashyAside(tmpName, dst); err != nil {
+			return err
+		}
 	}
 	removeTmp = false
+	return nil
+}
+
+// replaceBashyAside supports replacing an executing Windows image. Restore the
+// original path if installation fails; keep the old image until it can be deleted.
+func replaceBashyAside(tmp, dst string) error {
+	old := dst + ".old"
+	if err := os.Remove(old); err != nil && !errors.Is(err, os.ErrNotExist) {
+		f, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".old-*")
+		if err != nil {
+			return err
+		}
+		old = f.Name()
+		_ = f.Close()
+		_ = os.Remove(old)
+	}
+	if err := os.Rename(dst, old); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		if restore := os.Rename(old, dst); restore != nil {
+			return fmt.Errorf("install: %w; restore: %v", err, restore)
+		}
+		return err
+	}
 	return nil
 }
