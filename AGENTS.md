@@ -8,7 +8,7 @@ This is a Go 1.25 module for the `outpost` host agent. CLI entry points live in 
 
 ## Build, Test, and Development Commands
 
-There is no Makefile — the canonical entry points are bash scripts under `scripts/`. They work both under regular bash and under `outpost shell`, so a user with only `outpost` + a Go toolchain installed can rebuild from source (no system git, no make, no coreutils setup beyond what `outpost shell` already provides).
+The Makefile is a thin front door to the canonical build scripts under `scripts/`; `make test` supplies the release build tags. They work both under regular bash and under `outpost shell`, so a user with only `outpost` + a Go toolchain installed can rebuild from source (no system git, no make, no coreutils setup beyond what `outpost shell` already provides).
 
 - `./scripts/bootstrap-siblings.sh` materializes sibling-path replace targets (`../sh`) from `.sibling-pins`; run once on a fresh standalone clone before `./scripts/build.sh`. No-op inside the dhnt umbrella. Prefers `outpost git` when on PATH; falls back to system `git`.
 - `./scripts/build.sh` builds `./cmd/outpost` into `./bin/outpost`; set `RELEASE_TAG=vX.Y.Z` to stamp release metadata. Honors `$GOOS`/`$GOARCH`/`$CGO_ENABLED` from env.

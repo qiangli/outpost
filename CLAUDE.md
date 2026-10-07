@@ -17,7 +17,7 @@ Requires Go 1.25+ (see `go.mod`). Note the two sibling-path replaces in `go.mod`
 The sibling-path replaces resolve in two contexts: inside the dhnt umbrella they point at the `dhnt/sh` and `dhnt/coreutils` submodules; standalone, run `./scripts/bootstrap-siblings.sh` to clone each into `../<name>` at the SHA pinned in `.sibling-pins`. CI runs the bootstrap automatically. The bootstrap script prefers `outpost git` when an outpost is on PATH (so a Windows machine with only outpost + go installed can self-rebuild) and falls back to system `git` otherwise.
 
 ```bash
-# Build scripts (no Makefile — bash scripts under scripts/ are the canonical entry points)
+# Build scripts (Makefile delegates to these canonical scripts)
 ./scripts/build.sh           # → ./bin/outpost
 ./scripts/build-all.sh       # cross-compile darwin/linux/windows × amd64/arm64
 ./scripts/install-bin.sh     # build + install to $DHNT_BIN_DIR (default ~/.local/bin)
@@ -527,20 +527,19 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   `RequireLogin`). Gitea itself is still a binmgr-managed external (not compiled in),
   fetched by `bashy loom` — the lean-core model. The generic `BashyService`
   supervisor drives any `bashy <svc>` lifecycle; loom is the seed entry.
-  **Self-heal for a missing bashy** (`cmd/outpost/bashy.go` `bashyResolver`): the
-  supervisor never trusts `bashy` to be on the (narrow, launchd/systemd) daemon PATH
-  — it resolves via `$OUTPOST_BASHY_BIN` → PATH → outpost-adjacent + common install
-  dirs, and if bashy is genuinely absent it **auto-installs via `binmgr`** (same
-  path as `outpost bashy --install`), throttled by a 5-min backoff. The fetched
-  release is governed by **`bashy_version`** (`FileConfig.BashyVersion`, four-surface:
-  admincore `SetBuiltins` → restart, `outpost_set_builtins` MCP, `builtins set
-  --bashy-version` CLI, `bashy_version` SafeView/UI row): empty/`latest` = newest, a
-  tag pins it. **Pin it in production** — an unpinned `latest` means a restart can
-  silently pull a new bashy. The pin governs only the auto-install of a *missing*
-  bashy; an already-installed bashy on PATH is used as-is. A resolve failure is
-  non-fatal: the 30s loop retries, so a service recovers as soon as bashy is
-  installed or the network returns — a missing userland self-remediates instead of
-  failing forever. Loom's own four-surface toggle unchanged
+  **Bashy companion contract (Sprint 386 target):** resolve the executable-directory
+  sibling before `$OUTPOST_BASHY_BIN`, PATH, `~/bin`, `~/.local/bin` and the
+  verified binmgr cache. Auto-acquisition for managed services remains throttled;
+  offline mode refuses network acquisition. `bashy_version` (`FileConfig.BashyVersion`,
+  admincore/MCP/CLI/UI surfaces) retains an explicit operator pin; the default
+  companion release derives from outpost's own release stamp rather than an
+  independent constant. Empty configuration must not silently follow newest
+  on tagged builds. Untagged development fallback is separate and explicit.
+  Installed shell sessions execute bashy and report a missing executable clearly;
+  they do not fall back to an embedded interpreter. This paragraph describes the
+  required Sprint 386 contract; check the active story evidence for delivery.
+  A service resolve failure remains non-fatal to the daemon and retries through
+  the existing supervisor loop. Loom's own four-surface toggle unchanged
   (`SetBuiltins` Loom/LoomPort → restart, `outpost_set_builtins` MCP, `builtins set
   --loom[-port]` CLI, `loom_enabled` SafeView row).
 - **Zot builtin — the OCI registry (wrap-harness *tool lifecycle*).** Identical
