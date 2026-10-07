@@ -568,24 +568,35 @@ func dialDirectSSH(ctx context.Context, host string, port int, user string) (*ss
 // Wrapped in RetryableAuthMethod so a typo gets the same three tries
 // the server's MaxAuthTries allows.
 func sshPasswordAuth(user, target string) []ssh.AuthMethod {
-	envTried := false
 	return []ssh.AuthMethod{
-		ssh.RetryableAuthMethod(ssh.PasswordCallback(func() (string, error) {
-			if pw := os.Getenv("OUTPOST_SSH_PASSWORD"); pw != "" && !envTried {
-				// Env password only gets one shot — re-supplying the
-				// same wrong value three times just burns the server's
-				// auth tries and delays the real error.
-				envTried = true
-				return pw, nil
+		ssh.RetryableAuthMethod(ssh.PasswordCallback(sshPasswordCallback(user, target)), 3),
+	}
+}
+
+// sshPromptPassword is the interactive /dev/tty prompt; a test seam.
+var sshPromptPassword = readPassword
+
+// sshPasswordCallback returns the password source behind
+// sshPasswordAuth. An explicit $OUTPOST_SSH_PASSWORD makes the dial
+// non-interactive, like sshpass: it gets exactly one shot and a
+// rejection is final even when a controlling TTY exists — falling back
+// to a prompt would block an agent running under a PTY indefinitely.
+func sshPasswordCallback(user, target string) func() (string, error) {
+	envTried := false
+	return func() (string, error) {
+		if pw := os.Getenv("OUTPOST_SSH_PASSWORD"); pw != "" {
+			if envTried {
+				// Re-supplying the same wrong value just burns the
+				// server's auth tries and delays the real error.
+				return "", errors.New("OUTPOST_SSH_PASSWORD was rejected (invalid credentials)")
 			}
-			if !haveTTY() {
-				if envTried {
-					return "", errors.New("OUTPOST_SSH_PASSWORD was rejected (invalid credentials)")
-				}
-				return "", errors.New("no TTY for password prompt (set OUTPOST_SSH_PASSWORD for non-interactive use)")
-			}
-			return readPassword(fmt.Sprintf("%s@%s password", user, target), false)
-		}), 3),
+			envTried = true
+			return pw, nil
+		}
+		if !haveTTY() {
+			return "", errors.New("no TTY for password prompt (set OUTPOST_SSH_PASSWORD for non-interactive use)")
+		}
+		return sshPromptPassword(fmt.Sprintf("%s@%s password", user, target), false)
 	}
 }
 

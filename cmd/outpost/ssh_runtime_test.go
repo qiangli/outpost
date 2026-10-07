@@ -161,3 +161,26 @@ func meshTestConfig(t *testing.T, rawURL string) *conf.FileConfig {
 	}
 	return &conf.FileConfig{ServerAddr: u.Hostname(), ServerPort: port, Protocol: "ws"}
 }
+
+// An explicit OUTPOST_SSH_PASSWORD is non-interactive: after the server
+// rejects it, the callback must fail rather than fall back to a /dev/tty
+// prompt (which blocks forever when the caller runs under a PTY).
+func TestSSHPasswordCallbackEnvRejectionNeverPrompts(t *testing.T) {
+	t.Setenv("OUTPOST_SSH_PASSWORD", "wrong")
+	prev := sshPromptPassword
+	sshPromptPassword = func(string, bool) (string, error) {
+		t.Fatal("interactive prompt reached with OUTPOST_SSH_PASSWORD set")
+		return "", nil
+	}
+	defer func() { sshPromptPassword = prev }()
+
+	cb := sshPasswordCallback("u", "h")
+	if pw, err := cb(); err != nil || pw != "wrong" {
+		t.Fatalf("first attempt = %q, %v; want env password", pw, err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := cb(); err == nil || !strings.Contains(err.Error(), "OUTPOST_SSH_PASSWORD was rejected") {
+			t.Fatalf("retry %d err = %v; want env rejection", i, err)
+		}
+	}
+}
