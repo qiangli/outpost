@@ -5,16 +5,8 @@ description: cross-platform build / test / release for outpost (+ paired bashy).
 # deploy
 ## Tasks
 
-### bootstrap
-Materialize sibling deps (coreutils/sh) so the build resolves ../coreutils, ../sh.
-Effects: write
-```bash
-./scripts/bootstrap-siblings.sh
-```
-
 ### build-all
 Cross-compile outpost for every release platform on ONE host (CGO_ENABLED=0).
-Requires: bootstrap
 Effects: write
 ```bash
 ./scripts/build-all.sh
@@ -28,7 +20,6 @@ toolchain (+ git, coreutils). Shell tests need a controlling TTY, so they're
 excluded in headless CI (run them on a real dev box).
 Effects: write
 ```bash
-./scripts/bootstrap-siblings.sh
 bashy go test -short $(bashy go list ./... | grep -v 'internal/agent/shell')
 ```
 

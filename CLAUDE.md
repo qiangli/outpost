@@ -12,9 +12,9 @@ The local HTTP server binds loopback only — the cloud reaches it strictly thro
 
 ## Common commands
 
-Requires Go 1.25+ (see `go.mod`). Note the two sibling-path replaces in `go.mod`: `replace mvdan.cc/sh/v3 => ../sh` (the shell runner depends on a fork) and `replace github.com/qiangli/coreutils => ../coreutils` (the pure-Go git client behind `outpost git`, plus — over time — the rest of the agent userland). The sh fork additionally implements `disown` / `kill` / `nohup` / `setsid` as builtins (upstream has them only as declarations or not at all), which is what lets `nohup ... &` survive a closed SSH session in the matrix shell. The fork also ships `mvdan.cc/sh/v3/interactive` — a reusable read-edit-execute loop wrapping `ergochat/readline` around `interp.Runner`, originally extracted from `cmd/bashy`; this is what gives the matrix shell + `/ssh` arrow-key history, cursor editing, and Ctrl-R reverse search that upstream `parser.Interactive` does not provide.
+Requires Go 1.25+ (see `go.mod`). `go.mod` pins its siblings at real versions: coreutils and yoke as requires at pseudo-versions, and the forks as versioned replaces (`mvdan.cc/sh/v3 => github.com/qiangli/sh/v3`, plus readline, filebrowser, gotreesitter and goawk) — the shell runner depends on the sh fork. The sh fork additionally implements `disown` / `kill` / `nohup` / `setsid` as builtins (upstream has them only as declarations or not at all), which is what lets `nohup ... &` survive a closed SSH session in the matrix shell. The fork also ships `mvdan.cc/sh/v3/interactive` — a reusable read-edit-execute loop wrapping `ergochat/readline` around `interp.Runner`, originally extracted from `cmd/bashy`; this is what gives the matrix shell + `/ssh` arrow-key history, cursor editing, and Ctrl-R reverse search that upstream `parser.Interactive` does not provide.
 
-The sibling-path replaces resolve in two contexts: inside the dhnt umbrella they point at the `dhnt/sh` and `dhnt/coreutils` submodules; standalone, run `./scripts/bootstrap-siblings.sh` to clone each into `../<name>` at the SHA pinned in `.sibling-pins`. CI runs the bootstrap automatically. The bootstrap script prefers `outpost git` when an outpost is on PATH (so a Windows machine with only outpost + go installed can self-rebuild) and falls back to system `git` otherwise.
+A standalone clone builds with stock go (it downloads the pins); inside the dhnt umbrella the root go.work builds the live sibling submodules. The pre-push hook checks the standalone graph (`GOWORK=off go list -deps`). Move pins with `bashy mod sync` (rules: the dhnt umbrella's `docs/bashy-go-module-contract.md`).
 
 ```bash
 # Build scripts (Makefile delegates to these canonical scripts)
@@ -23,12 +23,10 @@ The sibling-path replaces resolve in two contexts: inside the dhnt umbrella they
 ./scripts/install-bin.sh     # build + install to $DHNT_BIN_DIR (default ~/.local/bin)
 ./scripts/tidy.sh            # go mod tidy + go fmt ./... + go vet ./...
 ./scripts/clean.sh           # rm -rf ./bin
-./scripts/bootstrap-siblings.sh   # materialize ../sh from .sibling-pins (idempotent)
 
 # Rebuild outpost from outpost (zero system-git, zero make — only Go toolchain required):
 outpost git clone https://github.com/qiangli/outpost.git
 cd outpost
-outpost shell ./scripts/bootstrap-siblings.sh
 outpost shell ./scripts/build.sh
 # → ./bin/outpost
 

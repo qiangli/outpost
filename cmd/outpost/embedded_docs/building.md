@@ -4,11 +4,11 @@ Every path below produces a `bin/outpost` (or `bin\outpost.exe`) with
 the git commit stamped in, so `outpost version` reports a build you can
 trace back to a SHA.
 
-**The one thing to know first:** outpost's `go.mod` contains
-`replace mvdan.cc/sh/v3 => ../sh` — the shell runner depends on a fork
-that must exist as a *sibling directory* of the checkout. Every build
-path below materializes it for you from the SHA pinned in
-[`.sibling-pins`](../.sibling-pins). This is also why
+**The one thing to know first:** outpost's `go.mod` pins its siblings at
+real versions, and the forks it depends on (the shell runner needs the sh
+fork) as versioned replaces such as
+`replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 <pseudo-version>`. A plain
+clone builds; the go command downloads the pins. Those replaces are also why
 `go install github.com/qiangli/outpost/cmd/outpost@latest` does **not**
 work: Go refuses to `go install` a module with replace directives.
 
@@ -27,7 +27,7 @@ work: Go refuses to `go install` a module with replace directives.
 ```bash
 git clone https://github.com/qiangli/outpost.git
 cd outpost
-./scripts/build.sh        # bootstraps ../sh, builds → ./bin/outpost
+./scripts/build.sh        # builds → ./bin/outpost
 ./bin/outpost version
 ```
 
@@ -67,9 +67,8 @@ outpost build --src .              # build the checkout you're standing in
 outpost build -o ./outpost-new     # choose the output path
 ```
 
-`outpost build` clones the repo, checks out `--ref`, materializes the
-`../sh` sibling at its pinned SHA, and runs `go build` with provenance
-ldflags. It prints the built path when done.
+`outpost build` clones the repo, checks out `--ref`, and runs `go build`
+with provenance ldflags (the go command fetches the pinned siblings). It prints the built path when done.
 
 ## Installing the result
 
@@ -102,6 +101,6 @@ authenticates correctly with no `libpam-dev` build dependency.
 
 ## Building inside the dhnt umbrella
 
-If your checkout is the `dhnt/outpost` submodule, `../sh` is already
-mounted as the `dhnt/sh` submodule — every path above detects it and
-leaves it alone. Nothing else changes.
+If your checkout is the `dhnt/outpost` submodule, the umbrella's root
+`go.work` builds it against the live sibling submodules (`dhnt/sh`,
+`dhnt/yoke`, ...). `GOWORK=off` builds the go.mod pins, as CI does.
