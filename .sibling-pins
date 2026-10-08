@@ -12,6 +12,6 @@
 # script/sync.sh, the SHA here must be bumped to match — sync.sh
 # automates this.
 sh=f6589660f589e0ac26006a2bfcc28718b2ebdde6
-coreutils=e14d77d97faba0fad4f3e232f11f605f64fef251
-yoke=6941373559984642b4c5cfed748108b1f8566a62
+coreutils=574a21fe8d426febcba95babe9cf4df6cf316fd9
+yoke=a61399bab54326097568952a5122e2c0a87f09da
 filebrowser=0b059ae20b7948baa3c7d2db1309485486b47c3a
