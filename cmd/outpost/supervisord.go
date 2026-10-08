@@ -188,11 +188,35 @@ func claimSupervisordPidFile() error {
 		return err
 	}
 	if data, err := os.ReadFile(p); err == nil {
-		if oldPid, perr := strconv.Atoi(strings.TrimSpace(string(data))); perr == nil && oldPid > 0 && processAlive(oldPid) {
+		if oldPid, perr := strconv.Atoi(strings.TrimSpace(string(data))); perr == nil && oldPid > 0 && processAlive(oldPid) && pidIsOutpost(oldPid) {
 			return fmt.Errorf("outpost supervisord is already running (pid %d)", oldPid)
 		}
 	}
 	return os.WriteFile(p, []byte(strconv.Itoa(os.Getpid())), 0o600)
+}
+
+// pidIsOutpost reports whether a live pid from a stale pidfile is still an
+// outpost process. After a reboot the pid is often reused by an unrelated
+// program (seen: ollama), and treating that as "already running" keeps the
+// supervisor from ever starting under launchd/systemd. When the identity
+// cannot be read, keep the conservative answer: assume it is ours.
+func pidIsOutpost(pid int) bool {
+	name, err := processName(pid)
+	if err != nil || name == "" {
+		return true
+	}
+	return sameExecutableName(name)
+}
+
+func sameExecutableName(name string) bool {
+	trim := func(n string) string {
+		return strings.TrimSuffix(strings.ToLower(filepath.Base(n)), ".exe")
+	}
+	self, err := os.Executable()
+	if err == nil && trim(self) == trim(name) {
+		return true
+	}
+	return strings.HasPrefix(trim(name), "outpost")
 }
 
 func removeSupervisordPidFile() {

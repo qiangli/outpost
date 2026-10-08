@@ -2,7 +2,11 @@
 
 package main
 
-import "golang.org/x/sys/windows"
+import (
+	"errors"
+
+	"golang.org/x/sys/windows"
+)
 
 // stillActive is GetExitCodeProcess's STILL_ACTIVE sentinel: a process
 // that has not yet exited reports this as its exit code.
@@ -39,3 +43,9 @@ func processAlive(pid int) bool {
 	}
 	return code == stillActive
 }
+
+// processName is not implemented on Windows; callers keep their
+// conservative answer.
+func processName(int) (string, error) { return "", errProcessNameUnsupported }
+
+var errProcessNameUnsupported = errors.New("process name lookup unsupported on windows")
