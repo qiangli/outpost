@@ -42,6 +42,22 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # SSH shell/exec sessions execute the paired bashy binary (Sprint 386
+      # S8: internal/agent/shell resolves it via sibling → $OUTPOST_BASHY_BIN
+      # → PATH → well-known dirs, and a shell request never downloads one).
+      # A standalone CI clone has no sibling checkout, so without this step
+      # TestSSHDirectE2E and the TestSSHHandler{Exec,ExecPTY,
+      # ExecDetachedOutputDoesNotHoldChannel,ShellGreets,
+      # CloudboxVouchedSkipsPassword} tests fail with "bashy executable
+      # missing". `latest` matches production pairing for these builds:
+      # pairedBashyVersion maps empty/dev stamps (what CI builds) to latest;
+      # releases pair by matching tag instead.
+      - name: install paired bashy (SSH/shell tests exec it)
+        run: |
+          set -euo pipefail
+          go install github.com/qiangli/bashy/cmd/bashy@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
       - name: Test rollout SHA convergence logic
         run: ./scripts/git-sha-equivalent_test.sh
 
