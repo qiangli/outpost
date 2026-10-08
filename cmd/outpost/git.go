@@ -342,12 +342,23 @@ func gitCommitCmd() *cobra.Command {
 }
 
 func gitStatusCmd() *cobra.Command {
-	return &cobra.Command{
+	var short, porcelain bool
+	cmd := &cobra.Command{
 		Use:     "status [path]",
 		Short:   "Show working tree status",
 		Args:    cobra.MaximumNArgs(1),
 		Example: `  outpost git status`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if short || porcelain {
+				// Porcelain short form is served by the engine
+				// (nativeStatus --short); other status flags stay
+				// loud cobra errors, never silent approximations.
+				res, err := outgit.Exec(cmd.Context(), ".", []string{"status", "--short"})
+				if err != nil {
+					return err
+				}
+				return renderGitResult(cmd, res)
+			}
 			repo := "."
 			if len(args) > 0 {
 				repo = args[0]
@@ -391,6 +402,9 @@ func gitStatusCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVarP(&short, "short", "s", false, "Porcelain short format (engine-native)")
+	cmd.Flags().BoolVar(&porcelain, "porcelain", false, "Alias for --short")
+	return cmd
 }
 
 func gitLogCmd() *cobra.Command {

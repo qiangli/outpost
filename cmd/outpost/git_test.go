@@ -310,11 +310,24 @@ func TestGitParityVerbsWiring(t *testing.T) {
 	}
 }
 
-// TestGitUnimplementedVerbsError verifies that recognized-but-
-// unimplemented verbs produce a clear pure-Go explanation with a
-// workaround hint (never a fallback to system git), and that genuinely
-// unknown verbs get a pointer to --help.
+// TestGitUnimplementedVerbsError verifies the one-door dispatch contract:
+// verbs the native engine cannot serve fail loudly with a "not served"
+// note plus a workaround hint (retry with --external where a host git
+// exists); verbs the engine HAS started serving (stash, clean) dispatch
+// for real; genuinely unknown verbs get a pointer to --help.
 func TestGitUnimplementedVerbsError(t *testing.T) {
+	// Engine dispatch is real: bare `stash` would snapshot a dirty repo,
+	// so run everything from an empty non-repo directory (never the
+	// checkout under test — t.TempDir() has no repo parents).
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty := t.TempDir()
+	if err := os.Chdir(empty); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(prev) }()
 	run := func(args ...string) (string, error) {
 		root := gitCmd()
 		buf := &bytes.Buffer{}
@@ -327,20 +340,31 @@ func TestGitUnimplementedVerbsError(t *testing.T) {
 
 	for verb, wantHint := range map[string]string{
 		"rebase": "merge <base>",
-		"stash":  "checkout -b wip",
-		"clean":  "ls-files -o",
+		"stash":  "push/pop/list run natively",
 	} {
 		_, err := run(verb)
 		if err == nil {
 			t.Fatalf("%s: expected error", verb)
 		}
-		if !strings.Contains(err.Error(), "pure-Go") || !strings.Contains(err.Error(), wantHint) {
-			t.Errorf("%s: error missing pure-Go note or hint %q:\n%v", verb, wantHint, err)
+		if !strings.Contains(err.Error(), "not served") || !strings.Contains(err.Error(), wantHint) {
+			t.Errorf("%s: error missing not-served note or hint %q:\n%v", verb, wantHint, err)
 		}
 	}
 
+	// Engine-dispatched but rejected for the form: `stash drop` reaches
+	// the engine (no repo touched) and comes back loud with the hint.
+	if _, err := run("stash", "drop"); err == nil || !strings.Contains(err.Error(), "push/pop/list run natively") {
+		t.Errorf("stash drop: %v", err)
+	}
+
+	// `clean` with no mode flag refuses like host git (fatal 128), even
+	// with no repository involved.
+	if out, err := run("clean"); err == nil || !strings.Contains(err.Error(), "exit status 128") || !strings.Contains(out, "requireForce") {
+		t.Errorf("clean: out=%q err=%v", out, err)
+	}
+
 	// Flags meant for the unimplemented verb don't derail the message.
-	if _, err := run("rebase", "-i", "main"); err == nil || !strings.Contains(err.Error(), "not implemented") {
+	if _, err := run("rebase", "-i", "main"); err == nil || !strings.Contains(err.Error(), "not served") {
 		t.Errorf("rebase -i: %v", err)
 	}
 
@@ -353,5 +377,43 @@ func TestGitUnimplementedVerbsError(t *testing.T) {
 	out, err := run()
 	if err != nil || !strings.Contains(out, "self-contained git client") {
 		t.Errorf("bare git: err=%v out:\n%s", err, out)
+	}
+}
+
+func TestGitStatusShortPassthrough(t *testing.T) {
+	// `status --short` must reach the engine's porcelain form, not die
+	// on flag parsing.
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(prev) }()
+	run := func(args ...string) (string, error) {
+		root := gitCmd()
+		buf := &bytes.Buffer{}
+		root.SetOut(buf)
+		root.SetErr(buf)
+		root.SetArgs(args)
+		err := root.Execute()
+		return buf.String(), err
+	}
+	if _, err := run("init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"--short", "-s", "--porcelain"} {
+		out, err := run("status", flag)
+		if err != nil {
+			t.Fatalf("status %s: %v", flag, err)
+		}
+		if !strings.Contains(out, "?? new.txt") {
+			t.Fatalf("status %s: expected porcelain untracked line, got %q", flag, out)
+		}
 	}
 }
