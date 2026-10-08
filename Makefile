@@ -36,7 +36,7 @@ tidy:  ## go mod tidy + go fmt + go vet (APPLIES fixes — not a gate)
 fmtcheck:  ## gofmt gate — reports unformatted files, never rewrites them
 	@./scripts/fmtcheck.sh
 
-hooks:  ## install the pre-push gates (gofmt + .sibling-pins drift)
+hooks:  ## install the pre-push gates (gofmt + standalone module graph)
 	@git config core.hooksPath scripts/hooks
 	@echo "hooks installed: core.hooksPath=scripts/hooks"
 

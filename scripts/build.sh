@@ -11,12 +11,6 @@ cd "$ROOT"
 # shellcheck source=lib.sh
 . "$ROOT/scripts/lib.sh"
 
-# Materialize the ../sh sibling first (go.mod: replace mvdan.cc/sh/v3
-# => ../sh) so a fresh standalone clone builds with this one command.
-# Idempotent — an existing sibling (umbrella submodule, prior run) is
-# left alone, so repeated calls from build-all.sh cost one stat each.
-"$ROOT/scripts/bootstrap-siblings.sh"
-
 mkdir -p "$OUT_DIR"
 
 OUT="$OUT_DIR/$BIN"

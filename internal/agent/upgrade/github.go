@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/qiangli/yoke/pkg/gomod"
 	"io"
 	"net/http"
 	"net/url"
@@ -167,7 +168,42 @@ func (g GitHubSource) Resolve(ctx context.Context) (Envelope, error) {
 	return env, nil
 }
 
+// resolveOutpostPin names the outpost commit a bashy product tag ships. The
+// pin is the go.mod `tool github.com/qiangli/outpost/cmd/outpost` directive
+// at the tag (the required outpost version: a pseudo-version's revision, or
+// a tag resolved on the outpost repo). Tags cut before go.mod carried the
+// pin fall back to the legacy .sibling-pins file.
 func (g GitHubSource) resolveOutpostPin(ctx context.Context, repo, tag string) (string, error) {
+	var file struct {
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+	}
+	if err := g.getJSON(ctx, g.base()+"/repos/"+repo+"/contents/go.mod?ref="+url.QueryEscape(tag), &file); err == nil && file.Encoding == "base64" {
+		if data, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(file.Content, "\n", "")); err == nil {
+			tools, err := gomod.Tools(data)
+			if err != nil {
+				return "", fmt.Errorf("parse go.mod at %s: %w", tag, err)
+			}
+			for _, t := range tools {
+				if t.Package != outpostToolPackage {
+					continue
+				}
+				if t.Commit != "" {
+					return shortCommit(t.Commit), nil
+				}
+				if t.Version != "" {
+					return g.resolveTagCommit(ctx, "qiangli/outpost", t.Version)
+				}
+			}
+		}
+	}
+	return g.resolveLegacyOutpostPin(ctx, repo, tag)
+}
+
+// outpostToolPackage is the tool directive a bashy product go.mod pins.
+const outpostToolPackage = "github.com/qiangli/outpost/cmd/outpost"
+
+func (g GitHubSource) resolveLegacyOutpostPin(ctx context.Context, repo, tag string) (string, error) {
 	var file struct {
 		Content  string `json:"content"`
 		Encoding string `json:"encoding"`

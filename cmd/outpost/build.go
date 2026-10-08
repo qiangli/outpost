@@ -6,38 +6,28 @@ package main
 // This is the scripted form of the self-rebuild flow:
 //
 //	outpost git clone https://github.com/qiangli/outpost.git
-//	cd outpost && outpost shell ./scripts/bootstrap-siblings.sh
 //	outpost shell ./scripts/build.sh
 //
-// Steps: clone --repo at --ref (or reuse --src), materialize the
-// sibling-path replace targets from .sibling-pins (go.mod has
-// `replace mvdan.cc/sh/v3 => ../sh`), then `go build` with the commit +
-// dirty flag stamped so `outpost version` stays traceable to a SHA.
+// Steps: clone --repo at --ref (or reuse --src), then `go build` with the
+// commit + dirty flag stamped so `outpost version` stays traceable to a SHA.
+// Siblings are go.mod pins, so the go command fetches them; no clones.
 //
 // The command deliberately stops at producing a binary — swapping the
 // running install is `outpost upgrade --local <built>`, which keeps the
 // .previous rollback contract in one place.
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 
 	"github.com/spf13/cobra"
 
 	outgit "github.com/qiangli/yoke/git"
 )
-
-// siblingRepoURLs mirrors repo_url() in scripts/bootstrap-siblings.sh.
-// If you add a new sibling to .sibling-pins, append here too.
-var siblingRepoURLs = map[string]string{
-	"sh": "https://github.com/qiangli/sh.git",
-}
 
 func buildCmd() *cobra.Command {
 	var (
@@ -54,9 +44,9 @@ func buildCmd() *cobra.Command {
 outpost's embedded git client, so the only prerequisite is Go 1.25+ on
 PATH (https://go.dev/dl/ or 'winget install GoLang.Go').
 
-By default it clones the upstream repo at main into a work directory,
-materializes the ../sh sibling at the SHA pinned in .sibling-pins, and
-builds with the commit stamped into the binary.
+By default it clones the upstream repo at main into a work directory and
+builds with the commit stamped into the binary; the go command fetches the
+sibling modules go.mod pins.
 
 To replace the running install afterwards, use the produced path with
 'outpost upgrade --local <path>' — that keeps the .previous rollback.`,
@@ -116,12 +106,7 @@ func runBuild(cmd *cobra.Command, repo, ref, src, dir, out string) error {
 		}
 	}
 
-	// ---- 2. siblings from .sibling-pins ----
-	if err := bootstrapSiblings(stdout, src); err != nil {
-		return err
-	}
-
-	// ---- 3. go build with provenance ldflags ----
+	// ---- 2. go build with provenance ldflags ----
 	commit, dirty := "", "false"
 	if rp, err := outgit.RevParse(outgit.RevParseOptions{RepoPath: src, Short: 7}); err == nil {
 		commit = rp.Short
@@ -190,53 +175,6 @@ func cloneAtRef(url, path, ref string) error {
 	return nil
 }
 
-// bootstrapSiblings is the Go twin of scripts/bootstrap-siblings.sh:
-// materialize each <name>=<sha> entry of <src>/.sibling-pins as a flat
-// sibling directory of the source tree, leaving already-present
-// checkouts (umbrella submounts, prior runs) alone.
-func bootstrapSiblings(stdout interface{ Write([]byte) (int, error) }, src string) error {
-	pins := filepath.Join(src, ".sibling-pins")
-	f, err := os.Open(pins)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // no sibling deps at this ref
-		}
-		return err
-	}
-	defer f.Close()
-
-	parent := filepath.Dir(src)
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		name, sha, ok := strings.Cut(line, "=")
-		if !ok || name == "" || sha == "" {
-			return fmt.Errorf("malformed .sibling-pins line: %s", line)
-		}
-		target := filepath.Join(parent, name)
-		if _, err := os.Stat(filepath.Join(target, ".git")); err == nil {
-			fmt.Fprintf(stdout, "==> sibling %s already present, leaving alone\n", name)
-			continue
-		}
-		url, ok := siblingRepoURLs[name]
-		if !ok {
-			return fmt.Errorf("no repo URL known for sibling %q (update siblingRepoURLs)", name)
-		}
-		fmt.Fprintf(stdout, "==> cloning sibling %s @ %.12s -> %s\n", url, sha, target)
-		if _, err := outgit.Clone(outgit.CloneOptions{URL: url, Path: target}); err != nil {
-			return fmt.Errorf("clone sibling %s: %w", name, err)
-		}
-		if _, err := outgit.Checkout(outgit.CheckoutOptions{RepoPath: target, Branch: sha}); err != nil {
-			return fmt.Errorf("checkout sibling %s @ %s: %w", name, sha, err)
-		}
-	}
-	return sc.Err()
-}
-
-// refSuffix renders " @ <ref>" for log lines, empty for default HEAD.
 func refSuffix(ref string) string {
 	if ref == "" {
 		return ""

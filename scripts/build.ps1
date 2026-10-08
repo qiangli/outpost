@@ -1,11 +1,8 @@
 # scripts/build.ps1 — build outpost from source on Windows.
 #
-# PowerShell counterpart of bootstrap-siblings.sh + build.sh in one
-# step: materializes the ../sh sibling at the SHA pinned in
-# .sibling-pins (go.mod has `replace mvdan.cc/sh/v3 => ../sh`, so a
-# bare clone does not build without it), then `go build` with the
-# commit + dirty flag stamped so `outpost version` reports a build
-# traceable to a git SHA.
+# PowerShell counterpart of build.sh: `go build` with the commit + dirty
+# flag stamped so `outpost version` reports a build traceable to a git
+# SHA. Siblings are go.mod pins, so a bare clone builds as is.
 #
 # Usage (from the repo root):
 #   powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1   # → .\bin\outpost.exe
@@ -51,14 +48,6 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
 }
 if (-not $GitCli) { Die "neither system 'git' nor 'outpost git' available — install git or an outpost release first" }
 
-function Git-Clone   { param($Url, $Target)
-    if ($GitCli -eq 'system') { & git clone --quiet $Url $Target } else { & outpost git clone --quiet $Url $Target }
-    if ($LASTEXITCODE -ne 0) { Die "clone $Url failed" }
-}
-function Git-Checkout { param($Target, $Sha)
-    if ($GitCli -eq 'system') { & git -C $Target checkout --quiet $Sha } else { Push-Location $Target; & outpost git checkout $Sha *> $null; Pop-Location }
-    if ($LASTEXITCODE -ne 0) { Die "checkout $Sha in $Target failed" }
-}
 function Git-ShortHead { param($Target)
     Push-Location $Target
     $sha = if ($GitCli -eq 'system') { & git rev-parse --short HEAD 2>$null } else { & outpost git rev-parse --short HEAD 2>$null }
@@ -79,31 +68,7 @@ function Git-IsDirty { param($Target)
     return $dirty
 }
 
-# ---- 2. bootstrap siblings from .sibling-pins -----------------------------
-
-$RepoUrls = @{ sh = 'https://github.com/qiangli/sh.git' }
-
-$pins = Join-Path $Root '.sibling-pins'
-if (-not (Test-Path $pins)) { Die "missing $pins" }
-
-foreach ($line in Get-Content $pins) {
-    $line = $line.Trim()
-    if ($line -eq '' -or $line.StartsWith('#')) { continue }
-    $name, $sha = $line -split '=', 2
-    if (-not $name -or -not $sha) { Die "malformed .sibling-pins line: $line" }
-
-    $target = Join-Path (Split-Path -Parent $Root) $name
-    if (Test-Path (Join-Path $target '.git')) {
-        Info "sibling $name -> $(Git-ShortHead $target) (already present, leaving alone)"
-        continue
-    }
-    if (-not $RepoUrls.ContainsKey($name)) { Die "no repo URL for sibling '$name'" }
-    Info "cloning $($RepoUrls[$name]) -> $target @ $($sha.Substring(0, 12))"
-    Git-Clone $RepoUrls[$name] $target
-    Git-Checkout $target $sha
-}
-
-# ---- 3. build --------------------------------------------------------------
+# ---- 2. build --------------------------------------------------------------
 
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) { Die "Go toolchain not found on PATH — install Go 1.25+ (winget install GoLang.Go)" }
 

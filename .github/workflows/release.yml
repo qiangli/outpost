@@ -52,8 +52,6 @@ jobs:
         with:
           fetch-depth: 0   # full history so vcs.revision stamps correctly
 
-      - name: Bootstrap sibling deps (../sh)
-        run: ./scripts/bootstrap-siblings.sh
 
       - uses: actions/setup-go@v6
         with:

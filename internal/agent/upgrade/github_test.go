@@ -170,6 +170,36 @@ func TestGitHubRateLimited(t *testing.T) {
 	}
 }
 
+func TestGitHubProductReleaseUsesGoModToolPin(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+	sum := strings.Repeat("b", 64)
+	mux.HandleFunc("/repos/qiangli/bashy/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"tag_name":"v1.2.3","assets":[{"name":"outpost-v1.2.3-windows-amd64.exe","browser_download_url":%q},{"name":"outpost-v1.2.3-windows-amd64.exe.sha256","browser_download_url":%q}]}`, srv.URL+"/outpost.exe", srv.URL+"/sum")
+	})
+	mux.HandleFunc("/sum", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "%s  outpost-v1.2.3-windows-amd64.exe\n", sum)
+	})
+	gm := "module github.com/qiangli/bashy\n\ngo 1.24\n\ntool github.com/qiangli/outpost/cmd/outpost\n\nrequire github.com/qiangli/outpost v0.0.0-20261008000000-cccccccccccc\n"
+	mux.HandleFunc("/repos/qiangli/bashy/contents/go.mod", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("ref") != "v1.2.3" {
+			t.Errorf("wrong go.mod ref: %s", r.URL)
+		}
+		fmt.Fprintf(w, `{"encoding":"base64","content":%q}`, base64.StdEncoding.EncodeToString([]byte(gm)))
+	})
+	mux.HandleFunc("/repos/qiangli/bashy/contents/.sibling-pins", func(w http.ResponseWriter, r *http.Request) {
+		t.Error("legacy .sibling-pins read although go.mod carries the tool pin")
+	})
+	env, err := (GitHubSource{Platform: "windows_amd64", apiBase: srv.URL, HTTPClient: srv.Client()}).Resolve(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env.Commit != "ccccccc" {
+		t.Fatalf("commit=%s, want the go.mod tool pin", env.Commit)
+	}
+}
+
 func TestGitHubProductReleaseUsesOutpostPin(t *testing.T) {
 	for _, pin := range []string{strings.Repeat("a", 40), "bad", ""} {
 		t.Run(pin, func(t *testing.T) {
