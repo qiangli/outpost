@@ -872,3 +872,84 @@ func TestWatcher_TimestampJitterDoesNotPush(t *testing.T) {
 			got, len(bodies))
 	}
 }
+
+// TestWatcher_MergesExtraOllamaModels — a model that lives only on an
+// extra daemon (bashy's own Ollama engine on 11435) must still reach the
+// pool push. Sprint 379 Y2: the watcher polled only 11434, so
+// bashy-managed models were invisible to the pool.
+func TestWatcher_MergesExtraOllamaModels(t *testing.T) {
+	tags := &stubTags{bodies: []string{`{"models":[{"name":"host-model:1b","digest":"h1","size":100}]}`}}
+	reg := &capturingRegistry{}
+	w, _, _ := newTestWatcher(t, tags, reg, nil)
+
+	bashyTags := &stubTags{bodies: []string{`{"models":[{"name":"bashy-model:1b","digest":"b1","size":200}]}`}}
+	bashySrv := httptest.NewServer(bashyTags)
+	t.Cleanup(bashySrv.Close)
+	w.cfg.ExtraOllamaURLs = []string{bashySrv.URL}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_ = w.Run(ctx)
+
+	last, ok := reg.lastPayload()
+	if !ok {
+		t.Fatal("no payload pushed")
+	}
+	got := map[string]int64{}
+	for _, m := range last.Models {
+		got[m.Name] = m.Size
+	}
+	if got["host-model:1b"] != 100 {
+		t.Errorf("host model missing from push: %v", got)
+	}
+	if got["bashy-model:1b"] != 200 {
+		t.Errorf("bashy-managed model missing from pool push: %v", got)
+	}
+}
+
+// TestWatcher_ToleratesUnreachableExtraOllama — an extra daemon that is
+// down must not fail the tick: the push still goes through with the
+// primary daemon's models.
+func TestWatcher_ToleratesUnreachableExtraOllama(t *testing.T) {
+	tags := &stubTags{bodies: []string{`{"models":[{"name":"host-model:1b","digest":"h1","size":100}]}`}}
+	reg := &capturingRegistry{}
+	w, _, _ := newTestWatcher(t, tags, reg, nil)
+
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close() // guaranteed connection-refused from here on
+	w.cfg.ExtraOllamaURLs = []string{deadURL}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_ = w.Run(ctx)
+
+	last, ok := reg.lastPayload()
+	if !ok {
+		t.Fatal("no payload pushed — a down extra daemon must not fail the tick")
+	}
+	if len(last.Models) != 1 || last.Models[0].Name != "host-model:1b" {
+		t.Errorf("models=%+v, want only the primary host-model:1b", last.Models)
+	}
+}
+
+// TestBashyOllamaURL — resolves bashy's own engine URL: $BASHY_OLLAMA_PORT
+// wins (the same contract as yoke's managed daemon), else 11435.
+func TestBashyOllamaURL(t *testing.T) {
+	t.Setenv("BASHY_OLLAMA_PORT", "")
+	if got := BashyOllamaURL(); got != "http://127.0.0.1:11435" {
+		t.Errorf("BashyOllamaURL()=%q, want http://127.0.0.1:11435", got)
+	}
+	t.Setenv("BASHY_OLLAMA_PORT", "12001")
+	if got := BashyOllamaURL(); got != "http://127.0.0.1:12001" {
+		t.Errorf("BashyOllamaURL()=%q, want http://127.0.0.1:12001", got)
+	}
+	t.Setenv("BASHY_OLLAMA_PORT", "garbage")
+	if got := BashyOllamaURL(); got != "http://127.0.0.1:11435" {
+		t.Errorf("BashyOllamaURL()=%q with garbage port, want default http://127.0.0.1:11435", got)
+	}
+	t.Setenv("BASHY_OLLAMA_PORT", "0")
+	if got := BashyOllamaURL(); got != "" {
+		t.Errorf("BashyOllamaURL()=%q with ephemeral port 0, want empty (no stable URL)", got)
+	}
+}

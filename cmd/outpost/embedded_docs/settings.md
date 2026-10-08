@@ -258,8 +258,8 @@ boundary, and verification procedure.
 ### Same-LAN direct inference (LAN-trust)
 
 `lan_inference_enabled` binds a **LAN-reachable** listener on
-`0.0.0.0:<lan_inference_port>` (default `11435`, kept distinct from the
-inference server's own `11434`) that reverse-proxies the OpenAI `/v1/*`
+`0.0.0.0:<lan_inference_port>` (default `11436`, kept distinct from the
+inference server's own `11434` and bashy's own `11435` Ollama engine) that reverse-proxies the OpenAI `/v1/*`
 and Ollama `/api/*` surface to the local inference server at
 `127.0.0.1:11434` (Ollama, or — when a shard is active — the shard
 leader's llama-server, which also serves the OpenAI `/v1` API on 11434).

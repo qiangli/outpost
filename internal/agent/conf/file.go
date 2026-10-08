@@ -278,8 +278,9 @@ type FileConfig struct {
 	LANInferenceEnabled *bool `json:"lan_inference_enabled,omitempty"`
 
 	// LANInferencePort is the TCP port the LAN inference listener binds on
-	// all interfaces (0.0.0.0). Default 11435 — deliberately distinct from
-	// the inference server's own 11434 so the two don't collide.
+	// all interfaces (0.0.0.0). Default DefaultLANInferencePort (11436) —
+	// deliberately distinct from the inference server's own 11434 and
+	// bashy's own 11435 engine so none of the three collide.
 	LANInferencePort int `json:"lan_inference_port,omitempty"`
 
 	// PeerPlaneEnabled opts this outpost into the p2p peer-plane locality
@@ -1962,13 +1963,23 @@ func (fc *FileConfig) LANInferenceOn() bool {
 	return *fc.LANInferenceEnabled
 }
 
+// DefaultLANInferencePort is the loopback-adjacent port the same-LAN
+// inference listener binds on 0.0.0.0 when unconfigured. It must stay
+// distinct from every model port on the host: 11434 (the host Ollama the
+// listener reverse-proxies), 11435 (bashy's own Ollama engine — yoke
+// DefaultManagedPort, also the door raw engine's OLLAMA_HOST), and 24556
+// (the llm model door). Sprint 379 Y2 moved it off 11435, which bound the
+// same port as bashy's engine.
+const DefaultLANInferencePort = 11436
+
 // LANInferencePortOrDefault returns the configured LAN inference listen
-// port, or 11435 (kept distinct from the inference server's own 11434).
+// port, or DefaultLANInferencePort (kept distinct from the inference
+// server's own 11434 and bashy's own 11435 engine).
 func (fc *FileConfig) LANInferencePortOrDefault() int {
 	if fc != nil && fc.LANInferencePort > 0 {
 		return fc.LANInferencePort
 	}
-	return 11435
+	return DefaultLANInferencePort
 }
 
 // PeerPlaneOn reports whether this outpost runs the p2p peer-plane locality

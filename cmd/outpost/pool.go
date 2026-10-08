@@ -23,6 +23,7 @@ import (
 
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/agent/ollama"
 )
 
 func poolCmd() *cobra.Command {
@@ -40,7 +41,8 @@ func poolStatusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show pool wiring + models the local Ollama would publish",
 		Long: `Reads agent.json and probes the local Ollama daemon (default
-http://127.0.0.1:11434, or $OLLAMA_HOST). Prints whether the pool is
+http://127.0.0.1:11434, or $OLLAMA_HOST) plus bashy's own engine
+(127.0.0.1:11435, or $BASHY_OLLAMA_PORT). Prints whether the pool is
 enabled, the cloudbox URL the watcher pushes to, and the model
 inventory currently visible to the watcher.
 
@@ -77,19 +79,24 @@ endpoint includes the same diagnostic block).`,
 // CLI-only fields (effective config path, detected URL) that the
 // in-process watcher doesn't need to know about.
 type poolStatusReport struct {
-	ConfigPath     string            `json:"config_path"`
-	Paired         bool              `json:"paired"`
-	AgentName      string            `json:"agent_name,omitempty"`
-	OllamaEnabled  bool              `json:"ollama_enabled"`
-	PoolEnabled    bool              `json:"pool_enabled"`
-	OllamaURL      string            `json:"ollama_url"`
-	OllamaReached  bool              `json:"ollama_reached"`
-	CloudboxURL    string            `json:"cloudbox_url,omitempty"`
-	HasAccessToken bool              `json:"has_access_token"`
-	ProbedAt       time.Time         `json:"probed_at"`
-	Models         []poolStatusModel `json:"models,omitempty"`
-	ProbeError     string            `json:"probe_error,omitempty"`
-	Notes          []string          `json:"notes,omitempty"`
+	ConfigPath    string `json:"config_path"`
+	Paired        bool   `json:"paired"`
+	AgentName     string `json:"agent_name,omitempty"`
+	OllamaEnabled bool   `json:"ollama_enabled"`
+	PoolEnabled   bool   `json:"pool_enabled"`
+	OllamaURL     string `json:"ollama_url"`
+	OllamaReached bool   `json:"ollama_reached"`
+	// Bashy's own Ollama engine (127.0.0.1:11435) keeps a separate model
+	// store: its models join the same pool push (Sprint 379 Y2), so the
+	// status shows them merged into Models below.
+	BashyOllamaURL     string            `json:"bashy_ollama_url,omitempty"`
+	BashyOllamaReached bool              `json:"bashy_ollama_reached,omitempty"`
+	CloudboxURL        string            `json:"cloudbox_url,omitempty"`
+	HasAccessToken     bool              `json:"has_access_token"`
+	ProbedAt           time.Time         `json:"probed_at"`
+	Models             []poolStatusModel `json:"models,omitempty"`
+	ProbeError         string            `json:"probe_error,omitempty"`
+	Notes              []string          `json:"notes,omitempty"`
 }
 
 type poolStatusModel struct {
@@ -140,7 +147,72 @@ func poolReport(ctx context.Context, fc *conf.FileConfig) poolStatusReport {
 			st.Models = models
 		}
 	}
+	// Bashy's own engine contributes its separate model store to the same
+	// pool push (see the watcher wiring in main.go). Best-effort: a host
+	// without the engine just reports it unreachable and moves on.
+	if bu := ollama.BashyOllamaURL(); bu != "" && !sameBaseURL(bu, st.OllamaURL) {
+		st.BashyOllamaURL = bu
+		st.BashyOllamaReached = probeBaseURL(ctx, bu)
+		if st.BashyOllamaReached {
+			extra, err := fetchOllamaTags(ctx, bu)
+			if err != nil {
+				st.Notes = append(st.Notes, "Bashy Ollama answered but /api/tags failed: "+err.Error())
+			} else {
+				st.Models = mergePoolModels(st.Models, extra)
+			}
+		}
+	}
 	return st
+}
+
+// sameBaseURL reports whether two daemon base URLs are the same daemon
+// (trailing slashes ignored) so the bashy extra is not probed twice when
+// $OLLAMA_HOST already points at it.
+func sameBaseURL(a, b string) bool {
+	return strings.TrimRight(a, "/") == strings.TrimRight(b, "/")
+}
+
+// probeBaseURL reports whether any HTTP daemon answers at base (any
+// status counts — mirrors agent.probeHTTP semantics for DetectOllama).
+func probeBaseURL(ctx context.Context, base string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode > 0
+}
+
+// mergePoolModels unions the bashy-engine inventory into the host list.
+// Primary (host) rows win on a name clash; the result stays sorted.
+func mergePoolModels(primary, extra []poolStatusModel) []poolStatusModel {
+	if len(extra) == 0 {
+		return primary
+	}
+	seen := make(map[string]bool, len(primary)+len(extra))
+	out := make([]poolStatusModel, 0, len(primary)+len(extra))
+	for _, m := range primary {
+		if m.Name == "" || seen[m.Name] {
+			continue
+		}
+		seen[m.Name] = true
+		out = append(out, m)
+	}
+	for _, m := range extra {
+		if m.Name == "" || seen[m.Name] {
+			continue
+		}
+		seen[m.Name] = true
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // fetchOllamaTags GETs /api/tags directly so the CLI sees exactly what
@@ -208,6 +280,9 @@ func printPoolStatus(w io.Writer, st poolStatusReport) error {
 		fmt.Fprintf(w, "Cloudbox URL:  %s\n", st.CloudboxURL)
 	}
 	fmt.Fprintf(w, "Ollama URL:    %s  (reachable=%s)\n", st.OllamaURL, yn(st.OllamaReached))
+	if st.BashyOllamaURL != "" {
+		fmt.Fprintf(w, "Bashy Ollama:  %s  (reachable=%s)\n", st.BashyOllamaURL, yn(st.BashyOllamaReached))
+	}
 
 	if st.ProbeError != "" {
 		fmt.Fprintf(w, "\nOllama probe error: %s\n", st.ProbeError)

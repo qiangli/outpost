@@ -76,6 +76,14 @@ type Config struct {
 	// http://127.0.0.1:11434). The watcher appends /api/tags.
 	OllamaURL string
 
+	// ExtraOllamaURLs are additional local Ollama daemons whose models
+	// join the same pool push — first entry is conventionally bashy's
+	// own engine (BashyOllamaURL, 127.0.0.1:11435), which keeps a
+	// separate model store from the host daemon. Each extra is probed
+	// best-effort per tick: a down extra is skipped, never fatal.
+	// Entries equal to OllamaURL (or empty) are dropped by New.
+	ExtraOllamaURLs []string
+
 	// CloudboxURL is the base URL of cloudbox (e.g. https://ai.dhnt.io).
 	// The watcher appends /api/v1/llm/registry.
 	CloudboxURL string
@@ -99,7 +107,7 @@ type Config struct {
 
 	// LANEndpoint is the direct same-LAN inference URL to advertise in each
 	// push (RegistryPushPayload.LANEndpoint), e.g.
-	// "http://192.0.2.10:11435/v1". Empty (the common case) omits the field
+	// "http://192.0.2.10:11436/v1". Empty (the common case) omits the field
 	// from the wire — set by main.go only when fc.LANInferenceOn().
 	LANEndpoint string
 
@@ -253,6 +261,17 @@ func New(cfg Config) (*Watcher, error) {
 	}
 	cfg.CloudboxURL = strings.TrimRight(cfg.CloudboxURL, "/")
 	cfg.OllamaURL = strings.TrimRight(cfg.OllamaURL, "/")
+	kept := cfg.ExtraOllamaURLs[:0]
+	seen := map[string]bool{cfg.OllamaURL: true}
+	for _, u := range cfg.ExtraOllamaURLs {
+		u = strings.TrimRight(strings.TrimSpace(u), "/")
+		if u == "" || seen[u] {
+			continue
+		}
+		seen[u] = true
+		kept = append(kept, u)
+	}
+	cfg.ExtraOllamaURLs = kept
 	return &Watcher{cfg: cfg, detailsCache: map[string]modelDetails{}}, nil
 }
 
@@ -405,34 +424,54 @@ func (w *Watcher) tick(ctx context.Context, lastSnapshot *[]ModelInfo, lastPushe
 // refreshLoaded GETs /api/ps and updates the loadedModels / swapping
 // cache. Best-effort: on any failure (404, decode error, transport)
 // the cache is left untouched so transient blips don't flip cloudbox
-// into thinking models unloaded.
+// into thinking models unloaded. Extra daemons (Config.ExtraOllamaURLs)
+// are unioned in best-effort — a down extra never wipes the cache.
 func (w *Watcher) refreshLoaded(ctx context.Context) {
+	names, swapping, ok := w.probeLoaded(ctx, w.cfg.OllamaURL)
+	if !ok {
+		return
+	}
+	for _, extra := range w.cfg.ExtraOllamaURLs {
+		en, esw, eok := w.probeLoaded(ctx, extra)
+		if !eok {
+			w.cfg.Logger.Debug("ollama watcher: extra /api/ps probe failed", "url", extra)
+			continue
+		}
+		names = unionStrings(names, en)
+		swapping = swapping || esw
+	}
+	sort.Strings(names)
+	w.setLoaded(names, swapping)
+}
+
+// probeLoaded GETs one daemon's /api/ps. ok=false on any failure —
+// the caller decides whether that is fatal (primary) or skippable.
+func (w *Watcher) probeLoaded(ctx context.Context, baseURL string) (names []string, swapping, ok bool) {
 	pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(pctx, http.MethodGet, w.cfg.OllamaURL+"/api/ps", nil)
+	req, err := http.NewRequestWithContext(pctx, http.MethodGet, baseURL+"/api/ps", nil)
 	if err != nil {
-		return
+		return nil, false, false
 	}
 	resp, err := w.cfg.HTTPClient.Do(req)
 	if err != nil {
 		w.cfg.Logger.Debug("ollama watcher: /api/ps probe failed", "err", err)
-		return
+		return nil, false, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		// 404 on /api/ps means the daemon is older than 0.1.x or the
 		// probe is being served by a non-ollama replacement; don't
 		// alarm, just leave the cache stale.
-		return
+		return nil, false, false
 	}
 	var pr psResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&pr); err != nil {
 		w.cfg.Logger.Debug("ollama watcher: /api/ps decode failed", "err", err)
-		return
+		return nil, false, false
 	}
 	now := time.Now()
-	names := make([]string, 0, len(pr.Models))
-	swapping := false
+	names = make([]string, 0, len(pr.Models))
 	for _, m := range pr.Models {
 		name := m.Name
 		if name == "" {
@@ -456,20 +495,80 @@ func (w *Watcher) refreshLoaded(ctx context.Context) {
 			swapping = true
 		}
 	}
-	sort.Strings(names)
-	w.setLoaded(names, swapping)
+	return names, swapping, true
 }
 
-// fetchModels GETs the local Ollama daemon's /api/tags, then enriches
-// each entry with per-digest /api/show metadata (capabilities,
-// context_length) from a cache. Cache misses do one extra request per
-// new digest — a model pull is the only thing that adds a row to the
-// inventory, and that's not a hot path. Sorted by name so equality
-// comparisons are stable.
+// unionStrings merges two name lists, deduplicated. Order is normalized
+// by the caller (refreshLoaded sorts before caching).
+func unionStrings(a, b []string) []string {
+	if len(b) == 0 {
+		return a
+	}
+	seen := make(map[string]bool, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, n := range a {
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	for _, n := range b {
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// fetchModels GETs the local Ollama daemon's /api/tags, unions in every
+// extra daemon's inventory (Config.ExtraOllamaURLs — bashy's own engine —
+// best-effort: a down extra is skipped, never fatal), then enriches each
+// entry with per-digest /api/show metadata (capabilities, context_length)
+// from a cache. /api/show goes to the daemon that served the model, so a
+// model that lives only on an extra still gets its details. Cache misses
+// do one extra request per new digest — a model pull is the only thing
+// that adds a row to the inventory, and that's not a hot path. Sorted by
+// name so equality comparisons are stable.
 func (w *Watcher) fetchModels(ctx context.Context) ([]ModelInfo, error) {
+	models, err := w.fetchTagsFrom(ctx, w.cfg.OllamaURL)
+	if err != nil {
+		return nil, err
+	}
+	sources := make(map[string]string, len(models))
+	for _, m := range models {
+		if _, ok := sources[m.Name]; !ok {
+			sources[m.Name] = w.cfg.OllamaURL
+		}
+	}
+	for _, extra := range w.cfg.ExtraOllamaURLs {
+		more, err := w.fetchTagsFrom(ctx, extra)
+		if err != nil {
+			w.cfg.Logger.Debug("ollama watcher: extra /api/tags probe failed", "url", extra, "err", err)
+			continue
+		}
+		for _, m := range more {
+			if _, ok := sources[m.Name]; !ok {
+				sources[m.Name] = extra
+			}
+		}
+		models = mergeModels(models, more)
+	}
+	for i := range models {
+		d := w.detailsFor(ctx, sources[models[i].Name], models[i])
+		models[i].Capabilities = d.Capabilities
+		models[i].ContextLength = d.ContextLength
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
+	return models, nil
+}
+
+// fetchTagsFrom GETs one daemon's /api/tags. Any failure is fatal to the
+// caller — extras are skipped by fetchModels, the primary aborts the tick.
+func (w *Watcher) fetchTagsFrom(ctx context.Context, baseURL string) ([]ModelInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, w.cfg.OllamaURL+"/api/tags", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/tags", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -481,20 +580,13 @@ func (w *Watcher) fetchModels(ctx context.Context) ([]ModelInfo, error) {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, fmt.Errorf("HTTP %d from %s/api/tags: %s",
-			resp.StatusCode, w.cfg.OllamaURL, strings.TrimSpace(string(body)))
+			resp.StatusCode, baseURL, strings.TrimSpace(string(body)))
 	}
 	var tr tagsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
 		return nil, fmt.Errorf("decode tags: %w", err)
 	}
-	models := tr.toModels()
-	for i := range models {
-		d := w.detailsFor(ctx, models[i])
-		models[i].Capabilities = d.Capabilities
-		models[i].ContextLength = d.ContextLength
-	}
-	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
-	return models, nil
+	return tr.toModels(), nil
 }
 
 func mergeModels(base, extra []ModelInfo) []ModelInfo {
@@ -532,7 +624,7 @@ func mergeModels(base, extra []ModelInfo) []ModelInfo {
 // zero modelDetails — the model still publishes, just without
 // capabilities/context_length. A failed probe is cached as zero so a
 // broken model doesn't get re-probed every tick.
-func (w *Watcher) detailsFor(ctx context.Context, m ModelInfo) modelDetails {
+func (w *Watcher) detailsFor(ctx context.Context, baseURL string, m ModelInfo) modelDetails {
 	key := m.Digest
 	if key == "" {
 		key = m.Name
@@ -543,21 +635,22 @@ func (w *Watcher) detailsFor(ctx context.Context, m ModelInfo) modelDetails {
 		return d
 	}
 	w.detailsMu.Unlock()
-	d := w.fetchDetails(ctx, m.Name)
+	d := w.fetchDetails(ctx, baseURL, m.Name)
 	w.detailsMu.Lock()
 	w.detailsCache[key] = d
 	w.detailsMu.Unlock()
 	return d
 }
 
-// fetchDetails POSTs to /api/show for one model. Best-effort: any
-// non-200 or decode error → zero details, no error propagation.
-func (w *Watcher) fetchDetails(ctx context.Context, name string) modelDetails {
+// fetchDetails POSTs to one daemon's /api/show for one model.
+// Best-effort: any non-200 or decode error → zero details, no error
+// propagation.
+func (w *Watcher) fetchDetails(ctx context.Context, baseURL, name string) modelDetails {
 	pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	body := fmt.Sprintf(`{"name":%q}`, name)
 	req, err := http.NewRequestWithContext(pctx, http.MethodPost,
-		w.cfg.OllamaURL+"/api/show", strings.NewReader(body))
+		baseURL+"/api/show", strings.NewReader(body))
 	if err != nil {
 		return modelDetails{}
 	}

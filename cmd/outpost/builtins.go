@@ -409,7 +409,7 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&mesh, "mesh", "", "on|off - libp2p mesh data plane (peer-to-peer transport under shard-RPC/peer-backup; needs pairing)")
 	cmd.Flags().IntVar(&meshPort, "mesh-port", 0, "TCP+QUIC listen port for the mesh host (0 = ephemeral)")
 	cmd.Flags().StringVar(&lanInference, "lan-inference", "", "on|off - serve local LLM inference directly to same-LAN callers (LAN-TRUST: no per-request auth; needs Ollama on + pairing; default off)")
-	cmd.Flags().IntVar(&lanInferencePort, "lan-inference-port", 0, "TCP port the LAN inference listener binds on 0.0.0.0 (0 = default 11435; must differ from the inference server's 11434)")
+	cmd.Flags().IntVar(&lanInferencePort, "lan-inference-port", 0, "TCP port the LAN inference listener binds on 0.0.0.0 (0 = default 11436; must differ from the inference server's 11434 and bashy's own 11435 engine)")
 	cmd.Flags().StringVar(&loom, "loom", "", "on|off - run the loom git forge (Gitea, managed external binary) on loopback, auto-exposed over the mesh as 'git'")
 	cmd.Flags().IntVar(&loomPort, "loom-port", 0, "loom's loopback HTTP port (0 = default 31880)")
 	cmd.Flags().StringVar(&meet, "meet", "", "on|off - run the meet web chat room (Slack-style browser UI over 'bashy meet') on loopback as a cloudbox app 'meet' (supervised via 'bashy meet service')")

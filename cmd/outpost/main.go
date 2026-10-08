@@ -1887,6 +1887,15 @@ func startCmd() *cobra.Command {
 						AccessToken: fc.AccessToken,
 						Capacity:    ollamaSvc,
 					}
+					// Bashy's own Ollama engine (127.0.0.1:11435) keeps a
+					// separate model store from the host daemon: register
+					// its models with the pool too, so a bashy-managed pull
+					// shows up in the cloud registry. Best-effort per tick
+					// (a host without the engine just skips it); dropped
+					// when it duplicates the primary URL. Sprint 379 Y2.
+					if bu := ollama.BashyOllamaURL(); bu != "" {
+						ocfg.ExtraOllamaURLs = []string{bu}
+					}
 					// Warm-serving advertisement: fold this host's live
 					// warm-preload budget (0 when busy) + busy state into each
 					// registry push so cloudbox can make considerate warm

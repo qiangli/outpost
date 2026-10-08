@@ -170,7 +170,7 @@ type RegistryPushPayload struct {
 	Cluster *ClusterCapacity `json:"cluster,omitempty"`
 
 	// LANEndpoint is the direct LAN inference URL (e.g.
-	// "http://192.0.2.10:11435/v1") this host serves when the operator has
+	// "http://192.0.2.10:11436/v1") this host serves when the operator has
 	// opted into the same-LAN direct-inference listener (lan_inference).
 	// Cloudbox may hand it to a caller it detects on the same LAN so the
 	// caller reaches this outpost's LLM directly — bypassing the cloudbox

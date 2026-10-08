@@ -262,16 +262,16 @@ func TestLANInferenceOn(t *testing.T) {
 	}
 }
 
-// TestLANInferencePortOrDefault — 11435 default, configured value wins.
+// TestLANInferencePortOrDefault — 11436 default, configured value wins.
 func TestLANInferencePortOrDefault(t *testing.T) {
 	for _, tt := range []struct {
 		name string
 		fc   *FileConfig
 		want int
 	}{
-		{"nil-fc", nil, 11435},
-		{"unset", &FileConfig{}, 11435},
-		{"zero", &FileConfig{LANInferencePort: 0}, 11435},
+		{"nil-fc", nil, DefaultLANInferencePort},
+		{"unset", &FileConfig{}, DefaultLANInferencePort},
+		{"zero", &FileConfig{LANInferencePort: 0}, DefaultLANInferencePort},
 		{"explicit", &FileConfig{LANInferencePort: 12000}, 12000},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -279,6 +279,26 @@ func TestLANInferencePortOrDefault(t *testing.T) {
 				t.Errorf("LANInferencePortOrDefault()=%d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestLANInferencePortAvoidsReservedPorts — the LAN listener default must
+// not collide with any loopback model port on the host: 11434 is the host
+// Ollama, 11435 is bashy's own Ollama engine (yoke DefaultManagedPort, the
+// door's raw-engine OLLAMA_HOST), 24556 is the llm model door. Sprint 379
+// Y2: the old 11435 default bound the same port as bashy's engine.
+func TestLANInferencePortAvoidsReservedPorts(t *testing.T) {
+	reserved := map[int]string{
+		11434: "host Ollama",
+		11435: "bashy managed Ollama engine (yoke DefaultManagedPort)",
+		24556: "llm model door",
+	}
+	got := (&FileConfig{}).LANInferencePortOrDefault()
+	if owner, ok := reserved[got]; ok {
+		t.Errorf("LANInferencePortOrDefault()=%d collides with %s", got, owner)
+	}
+	if got != DefaultLANInferencePort {
+		t.Errorf("LANInferencePortOrDefault()=%d, want DefaultLANInferencePort=%d", got, DefaultLANInferencePort)
 	}
 }
 

@@ -72,7 +72,7 @@ type BuiltinsParams struct {
 	// LAN-reachable reverse proxy to the local inference server, advertised
 	// to cloudbox so same-LAN callers reach this host's LLM directly (lower
 	// latency, bypassing the relay). LANInferencePort sets its listen port
-	// (0 = default 11435). This is a LAN-TRUST endpoint (no per-request
+	// (0 = default 11436). This is a LAN-TRUST endpoint (no per-request
 	// auth) — an explicit opt-in. nil = leave unchanged.
 	LANInference     *bool `json:"lan_inference,omitempty"`
 	LANInferencePort *int  `json:"lan_inference_port,omitempty"`
