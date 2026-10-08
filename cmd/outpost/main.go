@@ -1079,72 +1079,13 @@ func startCmd() *cobra.Command {
 				agent.InitBootCount(bcDir)
 			}
 
-			// Cloudbox-pushed self-upgrade worker + ledger. Constructed
-			// before mcpapi.New so the same Worker/Ledger feed both the
-			// MCP tools (outpost_rollback, outpost_upgrade_history) and
-			// the POST /admin/upgrade route mounted on the main tunnel
-			// server later in this function. Only wired for paired
-			// hosts — an unpaired daemon has no matrix-tunnel secret
-			// for cloudbox to authenticate with, and the MCP tools
-			// won't register either (they check s.upgrader != nil).
-			var (
-				upgradeWorker      *upgrade.Worker
-				upgradeLedger      *upgrade.Ledger
-				upgradeConfirmPath string
-			)
-			if fc.AccessToken != "" {
-				cacheDir, _ := conf.ResolveCacheDir()
-				upgradeConfirmPath = upgrade.PendingConfirmPath(cacheDir)
-				// Report "healthy=false" to cloudbox while a self-upgrade
-				// is pending confirmation (the watchdog marker is present),
-				// so the fleet health-gate sees an unconfirmed host. Hooked
-				// (not a direct call) to avoid an agent→upgrade import cycle.
-				if cp := upgradeConfirmPath; cp != "" {
-					agent.HealthyProbe = func() bool {
-						pc, _ := upgrade.ReadPendingConfirm(cp)
-						return pc == nil
-					}
-				}
-				ledgerPath := ""
-				if cacheDir != "" {
-					ledgerPath = filepath.Join(cacheDir, "upgrade.log")
-				}
-				upgradeLedger = upgrade.NewLedger(ledgerPath)
-				pendingPath := upgrade.PendingPath(cacheDir)
-				exe, _ := os.Executable()
-				// Drop any <exe>.replaced-* siblings left behind by a
-				// prior Windows-swap run. No-op on Unix. Idempotent.
-				upgrade.CleanupStaleSwaps(exe)
-				upgradeWorker, err = upgrade.NewWorker(upgrade.Options{
-					State: func() upgrade.StateSnapshot {
-						// Re-read the current FileConfig so a just-toggled
-						// update_mode takes effect on the next /admin/upgrade
-						// POST without a daemon restart.
-						cur, _ := conf.LoadFile(cfgPath)
-						if cur == nil {
-							cur = fc
-						}
-						return upgrade.StateSnapshot{
-							UpdateMode:    cur.UpdateModeName(),
-							CurrentCommit: agent.ReadBuildInfo().ShortCommit(),
-							CurrentDirty:  agent.ReadBuildInfo().Dirty,
-							BinaryPath:    exe,
-							PendingPath:   pendingPath,
-						}
-					},
-					Restart:        core.ScheduleRestart,
-					Ledger:         upgradeLedger,
-					ConfirmPath:    upgradeConfirmPath,
-					QuarantinePath: upgrade.QuarantinePath(cacheDir),
-				})
-				if err != nil {
-					return fmt.Errorf("upgrade worker: %w", err)
-				}
-				// Make the worker + ledger visible to admincore's
-				// shared business-logic layer so the adminui Update
-				// tab + MCP tools all read from the same source.
-				core.AttachUpgrade(upgradeWorker, upgradeLedger)
+			// Local upgrade recovery is available before cloud pairing. The fleet
+			// transport remains separately gated by the cloud credentials below.
+			upgradeWorker, upgradeLedger, upgradeConfirmPath, err := newLocalUpgrade(cfgPath, fc, core.ScheduleRestart)
+			if err != nil {
+				return err
 			}
+			core.AttachUpgrade(upgradeWorker, upgradeLedger)
 
 			// Folder-watcher backup scheduler. Constructed regardless
 			// of pairing — the cooperating app can start producing
@@ -1250,6 +1191,18 @@ func startCmd() *cobra.Command {
 				slog.Info("outpost: admin ui listening", "url", adminSrv.URL())
 				return adminSrv.Serve(gctx)
 			})
+
+			// Auto-rollback confirm half: if this boot is a just-upgraded
+			// binary, ArmConfirm clears the watchdog marker once we've
+			// stayed up long enough (declaring the upgrade healthy). A
+			// crash before then leaves the marker for the supervisor to
+			// act on. No-op when there's no pending upgrade.
+			if upgradeConfirmPath != "" {
+				g.Go(func() error {
+					upgrade.ArmConfirm(gctx, upgradeConfirmPath, agent.ReadBuildInfo().ShortCommit(), upgradeLedger)
+					return nil
+				})
+			}
 
 			startBashyServiceSupervisors(g, gctx, fc, meshHost)
 
@@ -1989,11 +1942,10 @@ func startCmd() *cobra.Command {
 			// during a release fan-out) only reaches hosts online at
 			// that moment; a host that was asleep or offline reconciles
 			// against the latest release on its next poll after the
-			// tunnel reconnects. Only spun up when paired (upgradeWorker
-			// is built solely when fc.AccessToken != ""); the puller
+			// tunnel reconnects. Only spun up when paired; the puller
 			// respects update_mode via Worker.Apply, so a "manual" /
 			// "never" host polls but never self-upgrades.
-			if upgradeWorker != nil {
+			if fc.AccessToken != "" {
 				if cbBase := cloudboxHTTPBase(fc); cbBase != "" {
 					bi := agent.ReadBuildInfo()
 					puller := upgrade.PullerConfig{
@@ -2003,17 +1955,6 @@ func startCmd() *cobra.Command {
 						Worker:       upgradeWorker,
 					}
 					g.Go(func() error { return puller.Run(gctx) })
-				}
-				// Auto-rollback confirm half: if this boot is a just-upgraded
-				// binary, ArmConfirm clears the watchdog marker once we've
-				// stayed up long enough (declaring the upgrade healthy). A
-				// crash before then leaves the marker for the supervisor to
-				// act on. No-op when there's no pending upgrade.
-				if upgradeConfirmPath != "" {
-					g.Go(func() error {
-						upgrade.ArmConfirm(gctx, upgradeConfirmPath, agent.ReadBuildInfo().ShortCommit(), upgradeLedger)
-						return nil
-					})
 				}
 			}
 
