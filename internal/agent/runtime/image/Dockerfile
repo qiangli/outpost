@@ -34,7 +34,7 @@
 # Compiles the per-node CNI plugin from its embedded source. Stdlib
 # only — no module proxy needed at image-build time. Pinned to the
 # same Go minor we use on the host so the runtime binary is consistent.
-FROM golang:1.25-alpine AS cni-builder
+FROM golang:1.27.1-alpine AS cni-builder
 WORKDIR /src
 # Copy go.mod first so the (currently no-op) `go mod download` layer
 # stays cached when only .go source changes. Mirrors the canonical Go

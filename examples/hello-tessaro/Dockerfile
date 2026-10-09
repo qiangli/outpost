@@ -3,7 +3,7 @@
 #
 #   docker build --build-arg VERSION=v0.1.0 --build-arg COMMIT=$(git rev-parse --short HEAD) -t hello-tessaro .
 #   docker run -e APP_ENV=qa -e HELLO_TESSARO_SSO_SECRET=... -e HELLO_TESSARO_ADDR=0.0.0.0:8080 -p 8080:8080 hello-tessaro
-FROM golang:1.26 AS build
+FROM golang:1.27.1 AS build
 WORKDIR /src
 COPY . .
 ARG VERSION=dev

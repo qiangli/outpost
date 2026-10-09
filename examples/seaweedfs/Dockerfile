@@ -16,7 +16,7 @@
 # or two so we're not chasing prerelease bugs.
 ARG SEAWEEDFS_REF=4.29
 
-FROM golang:1.25-alpine AS builder
+FROM golang:1.27.1-alpine AS builder
 ARG SEAWEEDFS_REF
 RUN apk add --no-cache git
 RUN git clone --depth=1 --branch=${SEAWEEDFS_REF} \
