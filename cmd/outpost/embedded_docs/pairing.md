@@ -120,6 +120,7 @@ instead (it lives inside `outpost start`, so the boot service covers it):
 
 ```bash
 outpost config set --ssh-listen-addr :2222
+outpost restart  # listener binds take effect at (re)start
 ```
 
 ## Platform notes

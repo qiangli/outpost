@@ -1600,6 +1600,22 @@ func startCmd() *cobra.Command {
 				})
 			}
 
+			// O4 managed-service sshd: honor an explicit ssh_listen_addr
+			// even before first pairing. The branch below returns early
+			// (no tunnel, no listeners), which is correct by default —
+			// but an operator who explicitly opted into LAN SSH would
+			// otherwise get a silently dead setting until pairing. The
+			// peer extras stay off: peers is nil until paired, so the
+			// server keeps the loopback-only direct-tcpip posture (same
+			// as the unpaired standalone `outpost sshd`).
+			if cfg.AgentName == "" && strings.TrimSpace(fc.SSHListenAddr) != "" && fc.SSHOn() {
+				firstRunKey, kerr := agent.LoadOrCreateHostKey()
+				if kerr != nil {
+					return fmt.Errorf("ssh host key: %w", kerr)
+				}
+				startLANSSHListener(gctx, g, fc, cfg, firstRunKey, nil, apps)
+			}
+
 			if cfg.AgentName == "" {
 				fmt.Fprintln(os.Stderr, "Not yet configured — open the Admin UI to pair this host with the portal.")
 				slog.Info("outpost: awaiting first-run pairing through admin UI")

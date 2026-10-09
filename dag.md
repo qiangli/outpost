@@ -92,6 +92,20 @@ Effects: destroy
 ./scripts/clean.sh
 ```
 
+### o4-sshd-service
+O4 managed-service sshd proof (Story 1537): given a bashy+outpost pair,
+install it via `bashy self install --service`, serve sshd from the managed
+daemon, log in over stock ssh (key auth) + SFTP round trip, then uninstall
+leaving nothing running. macOS/Linux here; Windows runs the .ps1 twin.
+Effects: write
+
+```bash
+BASHY_BIN="${O4_BASHY_BIN:?set O4_BASHY_BIN to the candidate product bashy}" \
+O4_MODE="${O4_MODE:-user}" \
+O4_PORT="${O4_PORT:-22022}" \
+./scripts/sshd-managed-service-check.sh
+```
+
 ### qa
 Verify a *published* release build (no source build, no Go — only bashy, which
 self-provisions git/coreutils). Downloads `$OUTPOST_TEST_VERSION` for THIS host's
