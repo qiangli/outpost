@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"strings"
 )
 
@@ -40,7 +41,14 @@ func disableSleep() {
 }
 
 // windowsUserID is DOMAIN\User (or just User) — the principal the task runs as.
+// windowsUserID names the account the task runs as. The process token is the
+// authority: over ssh on a workgroup machine USERDOMAIN can read "WORKGROUP",
+// which Task Scheduler cannot map to a SID (HRESULT 0x80070534). The
+// environment is only a fallback when the token lookup fails.
 func windowsUserID() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username
+	}
 	if d := os.Getenv("USERDOMAIN"); d != "" {
 		return d + `\` + os.Getenv("USERNAME")
 	}
