@@ -7,7 +7,9 @@
 // It still has its own go.mod so outpost `go build ./...` skips this subtree.
 module github.com/qiangli/outpost/examples/hello-tessaro
 
-go 1.26.4
+go 1.27
+
+toolchain go1.27.1
 
 require github.com/qiangli/coreutils v0.0.0
 
