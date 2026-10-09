@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   O4 managed-service sshd proof (Story 1537) — Windows counterpart of
@@ -54,7 +54,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-function Fail([string]$m) { Write-Error "FAIL: $m" }
+function Fail([string]$m) { Write-Error "FAIL: $m" -ErrorAction Continue }
 function Info([string]$m) { Write-Host ">> $m" }
 function Pass([string]$m) { Write-Host ">> PASS $m" }
 
@@ -88,8 +88,16 @@ if (Test-Tcp '127.0.0.1' $AdminPort) { Fail "admin port $AdminPort already in us
 
 # Fixed task identity: refuse to replace a registration we did not create.
 $taskExists = $false
-schtasks.exe /Query /TN outpost 2>$null | Out-Null
-if ($LASTEXITCODE -eq 0) { $taskExists = $true }
+# Windows PowerShell promotes native stderr to a terminating error under Stop.
+# An absent task is expected here; inspect its exit status instead.
+$previousPreference = $ErrorActionPreference
+try {
+  $ErrorActionPreference = 'Continue'
+  schtasks.exe /Query /TN outpost 2>$null | Out-Null
+  if ($LASTEXITCODE -eq 0) { $taskExists = $true }
+} finally {
+  $ErrorActionPreference = $previousPreference
+}
 if ($taskExists) { Fail "Task Scheduler task 'outpost' already registered — remove it first"; exit 2 }
 
 $me = $env:USERNAME
@@ -103,7 +111,9 @@ $env:BASHY_HOME = Join-Path $T 'bhome'
 $env:OUTPOST_ADMIN_ADDR = "127.0.0.1:$AdminPort"
 # Task processes read USER registry env at spawn — set it BEFORE install.
 $propagated = @('XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'BASHY_HOME', 'OUTPOST_ADMIN_ADDR')
+$previousUserEnvironment = @{}
 foreach ($n in $propagated) {
+  $previousUserEnvironment[$n] = [Environment]::GetEnvironmentVariable($n, 'User')
   [Environment]::SetEnvironmentVariable($n, [Environment]::GetEnvironmentVariable($n), 'User')
 }
 $akReal = Join-Path $realHome '.ssh\authorized_keys'
@@ -125,7 +135,7 @@ function Cleanup {
     else { & (Join-Path $Install 'outpost.exe') service uninstall 2>$null }
     & (Join-Path $Install 'outpost.exe') stop 2>$null | Out-Null
   }
-  foreach ($n in $propagated) { [Environment]::SetEnvironmentVariable($n, $null, 'User') }
+  foreach ($n in $propagated) { [Environment]::SetEnvironmentVariable($n, $previousUserEnvironment[$n], 'User') }
   Get-InstallProcs | ForEach-Object { try { $_ | Stop-Process -Force } catch {} }
   Start-Sleep -Seconds 2
   if ($akExisted) { Copy-Item $akBak $akReal -Force }
@@ -135,7 +145,18 @@ function Cleanup {
 
 # --- 1. ephemeral key + documented authorized_keys auth ----------------------
 try {
-  & ssh-keygen -t ed25519 -f (Join-Path $T 'id') -N '' -C o4-check -q
+  # PowerShell 5.1 drops empty native arguments. Pass the quoted empty
+  # passphrase directly through ProcessStartInfo on every PowerShell version.
+  $keyStart = New-Object Diagnostics.ProcessStartInfo
+  $keyStart.FileName = (Get-Command ssh-keygen).Source
+  $keyStart.Arguments = '-t ed25519 -f "' + (Join-Path $T 'id') + '" -N "" -C o4-check -q'
+  $keyStart.UseShellExecute = $false
+  $keyProcess = [Diagnostics.Process]::Start($keyStart)
+  $keyProcess.WaitForExit()
+  $keyExit = $keyProcess.ExitCode
+  $keyProcess.Dispose()
+  if ($keyExit -ne 0) { throw "ssh-keygen failed (exit=$keyExit)" }
+  # End ephemeral key generation.
   $sshDir = Split-Path $akReal
   if (-not (Test-Path $sshDir)) { $null = New-Item -ItemType Directory -Force -Path $sshDir }
   Add-Content -Path $akReal -Value (Get-Content (Join-Path $T 'id.pub') -Raw)
@@ -197,8 +218,14 @@ try {
 
   # --- 5. SFTP put/get round trip --------------------------------------------
   'o4-sftp-payload' | Out-File -NoNewline -FilePath (Join-Path $T 'up.txt')
-  @("put $T\up.txt $T\rmt.txt", "get $T\rmt.txt $T\down.txt", "rm $T\rmt.txt") |
-    Out-File -FilePath (Join-Path $T 'sftp.batch')
+  # Begin SFTP batch: OpenSSH expects UTF-8 without a BOM, and backslashes
+  # are escapes in its command language. Quote paths, including spaces.
+  $sftpRoot = $T.Replace('\', '/')
+  $batch = @(( 'put "' + $sftpRoot + '/up.txt" "' + $sftpRoot + '/rmt.txt"'),
+    ('get "' + $sftpRoot + '/rmt.txt" "' + $sftpRoot + '/down.txt"'),
+    ('rm "' + $sftpRoot + '/rmt.txt"'))
+  [IO.File]::WriteAllLines((Join-Path $T 'sftp.batch'), $batch, (New-Object Text.UTF8Encoding($false)))
+  # End SFTP batch.
   & sftp -P $Port -i $idFile @sshOpts -b (Join-Path $T 'sftp.batch') $target 2>$null | Out-Null
   if ($LASTEXITCODE -ne 0) { Fail 'sftp round trip failed'; exit 1 }
   $up = Get-Content (Join-Path $T 'up.txt') -Raw
