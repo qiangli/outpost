@@ -157,6 +157,20 @@ OUTPOST_ADMIN_ADDR="127.0.0.1:$O4_ADMIN_PORT"; export OUTPOST_ADMIN_ADDR
 ISOLATED_HOME="$T/home"
 mkdir -p "$ISOLATED_HOME" "$INSTALL"
 export HOME="$ISOLATED_HOME"
+# A running systemd --user manager fixes its unit search path at startup, so
+# a unit written under the isolated XDG_CONFIG_HOME is invisible to
+# `systemctl --user enable` ("Unit file ... does not exist"). In Linux user
+# mode only the unit directory is shared with the real one; outpost config,
+# cache and state stay isolated. Refuse rather than touch an existing unit.
+REAL_UNIT_DIR_CREATED=0
+if [ "$OSNAME" = linux ] && [ "$O4_MODE" = user ]; then
+  if [ -e "$REALHOME/.config/systemd/user/outpost.service" ]; then
+    fail "a real outpost systemd --user unit exists for $ME — remove it first"; exit 2
+  fi
+  [ -d "$REALHOME/.config/systemd/user" ] || REAL_UNIT_DIR_CREATED=1
+  mkdir -p "$REALHOME/.config/systemd/user" "$XDG_CONFIG_HOME"
+  ln -s "$REALHOME/.config/systemd" "$XDG_CONFIG_HOME/systemd"
+fi
 
 # The daemon's authorized_keys lookup uses the OS home directory (not $HOME),
 # so resolve the real path via the account database — never $HOME here.
@@ -188,6 +202,9 @@ cleanup() {
   if [ "$SYSTEMD_IMPORTED" = 1 ]; then
     systemctl --user unset-environment XDG_CONFIG_HOME XDG_CACHE_HOME OUTPOST_ADMIN_ADDR >/dev/null 2>&1 || true
     sudo -n systemctl unset-environment XDG_CONFIG_HOME XDG_CACHE_HOME OUTPOST_ADMIN_ADDR >/dev/null 2>&1 || true
+  fi
+  if [ "${REAL_UNIT_DIR_CREATED:-0}" = 1 ]; then
+    rmdir "$REALHOME/.config/systemd/user" "$REALHOME/.config/systemd" 2>/dev/null || true
   fi
   # Belt and suspenders: SIGTERM anything still running from $INSTALL
   # (supervisord handles SIGTERM by stopping the daemon first), then SIGKILL.
@@ -333,7 +350,17 @@ cmp -s "$T/up.txt" "$T/down.txt" || { fail "sftp payload mismatch"; exit 1; }
 pass "sftp put/get round trip"
 
 # --- 8. stop + uninstall; nothing may remain -----------------------------------
-if [ "$O4_MODE" = user ]; then "$OUTPOST_BIN" service uninstall --user; else sudo -n "$OUTPOST_BIN" service uninstall --system; fi
+# `--system` exists only on darwin; the Linux system unit is the default.
+if [ "$O4_MODE" = user ]; then UNINSTALL_FLAGS="--user"
+elif [ "$OSNAME" = darwin ]; then UNINSTALL_FLAGS="--system"
+else UNINSTALL_FLAGS=""; fi
+if [ "$O4_MODE" = user ]; then
+  # shellcheck disable=SC2086
+  "$OUTPOST_BIN" service uninstall $UNINSTALL_FLAGS || { fail "service uninstall failed"; exit 1; }
+else
+  # shellcheck disable=SC2086
+  sudo -n "$OUTPOST_BIN" service uninstall $UNINSTALL_FLAGS || { fail "service uninstall failed"; exit 1; }
+fi
 "$OUTPOST_BIN" stop >/dev/null 2>&1 || true
 # SIGTERM the supervisor (it stops the daemon first), then verify.
 SUP_PID_FILE="$XDG_CACHE_HOME/outpost/supervisord.pid"
@@ -348,6 +375,16 @@ done
 if tcp_open 127.0.0.1 "$O4_PORT"; then fail "sshd port still open after uninstall"; exit 1; fi
 leftovers=$(ps -ax -o pid= -o command= 2>/dev/null | grep -F "$INSTALL/" | grep -v grep || true)
 [ -z "$leftovers" ] || { fail "processes still running from $INSTALL: $leftovers"; exit 1; }
+# The registration itself must be gone, not just the processes.
+if [ "$OSNAME" = linux ]; then
+  if [ "$O4_MODE" = user ]; then
+    systemctl --user is-enabled outpost.service >/dev/null 2>&1 && { fail "systemd --user unit still registered after uninstall"; exit 1; }
+  else
+    systemctl is-enabled outpost.service >/dev/null 2>&1 && { fail "systemd system unit still registered after uninstall"; exit 1; }
+  fi
+elif [ "$OSNAME" = darwin ] && [ "$O4_MODE" = system ]; then
+  [ -e /Library/LaunchDaemons/io.dhnt.outpost.plist ] && { fail "LaunchDaemon still registered after uninstall"; exit 1; }
+fi
 OUTPOST_INSTALLED=""  # cleanup trap: nothing left to uninstall
-pass "service uninstalled; no listener, no processes, authorized_keys restored"
+pass "service uninstalled; no registration, no listener, no processes, authorized_keys restored"
 echo "O4-OK mode=$O4_MODE os=$OSNAME port=$O4_PORT"
