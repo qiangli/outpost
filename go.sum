@@ -597,6 +597,8 @@ github.com/prometheus/procfs v0.20.1 h1:XwbrGOIplXW/AU3YhIhLODXMJYyC1isLFfYCsTEy
 github.com/prometheus/procfs v0.20.1/go.mod h1:o9EMBZGRyvDrSPH1RqdxhojkuXstoe4UlK79eF5TGGo=
 github.com/qiangli/coreutils v0.0.0-20261009201221-a50cc1f27e6f h1:Y0TFWGdXnQJbkCwYBefcku5y7uc631KtgZ9dM3ECZng=
 github.com/qiangli/coreutils v0.0.0-20261009201221-a50cc1f27e6f/go.mod h1:QFDRohUI+2hkfonUl9DnpGy9bYEC9oE/zY9oS2zr3iI=
+github.com/qiangli/coreutils v0.0.0-20261010190610-9ab2513fb087 h1:K36tXgS0gJD5ENEMp9EnCpzoMFLOUZyk7JXHmYgcQbQ=
+github.com/qiangli/coreutils v0.0.0-20261010190610-9ab2513fb087/go.mod h1:syd1LO1H/WqQqw6ioX2cxldGr2ug0jNi+sk98XVTgQU=
 github.com/qiangli/coreutils/third_party/goawk v0.0.0-20261009201221-a50cc1f27e6f h1:swXo8mpvz1uj7RaU5+EB/wUGMOZ8Me/tQ2MN/B7Trt0=
 github.com/qiangli/coreutils/third_party/goawk v0.0.0-20261009201221-a50cc1f27e6f/go.mod h1:eWcTOZKzYiskL0m3T9AqnK+8dxq+ga6fd32pFBPolLk=
 github.com/qiangli/filebrowser/v2 v2.0.0-20261009064700-9c1237190cff h1:IZAYNdYS2RrgOPAfi7BdoXQOmJZD+nrNTKVLnSVZ3Yc=
@@ -609,6 +611,8 @@ github.com/qiangli/sh/v3 v3.0.0-20261009223315-5ed7e8b0b4ff h1:FTNz0M2lxbAoD0t5A
 github.com/qiangli/sh/v3 v3.0.0-20261009223315-5ed7e8b0b4ff/go.mod h1:ZFYKF5yRZk5SSMzb1/Shustc5RWl/YmgE9cVykg+hzg=
 github.com/qiangli/yoke v0.0.0-20261010022445-bf71bf71a47f h1:g+p0CPgj3O4D+jjNnC4kDqe8FCoKpZtYrifxOZv15fA=
 github.com/qiangli/yoke v0.0.0-20261010022445-bf71bf71a47f/go.mod h1:14j/svl9rJSw0lVuA6Bha8KG9o61sjqc5CS1gZI/Le4=
+github.com/qiangli/yoke v0.0.0-20261010222016-1ea229078706 h1:vOhZ3SVEmo5xjyZtDiaMMeCOVzeku5s+vThfnCAW+mI=
+github.com/qiangli/yoke v0.0.0-20261010222016-1ea229078706/go.mod h1:Vpw+JcY6aXtCFdjyokP3zkFiGOyzK6sXHaCQRki6v6E=
 github.com/quic-go/qpack v0.6.0 h1:g7W+BMYynC1LbYLSqRt8PBg5Tgwxn214ZZR34VIOjz8=
 github.com/quic-go/qpack v0.6.0/go.mod h1:lUpLKChi8njB4ty2bFLX2x4gzDqXwUpaO1DP9qMDZII=
 github.com/quic-go/quic-go v0.59.1 h1:0Gmua0HW1Tv7ANR7hUYwRyD0MG5OJfgvYSZasGZzBic=
