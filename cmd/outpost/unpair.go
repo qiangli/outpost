@@ -13,8 +13,9 @@ import (
 func unpairCmd() *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
-		Use:   "unpair",
-		Short: "Clear the portal pairing (keeps apps/outbound/builtins). Daemon restarts.",
+		Use:     "unpair",
+		Aliases: []string{"logout"},
+		Short:   "Clear the portal pairing and return this outpost to dormant.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !yes {
 				fmt.Println("This will clear AgentName, Token, AccessToken from agent.json and restart outpost.")
@@ -33,7 +34,13 @@ func unpairCmd() *cobra.Command {
 			if err := session.callTool(cmd.Context(), "outpost_unpair", map[string]any{}, &out); err != nil {
 				return err
 			}
-			fmt.Println("Unpaired. Restarting outpost — poll `outpost status` until configured=false.")
+			// The user service is the switch that keeps a paired outpost alive.
+			// Removing it also stops its supervisor, returning the installation to
+			// the dormant state. Platform uninstallers are deliberately idempotent.
+			if err := deactivatePairedService(); err != nil {
+				return err
+			}
+			fmt.Println("Unpaired. The per-user outpost service has been stopped and removed (dormant).")
 			return nil
 		},
 	}

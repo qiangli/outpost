@@ -51,6 +51,37 @@ type installOpts struct {
 	RunAs  string // OS user the system service runs as ("" = invoking non-root user)
 }
 
+// userServiceManager is the small policy boundary used by pairing.  The
+// platform implementations remain responsible for launchd, systemd, and Task
+// Scheduler; pairing only needs to turn the per-user service on or off.
+// Keeping this boundary here lets command tests prove the pairing policy
+// without registering anything on the host running the tests.
+type userServiceManager interface {
+	Install() error
+	Uninstall() error
+}
+
+type platformUserServiceManager struct{}
+
+func (platformUserServiceManager) Install() error {
+	return installService(installOpts{System: false})
+}
+
+func (platformUserServiceManager) Uninstall() error {
+	return uninstallService(installOpts{System: false})
+}
+
+var pairingServiceManager userServiceManager = platformUserServiceManager{}
+
+func activatePairedService(daemonWasRunning, noService bool) error {
+	if daemonWasRunning || noService {
+		return nil
+	}
+	return pairingServiceManager.Install()
+}
+
+func deactivatePairedService() error { return pairingServiceManager.Uninstall() }
+
 func serviceCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "service",

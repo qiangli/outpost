@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/qiangli/outpost/internal/agent/admincore"
+	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
 // outpost status — one-page summary of pairing + builtins + outbound.
@@ -27,7 +28,21 @@ func statusCmd() *cobra.Command {
 			}
 			session, err := dialMCP(cmd.Context())
 			if err != nil {
-				return err
+				// A dormant install has no daemon to answer MCP. Its config is
+				// still enough to report the pairing state without starting it.
+				path, pathErr := conf.DefaultConfigPath()
+				if pathErr != nil {
+					return err
+				}
+				fc, loadErr := conf.LoadFile(path)
+				if loadErr != nil {
+					return err
+				}
+				if jsonOut {
+					return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"state": pairingState(fc.AgentName), "agent_name": fc.AgentName})
+				}
+				fmt.Println(pairingState(fc.AgentName))
+				return nil
 			}
 			defer session.close()
 			var status admincore.StatusView
@@ -42,17 +57,20 @@ func statusCmd() *cobra.Command {
 				b, _ := json.MarshalIndent(map[string]any{
 					"status": status,
 					"config": cfg,
+					"state":  pairingState(status.AgentName),
 				}, "", "  ")
 				fmt.Println(string(b))
 				return nil
 			}
 			fmt.Println("Pairing")
 			if status.Configured {
+				fmt.Printf("  state       active (paired as %s)\n", status.AgentName)
 				fmt.Printf("  agent_name  %s\n", status.AgentName)
 				fmt.Printf("  cloudbox    %s\n", status.CloudboxURL)
 				fmt.Printf("  protocol    %s\n", cfg.Protocol)
 				fmt.Printf("  has_token   %t\n", cfg.HasToken)
 			} else {
+				fmt.Println("  state       dormant (unpaired)")
 				fmt.Println("  unpaired — run `outpost register` or visit the admin UI to pair.")
 			}
 			fmt.Printf("  os_user     %s\n", status.CurrentOSUser)
@@ -125,4 +143,11 @@ func statusCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit JSON instead of a table")
 	cmd.Flags().BoolVar(&localPresence, "local-presence", false, "Report local daemon presence without authentication (installer probe)")
 	return cmd
+}
+
+func pairingState(name string) string {
+	if name == "" {
+		return "dormant (unpaired)"
+	}
+	return fmt.Sprintf("active (paired as %s)", name)
 }

@@ -4035,8 +4035,8 @@ func registerCmd() *cobra.Command {
 		out          string
 		authURL      string
 		title        string
-		assumeYes    bool
 		clientOnly   bool
+		noService    bool
 		ring         string
 	)
 	cmd := &cobra.Command{
@@ -4129,10 +4129,6 @@ code" dialog usually only needs --code.`,
 			if handled, _ := restartRunningDaemon(cmd.Context()); handled {
 				return nil
 			}
-
-			if scripted {
-				return nil
-			}
 			// Client-only registrations have no tunnel + no inbound
 			// surface, so the only thing `outpost start` would do is
 			// run the admin UI. Skip the auto-start prompt to avoid
@@ -4143,16 +4139,7 @@ code" dialog usually only needs --code.`,
 				fmt.Println("`outpost ssh-proxy <host>` from your shell — nothing to start.")
 				return nil
 			}
-			if !assumeYes {
-				ans, _ := promptDefault(reader, "Start outpost now? [Y/n]", "y")
-				if !isYes(ans) {
-					fmt.Println()
-					fmt.Println("To start later, run:")
-					fmt.Println("    outpost start")
-					return nil
-				}
-			}
-			return execSelfStart()
+			return activatePairedService(false, noService)
 		},
 	}
 	cmd.Flags().StringVar(&serverURL, "server", "", "Portal URL (default https://ai.dhnt.io)")
@@ -4165,7 +4152,8 @@ code" dialog usually only needs --code.`,
 		"Optional application-level auth endpoint. When set, the agent forwards {user,password} to it and trusts the returned role; the host OS is no longer consulted.")
 	cmd.Flags().StringVar(&title, "title", "",
 		"Human-readable subtitle shown in the portal (e.g. \"Family streaming box\"). Required when --auth-url is set; optional otherwise (falls back to the OS user / hostname).")
-	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "On success, start outpost immediately without asking")
+	cmd.Flags().BoolP("yes", "y", false, "Deprecated: registration starts the per-user service without prompting")
+	cmd.Flags().BoolVar(&noService, "no-service", false, "Pair without installing or starting the per-user outpost service")
 	cmd.Flags().BoolVar(&clientOnly, "client-only", false,
 		"Pair this machine as a credential-only outpost — outbound SSH via `outpost ssh-proxy` only, no inbound listeners, no matrix tunnel. The host row shows up in cloudbox with a 'client' badge so the operator can see it; it cannot be a share target.")
 	cmd.Flags().StringVar(&ring, "ring", "",
