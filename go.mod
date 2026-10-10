@@ -21,7 +21,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/pkg/sftp v1.13.10
-	github.com/qiangli/yoke v0.0.0-20261009073833-dddfffe1f47b
+	github.com/qiangli/yoke v0.0.0-20261010022445-bf71bf71a47f
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.53.0
 	github.com/spf13/cobra v1.10.2
@@ -212,7 +212,7 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
-	github.com/qiangli/coreutils v0.0.0-20261009071524-54a8fb26235e // indirect
+	github.com/qiangli/coreutils v0.0.0-20261009201221-a50cc1f27e6f // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.1 // indirect
 	github.com/quic-go/webtransport-go v0.10.0 // indirect
@@ -292,14 +292,14 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 v3.0.0-20261009065157-d3d7766e8a47
+replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 v3.0.0-20261009223315-5ed7e8b0b4ff
 
 replace github.com/filebrowser/filebrowser/v2 => github.com/qiangli/filebrowser/v2 v2.0.0-20261009064700-9c1237190cff
 
 // Dependency replaces are not transitive: coreutils' embedded awk needs the
 // fork (it imports goawk/regex, which upstream v1.31.0 does not contain), and
 // coreutils' own replace does not reach this module. Same pin bashy carries.
-replace github.com/benhoyt/goawk => github.com/qiangli/coreutils/third_party/goawk v0.0.0-20261008102224-574a21fe8d42
+replace github.com/benhoyt/goawk => github.com/qiangli/coreutils/third_party/goawk v0.0.0-20261009201221-a50cc1f27e6f
 
 replace github.com/odvcencio/gotreesitter => github.com/qiangli/gotreesitter v0.0.0-20261006115113-c8a5d22bb3f0
 
