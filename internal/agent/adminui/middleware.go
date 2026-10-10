@@ -21,9 +21,19 @@ const cookieName = "outpost_admin"
 //     /api/* call requires a session cookie from /api/login, regardless
 //     of whether pairing has happened yet. This is the safe default for
 //     LAN-reachable admin UIs.
+//
+// On a loopback listener a direct loopback peer presenting the host's MCP
+// bearer is admitted as the OS user (see bearerIdentity); it never applies
+// to a non-loopback bind.
 func (s *Server) requireSession() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if s.loopbackOnly && !s.isConfigured() {
+			c.Next()
+			return
+		}
+		if user, ok := s.bearerIdentity(c); ok {
+			c.Set("admin_user", user)
+			c.Set(ctxAuthVia, authViaBearer)
 			c.Next()
 			return
 		}

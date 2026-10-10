@@ -370,8 +370,8 @@ func (s *Server) registerRoutes() {
 	// own path so a status read never puts a credential on screen.
 	api.GET("/cluster/control-plane", s.handleGetControlPlane)
 	api.POST("/cluster/control-plane", s.handleSetControlPlane)
-	api.GET("/cluster/control-plane/token", s.handleRevealControlPlaneToken)
-	api.POST("/cluster/control-plane/token/rotate", s.handleRotateControlPlaneToken)
+	api.GET("/cluster/control-plane/token", s.denyBearer(), s.handleRevealControlPlaneToken)
+	api.POST("/cluster/control-plane/token/rotate", s.denyBearer(), s.handleRotateControlPlaneToken)
 
 	// Peer-plane JOIN — which control plane this host is a node OF, when that
 	// is not the cloudbox-hosted one. The mirror image of the block above:
@@ -396,9 +396,9 @@ func (s *Server) registerRoutes() {
 	// tool's .mcp.json. Only available when main.go threaded the
 	// closures in (skipped on test paths).
 	if s.deps.MCPToken != nil {
-		api.GET("/mcp/credentials", s.handleMCPCredentials)
+		api.GET("/mcp/credentials", s.denyBearer(), s.handleMCPCredentials)
 		if s.deps.RotateMCPToken != nil {
-			api.POST("/mcp/token/rotate", s.handleRotateMCPToken)
+			api.POST("/mcp/token/rotate", s.denyBearer(), s.handleRotateMCPToken)
 		}
 	}
 
@@ -411,7 +411,7 @@ func (s *Server) registerRoutes() {
 		api.POST("/outbound/:path/disconnect", s.handleDisconnectOutbound)
 	}
 
-	// Local-access proxy via NoRoute fallback (session-gated).
+	// Local-access proxy via NoRoute fallback (session-gated, cookie only).
 	s.engine.NoRoute(s.handleLocalAppProxy)
 }
 
@@ -435,6 +435,11 @@ func (s *Server) handleLocalAppProxy(c *gin.Context) {
 	if !outboundMatch && !localMatch {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
+	}
+	// The host bearer is never accepted here and never forwarded: an app
+	// behind this proxy must not receive the admin credential.
+	if s.bearerMatches(c.Request) {
+		c.Request.Header.Del("Authorization")
 	}
 	if cookie, err := c.Cookie(cookieName); err != nil || cookie == "" {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "login required"})
