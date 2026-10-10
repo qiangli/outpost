@@ -19,8 +19,13 @@ const testMCPToken = "synthetic-mcp-bearer-0123456789abcdef0123456789"
 // MCP token wired, as main.go does.
 func bearerServer(t *testing.T) *Server {
 	t.Helper()
+	return bearerServerWith(t, &conf.FileConfig{AgentName: "x", Token: "t"})
+}
+
+func bearerServerWith(t *testing.T, fc *conf.FileConfig) *Server {
+	t.Helper()
 	configPath := filepath.Join(t.TempDir(), "agent.json")
-	if err := conf.SaveFile(configPath, &conf.FileConfig{AgentName: "x", Token: "t"}); err != nil {
+	if err := conf.SaveFile(configPath, fc); err != nil {
 		t.Fatal(err)
 	}
 	s := newTestServer(t, configPath, nil, nil)
@@ -187,5 +192,71 @@ func TestLocalAppProxyDoesNotForwardBearer(t *testing.T) {
 	}
 	if seen != "" {
 		t.Fatalf("upstream app received the admin bearer: %q", seen)
+	}
+}
+
+const (
+	testProvToken = "synthetic-provisioning-token-aaaaaaaaaaaaaaaa"
+	testSSOSecret = "synthetic-sso-secret-bbbbbbbbbbbbbbbbbbbbbbbb"
+	testSvcSecret = "synthetic-service-sso-secret-cccccccccccccc"
+)
+
+func secretServer(t *testing.T) *Server {
+	t.Helper()
+	return bearerServerWith(t, &conf.FileConfig{
+		AgentName: "x", Token: "t",
+		Apps: []conf.AppConfig{{
+			Name: "probe", Scheme: "http", Host: "127.0.0.1", Port: 9, Enabled: true,
+			ProvisioningToken: testProvToken, SSOSecret: testSSOSecret,
+		}},
+		BashyServices: []conf.BashyService{{
+			Name: "svc", Enabled: true, TrustCloudIdentity: true, SSOSecret: testSvcSecret,
+		}},
+	})
+}
+
+func TestBearerCannotRotateProvisioningToken(t *testing.T) {
+	s := secretServer(t)
+	w := bearerReq(s, http.MethodPost, "/api/apps/probe/provisioning-token/rotate", "127.0.0.1:5000", "Bearer "+testMCPToken)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("bearer rotated a provisioning token: %d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "provisioning_token") {
+		t.Errorf("response carries a token: %s", w.Body.String())
+	}
+}
+
+func TestBearerReadsNeverCarryAppSecrets(t *testing.T) {
+	s := secretServer(t)
+	for _, path := range []string{"/api/apps", "/api/config"} {
+		w := bearerReq(s, http.MethodGet, path, "127.0.0.1:5000", "Bearer "+testMCPToken)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d: %s", path, w.Code, w.Body.String())
+		}
+		body := w.Body.String()
+		if !strings.Contains(body, "probe") {
+			t.Errorf("GET %s lost the (non-secret) app row: %s", path, body)
+		}
+		for _, secret := range []string{testProvToken, testSSOSecret, testSvcSecret, testMCPToken} {
+			if strings.Contains(body, secret) {
+				t.Errorf("GET %s leaked a secret to the bearer caller", path)
+			}
+		}
+	}
+}
+
+func TestSessionReadsKeepAppSecretsForTheInteractiveUI(t *testing.T) {
+	s := secretServer(t)
+	cookie, err := s.sessions.Mint("someone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/apps", nil)
+	req.RemoteAddr = "127.0.0.1:5000"
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: cookie})
+	w := httptest.NewRecorder()
+	s.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), testProvToken) {
+		t.Fatalf("interactive session no longer sees app tokens: %d %s", w.Code, w.Body.String())
 	}
 }

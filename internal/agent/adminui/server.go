@@ -347,7 +347,7 @@ func (s *Server) registerRoutes() {
 	api.GET("/apps/suggestions", s.handleListSuggestions)
 	api.POST("/apps", s.handleUpsertApp)
 	api.DELETE("/apps/:name", s.handleDeleteApp)
-	api.POST("/apps/:name/provisioning-token/rotate", s.handleRotateProvisioningToken)
+	api.POST("/apps/:name/provisioning-token/rotate", s.denyBearer(), s.handleRotateProvisioningToken)
 	api.POST("/restart", s.handleRestart)
 	// Update tab: consolidated build + source + ledger payload, plus
 	// the two operator-driven actions (apply pending / rollback).
