@@ -3,12 +3,14 @@ id: d7f31dbff83b
 kind: feature
 title: 'S18 outpost as init: outpost supervisord runs only the daemon and bashy supervisord; exposure follows unit state; toggles call bashy service; old agent.json service config removed'
 seq: 1887
-status: todo
+status: assigned
 priority: p1
 labels:
     - outpost
     - bashy
 created: 2026-10-11T05:07:50.314316Z
+weave: 2
+assignee: codex-gpt5.6-terra
 sprint: 418
 sprint_id: 9891800f-8da5-5338-92bc-1d75755ca548
 sprint_title: 'Agent ecosystem synergy: agentic tools compose like a|b|c through bashy extension points'
@@ -21,3 +23,5 @@ Operator coverage requirement 2026-10-10 PDT: retain every currently supported s
 Operator rod-not-fish requirement 2026-10-10 PDT: implement reusable service declaration/configuration/enablement machinery shared by built-in, internal and external services. Built-ins are seeds, not service-name branches. Internal capabilities retain their subsystem behind a generic runtime provider and use the same registry, desired state, health/status/events and exposure contracts; no separate internal feature-flag path or fake child process. Acceptance includes seeded built-in + internal capability + fresh custom external declaration using the same service verbs, plus an operator override, without per-service supervisor/toggle/exposure code. Agree the S15/S16/S18 provider contract first; preserve complete existing feature coverage and no legacy compatibility/migration.
 
 Conductor verify: `go test -short ./...` in outpost on a claimed native host, then paired-host live toggle, re-adoption and failed-unit withdrawal probes. Own outpost init/exposure code. Coordinate the generic status IPC shape with S16 before implementation; preserve every current service and remove retired config directly. Commit with `Agent:` trailer.
+
+Manager review 2026-10-11 07:14 UTC: prior outpost weave #2 committed `54b6fe3` on an unmerged branch, making init start exactly the outpost daemon and bashy monitor and removing the supervisedFromConfig *call*. This is a useful partial, not S18 acceptance. Continue from that commit, then delete `FileConfig.Supervised` and its old keys/readers/tests, convert the existing meet and other supported toggles to generic `bashy service` desired state, consume S16 status IPC for exposure/re-adoption/failed withdrawal, and prove paired-host behavior. Retain all existing services/features. The manager will not merge #2 alone as a complete story.
