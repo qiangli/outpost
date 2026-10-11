@@ -4,3 +4,5 @@
 {"op":"validate","slug":"mesh-ssh-preflight-must-resolve-before-forwarding","tool":"codex-gpt5.6-terra-b","host":"dragon","episode":"weave-issue-2","at":"2026-08-29T11:57:36.832573Z"}
 {"op":"add","slug":"qa-pollers-must-avoid-locale-sensitive-evidence-filters","tool":"codex-gpt-5.5-b","host":"dragon","episode":"weave-issue-2","at":"2026-08-29T18:45:21.632144Z"}
 {"op":"add","slug":"default-on-bashy-services-need-explicit-enabled-tracking","tool":"codex-gpt-5.5-a","host":"dragon","episode":"weave-issue-1","at":"2026-08-31T08:11:16.715771Z"}
+{"op":"supersede","slug":"service-units-are-read-and-written-through-fleet-s-go-api-not-th","id":"01a12a0f-1b1e-7da4-bbc8-db64aae3b336","tool":"claude-opus5-c","host":"dragon","episode":"ep-dd7732ba7e9c708e","at":"2026-10-11T08:23:15.487314Z"}
+{"op":"supersede","slug":"default-on-bashy-services-need-explicit-enabled-tracking","id":"01a12a0f-1b20-7860-b37a-700c7a2b8d6c","tool":"claude-opus5-c","host":"dragon","episode":"ep-dd7732ba7e9c708e","at":"2026-10-11T08:23:15.488962Z"}
