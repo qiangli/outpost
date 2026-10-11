@@ -73,7 +73,7 @@ func (s *Server) registerAppsTools() {
 		if err != nil {
 			return apiErrResult[listAppsOut](err)
 		}
-		return nil, listAppsOut{Apps: apps}, nil
+		return nil, listAppsOut{Apps: admincore.RedactApps(apps)}, nil
 	})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
@@ -101,7 +101,7 @@ func (s *Server) registerAppsTools() {
 		if err != nil {
 			return apiErrResult[upsertAppOut](err)
 		}
-		return nil, upsertAppOut{OK: true, App: ac}, nil
+		return nil, upsertAppOut{OK: true, App: admincore.RedactApp(ac)}, nil
 	})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
@@ -122,7 +122,7 @@ func (s *Server) registerAppsTools() {
 		if err != nil {
 			return apiErrResult[upsertAppOut](err)
 		}
-		return nil, upsertAppOut{OK: true, App: ac}, nil
+		return nil, upsertAppOut{OK: true, App: admincore.RedactApp(ac)}, nil
 	})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{

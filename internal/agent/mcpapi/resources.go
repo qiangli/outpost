@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/qiangli/outpost/internal/agent/admincore"
 )
 
 // Resources are read-only snapshots agent tools fetch to reason about
@@ -28,8 +30,14 @@ func (s *Server) registerReadOnlyResources() {
 
 	s.addJSONResource("outpost://config",
 		"Outpost full config (redacted)",
-		"Full FileConfig view with secrets stripped — Token, AccessToken, ProvisioningToken, Cluster.Token, Cluster.CA never leave the daemon. Includes live built-in detection (podman/ollama Available + Target), LLM pool diagnostic, outbound mount status.",
-		func(ctx context.Context) (any, error) { return s.core.SafeView() })
+		"Full FileConfig view with secrets stripped — Token, AccessToken, per-app ProvisioningToken/SSOSecret, per-service SSOSecret, Cluster.Token, Cluster.CA never leave the daemon (presence in app_secrets / bashy_service_secrets). Includes live built-in detection (podman/ollama Available + Target), LLM pool diagnostic, outbound mount status.",
+		func(ctx context.Context) (any, error) {
+			v, err := s.core.SafeView()
+			if err != nil {
+				return nil, err
+			}
+			return v.Redacted(), nil
+		})
 
 	s.addJSONResource("outpost://apps",
 		"Registered custom apps",
@@ -39,7 +47,7 @@ func (s *Server) registerReadOnlyResources() {
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"apps": apps}, nil
+			return map[string]any{"apps": admincore.RedactApps(apps)}, nil
 		})
 
 	s.addJSONResource("outpost://outbound",

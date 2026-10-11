@@ -8,7 +8,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/qiangli/outpost/internal/agent/admincore"
-	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 )
 
@@ -26,13 +25,6 @@ func respondError(c *gin.Context, err error) {
 func viaBearer(c *gin.Context) bool {
 	v, _ := c.Get(ctxAuthVia)
 	return v == authViaBearer
-}
-
-// redactApp blanks the per-app secrets a host-bearer caller must never read.
-func redactApp(ac conf.AppConfig) conf.AppConfig {
-	ac.ProvisioningToken = ""
-	ac.SSOSecret = ""
-	return ac
 }
 
 // handleStatus is the SPA's "what should I render?" call.
@@ -107,17 +99,7 @@ func (s *Server) handleGetConfig(c *gin.Context) {
 		return
 	}
 	if viaBearer(c) {
-		apps := make([]conf.AppConfig, len(sv.Apps))
-		for i, a := range sv.Apps {
-			apps[i] = redactApp(a)
-		}
-		sv.Apps = apps
-		svcs := make([]conf.BashyService, len(sv.BashyServices))
-		for i, b := range sv.BashyServices {
-			b.SSOSecret = ""
-			svcs[i] = b
-		}
-		sv.BashyServices = svcs
+		sv = sv.Redacted()
 	}
 	c.JSON(http.StatusOK, sv)
 }
@@ -165,11 +147,7 @@ func (s *Server) handleListApps(c *gin.Context) {
 		return
 	}
 	if viaBearer(c) {
-		red := make([]conf.AppConfig, len(apps))
-		for i, a := range apps {
-			red[i] = redactApp(a)
-		}
-		apps = red
+		apps = admincore.RedactApps(apps)
 	}
 	c.JSON(http.StatusOK, gin.H{"apps": apps})
 }
@@ -188,7 +166,7 @@ func (s *Server) handleUpsertApp(c *gin.Context) {
 		return
 	}
 	if viaBearer(c) {
-		ac = redactApp(ac)
+		ac = admincore.RedactApp(ac)
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "app": ac})
 }

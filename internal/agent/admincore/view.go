@@ -246,6 +246,7 @@ type SafeView struct {
 	OAuth2Email             string              `json:"oauth2_email,omitempty"`
 	AdminUsers              []string            `json:"admin_users"`
 	Apps                    []conf.AppConfig    `json:"apps"`
+	AppSecrets              []SecretPresence    `json:"app_secrets,omitempty"`
 	ShellEnabled            bool                `json:"shell_enabled"`
 	DesktopEnabled          bool                `json:"desktop_enabled"`
 	ClipboardEnabled        bool                `json:"clipboard_enabled"`
@@ -271,6 +272,7 @@ type SafeView struct {
 	MeshEnabled             bool                `json:"mesh_enabled"`
 	MeshPort                int                 `json:"mesh_port,omitempty"`
 	BashyServices           []conf.BashyService `json:"bashy_services,omitempty"`
+	BashyServiceSecrets     []SecretPresence    `json:"bashy_service_secrets,omitempty"`
 	BashyAppsEnabled        bool                `json:"bashy_apps_enabled"`
 	BashyAppsPort           int                 `json:"bashy_apps_port,omitempty"`
 	BashyVersion            string              `json:"bashy_version,omitempty"`
@@ -319,8 +321,10 @@ type SafeView struct {
 
 // SafeView returns the redacted view of the on-disk FileConfig + live
 // state (built-in availability probes, outbound mount status, pool
-// diagnostic). The Token / AccessToken / ProvisioningToken values are
-// NEVER included — presence is reported via has_token only.
+// diagnostic). Top-level secrets (Token, AccessToken, cloud/cluster keys) are
+// NEVER included — presence is reported via has_* flags. Nested per-app and
+// per-service credentials are still present for the interactive admin
+// session; every other caller must use Redacted().
 func (s *Server) SafeView() (SafeView, error) {
 	fc, err := s.loadConfig()
 	if err != nil {
