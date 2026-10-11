@@ -184,7 +184,13 @@ while [ "$i" -lt 300 ]; do
     i=$((i + 1))
     sleep 1
 done
-if listening "${OUTPOST_API_PORT}"; then
+# k3s opens the apiserver port before it writes --write-kubeconfig; reading
+# the file in that window fails the sed below and kills the plane (exit 2).
+while [ "$i" -lt 300 ] && [ ! -s /etc/rancher/k3s/k3s-internal.yaml ]; do
+    i=$((i + 1))
+    sleep 1
+done
+if listening "${OUTPOST_API_PORT}" && [ -s /etc/rancher/k3s/k3s-internal.yaml ]; then
     # k3s must run on its native internal port, but the host deliberately
     # publishes it on 16443 to avoid colliding with a worker's local visitor.
     # Export a host-usable kubeconfig without changing any internal component
@@ -207,7 +213,7 @@ if listening "${OUTPOST_API_PORT}"; then
     log "publishing apiserver 127.0.0.1:${OUTPOST_API_PORT} as stcp k3s-apiserver"
     frpc -c /tmp/frpc-publish.toml &
 else
-    log "WARNING: apiserver never listened on ${OUTPOST_API_PORT}; not published"
+    log "WARNING: apiserver never listened on ${OUTPOST_API_PORT} or never wrote its kubeconfig; not published"
 fi
 
 # Exit if EITHER half dies. A control plane with a live apiserver and a dead

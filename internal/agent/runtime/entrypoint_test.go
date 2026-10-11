@@ -60,3 +60,25 @@ func TestEmbeddedEntrypointAPIBindDefaultsToContainerLoopback(t *testing.T) {
 		t.Fatal("entrypoint does not thread the bridge-only bind override into frpc")
 	}
 }
+
+func TestEmbeddedServerEntrypointWaitsForKubeconfigBeforeExport(t *testing.T) {
+	data, err := fs.ReadFile(imageFS, "image/server-entrypoint.sh")
+	if err != nil {
+		t.Fatalf("read embedded server entrypoint: %v", err)
+	}
+	script := string(data)
+	waitAt := strings.Index(script, `[ ! -s /etc/rancher/k3s/k3s-internal.yaml ]`)
+	if waitAt < 0 {
+		t.Fatal("server entrypoint does not wait for k3s to write its kubeconfig")
+	}
+	sedAt := strings.Index(script, "/etc/rancher/k3s/k3s-internal.yaml > /etc/rancher/k3s/k3s.yaml.new")
+	if sedAt < 0 {
+		t.Fatal("server entrypoint no longer exports the host kubeconfig")
+	}
+	if waitAt > sedAt {
+		t.Fatal("kubeconfig wait must precede the export that reads it")
+	}
+	if !strings.Contains(script[waitAt:sedAt], `[ -s /etc/rancher/k3s/k3s-internal.yaml ]; then`) {
+		t.Fatal("export must be guarded by the kubeconfig existing, not only the port listening")
+	}
+}
