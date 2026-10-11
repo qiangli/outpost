@@ -224,6 +224,17 @@ func TestBuildSpec_HostPathMount(t *testing.T) {
 	}
 }
 
+func TestBuildSpec_HostPathPOSIXAbsoluteOnWindows(t *testing.T) {
+	p := basePod()
+	p.Spec.Volumes = []corev1.Volume{{Name: "data", VolumeSource: corev1.VolumeSource{
+		HostPath: &corev1.HostPathVolumeSource{Path: "/srv/data"},
+	}}}
+	p.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{Name: "data", MountPath: "/data"}}
+	if _, err := BuildSpec(p); err != nil {
+		t.Fatalf("POSIX absolute HostPath rejected: %v", err)
+	}
+}
+
 func TestBuildSpec_EmptyDirMount_Memory(t *testing.T) {
 	p := basePod()
 	p.Spec.Volumes = []corev1.Volume{{

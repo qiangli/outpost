@@ -98,6 +98,22 @@ func TestNativeArtifactTreeRefusesDeepSymlinkChain(t *testing.T) {
 	}
 }
 
+func TestValidateNativeArtifactSymlinkTargetFollowsChainedDotDot(t *testing.T) {
+	links := map[string]string{"sub/link": ".."}
+	if _, err := resolveNativeArtifactPath(".", "sub/link/../..", links); err == nil {
+		t.Fatal("chained symlink target that escapes the tree was accepted")
+	}
+	if _, err := resolveNativeArtifactPath(".", "later", links); err != nil {
+		t.Fatalf("dangling in-tree target was rejected: %v", err)
+	}
+	links["real/link"] = ".."
+	links["alias"] = "real"
+	got, err := resolveNativeArtifactPath(".", "alias/link/../..", links)
+	if err == nil || got != "" {
+		t.Fatalf("chained link through an alias escaped validation: path=%q err=%v", got, err)
+	}
+}
+
 // The mirror of the escape tests: a link whose target does not exist YET must
 // still resolve once the archive creates it, and a member written through that
 // link must land inside the tree. Refusing this would break legitimate archives

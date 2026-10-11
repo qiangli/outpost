@@ -630,6 +630,7 @@ func extractNativeArtifactTreeTarGzip(archivePath string, root *os.Root) error {
 	tr := tar.NewReader(gz)
 	var total int64
 	var files int
+	links := make(map[string]string)
 	for {
 		hdr, nextErr := tr.Next()
 		if errors.Is(nextErr, io.EOF) {
@@ -673,7 +674,7 @@ func extractNativeArtifactTreeTarGzip(archivePath string, root *os.Root) error {
 			}
 			total += n
 		case tar.TypeSymlink:
-			if err := writeNativeArtifactTreeSymlink(root, name, hdr.Linkname); err != nil {
+			if err := writeNativeArtifactTreeSymlink(root, name, hdr.Linkname, links); err != nil {
 				return err
 			}
 		case tar.TypeLink:
@@ -697,6 +698,7 @@ func extractNativeArtifactTreeZip(archivePath string, root *os.Root) error {
 	defer zr.Close()
 	var total int64
 	var files int
+	links := make(map[string]string)
 	for _, zf := range zr.File {
 		name, err := safeNativeArtifactTreeName(zf.Name)
 		if err != nil {
@@ -712,7 +714,7 @@ func extractNativeArtifactTreeZip(archivePath string, root *os.Root) error {
 			if err != nil {
 				return err
 			}
-			if err := writeNativeArtifactTreeSymlink(root, name, link); err != nil {
+			if err := writeNativeArtifactTreeSymlink(root, name, link, links); err != nil {
 				return err
 			}
 		case zf.FileInfo().IsDir():
@@ -811,7 +813,7 @@ func writeNativeArtifactTreeFile(root *os.Root, name string, src io.Reader, mode
 // `esc -> "sub/link/../.."` cleans to "." while the kernel lands two levels
 // above the tree). Treating a lexical check as the boundary is precisely the
 // defect this code replaced — do not re-add one here and rely on it.
-func writeNativeArtifactTreeSymlink(root *os.Root, name, linkname string) error {
+func writeNativeArtifactTreeSymlink(root *os.Root, name, linkname string, links map[string]string) error {
 	ln := strings.ReplaceAll(linkname, "\\", "/")
 	if ln == "" {
 		return fmt.Errorf("vknode: native artifact symlink has an empty target; refused")
@@ -822,6 +824,19 @@ func writeNativeArtifactTreeSymlink(root *os.Root, name, linkname string) error 
 	if resolved := path.Join(path.Dir(name), ln); resolved == ".." || strings.HasPrefix(resolved, "../") {
 		return fmt.Errorf("vknode: native artifact symlink %q escapes the artifact tree; refused", linkname)
 	}
+	// os.Root protects operations on Unix, but native Windows currently allows
+	// a path to escape after resolving a chain of symlinks followed by `..`.
+	// Resolve the archive's already-created links component by component before
+	// creating this link. The stack semantics intentionally apply `..` after
+	// expanding a link target, matching filesystem path resolution.
+	_, err := resolveNativeArtifactPath(path.Dir(name), ln, links)
+	if err != nil {
+		return err
+	}
+	linkPath, err := resolveNativeArtifactPath(".", name, links)
+	if err != nil {
+		return err
+	}
 	if err := mkdirAllNativeArtifactTree(root, path.Dir(name)); err != nil {
 		return err
 	}
@@ -831,7 +846,39 @@ func writeNativeArtifactTreeSymlink(root *os.Root, name, linkname string) error 
 	if err := root.Symlink(filepath.FromSlash(ln), filepath.FromSlash(name)); err != nil {
 		return fmt.Errorf("vknode: create native artifact symlink %q: %w", name, err)
 	}
+	links[linkPath] = ln
 	return nil
+}
+
+func resolveNativeArtifactPath(base, target string, links map[string]string) (string, error) {
+	stack := strings.Split(base, "/")
+	if len(stack) == 1 && stack[0] == "." {
+		stack = nil
+	}
+	queue := strings.Split(target, "/")
+	for steps := 0; len(queue) > 0; steps++ {
+		if steps > 4096 {
+			return "", fmt.Errorf("vknode: native artifact symlink target %q has too many chained links; refused", target)
+		}
+		part := queue[0]
+		queue = queue[1:]
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			if len(stack) == 0 {
+				return "", fmt.Errorf("vknode: native artifact symlink %q escapes the artifact tree through a chained link; refused", target)
+			}
+			stack = stack[:len(stack)-1]
+		default:
+			stack = append(stack, part)
+			if link, ok := links[strings.Join(stack, "/")]; ok {
+				stack = stack[:len(stack)-1]
+				queue = append(strings.Split(link, "/"), queue...)
+			}
+		}
+	}
+	return strings.Join(stack, "/"), nil
 }
 
 func readNativeArtifactZipSymlink(zf *zip.File) (string, error) {

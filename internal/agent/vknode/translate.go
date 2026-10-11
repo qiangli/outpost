@@ -2,6 +2,7 @@ package vknode
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -226,7 +227,9 @@ func buildMounts(pod *corev1.Pod, vms []corev1.VolumeMount, clusterID string) ([
 		switch {
 		case v.HostPath != nil:
 			src := v.HostPath.Path
-			if !filepath.IsAbs(src) {
+			// HostPath is a logical identifier, but Kubernetes paths are
+			// POSIX-absolute even when the node agent runs on Windows.
+			if !path.IsAbs(src) && !filepath.IsAbs(src) {
 				return nil, nil, fmt.Errorf("vknode: hostPath %q must be absolute", src)
 			}
 			nv := NamedVolume{
