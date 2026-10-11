@@ -163,6 +163,18 @@ func TestInternalUnitFollowsMonitorDesiredStateAndReports(t *testing.T) {
 		t.Fatalf("unwanted unit published: %v", apps.names())
 	}
 
+	// A monitor that answers without this unit has not admitted it. The
+	// local enabled bit must not bypass the monitor's declared inventory.
+	mon.mu.Lock()
+	delete(mon.want, "registry")
+	mon.mu.Unlock()
+	if err := r.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if cap.activated != 0 || len(apps.names()) != 0 {
+		t.Fatalf("unit omitted by monitor was activated: count=%d apps=%v", cap.activated, apps.names())
+	}
+
 	// The monitor wants it: activate, publish, report active with health.
 	mon.setWant("registry", true)
 	if err := r.Reconcile(ctx); err != nil {

@@ -348,8 +348,8 @@ func (r *Reconciler) applyInternal(ctx context.Context, u fleet.Service, desired
 	// dependencies); the local declaration can only turn a unit OFF early,
 	// so a disable applies before the monitor has re-read it.
 	wanted := u.Enabled
-	if w, ok := desired[u.Name]; ok {
-		wanted = u.Enabled && w
+	if monitorUp {
+		wanted = u.Enabled && desired[u.Name]
 	}
 	var applyErr error
 	switch {
