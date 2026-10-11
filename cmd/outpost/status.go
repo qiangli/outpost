@@ -38,6 +38,9 @@ func statusCmd() *cobra.Command {
 				if loadErr != nil {
 					return err
 				}
+				if fc == nil {
+					fc = &conf.FileConfig{}
+				}
 				if jsonOut {
 					return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"state": pairingState(fc.AgentName), "agent_name": fc.AgentName})
 				}
