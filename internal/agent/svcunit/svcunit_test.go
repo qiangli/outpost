@@ -566,56 +566,39 @@ func TestKickIsNonBlockingAndCoalesces(t *testing.T) {
 	}
 }
 
-// ---- client: the `bashy service` seam ----
+// ---- monitor: the one thing outpost cannot answer locally ----
 
-// The client must read the declaration and status surfaces exactly as the
-// `bashy service` CLI emits them, including fleet's list envelope.
-func TestClientReadsUnitsAndStatuses(t *testing.T) {
-	var calls [][]string
-	c := &Client{Run: func(_ context.Context, args ...string) ([]byte, error) {
-		calls = append(calls, args)
-		switch {
-		case len(args) >= 2 && args[1] == "list":
-			return []byte(`{"kind":"service","items":[
-				{"name":"gateway","provider":"process","app":"gateway","mesh":["gw"]},
-				{"name":"schedule","provider":"process"},
-				{"name":"files","provider":"internal"}]}`), nil
-		case len(args) >= 3 && args[1] == "show" && args[2] == "gateway":
-			return []byte(`{"name":"gateway","kind":"service","provider":"process",
-				"ports":[{"name":"http","port":9731}],
-				"expose":{"app":{"name":"gateway","require_login":true},"mesh":[{"name":"gw"}]},
-				"enabled":true}`), nil
-		case len(args) >= 3 && args[1] == "show" && args[2] == "files":
-			return []byte(`{"name":"files","kind":"service","provider":"internal",
-				"capability":"outpost.files","owner":"outpost","enabled":false}`), nil
-		case len(args) >= 2 && args[1] == "status":
-			return []byte(`[{"unit":"gateway","provider":"process","enabled":true,"state":"active","pid":91}]`), nil
-		}
-		return nil, fmt.Errorf("unexpected argv %v", args)
-	}}
+// The monitor client must read the status surface as the CLI emits it, in
+// both the bare-array and fleet-envelope shapes.
+func TestMonitorReadsStatuses(t *testing.T) {
+	for name, body := range map[string]string{
+		"bare array": `[{"unit":"gateway","provider":"process","enabled":true,"state":"active","pid":91}]`,
+		"envelope":   `{"kind":"service","items":[{"unit":"gateway","provider":"process","enabled":true,"state":"active","pid":91}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var argv []string
+			m := &Monitor{Run: func(_ context.Context, args ...string) ([]byte, error) {
+				argv = args
+				return []byte(body), nil
+			}}
+			sts, err := m.Statuses(context.Background())
+			if err != nil {
+				t.Fatalf("statuses: %v", err)
+			}
+			if fmt.Sprint(argv) != fmt.Sprint([]string{"service", "status", "--json"}) {
+				t.Fatalf("argv = %v", argv)
+			}
+			if len(sts) != 1 || sts[0].State != service.Active || sts[0].PID != 91 {
+				t.Fatalf("statuses = %+v", sts)
+			}
+		})
+	}
+}
 
-	units, err := c.Units(context.Background())
-	if err != nil {
-		t.Fatalf("units: %v", err)
-	}
-	// `schedule` declares neither an exposure nor an internal capability, so
-	// outpost has no work for it and does not pay a subprocess to read it.
-	if len(units) != 2 || units[0].Name != "files" || units[1].Name != "gateway" {
-		t.Fatalf("units = %v, want [files gateway]", unitNames(units))
-	}
-	if units[1].Expose.App == nil || !units[1].Expose.App.RequireLogin {
-		t.Fatalf("declaration lost its app exposure: %+v", units[1].Expose)
-	}
-	if units[0].Capability != "outpost.files" || units[0].Owner != fleet.ServiceOwnerOutpost {
-		t.Fatalf("internal declaration lost its capability binding: %+v", units[0])
-	}
-
-	sts, err := c.Statuses(context.Background())
-	if err != nil {
-		t.Fatalf("statuses: %v", err)
-	}
-	if len(sts) != 1 || sts[0].State != service.Active || sts[0].PID != 91 {
-		t.Fatalf("statuses = %+v", sts)
+func TestMonitorWithoutARunnerIsAnError(t *testing.T) {
+	var m *Monitor
+	if _, err := m.Statuses(context.Background()); err == nil {
+		t.Fatal("expected an error with no monitor configured")
 	}
 }
 
@@ -625,35 +608,4 @@ func unitNames(us []fleet.Service) []string {
 		out = append(out, u.Name)
 	}
 	return out
-}
-
-// Desired state is written through the unit store and nowhere else.
-func TestClientWritesDesiredStateThroughTheUnitStore(t *testing.T) {
-	var calls [][]string
-	c := &Client{Run: func(_ context.Context, args ...string) ([]byte, error) {
-		calls = append(calls, args)
-		return nil, nil
-	}}
-	if err := c.SetEnabled(context.Background(), "meet", true); err != nil {
-		t.Fatalf("enable: %v", err)
-	}
-	if err := c.SetEnabled(context.Background(), "meet", false); err != nil {
-		t.Fatalf("disable: %v", err)
-	}
-	if err := c.Set(context.Background(), "meet", map[string]string{"ports.0.port": "8700", "settings.root_url": "https://x"}); err != nil {
-		t.Fatalf("set: %v", err)
-	}
-	want := [][]string{
-		{"service", "enable", "meet"},
-		{"service", "disable", "meet"},
-		{"service", "set", "meet", "--set", "ports.0.port=8700", "--set", "settings.root_url=https://x"},
-	}
-	if len(calls) != len(want) {
-		t.Fatalf("calls = %v", calls)
-	}
-	for i := range want {
-		if fmt.Sprint(calls[i]) != fmt.Sprint(want[i]) {
-			t.Fatalf("call %d = %v, want %v", i, calls[i], want[i])
-		}
-	}
 }
