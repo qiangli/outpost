@@ -1,6 +1,7 @@
 package admincore
 
 import (
+	"context"
 	"strings"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
@@ -84,22 +85,27 @@ type BuiltinsParams struct {
 	Shard      *bool    `json:"shard,omitempty"`
 	ShardPeers []string `json:"shard_peers,omitempty"`
 	ShardRole  *string  `json:"shard_role,omitempty"`
-	// Back-compat convenience for the generic bashy service "loom".
-	Loom     *bool `json:"loom,omitempty"`
-	LoomPort *int  `json:"loom_port,omitempty"`
-	// Back-compat convenience for the generic bashy service "meet" (the
-	// web chat room). Like Loom/LoomPort, but with NO mesh service — a
-	// personal chat room has no peer consumer. The Command base
-	// (["meet","service"]) is pinned in DefaultBashyServices so the
-	// supervisor drives `bashy meet service {start,status,stop}`.
-	Meet     *bool `json:"meet,omitempty"`
-	MeetPort *int  `json:"meet_port,omitempty"`
-	// BashyServices replaces the whole generic service set when non-nil.
-	BashyServices []conf.BashyService `json:"bashy_services,omitempty"`
-	// BashyApps toggles the supervised bashy Apps service. nil = leave
-	// unchanged; a fresh/missing bashy_services config defaults on at boot.
-	BashyApps     *bool `json:"bashy_apps,omitempty"`
-	BashyAppsPort *int  `json:"bashy_apps_port,omitempty"`
+	// Services is the generic desired-state write over service units: unit
+	// name -> enabled. It is the ONLY way outpost turns a service on or off,
+	// and it is the same write `bashy service enable|disable` performs — one
+	// sparse overlay in fleet's unit store, validated by fleet's rules
+	// (including the port-conflict check).
+	//
+	// There are deliberately no per-service fields here any more. `loom`,
+	// `meet` and `apps` were three hardcoded toggles that each needed their
+	// own config key, reader, lifecycle and exposure code; they are seeded
+	// unit DECLARATIONS now, so a third-party daemon an operator just
+	// declared is configured through this same map with no outpost change.
+	//
+	// Applies LIVE: the running monitor reconciles the new desired state and
+	// outpost's exposure reconciler republishes, so a toggle does not need
+	// an outpost restart.
+	Services map[string]bool `json:"services,omitempty"`
+	// ServiceSettings overrides fields of a unit's declaration: unit name ->
+	// dotted path -> value, the `bashy service set NAME --set k=v` shape
+	// (e.g. {"loom":{"ports.0.port":"31900"}}). An override of a seeded
+	// built-in writes a sparse local overlay; removing it restores the seed.
+	ServiceSettings map[string]map[string]string `json:"service_settings,omitempty"`
 	// BashyVersion pins the bashy release the self-heal auto-install fetches
 	// when bashy is missing ("" / "latest" = newest; a tag pins it). Takes
 	// effect on the next restart. nil = leave unchanged.
@@ -150,19 +156,37 @@ type BuiltinsParams struct {
 // BuiltinsResult reports what happened. RestartPending is true when
 // the change is one the tunnel / built-in routes need to reload to
 // observe — callers should poll Status until the daemon is back.
+// ServicesApplied is true when service desired state moved; that takes
+// effect immediately, so a caller can say "applied" rather than repeating
+// the old, false "restart to apply".
 type BuiltinsResult struct {
-	OK             bool `json:"ok"`
-	RestartPending bool `json:"restart_pending"`
+	OK              bool `json:"ok"`
+	RestartPending  bool `json:"restart_pending"`
+	ServicesApplied bool `json:"services_applied,omitempty"`
 }
 
 // SetBuiltins applies the partial update p to the persisted FileConfig
 // and (when the host is paired) schedules a restart so the new toggles
 // take effect. On a first-time setup (AgentName empty) nothing is
 // mounted yet, so the save is harmless and no restart is triggered.
-func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
+//
+// Service units are the exception, and deliberately so: p.Services /
+// p.ServiceSettings are written to the host's unit registry and applied
+// LIVE — the monitor reconciles the processes and the exposure reconciler
+// republishes — so enabling a service no longer reports a restart it did not
+// schedule. Everything still in FileConfig keeps the persist-then-defer
+// behaviour described below.
+//
+// ctx bounds the unit-store writes (one of them shells out to the registry's
+// own `set` verb); the FileConfig write is local and unbounded.
+func (s *Server) SetBuiltins(ctx context.Context, p BuiltinsParams) (BuiltinsResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fc, err := s.loadConfig()
+	if err != nil {
+		return BuiltinsResult{}, err
+	}
+	servicesChanged, err := s.applyServiceDesiredState(ctx, p)
 	if err != nil {
 		return BuiltinsResult{}, err
 	}
@@ -252,72 +276,6 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 			fc.Shard = &conf.ShardConfig{}
 		}
 		fc.Shard.Role = *p.ShardRole
-	}
-	if p.Loom != nil {
-		fc.LoomEnabled = p.Loom
-	}
-	if p.LoomPort != nil {
-		fc.LoomPort = *p.LoomPort
-	}
-	if p.Loom != nil || p.LoomPort != nil {
-		upsertBashyService(&fc.BashyServices, conf.BashyService{
-			Name: "loom",
-			// EXPLICIT OPT-IN ONLY — an absent toggle means OFF for loom, unlike
-			// the other builtins.
-			//
-			// The shared shape is `p.X == nil || *p.X`, which reads "absent means
-			// on". That is right for a service you are configuring because you
-			// want it, but for loom it meant setting ONLY `loom_port` — naming a
-			// port, not asking for a forge — silently started a git server and
-			// published it on the mesh as the `git` service.
-			//
-			// loom is a forge for p2p/sphere work; a single-host workflow is
-			// served by `bashy weave` and needs no forge at all. So it turns on
-			// when someone says so, and never as a side effect of an adjacent
-			// setting.
-			Enabled:      p.Loom != nil && *p.Loom,
-			AppName:      "loom",
-			AppPort:      fc.LoomPortOrDefault(),
-			RequireLogin: true,
-			MeshService:  "git",
-		}, p.Loom, p.LoomPort)
-	}
-	if p.Meet != nil {
-		fc.MeetEnabled = p.Meet
-	}
-	if p.MeetPort != nil {
-		fc.MeetPort = *p.MeetPort
-	}
-	if p.Meet != nil || p.MeetPort != nil {
-		upsertBashyService(&fc.BashyServices, conf.BashyService{
-			Name:         "meet",
-			Enabled:      p.Meet == nil || *p.Meet,
-			AppName:      "meet",
-			AppPort:      fc.MeetPortOrDefault(),
-			RequireLogin: true,
-		}, p.Meet, p.MeetPort)
-	}
-	if p.BashyServices != nil {
-		// Reads hand out redacted rows, so an empty sso_secret means "keep the
-		// stored key", never "clear it": a blank would make boot mint a new key
-		// the cooperating upstream does not have.
-		stored := map[string]string{}
-		for _, b := range fc.BashyServices {
-			stored[b.Name] = b.SSOSecret
-		}
-		svcs := normalizeBashyServices(p.BashyServices)
-		for i := range svcs {
-			if svcs[i].SSOSecret == "" {
-				svcs[i].SSOSecret = stored[svcs[i].Name]
-			}
-		}
-		fc.BashyServices = svcs
-	}
-	if p.BashyApps != nil {
-		fc.BashyAppsEnabled = p.BashyApps
-	}
-	if p.BashyAppsPort != nil {
-		fc.BashyAppsPort = *p.BashyAppsPort
 	}
 	if p.Zot != nil {
 		fc.ZotEnabled = p.Zot
@@ -430,7 +388,6 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	updateModeOnly := p.UpdateMode != nil && p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterAgent == nil && p.ClusterVirtual == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.Loom == nil && p.LoomPort == nil && p.Meet == nil && p.MeetPort == nil && p.BashyServices == nil && p.BashyApps == nil && p.BashyAppsPort == nil && p.BashyVersion == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil && p.ActrunnerSandbox == nil && p.ActrunnerSandboxImage == nil && p.ActrunnerDockerHost == nil && p.CloudDOEnabled == nil && p.CloudDOToken == nil && p.Headlamp == nil && p.HeadlampPort == nil
 	if p.UpdateMode != nil {
 		if !conf.ValidUpdateMode(*p.UpdateMode) {
 			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")
@@ -452,65 +409,24 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 	// breaks batches of operator toggles), advertise RestartPending so
 	// the SPA can surface a sticky "Restart to apply" banner and let
 	// the operator pull the trigger when their batch is done.
-	restart := fc.AgentName != "" && !updateModeOnly
-	return BuiltinsResult{OK: true, RestartPending: restart}, nil
+	// Only a boot-only toggle needs a restart. update_mode is live-read by
+	// the upgrade worker, and service desired state was already applied by
+	// the unit store, the monitor and the exposure reconciler — a call
+	// carrying just those two reports no restart, because none is coming.
+	restart := fc.AgentName != "" && touchesBootOnlyConfig(p)
+	return BuiltinsResult{OK: true, RestartPending: restart, ServicesApplied: servicesChanged}, nil
 }
 
-func upsertBashyService(services *[]conf.BashyService, svc conf.BashyService, enabled *bool, port *int) {
-	if services == nil {
-		return
-	}
-	name := strings.TrimSpace(svc.Name)
-	if name == "" {
-		return
-	}
-	svc.Name = name
-	if svc.AppName == "" {
-		svc.AppName = name
-	}
-	if svc.AppPort == 0 && port != nil {
-		svc.AppPort = *port
-	}
-	if enabled != nil {
-		svc.Enabled = *enabled
-	}
-	for i := range *services {
-		if (*services)[i].Name == name {
-			existing := (*services)[i]
-			existing.Enabled = svc.Enabled
-			if svc.AppName != "" {
-				existing.AppName = svc.AppName
-			}
-			if svc.AppPort != 0 {
-				existing.AppPort = svc.AppPort
-			}
-			if svc.MeshService != "" {
-				existing.MeshService = svc.MeshService
-			}
-			if svc.RequireLogin {
-				existing.RequireLogin = true
-			}
-			(*services)[i] = existing
-			return
-		}
-	}
-	*services = append(*services, svc)
-}
-
-func normalizeBashyServices(in []conf.BashyService) []conf.BashyService {
-	out := make([]conf.BashyService, 0, len(in))
-	seen := map[string]bool{}
-	for _, svc := range in {
-		svc.Name = strings.TrimSpace(svc.Name)
-		if svc.Name == "" || seen[svc.Name] {
-			continue
-		}
-		seen[svc.Name] = true
-		if svc.AppName == "" {
-			svc.AppName = svc.Name
-		}
-		svc.EnabledSet = true
-		out = append(out, svc)
-	}
-	return out
+// touchesBootOnlyConfig reports whether p carries a FileConfig toggle that
+// the tunnel or a built-in route only reads at boot, and therefore needs a
+// daemon restart to observe.
+//
+// It is the single predicate the restart decision is made on, so a new
+// toggle cannot be remembered in one of several parallel conditions and
+// forgotten in another. Two kinds of field are deliberately absent from it:
+// update_mode, which the upgrade worker re-reads on every push, and
+// services/service_settings, which are applied live by the unit store, the
+// monitor and the exposure reconciler.
+func touchesBootOnlyConfig(p BuiltinsParams) bool {
+	return !(p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterAgent == nil && p.ClusterVirtual == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.BashyVersion == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil && p.ActrunnerSandbox == nil && p.ActrunnerSandboxImage == nil && p.ActrunnerDockerHost == nil && p.CloudDOEnabled == nil && p.CloudDOToken == nil && p.Headlamp == nil && p.HeadlampPort == nil)
 }

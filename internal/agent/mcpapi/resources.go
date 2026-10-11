@@ -18,6 +18,7 @@ import (
 //   - outpost://config   — full SafeView (redacted FileConfig)
 //   - outpost://apps     — registered custom apps
 //   - outpost://outbound — outbound mounts + live state
+//   - outpost://services — service units: declared state + monitor state
 //
 // MCP ResourceContents support text or binary; we always emit one
 // text block with the JSON payload, which the SDK exposes to clients
@@ -30,7 +31,7 @@ func (s *Server) registerReadOnlyResources() {
 
 	s.addJSONResource("outpost://config",
 		"Outpost full config (redacted)",
-		"Full FileConfig view with secrets stripped — Token, AccessToken, per-app ProvisioningToken/SSOSecret, per-service SSOSecret, Cluster.Token, Cluster.CA never leave the daemon (presence in app_secrets / bashy_service_secrets). Includes live built-in detection (podman/ollama Available + Target), LLM pool diagnostic, outbound mount status.",
+		"Full FileConfig view with secrets stripped — Token, AccessToken, per-app ProvisioningToken/SSOSecret, per-service trusted-identity HMAC keys, Cluster.Token, Cluster.CA never leave the daemon (presence in app_secrets / service_secrets). Includes live built-in detection (podman/ollama Available + Target), LLM pool diagnostic, outbound mount status.",
 		func(ctx context.Context) (any, error) {
 			v, err := s.core.SafeView()
 			if err != nil {
@@ -56,6 +57,11 @@ func (s *Server) registerReadOnlyResources() {
 		func(ctx context.Context) (any, error) {
 			return map[string]any{"outbound": s.core.ListOutbound()}, nil
 		})
+
+	s.addJSONResource("outpost://services",
+		"Service units + monitor state",
+		"Every declared service unit (embedded built-in seed, in-process outpost capability, or third-party YAML) with its desired state and the service monitor's structured runtime state: inactive/starting/active/degraded/failed/stopping, pid, restarts, health, declared ports and what outpost currently publishes on the tunnel and the mesh. This is `bashy service status --json` as the daemon sees it; monitor_reachable=false means the rows carry the last state seen, not live truth. Toggle a unit with outpost_set_builtins' services field.",
+		func(ctx context.Context) (any, error) { return s.core.ServiceStatus() })
 
 	// outpost://peers — Wave 3B.2. The daemon's live discovery cache
 	// (mDNS browse hits, HTTP probe results, NAT hints, gossip in

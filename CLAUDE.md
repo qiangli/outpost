@@ -34,8 +34,9 @@ outpost shell ./scripts/build.sh
 #   internal/agent/{auth,apps,clipboard,ssh,hostkey,tunnel,outbound}_test.go
 #   internal/agent/portal/exchange_test.go
 #   internal/agent/conf/{file,url}_test.go
-#   internal/agent/admincore/networking_test.go
-#   internal/agent/adminui/{adminui,e2e,suggestions,builtins,cluster,login_limiter}_test.go
+#   internal/agent/admincore/{networking,services}_test.go
+#   internal/agent/svcunit/{svcunit,store}_test.go   — unit exposure + providers
+#   internal/agent/adminui/{adminui,e2e,suggestions,builtins,services,cluster,login_limiter}_test.go
 #   internal/agent/mcpapi/mcpapi_test.go        — end-to-end MCP protocol roundtrip
 #   cmd/outpost/docs_test.go                    — drift detector for embedded docs
 # -tags fb_archives is what outpost ships (GO_TAGS in scripts/lib.sh): the
@@ -53,6 +54,7 @@ go run ./cmd/outpost register --server https://ai.dhnt.io --code <code> --name <
 go run ./cmd/outpost start
 go run ./cmd/outpost stop
 go run ./cmd/outpost status                # paired-yet + builtins + apps + outbound
+go run ./cmd/outpost services              # service units: declared, wanted, monitor state, published
 go run ./cmd/outpost docs settings         # embedded reference (every persisted setting)
 
 # MCP-backed CLI subcommands (drive the running daemon via /mcp/*):
@@ -184,7 +186,7 @@ Mounted on the same gin engine at `/mcp/*` using `github.com/modelcontextprotoco
 
 - `server.go` — wraps `mcp.NewStreamableHTTPHandler` with constant-time bearer-token middleware (`bearerAuth`). Token lives in `FileConfig.MCPBearerToken`; the value is in-memory swappable via `Server.Rotate()` so the SPA's "Rotate" button and the `outpost_rotate_mcp_token` tool both update the live state atomically.
 - `tools.go` registers Phase-1 parity tools across files `tools_{pair,builtins,networking,apps,outbound,cluster,lifecycle}.go`. Every tool delegates to one `admincore.Server` method.
-- `resources.go` — `outpost://status`, `outpost://config`, `outpost://apps`, `outpost://outbound`. Read-only JSON snapshots; same shapes adminui's `/api/*` endpoints return.
+- `resources.go` — `outpost://status`, `outpost://config`, `outpost://apps`, `outpost://outbound`, `outpost://services`. Read-only JSON snapshots; same shapes adminui's `/api/*` endpoints return.
 - `mcpapi_test.go` drives the full protocol end-to-end against an `httptest.Server`: initialize → list tools (asserts every parity tool is registered) → read resource → call tool. Also covers no-header / wrong-scheme / wrong-token / valid-token paths.
 
 Tool naming uses verb-noun (`outpost_upsert_app`, `outpost_delete_outbound`); CLI subcommands use Unix conventions (`apps add`, `outbound rm`). The mismatch is deliberate — the audiences differ — and `docs/settings.md` documents the mapping.
@@ -250,6 +252,7 @@ All paths take session-cookie auth (or bypass gate when unpaired + loopback). Ea
 - `GET|POST /api/outbound`, `DELETE /api/outbound/:path`, `POST /api/outbound/:path/connect`, `POST /api/outbound/:path/disconnect`, `GET /api/outbound/suggestions`
 - `POST /api/cluster/kubeconfig`, `DELETE /api/cluster/kubeconfig`
 - `GET /api/mcp/credentials`, `POST /api/mcp/token/rotate`
+- `GET /api/services` — every declared service unit joined with the monitor's state (see "Service units")
 - `POST /api/restart`
 
 Outbound endpoints are only registered when `core.Deps().Outbound != nil` (i.e. once paired with an `access_token`). MCP-credential endpoints are only registered when `main.go` threaded `MCPToken` / `RotateMCPToken` closures in (skipped on test paths).
@@ -515,34 +518,92 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   (`outpost mesh service add git 127.0.0.1:3000`) or an OCI registry
   (`… add registry 127.0.0.1:5000`) — over the mesh persistently; a peer reaches
   it with `outpost mesh listen <peer-id> git`.
-- **Loom builtin — the git forge, now a supervised *bashy service*.** `LoomEnabled`
-  (`LoomOn()`) + `LoomPort` (default **31880**, aligned with bashy/coreutils'
-  `loom.DefaultPort`): when on, loom is no longer launched via an in-process
-  `loom.Start` — it is a **`conf.BashyService`** (`DefaultBashyServices()`), and the
-  daemon supervises it through the convention **`bashy <name> start|status|stop`**
-  (`startBashyServiceSupervisors` → `superviseBashyService` in `main.go`): start on
-  boot, 30s health-check + restart-on-`stopped`, stop on shutdown, **auto-expose over
-  the mesh as `git`**, and register as a cloudbox app (`RegisterWithMeta`,
-  `RequireLogin`). Gitea itself is still a binmgr-managed external (not compiled in),
-  fetched by `bashy loom` — the lean-core model. The generic `BashyService`
-  supervisor drives any `bashy <svc>` lifecycle; loom is the seed entry.
-  **Bashy companion contract (Sprint 386 target):** resolve the executable-directory
-  sibling before `$OUTPOST_BASHY_BIN`, PATH, `~/bin`, `~/.local/bin` and the
-  verified binmgr cache. Auto-acquisition for managed services remains throttled;
-  offline mode refuses network acquisition. `bashy_version` (`FileConfig.BashyVersion`,
-  admincore/MCP/CLI/UI surfaces) retains an explicit operator pin; the default
-  companion release derives from outpost's own release stamp rather than an
-  independent constant. Empty configuration must not silently follow newest
-  on tagged builds. Untagged development fallback is separate and explicit.
-  Installed shell sessions execute bashy and report a missing executable clearly;
-  they do not fall back to an embedded interpreter. This paragraph describes the
-  required Sprint 386 contract; check the active story evidence for delivery.
-  A service resolve failure remains non-fatal to the daemon and retries through
-  the existing supervisor loop. Loom's own four-surface toggle unchanged
-  (`SetBuiltins` Loom/LoomPort → restart, `outpost_set_builtins` MCP, `builtins set
-  --loom[-port]` CLI, `loom_enabled` SafeView row).
-- **Zot builtin — the OCI registry (wrap-harness *tool lifecycle*).** Identical
-  pattern to loom: `ZotEnabled`/`ZotPort` (default 5000), four-surface; the daemon
+- **Service units — one model for every daemon (Sprint 418 S18).** Long-lived
+  services are **not** outpost toggles any more. Each is a YAML **unit** in
+  fleet's registry rings (`yoke/pkg/fleet` `Service`: `exec`, `ports`, `health`,
+  `restart`, `requires`, `secrets`, `settings`, `expose.app`, `expose.mesh`,
+  `enabled`), and three programs divide the work on the inetd/systemd split:
+  `bashy service` owns the declarations and their desired state (systemctl),
+  `bashy supervisord` is the monitor that keeps enabled units up (inetd), and
+  `outpost supervisord` is init, watching exactly the outpost daemon and that
+  monitor (systemd) — never an individual service.
+
+  The **daemon** (`internal/agent/svcunit`, wired in `cmd/outpost/services.go`)
+  does two things with units and nothing else:
+  1. **Publishes what they declare.** `expose.app` becomes a matrix-tunnel app
+     route via `AppRegistry.RegisterWithMeta`; each `expose.mesh` becomes a
+     `Forwarder.Expose` name. Published while the monitor reports `active` or
+     `degraded` (`service.State.Exposed`), **withdrawn otherwise** — a disabled,
+     failed, starting or stopping unit is not advertised.
+  2. **Hosts in-process capabilities.** A unit with `provider: internal` +
+     `owner: outpost` names a capability the daemon registered
+     (`cmd/outpost/capabilities.go`, `svcunit.Capability`'s four closures). No
+     child, no pid, and no feature flag beside the unit's `enabled` bit.
+
+  **Declarations are read and written IN PROCESS** through fleet's Go API
+  (`svcunit.Store` → `fleet.Catalog`), not by shelling out: `outpost builtins
+  set --service meet=on` and `bashy service enable meet` are one write of one
+  sparse overlay through one set of rules (including the port-conflict check).
+  Only two things use the bashy CLI: a PROCESS unit's runtime state
+  (`bashy service status --json`, the monitor's own facade — `svcunit.Monitor`),
+  and a dotted-path declaration override (`bashy service set`, because fleet's
+  path editor is unexported). Toggles apply **live** — the monitor reconciles the
+  process, `Reconciler.Kick` republishes exposure, and the result reports
+  `services_applied` with no restart.
+
+  Read surfaces, all the same join: `outpost services`, `GET /api/services`,
+  the `outpost://services` MCP resource, `SafeView.services`. An unreachable
+  monitor reports `monitor_reachable:false` and keeps an enabled unit's
+  exposure (reported `degraded`) rather than tearing down a healthy host; a
+  *disabled* unit is withdrawn regardless, since that comes from the local
+  declaration.
+
+  **Trusted cloud identity:** a unit's `expose.app.trust_cloud_identity` asks
+  for the signed-header contract; the declaration never holds the key (its
+  `secrets` are vault references), so outpost mints one lazily into the
+  daemon-internal `service_sso` map keyed by app route and persists it. A unit
+  that asks and cannot get one is refused, not published unsigned.
+
+  **Retired in the same pass** — no compatibility reader, by operator
+  clarification 2026-10-10: `agent.json` `bashy_services`, `bashy_apps_enabled`,
+  `bashy_apps_port`, `meet_enabled`, `meet_port`, `loom_enabled`, `loom_port`,
+  `supervised`; `conf.BashyService`, `DefaultBashyServices`,
+  `SupervisedProgram`, `EnsureBashyServiceSSOSecrets`; `effectiveBashyServices`,
+  `registerBashyServiceApps`, `startBashyServiceSupervisors`,
+  `superviseBashyService`, `startBashyService`, `bashyServiceRunning` (the 30 s
+  "grep `bashy X status` for the word stopped" poller, which had no health
+  check, no start limit, and never withdrew a dead service's routes); and the
+  never-wired `internal/agent/apphealth`. `--loom`, `--meet` and `--bashy-apps`
+  are replaced by the generic `--service NAME=on|off` /
+  `--service-set NAME.PATH=VALUE` pair. Custom supervised programs are custom
+  process units. act_runner's default instance now reads loom's declared port
+  (`localForgeURL`) instead of a second copy in `agent.json`.
+
+  **Bashy companion contract (Sprint 386 target):** resolve the
+  executable-directory sibling before `$OUTPOST_BASHY_BIN`, PATH, `~/bin`,
+  `~/.local/bin` and the verified binmgr cache. Auto-acquisition remains
+  throttled; offline mode refuses network acquisition. `bashy_version`
+  (`FileConfig.BashyVersion`, admincore/MCP/CLI/UI) retains an explicit
+  operator pin; the default companion release derives from outpost's own
+  release stamp rather than an independent constant. Empty configuration must
+  not silently follow newest on tagged builds. Untagged development fallback is
+  separate and explicit. Installed shell sessions execute bashy and report a
+  missing executable clearly; they do not fall back to an embedded interpreter.
+  This paragraph describes the required Sprint 386 contract; check the active
+  story evidence for delivery.
+
+  **Status (2026-10-11):** the outpost side is complete and unit-tested. The
+  producers are not published yet — the installed bashy has neither
+  `bashy service` (yoke S15 is merged at source) nor the monitor meaning of
+  `bashy supervisord` (S16/S19 in flight). Until they ship, the daemon's
+  declaration reads find only the embedded seeds and the status call fails, so
+  exposure degrades as documented above. The subsystems that still carry their
+  own boot wiring (files, sandbox, podman/ollama proxies, Zot, SeaweedFS,
+  Kopia, Headlamp) move behind the internal provider by adding a declaration
+  (S17) plus one entry in `outpostCapabilities()` — no other outpost change.
+- **Zot builtin — the OCI registry (wrap-harness *tool lifecycle*).** Still on
+  its own boot wiring pending an S17 declaration (see Service units above):
+  `ZotEnabled`/`ZotPort` (default 5000), four-surface; the daemon
   runs **Zot** (project-zot/zot, Apache-2.0) as a managed external binary via
   `coreutils/external/zot.Start` on a loopback port and **auto-exposes it over the
   mesh as `registry`** (serves container images + Ollama models, OCI). Also

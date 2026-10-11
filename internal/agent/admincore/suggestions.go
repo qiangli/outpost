@@ -8,14 +8,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
 // Suggestion is one auto-detected local app the operator can register
@@ -62,7 +59,7 @@ func (s *Server) AppSuggestions() ([]Suggestion, error) {
 		sug.Existing = registered[sug.Name]
 		out = append(out, *sug)
 	}
-	for _, sug := range bashyServiceSuggestions(fc) {
+	for _, sug := range serviceUnitSuggestions(s.deps.Services) {
 		if registered[sug.Name] {
 			sug.Existing = true
 		}
@@ -71,57 +68,54 @@ func (s *Server) AppSuggestions() ([]Suggestion, error) {
 	return out, nil
 }
 
-func bashyServiceSuggestions(fc *conf.FileConfig) []Suggestion {
-	if _, err := exec.LookPath("bashy"); err != nil {
+// serviceUnitSuggestions offers the declared-but-not-yet-enabled service
+// units that publish an app route, so the admin UI can surface "this host
+// could run meet" without the operator reading YAML.
+//
+// It used to probe `bashy <name> start|status|stop --help` for each of a
+// hardcoded descriptor list — three subprocesses per candidate, and a list
+// that had to be edited for every new daemon. The declarations already say
+// what exists, what port it wants and whether it is on, so the whole probe
+// goes away and a third-party unit shows up here for free.
+func serviceUnitSuggestions(ops ServiceOps) []Suggestion {
+	if ops == nil {
 		return nil
 	}
-	enabled := map[string]bool{}
-	if fc != nil {
-		for _, svc := range fc.BashyServices {
-			if svc.Enabled {
-				enabled[svc.Name] = true
-			}
-		}
+	units, err := ops.All()
+	if err != nil {
+		return nil
 	}
 	out := []Suggestion{}
-	for _, d := range defaultBashyServiceDescriptors() {
-		if !bashyServiceAvailable(d.Name) {
+	for _, u := range units {
+		app := u.Expose.App
+		if app == nil || u.IsRetired() {
 			continue
 		}
+		port, ok := u.PortNamed(app.Port)
+		if !ok || port.Port <= 0 {
+			continue
+		}
+		name := app.Name
+		if name == "" {
+			name = u.Name
+		}
+		note := u.Description
+		if note == "" {
+			note = "service unit " + u.Name
+		}
 		out = append(out, Suggestion{
-			Name:     d.AppName,
+			Name:     name,
 			Scheme:   "http",
 			Host:     "127.0.0.1",
-			Port:     d.AppPort,
+			Port:     port.Port,
 			Role:     "user",
-			Source:   "bashyService",
-			Note:     "managed by outpost via `bashy " + d.Name + " start|status|stop`",
-			Existing: enabled[d.Name],
+			Source:   "serviceUnit",
+			Note:     note + " — enable with `bashy service enable " + u.Name + "`",
+			Existing: u.Enabled,
 			Managed:  true,
 		})
 	}
 	return out
-}
-
-func defaultBashyServiceDescriptors() []conf.BashyService {
-	return conf.DefaultBashyServices()
-}
-
-func bashyServiceAvailable(name string) bool {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return false
-	}
-	for _, sub := range []string{"start", "status", "stop"} {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		cmd := exec.CommandContext(ctx, "bashy", name, sub, "--help")
-		err := cmd.Run()
-		cancel()
-		if err != nil {
-			return false
-		}
-	}
-	return true
 }
 
 // wellKnownPodmanCandidates returns the per-OS list of paths where

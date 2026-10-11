@@ -1,53 +1,47 @@
 package admincore
 
 import (
+	"context"
 	"testing"
-
-	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
-// loom turns on only when someone asks for it — never as a side effect of an
-// adjacent setting.
+// Naming a port is not asking for a service.
 //
-// The other builtins use "absent means on", which is right when you are
-// configuring a service because you want it. For loom that shape meant setting
-// loom_port alone — naming a port, not asking for a forge — silently started a
-// git server and published it on the mesh as the `git` service. loom serves
-// p2p/sphere work; a single-host workflow is served by `bashy weave` and needs
-// no forge at all.
-func TestLoomIsExplicitOptInOnly(t *testing.T) {
-	port := 31880
-	on, off := true, false
-
+// loom used to be a `loom` toggle beside a `loom_port` toggle under the
+// shared "absent means on" rule, so setting ONLY loom_port — naming a port,
+// not asking for a forge — silently started a git server and published it on
+// the mesh as the `git` service. The toggle therefore carried a one-off
+// explicit-opt-in exception that every reader had to know about.
+//
+// The hazard is structural now rather than special-cased: a declaration
+// override (service_settings) and a desired-state write (services) are
+// different fields, and nothing in the former can reach `enabled`. The
+// exception is gone because the shape that needed it is gone.
+func TestServiceSettingsCannotEnableAUnit(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		p    BuiltinsParams
 		want bool
 	}{
-		{"port alone does not enable it", BuiltinsParams{LoomPort: &port}, false},
-		{"explicit true enables it", BuiltinsParams{Loom: &on}, true},
-		{"explicit false wins over a port", BuiltinsParams{Loom: &off, LoomPort: &port}, false},
+		{"a field override alone does not enable it",
+			BuiltinsParams{ServiceSettings: map[string]map[string]string{"loom": {"ports.0.port": "31880"}}}, false},
+		{"an explicit true enables it",
+			BuiltinsParams{Services: map[string]bool{"loom": true}}, true},
+		{"an explicit false wins over an adjacent override",
+			BuiltinsParams{
+				Services:        map[string]bool{"loom": false},
+				ServiceSettings: map[string]map[string]string{"loom": {"ports.0.port": "31880"}},
+			}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			core, cfgPath := newTestCore(t)
-			if _, err := core.SetBuiltins(tc.p); err != nil {
+			core, _ := newTestCore(t)
+			ops := &stubServiceOps{units: []string{"loom"}, enabled: map[string]bool{}, fields: map[string]map[string]string{}}
+			core.SetServices(ops)
+			if _, err := core.SetBuiltins(context.Background(), tc.p); err != nil {
 				t.Fatal(err)
 			}
-			fc, err := conf.LoadFile(cfgPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var found, enabled bool
-			for _, s := range fc.BashyServices {
-				if s.Name == "loom" {
-					found, enabled = true, s.Enabled
-				}
-			}
-			if tc.want && !enabled {
-				t.Errorf("loom enabled = %v (entry present %v), want enabled", enabled, found)
-			}
-			if !tc.want && enabled {
-				t.Errorf("loom was enabled without an explicit opt-in")
+			if got := ops.enabled["loom"]; got != tc.want {
+				t.Errorf("loom enabled = %v, want %v", got, tc.want)
 			}
 		})
 	}

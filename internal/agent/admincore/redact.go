@@ -43,17 +43,15 @@ func (v SafeView) Redacted() SafeView {
 		}
 	}
 	v.Apps = RedactApps(v.Apps)
-	v.BashyServiceSecrets = nil
-	if v.BashyServices != nil {
-		svcs := make([]conf.BashyService, len(v.BashyServices))
-		for i, b := range v.BashyServices {
-			if b.SSOSecret != "" {
-				v.BashyServiceSecrets = append(v.BashyServiceSecrets, SecretPresence{Name: b.Name, HasSSOSecret: true})
-			}
-			b.SSOSecret = ""
-			svcs[i] = b
+	// A service unit's view never carries a secret in the first place — the
+	// declaration holds vault REFERENCES, and the trusted-identity HMAC keys
+	// live in outpost's own config. Report which app routes have one.
+	v.ServiceSecrets = nil
+	for _, app := range sortedKeys(v.serviceSSO) {
+		if v.serviceSSO[app] != "" {
+			v.ServiceSecrets = append(v.ServiceSecrets, SecretPresence{Name: app, HasSSOSecret: true})
 		}
-		v.BashyServices = svcs
 	}
+	v.serviceSSO = nil
 	return v
 }

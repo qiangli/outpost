@@ -47,6 +47,14 @@ type Deps struct {
 	// the operator adds/removes/toggles custom apps. Concurrent-safe.
 	Apps *agent.AppRegistry
 
+	// Services is the host's service-unit registry plus the monitor's state:
+	// the single control surface for declaring, configuring, enabling and
+	// observing every service — a seeded built-in, an in-process outpost
+	// capability, or a third-party YAML. Optional; nil on test paths and when
+	// the unit registry could not be opened, where the service operations
+	// report "not available" rather than panicking.
+	Services ServiceOps
+
 	// Outbound manages local mount paths that proxy through cloudbox
 	// to remote outposts' apps. Optional — when nil the outbound
 	// operations report "not configured" rather than panic.
@@ -406,6 +414,16 @@ func (s *Server) SetCloudbox(base, accessToken, agentName string) {
 	s.deps.CloudboxBase = base
 	s.deps.CloudboxAccessToken = accessToken
 	s.deps.AgentName = agentName
+}
+
+// SetServices binds the service-unit control surface after construction.
+// The reconciler needs the live AppRegistry and mesh forwarder, which the
+// daemon builds after admincore, so the dependency is late-bound rather than
+// passed to New.
+func (s *Server) SetServices(ops ServiceOps) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deps.Services = ops
 }
 
 // ScheduleRestart asynchronously triggers Deps.Restart after a short

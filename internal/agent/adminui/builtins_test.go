@@ -8,6 +8,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -77,7 +78,7 @@ func TestBuiltinsTogglePodmanOllama(t *testing.T) {
 	}
 }
 
-func TestBuiltinsToggleBashyAppsREST(t *testing.T) {
+func TestBuiltinsToggleServiceUnitREST(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "agent.json")
 	if err := conf.SaveFile(configPath, &conf.FileConfig{AgentName: "h"}); err != nil {
@@ -88,38 +89,52 @@ func TestBuiltinsToggleBashyAppsREST(t *testing.T) {
 		t.Skip("cannot determine OS user")
 	}
 	s := newTestServer(t, configPath, map[string]string{user: "secret"}, nil)
+	svc := newFakeServiceOps("console")
+	s.core.SetServices(svc)
 	w := doJSON(s, http.MethodPost, "/api/login", map[string]string{"user": user, "password": "secret"}, "")
 	cookie := extractCookie(w, cookieName)
 	if cookie == "" {
 		t.Fatal("missing session cookie after login")
 	}
 
+	// A service toggle is a desired-state write through the unit store, and
+	// it applies LIVE: the response says services_applied and does NOT claim
+	// a restart, which is the mismatch this replaced.
 	w = doJSON(s, http.MethodPost, "/api/config/builtins",
-		map[string]any{"bashy_apps": false, "bashy_apps_port": 24000}, cookie)
+		map[string]any{"services": map[string]any{"console": true}}, cookie)
 	if w.Code != http.StatusOK {
-		t.Fatalf("toggle bashy apps: %d %s", w.Code, w.Body.String())
+		t.Fatalf("toggle a service unit: %d %s", w.Code, w.Body.String())
 	}
-	fc, err := conf.LoadFile(configPath)
-	if err != nil {
-		t.Fatalf("reload: %v", err)
+	var res struct {
+		OK              bool `json:"ok"`
+		Restarting      bool `json:"restarting"`
+		ServicesApplied bool `json:"services_applied"`
 	}
-	if fc.BashyAppsEnabled == nil || *fc.BashyAppsEnabled || fc.BashyAppsPort != 24000 {
-		t.Fatalf("bashy apps config not persisted: enabled=%v port=%d", fc.BashyAppsEnabled, fc.BashyAppsPort)
-	}
-
-	w = doJSON(s, http.MethodGet, "/api/config", nil, cookie)
-	if w.Code != http.StatusOK {
-		t.Fatalf("get config: %d %s", w.Code, w.Body.String())
-	}
-	var view struct {
-		BashyAppsEnabled bool `json:"bashy_apps_enabled"`
-		BashyAppsPort    int  `json:"bashy_apps_port"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if view.BashyAppsEnabled || view.BashyAppsPort != 24000 {
-		t.Fatalf("view = enabled:%v port:%d, want false/24000", view.BashyAppsEnabled, view.BashyAppsPort)
+	if !res.OK || !res.ServicesApplied {
+		t.Fatalf("service toggle result = %+v, want ok + services_applied", res)
+	}
+	if res.Restarting {
+		t.Fatal("a service toggle claimed a restart it does not need")
+	}
+	if !svc.enabled["console"] {
+		t.Fatalf("desired state was not written to the unit store: %+v", svc.enabled)
+	}
+	if svc.kicks == 0 {
+		t.Fatal("the exposure reconciler was not nudged, so the change would not apply live")
+	}
+
+	// Toggling a unit nobody declared is a 400 that names the alternatives,
+	// not a silent no-op.
+	w = doJSON(s, http.MethodPost, "/api/config/builtins",
+		map[string]any{"services": map[string]any{"consul": true}}, cookie)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("undeclared unit = %d %s, want 400", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "console") {
+		t.Fatalf("the error does not name the declared units: %s", w.Body.String())
 	}
 }
 

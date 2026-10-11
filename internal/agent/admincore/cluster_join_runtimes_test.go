@@ -1,6 +1,7 @@
 package admincore
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"reflect"
@@ -148,7 +149,7 @@ func TestJoinPeerPlane_ExplicitVirtualIsPersisted(t *testing.T) {
 func TestJoinPeerPlane_DoesNotClobberExistingSelection(t *testing.T) {
 	t.Run("selection made by SetBuiltins survives a credential-only join", func(t *testing.T) {
 		s := newTestServer(t)
-		if _, err := s.SetBuiltins(BuiltinsParams{
+		if _, err := s.SetBuiltins(context.Background(), BuiltinsParams{
 			ClusterAgent:   boolp(false),
 			ClusterVirtual: []string{"vk-podman"},
 		}); err != nil {

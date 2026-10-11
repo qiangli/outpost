@@ -115,10 +115,9 @@ tool, or wipe `agent.json` by hand.
 | Warm desired set (persisted) | `warm_desired` | — (managed by `/admin/warm`) | — | — | Live |
 | Same-LAN direct inference | `lan_inference_enabled` | `builtins set --lan-inference` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Same-LAN direct inference port | `lan_inference_port` | `builtins set --lan-inference-port` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
-| Bashy Apps service | `bashy_apps_enabled` / `bashy_services[name=apps]` | `builtins set --bashy-apps` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
-| Bashy Apps service port | `bashy_apps_port` / `bashy_services[name=apps].app_port` | `builtins set --bashy-apps-port` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
-| Meet web chat room | `meet_enabled` | `builtins set --meet` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
-| Meet web chat room port | `meet_port` | `builtins set --meet-port` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
+| Service unit desired state | unit YAML `enabled` | `builtins set --service NAME=on\|off` | Inbound > Services | `outpost_set_builtins` (`services`) | Live |
+| Service unit declaration override | unit YAML (any field) | `builtins set --service-set NAME.PATH=V` | Inbound > Services | `outpost_set_builtins` (`service_settings`) | Live |
+| Service trusted-identity HMAC keys | `service_sso` (daemon-internal) | — (minted on first publication) | presence only | presence only | Live |
 | Cluster join | `cluster.enabled` | `builtins set --cluster` | Inbound > Cluster | `outpost_set_builtins` | Restart |
 | Digital Ocean support (cloud venue) | `cloud_do_enabled` | `builtins set --cloud-do` | Inbound > Cloud | `outpost_set_builtins` | Restart |
 | Digital Ocean API token | `cloud_do_token` | `builtins set --cloud-do-token` | Inbound > Cloud | `outpost_set_builtins` | Restart |
@@ -130,19 +129,23 @@ tool, or wipe `agent.json` by hand.
 All built-in toggles default to ON when the JSON key is absent (old
 configs) so an upgrade doesn't silently disable features. That now
 includes the o3 proxies — `podman_enabled`, `ollama_enabled` and
-`otel_enabled` — plus bashy Apps when `bashy_services` is missing, so a
-freshly paired host is useful with zero configuration. They are
-*detection/capability-gated*: outpost registers each mount only when the
-backing daemon or service is actually reachable, and a host without
-podman / Ollama / an observability proxy / bashy Apps logs a visible status
-and carries on. o3 and bashy Apps are never dependencies; nothing fails to
-start because they are missing.
+`otel_enabled` — so a freshly paired host is useful with zero
+configuration. They are *detection/capability-gated*: outpost registers
+each mount only when the backing daemon is actually reachable, and a host
+without podman / Ollama / an observability proxy logs a visible status and
+carries on. o3 is never a dependency; nothing fails to start because it is
+missing.
+
+**Service units are not built-in toggles and do not follow that rule.** A
+unit's `enabled` is a declaration field, and a seeded unit ships
+`enabled: false`: a service runs because someone asked for it. See
+"Service units" below.
 
 The remaining opt-ins (default OFF, explicit choice required) are
 `sandbox_enabled` (widens *who* may run containers on the host),
-`lan_inference_enabled` (a LAN-trust listener with no per-request auth),
-`meet_enabled` (a supervised chat-room service) and `cluster.enabled`
-(hands a remote control plane the right to schedule workloads here).
+`lan_inference_enabled` (a LAN-trust listener with no per-request auth)
+and `cluster.enabled` (hands a remote control plane the right to schedule
+workloads here).
 
 Because the o3 keys are default-ON, "off" is only representable as an
 explicit `false` on disk — those three are pointer-bools so an opt-out
@@ -151,88 +154,119 @@ is written literally and survives every later config write. Do not
 absent, and the next load would read absent as the default and turn the
 service back on.
 
-### Bashy Apps service (supervised bashy service)
+### Service units
 
-On a host with a private RFC1918 IPv4 address, Outpost starts Bashy Apps on
-that exact LAN address as well as loopback. Bashy refuses the LAN bind unless
-host-OS password authentication is available and requires login for every
-off-loopback request. Outpost never defaults this listener to `0.0.0.0`: when
-no private address exists, it keeps only loopback plus the authenticated
-Cloudbox matrix route and logs the LAN omission. QR pairing remains off until
-an operator enables it separately.
+Every long-lived daemon on the host is a **service unit**: one YAML
+declaration, read from fleet's registry rings — the compiled-in built-in
+seeds, the shared dirs on `$BASHY_SERVICES_PATH`, then the host-local
+overrides. Three programs divide the work, on the unix inetd/systemd split:
 
-`bashy_apps_enabled` controls **bashy Apps**, the cooperative app matrix
-served by bashy through `bashy apps service`. Safe fresh installs default
-it **ON** when `bashy_services` is missing, and outpost publishes it as a
-Cloudbox app named `apps` at `/matrix/h/<host>/app/apps/`. The upstream is
-always loopback (`http://127.0.0.1:<port>`); Outpost never creates a direct
-public listener for it.
+| Role | Unix analogue | Command |
+|---|---|---|
+| Unit definitions and per-unit verbs | unit files + `systemctl` | `bashy service` |
+| Service monitor — keeps enabled units up | `inetd` | `bashy supervisord` |
+| Init — keeps the daemon and the monitor up | `systemd` | `outpost supervisord` |
 
-The default port is `22749` (`BASHY` on a telephone keypad). Set
-`bashy_apps_port` or the generic `bashy_services` row's `app_port` to
-override it. Legacy configs that explicitly used `8639` keep that value;
-to migrate, set `builtins set --bashy-apps-port 22749` or edit the
-`apps` service row to `app_port:22749`, then restart outpost and bashy
-Apps. Do not change `31415`: that is the unrelated bashy/ycode OTel proxy
-port and remains owned by the observability stack.
+The outpost **daemon** is none of those. It neither starts nor polls a
+service. It does exactly two things with units:
 
-Access is intentionally gated. Cloudbox sees `require_login:true` and
-`elevation_required:true`, so off-loopback access requires the host OS
-user/password elevation. The managed service is armed with `--pair`, but QR
-pairing remains default-off: no ticket or device exists until the signed-in
-operator enables phone pairing in Bashy Apps Settings. A short-lived ticket
-opens the LAN pairing listener only for redemption/paired-device access.
-The cooperative identity path is also on: outpost generates a per-service
-`sso_secret`, stamps `Remote-User` / `Remote-Email` and
-`X-Outpost-Identity-Sig`. Cloudbox supplies `X-Forwarded-Prefix` on proxied
-requests, and Bashy derives its external base paths from that header. A
-missing bashy binary or a bashy without `apps service`
-does not crash-loop outpost: the supervisor logs an actionable command
-failure and retries, while the daemon continues serving its other surfaces.
+1. **Publishes what they declare.** A unit's `expose.app` becomes a
+   matrix-tunnel app route (`/matrix/h/<host>/app/<name>/`) and each
+   `expose.mesh` entry becomes a mesh service name — while the monitor
+   reports the unit `active` or `degraded`, and **withdrawn otherwise**. A
+   disabled, failed, starting or stopping unit is not advertised. (The
+   previous per-service poller registered a route once at boot and never
+   withdrew it, so a service that died stayed advertised until the daemon
+   restarted.)
+2. **Hosts in-process capabilities.** A unit with `provider: internal` and
+   `owner: outpost` names a capability registered inside the daemon
+   (`capability: outpost.<id>`). It has no child process and no pid; its
+   `enabled` bit is the only switch, and there is no feature flag beside it.
 
-If an existing config already has a `bashy_services` array, outpost treats
-that array as operator intent. A list that omits `apps` does not silently
-gain it; add `bashy_apps_enabled:true` or an enabled `apps` service row to
-opt in. An explicit `{"name":"apps","enabled":false}` remains a durable
-opt-out.
+#### Controlling a unit
 
-### Meet web chat room (supervised bashy service)
+Desired state is one generic field on every surface — there are no
+per-service toggles, so a third-party daemon an operator declared this
+morning is controlled the same way a seeded built-in is:
 
-`meet_enabled` (default **OFF**) runs the **meet** web chat room — a
-Slack-style browser UI over `bashy meet` — as a supervised bashy service
-on the loopback port `meet_port` (default `8637`), published as a
-cloudbox app named `meet` (reachable at `/matrix/h/<host>/app/meet/`,
-login required). This is the same generic supervision framework loom
-uses: the daemon starts it on boot, health-checks every 30s, restarts on
-`stopped`, and stops it on shutdown.
+```bash
+outpost builtins set --service meet=on                     # desired state
+outpost builtins set --service-set loom.ports.0.port=31900 # declaration override
+outpost services                                           # what is declared, wanted, running, published
+bashy service enable meet                                  # the identical write
+bashy service show meet --yaml                             # the declaration
+bashy service logs meet -f                                 # the unit's own log
+```
 
-The built-in service entry also sets `trust_cloud_identity:true`. Before
-registration, outpost generates a per-service 32-byte `sso_secret` when
-needed, persists it in the `bashy_services` entry, and supplies both fields
-to the existing signed-header proxy path. Cloud requests therefore reach
-meet with `Remote-User` / `Remote-Email` plus
-`X-Outpost-Identity-Sig`, which its `coopauth.Guard` can verify. An enabled
-trusted service with no secret is rejected during registration instead of
-silently running with spoofable unsigned identity headers.
+`outpost builtins set --service` and `bashy service enable` are **one
+write**, not two paths that have to agree: fleet's registry is a Go library,
+so the daemon writes the same sparse local overlay through the same
+validation — including the port-conflict check, which refuses to enable a
+unit whose listener another enabled unit holds and names the holder.
 
-**Lifecycle trap.** The service lives under a subcommand, so the
-supervisor drives **`bashy meet service {start,status,stop}`** — NOT
-`bashy meet start`, which already exists and starts a *deliberation
-session*, not the web server. The `["meet","service"]` Command base is
-pinned in `conf.DefaultBashyServices()` so an operator who enables meet
-through the `bashy_services` array without re-declaring the argv still
-gets the daemon. There is **no mesh service**: a personal chat room has
-no peer consumer, so unlike loom it is not auto-exposed over the mesh.
-The backing `bashy meet service` is provided by the bashy/coreutils side;
-the supervisor tolerates it being absent (the 30s loop retries, and
-`bashyResolver` self-heals a missing bashy), so enabling meet before the
-subcommand exists is safe — it comes up on the next poll once installed.
+**It applies live.** The monitor reconciles the process and the daemon
+republishes; `restart_pending` is false and the response says
+`services_applied`. Only a boot-only `agent.json` toggle still asks for a
+restart.
 
-Four surfaces: `meet_enabled` / `meet_port` file keys, `builtins set
---meet=on --meet-port N` CLI, the Built-ins > Meet chat UI toggle, and
-the `meet` / `meet_port` args on the `outpost_set_builtins` MCP tool.
-Like loom, a meet change triggers a **restart** (the service is wired at
-boot).
+**Naming a port is not asking for a service.** An override
+(`--service-set`) and a desired-state write (`--service`) are different
+fields, and nothing in the former can reach `enabled`. This replaces a
+hazard the old shape had: `loom_port` sat beside `loom` under an "absent
+means on" rule, so setting only the port silently started a git forge and
+published it on the mesh as `git`.
+
+#### Reading state
+
+`outpost services`, `GET /api/services` and the `outpost://services` MCP
+resource all render the same join: the declaration, its desired state, and
+the monitor's structured state — `inactive`, `starting`, `active`,
+`degraded`, `failed` or `stopping`, with pid, restart count, health verdict,
+declared ports and what outpost currently publishes. Structured states
+replace grepping a service's text output.
+
+When the monitor cannot be answered, `monitor_reachable` is false and the
+surfaces say so rather than presenting the last values as live truth. An
+enabled unit keeps its exposure in that window and reports `degraded`:
+withdrawing a healthy host's routes because a status call failed would be
+worse than the failed call. A **disabled** unit is withdrawn regardless,
+since that fact is read from the local declaration.
+
+#### Trusted cloud identity
+
+A unit whose `expose.app` sets `trust_cloud_identity: true` is asking for
+the signed-header SSO contract. The declaration never holds the key — a
+unit's `secrets` are vault *references* — so outpost mints a 32-byte HMAC
+key the first time it publishes that app route, keyed by route name in the
+daemon-internal `service_sso` map, and persists it: a fresh key on every
+boot would silently invalidate every signature the upstream had learned.
+Cloud requests then arrive with `Remote-User` / `Remote-Email` /
+`X-Periscope-Role` plus `X-Outpost-Identity-Ts` and
+`X-Outpost-Identity-Sig`, which the upstream verifies. A unit that asks for
+the contract and cannot get a key is **refused**, not published with a
+blank signature. Reads report presence only (`service_secrets`).
+
+#### Custom units
+
+An extra long-running program is a unit like any other. The retired
+`supervised` array in `agent.json` had no health check, no start limit and
+no exposure; a unit has all three:
+
+```yaml
+name: qa-poller
+kind: service
+exec: [bashy, qa-poller.sh]
+workdir: /qa
+restart:
+  policy: always
+  backoff: {min: 1s, max: 30s, healthy_after: 30s}
+  start_limit: {burst: 5, interval: 5m}
+enabled: true
+```
+
+`bashy service add -f qa-poller.yaml` declares it; `bashy supervisord`
+runs it; `outpost supervisord` keeps that monitor running, so it survives a
+reboot on every platform.
 
 ### Headlamp operating UI (peer DKS plane)
 
