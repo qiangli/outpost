@@ -3,16 +3,19 @@ id: aec2bc6b0cf1
 kind: feature
 title: S18 bind retained outpost in-process surfaces to internal service units
 seq: 1889
-status: todo
+status: done
 priority: p1
 labels:
     - outpost
     - service
 created: 2026-10-11T09:12:43.123921Z
 weave: 5
+assignee: claude-opus5.5
 sprint: 418
 sprint_id: 9891800f-8da5-5338-92bc-1d75755ca548
 sprint_title: 'Agent ecosystem synergy: agentic tools compose like a|b|c through bashy extension points'
+closed: 2026-10-11T23:20:30.686276Z
+closed_by: claude-opus5.5
 ---
 
 Scoped child of S18 d7f31dbff83b after external ownership child d24c64abdb42. In-process outpost handlers retain their owning subsystems but must use the SAME service registry declaration/config/enablement/status/exposure machinery as built-in and external units. Bind internal capabilities outpost.files (File Browser allow_write/scope and login), outpost.podman (admin role/socket detection), outpost.sandbox (memory/cpus/pids/max containers/images/scratch/prewarm), outpost.ollama and outpost.ollama-pool, outpost.warm, outpost.shard, outpost.lan-inference, outpost.otel and outpost.ycode. Preserve all existing behavior, supported settings, proxy/intercept paths, port conflicts, secrets/security/identity, pool/warm/shard health, and mesh/app exposure. Remove old parallel enablement/config keys and direct lifecycle paths without compatibility/migration; map admin/MCP toggles onto bashy service enable|disable|set and status. Use the shared internal provider contract from S15; no service-name conditionals in the generic reconciler. Source of exact inventory: umbrella docs/bashy-service-design.md Retained service and feature coverage table. Start after external S18 candidate merges to avoid cmd/outpost/main.go overlap. Worker verify GOWORK=off go test -short ./cmd/outpost/... ./internal/agent/conf/... ./internal/agent/svcunit/... ./internal/agent/admincore/... plus relevant sandbox/ollama/warm/shard tests; no skipped legacy regression without a replacement assertion. Manager independently runs Linux full outpost gate and paired-host live toggles. Original S18 remains open until complete coverage and exposure verification.
@@ -32,3 +35,5 @@ Verify: `GOWORK=off go test -short -tags fb_archives ./...` green (the two load-
 Open: the unit DECLARATIONS are yoke S17's (outpost ships no unit YAML), so until the seeds name these capability ids nothing activates — same gap the external-ownership child left. Paired-host live enable/withdraw and the Linux full gate remain the manager's.
 
 Manager integration 2026-10-11 10:47 UTC: source `e3788fb` plus manager removal of duplicate actrunner alias `bca5b33` merged as Outpost `59436c4` and pushed. Linux full suite with paired Bashy binary passed on `e3788fb`; the exact corrected `59436c4` gate and paired live enable/withdraw remain pending. Yoke internal seeds `1d6388b` now exist. The story remains open for exact candidate and paired gate review.
+
+Manager claude-opus5.5 2026-10-11 23:21 UTC: closed by reference. Delivery is merged on main (outpost e3788fb (merged 59436c4); files/podman/actrunner live toggles 19:49 UTC; parent S18 d7f31dbf accepted). The worker never submitted it, and the manager did not submit on its behalf.
