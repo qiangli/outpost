@@ -675,8 +675,8 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   executor per request and answers 503-with-reason while the unit is down
   (it used to be unmounted, i.e. a 404 indistinguishable from an old
   outpost).
-- **act_runner — the provisioning-handshake capability (`outpost.actrunner`, alias
-  `outpost.ci`; `cmd/outpost/capability_actrunner.go`).** The CI executor of
+- **act_runner — the provisioning-handshake capability (`outpost.actrunner`;
+  `cmd/outpost/capability_actrunner.go`).** The CI executor of
   the local-p2p-CICD loop (dhnt/docs/local-p2p-cicd.md): loom Actions +
   act_runner + zot, one Gitea Actions run gating both humans and the weave
   fleet. It is a `provider: internal` / `owner: outpost` unit rather than a

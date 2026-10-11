@@ -20,12 +20,6 @@ const (
 	capOtel         = "outpost.otel"
 	capYcode        = "outpost.ycode"
 	capActrunner    = "outpost.actrunner"
-	// capActrunnerAlias is the name the capability's role would suggest.
-	// Registered so a unit seed written against either spelling binds
-	// instead of failing with "capability is not registered" — outpost
-	// answers to both halves of the contract rather than to whichever one
-	// it guessed.
-	capActrunnerAlias = "outpost.ci"
 )
 
 // capabilityDeps is the set of in-process capabilities the daemon
@@ -113,6 +107,5 @@ func outpostCapabilities(deps capabilityDeps) map[string]service.Capability {
 		DockerHost: resolveActrunnerDockerHost,
 	}
 	caps[capActrunner] = ci
-	caps[capActrunnerAlias] = ci
 	return caps
 }

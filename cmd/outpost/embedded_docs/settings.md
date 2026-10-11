@@ -325,7 +325,7 @@ each for a stated reason:
 | `outpost.lan-inference` | a LAN-bound listener on its declared port | an in-process reverse proxy; the port is declared so fleet checks it for conflicts | `target` (upstream; empty = the ollama unit's target, else `127.0.0.1:11434`); the port comes from `ports` |
 | `outpost.otel` | apps `otel-prometheus`, `otel-logs`, `otel-alerts`, `otel-traces`, `otel-dashboard` | the proxy URL and its bearer come from ycode's own manifest, and each surface needs a bearer-injecting proxy wrap | `pool` (allow cloudbox to federate queries / fan out alert rules; default on) |
 | `outpost.ycode` | apps `ycode`, `ycode-canvas`, `ycode-classic` | same manifest-detected proxy and bearer injection | `share` (which surfaces to publish: a list, `all`, or empty = the catalog's default-on set), `require_login` (cloudbox OS-password elevation; default off) |
-| `outpost.actrunner` (alias `outpost.ci`) | nothing — it dials OUT to the forge | see below | see the table below |
+| `outpost.actrunner` | nothing — it dials OUT to the forge | see below | see the table below |
 
 Every one of them **refuses activation with the reason** when its backend
 is missing — an undetected podman socket, a stopped Ollama, an unreachable
@@ -398,7 +398,7 @@ outpost ships no unit YAML. Two things in that contract are outpost's half:
    `outpost.files`, `outpost.podman`, `outpost.sandbox`, `outpost.ollama`,
    `outpost.ollama-pool`, `outpost.warm`, `outpost.shard`,
    `outpost.lan-inference`, `outpost.otel`, `outpost.ycode`,
-   `outpost.actrunner` (alias `outpost.ci`).
+   `outpost.actrunner`.
 
    The id is the contract; the unit **name** is the operator's, so nothing
    in outpost keys off it. `outpost services` lists each unit's capability
