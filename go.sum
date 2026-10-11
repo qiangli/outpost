@@ -609,6 +609,8 @@ github.com/qiangli/gotreesitter v0.0.0-20261006115113-c8a5d22bb3f0 h1:yZD0o/eRpD
 github.com/qiangli/gotreesitter v0.0.0-20261006115113-c8a5d22bb3f0/go.mod h1:ccYZsDUmAJQAtliLsNHT33F3X4AN7f/Z6JGiPNZoEzY=
 github.com/qiangli/sh/v3 v3.0.0-20261009223315-5ed7e8b0b4ff h1:FTNz0M2lxbAoD0t5AnGhypnWgoXK68PlAnD8IBbC2Z4=
 github.com/qiangli/sh/v3 v3.0.0-20261009223315-5ed7e8b0b4ff/go.mod h1:ZFYKF5yRZk5SSMzb1/Shustc5RWl/YmgE9cVykg+hzg=
+github.com/qiangli/sh/v3 v3.0.0-20261010183127-da25e2efc36b h1:xWTge/7xuaEVaEAxlyYBMEnJ6JojflvZCNfZOZjTFJE=
+github.com/qiangli/sh/v3 v3.0.0-20261010183127-da25e2efc36b/go.mod h1:ZFYKF5yRZk5SSMzb1/Shustc5RWl/YmgE9cVykg+hzg=
 github.com/qiangli/yoke v0.0.0-20261010022445-bf71bf71a47f h1:g+p0CPgj3O4D+jjNnC4kDqe8FCoKpZtYrifxOZv15fA=
 github.com/qiangli/yoke v0.0.0-20261010022445-bf71bf71a47f/go.mod h1:14j/svl9rJSw0lVuA6Bha8KG9o61sjqc5CS1gZI/Le4=
 github.com/qiangli/yoke v0.0.0-20261010222016-1ea229078706 h1:vOhZ3SVEmo5xjyZtDiaMMeCOVzeku5s+vThfnCAW+mI=

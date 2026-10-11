@@ -292,7 +292,7 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 v3.0.0-20261009223315-5ed7e8b0b4ff
+replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 v3.0.0-20261010183127-da25e2efc36b
 
 replace github.com/filebrowser/filebrowser/v2 => github.com/qiangli/filebrowser/v2 v2.0.0-20261009064700-9c1237190cff
 
