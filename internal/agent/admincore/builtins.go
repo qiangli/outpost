@@ -110,47 +110,10 @@ type BuiltinsParams struct {
 	// when bashy is missing ("" / "latest" = newest; a tag pins it). Takes
 	// effect on the next restart. nil = leave unchanged.
 	BashyVersion *string `json:"bashy_version,omitempty"`
-	// Zot toggles running the Zot OCI registry as a managed external binary on a
-	// loopback port, auto-exposed over the mesh as `registry`. ZotPort sets its
-	// HTTP port (0 = default 5000). nil = leave unchanged.
-	Zot     *bool `json:"zot,omitempty"`
-	ZotPort *int  `json:"zot_port,omitempty"` // Seaweedfs toggles running SeaweedFS (object/blob store, S3 gateway) as a
-	// managed external binary on a loopback port, auto-exposed over the mesh as
-	// `s3`. SeaweedfsPort sets its S3 port (0 = default 8333). nil = unchanged.
-	Seaweedfs     *bool `json:"seaweedfs,omitempty"`
-	SeaweedfsPort *int  `json:"seaweedfs_port,omitempty"`
-	// Kopia toggles running the Kopia snapshot-backup repository server as a
-	// managed external binary on a loopback port, auto-exposed over the mesh as
-	// `backup`. KopiaPort sets its port (0 = default 51515). nil = unchanged.
-	Kopia     *bool `json:"kopia,omitempty"`
-	KopiaPort *int  `json:"kopia_port,omitempty"`
-
-	// Actrunner toggles running Gitea act_runner (the CI executor) as a managed
-	// external binary. Unlike loom/zot it's a CONSUMER: it registers against a
-	// Gitea instance and dials OUT. ActrunnerInstance is the Gitea base URL
-	// (empty = local loom forge); ActrunnerToken is the registration token;
-	// ActrunnerLabels are the executor labels (default "host:host"). nil = unchanged.
-	Actrunner         *bool   `json:"actrunner,omitempty"`
-	ActrunnerInstance *string `json:"actrunner_instance,omitempty"`
-	ActrunnerToken    *string `json:"actrunner_token,omitempty"`
-	ActrunnerLabels   *string `json:"actrunner_labels,omitempty"`
 	// CloudDOEnabled toggles Digital Ocean provider support; CloudDOToken is the
 	// DO API token (exported as DIGITALOCEAN_ACCESS_TOKEN). nil = unchanged.
 	CloudDOEnabled *bool   `json:"cloud_do_enabled,omitempty"`
 	CloudDOToken   *string `json:"cloud_do_token,omitempty"`
-	// ActrunnerSandbox opts the runner into the tier-3 sandbox (container)
-	// executor (runs-on: sandbox → OCI container via bashy podman), additive to
-	// the host build lane. ActrunnerSandboxImage / ActrunnerDockerHost override
-	// the image / DOCKER_HOST (empty docker-host = auto-resolve bashy podman).
-	ActrunnerSandbox      *bool   `json:"actrunner_sandbox,omitempty"`
-	ActrunnerSandboxImage *string `json:"actrunner_sandbox_image,omitempty"`
-	ActrunnerDockerHost   *string `json:"actrunner_docker_host,omitempty"`
-
-	// headlamp toggles deploying Headlamp (the operating UI) on the peer DKS
-	// plane. HeadlampPort sets its supervised loopback forward port (0 = default
-	// 18466). nil = leave unchanged. See docs/peer-dks-headlamp.md.
-	Headlamp     *bool `json:"headlamp,omitempty"`
-	HeadlampPort *int  `json:"headlamp_port,omitempty"`
 }
 
 // BuiltinsResult reports what happened. RestartPending is true when
@@ -277,59 +240,14 @@ func (s *Server) SetBuiltins(ctx context.Context, p BuiltinsParams) (BuiltinsRes
 		}
 		fc.Shard.Role = *p.ShardRole
 	}
-	if p.Zot != nil {
-		fc.ZotEnabled = p.Zot
-	}
-	if p.ZotPort != nil {
-		fc.ZotPort = *p.ZotPort
-	}
-	if p.Seaweedfs != nil {
-		fc.SeaweedfsEnabled = p.Seaweedfs
-	}
-	if p.SeaweedfsPort != nil {
-		fc.SeaweedfsPort = *p.SeaweedfsPort
-	}
-	if p.Kopia != nil {
-		fc.KopiaEnabled = p.Kopia
-	}
-	if p.KopiaPort != nil {
-		fc.KopiaPort = *p.KopiaPort
-	}
-	if p.Headlamp != nil {
-		fc.HeadlampEnabled = p.Headlamp
-	}
-	if p.HeadlampPort != nil {
-		fc.HeadlampPort = *p.HeadlampPort
-	}
-	if p.Actrunner != nil {
-		fc.ActrunnerEnabled = p.Actrunner
-	}
 	if p.BashyVersion != nil {
 		fc.BashyVersion = strings.TrimSpace(*p.BashyVersion)
-	}
-	if p.ActrunnerInstance != nil {
-		fc.ActrunnerInstance = *p.ActrunnerInstance
-	}
-	if p.ActrunnerToken != nil {
-		fc.ActrunnerToken = *p.ActrunnerToken
 	}
 	if p.CloudDOEnabled != nil {
 		fc.CloudDOEnabled = p.CloudDOEnabled
 	}
 	if p.CloudDOToken != nil {
 		fc.CloudDOToken = *p.CloudDOToken
-	}
-	if p.ActrunnerLabels != nil {
-		fc.ActrunnerLabels = *p.ActrunnerLabels
-	}
-	if p.ActrunnerSandbox != nil {
-		fc.ActrunnerSandbox = p.ActrunnerSandbox
-	}
-	if p.ActrunnerSandboxImage != nil {
-		fc.ActrunnerSandboxImage = *p.ActrunnerSandboxImage
-	}
-	if p.ActrunnerDockerHost != nil {
-		fc.ActrunnerDockerHost = *p.ActrunnerDockerHost
 	}
 	if p.Otel != nil {
 		fc.OtelEnabled = p.Otel
@@ -428,5 +346,5 @@ func (s *Server) SetBuiltins(ctx context.Context, p BuiltinsParams) (BuiltinsRes
 // services/service_settings, which are applied live by the unit store, the
 // monitor and the exposure reconciler.
 func touchesBootOnlyConfig(p BuiltinsParams) bool {
-	return !(p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterAgent == nil && p.ClusterVirtual == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.BashyVersion == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil && p.ActrunnerSandbox == nil && p.ActrunnerSandboxImage == nil && p.ActrunnerDockerHost == nil && p.CloudDOEnabled == nil && p.CloudDOToken == nil && p.Headlamp == nil && p.HeadlampPort == nil)
+	return !(p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterAgent == nil && p.ClusterVirtual == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.BashyVersion == nil && p.CloudDOEnabled == nil && p.CloudDOToken == nil)
 }

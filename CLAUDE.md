@@ -598,46 +598,46 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   `bashy supervisord` (S16/S19 in flight). Until they ship, the daemon's
   declaration reads find only the embedded seeds and the status call fails, so
   exposure degrades as documented above. The subsystems that still carry their
-  own boot wiring (files, sandbox, podman/ollama proxies, Zot, SeaweedFS,
-  Kopia, Headlamp) move behind the internal provider by adding a declaration
-  (S17) plus one entry in `outpostCapabilities()` — no other outpost change.
-- **Zot builtin — the OCI registry (wrap-harness *tool lifecycle*).** Still on
-  its own boot wiring pending an S17 declaration (see Service units above):
-  `ZotEnabled`/`ZotPort` (default 5000), four-surface; the daemon
-  runs **Zot** (project-zot/zot, Apache-2.0) as a managed external binary via
-  `coreutils/external/zot.Start` on a loopback port and **auto-exposes it over the
-  mesh as `registry`** (serves container images + Ollama models, OCI). Also
-  `bashy zot serve`. The first wrapped tools prove the pattern.
-- **SeaweedFS builtin — the object/blob store (wrap-harness *tool lifecycle*).**
-  `SeaweedfsEnabled`/`SeaweedfsPort` (default 8333), four-surface; the daemon runs
-  **SeaweedFS** (Apache-2.0; the `weed` binary extracted by binmgr from the
-  `<os>_<arch>.tar.gz`) via `coreutils/external/seaweedfs.Start` — `weed server …
-  -s3`, loopback-bound — and **auto-exposes the S3 gateway over the mesh as `s3`**
-  (can also back zot's blob store). Also `bashy seaweedfs serve`.
-- **Kopia builtin — the snapshot-backup repo server (wrap-harness *tool
-  lifecycle*).** `KopiaEnabled`/`KopiaPort` (default 51515), four-surface; the
-  daemon runs **Kopia** (Apache-2.0; the `kopia` binary extracted by binmgr from a
-  versioned subdir in the archive — basename match) via `coreutils/external/
-  kopia.Start` (seeds a filesystem repo on first run, then `kopia server start
-  --insecure --without-password`) and **auto-exposes it over the mesh as
-  `backup`** (many nodes back up into one repo). Also `bashy kopia serve`. Kopia's
-  server flags are version-sensitive — validate on a real host. **Four exposed
-  wrapped tools (loom `git`, zot `registry`, seaweedfs `s3`, kopia `backup`) —
-  each a `binmgr.GitHubSpec` + `external/<tool>` launcher + `bashy <tool>` + an
-  outpost builtin toggle, none compiled into outpost, each on its own release
-  cadence.**
-- **act_runner builtin — the CI executor (wrap-harness, but a CONSUMER not a mesh
-  service).** `ActrunnerEnabled`/`ActrunnerInstance`/`ActrunnerToken`/
-  `ActrunnerLabels` (four-surface: `admincore.SetBuiltins` + `outpost_set_builtins`
-  MCP + `builtins set --actrunner[-instance|-token|-labels]` CLI + SafeView).
-  Unlike loom/zot it does NOT expose a mesh service — on boot it **registers**
-  against a Gitea instance (`ActrunnerInstanceResolved()`: the local loom forge
-  `http://127.0.0.1:<loom_port>` when loom is on, else an explicit mesh-reachable
-  git addr) and runs the `act_runner` daemon (`coreutils/external/actrunner`,
-  resolved via `binmgr.URLSpec` from dl.gitea.com), which **dials OUT** to Gitea —
-  NAT/mesh-friendly. This is the CI executor of the local-p2p-CICD loop
-  (dhnt/docs/local-p2p-cicd.md): loom Actions + act_runner + zot, one Gitea
-  Actions run serving as the gate for both humans and the weave fleet.
+  own boot wiring (files, sandbox, podman/ollama proxies) move behind the
+  internal provider by adding a declaration (S17) plus one entry in
+  `outpostCapabilities()` — no other outpost change. The wrapped EXTERNAL
+  tools are already off that list (next bullet).
+- **Wrapped external tools are service units, not outpost toggles (Sprint 418
+  S18 child).** Zot (OCI registry: images + Ollama models), SeaweedFS (object
+  store / S3 gateway), Kopia (snapshot-backup repo) and the Headlamp loopback
+  forward are each a command, a port and a mesh name — exactly what
+  `provider: process` expresses — so the monitor owns their children and the
+  daemon owns only their publication (`expose.mesh` → `registry` / `s3` /
+  `backup` / `headlamp`). `cmd/outpost/main.go` starts none of them, and
+  `agent.json` has no `zot_*`, `seaweedfs_*`, `kopia_*`, `actrunner_*` or
+  `headlamp_*` key (removed outright, no compatibility reader). The pins and
+  provisioning are unchanged — still `binmgr` + `yoke/external/<tool>`,
+  reached through `bashy <tool> serve` or a unit's own `download:` pin, none
+  compiled into outpost, each on its own release cadence. Three things got
+  better in the move: a failed unit is **withdrawn** from the mesh (the old
+  code exposed once and never withdrew), a failed fetch is **retried** under
+  the unit's restart policy (it used to log once and give up until the next
+  daemon restart), and the port exists in **one** place.
+- **act_runner — the one in-process capability (`outpost.actrunner`, alias
+  `outpost.ci`; `cmd/outpost/capability_actrunner.go`).** The CI executor of
+  the local-p2p-CICD loop (dhnt/docs/local-p2p-cicd.md): loom Actions +
+  act_runner + zot, one Gitea Actions run gating both humans and the weave
+  fleet. It is a `provider: internal` / `owner: outpost` unit rather than a
+  process unit because three of its inputs are not declarable: `act_runner
+  register` is a **provisioning handshake** that must succeed (and be
+  retried) before the daemon may run and the unit schema has no pre-start
+  hook (the contract gap reported to yoke S17); the forge URL defaults to the
+  **loom unit's own declared listener** (`localForgeURL`) and the sandbox
+  executor's `DOCKER_HOST` comes from `bashy podman machine inspect`; and the
+  job env carries the operator's **vault** secrets so a deploy step inherits
+  `GITHUB_TOKEN` without a per-repo secret. Everything decidable is in the
+  declaration (`settings.{instance,forge_unit,labels,sandbox,sandbox_image,
+  docker_host,data_dir,version,name}`, token via a `secrets` vault ref as
+  `ACTRUNNER_TOKEN`); the unit's `enabled` bit is the only switch. Unlike
+  loom/zot it exposes nothing — it **dials OUT** to Gitea, NAT/mesh-friendly.
+  An unresolvable instance or token is now a **refusal** with the reason (the
+  old block logged "skipping" and left an enabled service looking fine while
+  nothing ran). See `docs/settings.md` → "Wrapped external tools".
 - **Mobility-aware directory mirror (`FileConfig.Mirror`, `internal/agent/mirror`).**
   A continuous one-way live replica — distinct from `backup` (age-encrypted
   scheduled snapshots → cloudbox). Each `MirrorJob{Source, Service, LANOnly}`

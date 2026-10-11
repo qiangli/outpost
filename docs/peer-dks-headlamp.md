@@ -211,24 +211,40 @@ subset (`HLV_ONLY`) run that must never be green, a narrowing
 unauthenticated 2xx that must FAIL. What remains unproven is only the live
 transport it all rides on — see the evidence boundary below.
 
-## Four-surface wiring — `headlamp_enabled`
+## Wiring — the `headlamp` service unit
 
-Headlamp is wired as a builtin following the loom/zot pattern on all four
-surfaces:
+Headlamp is **not** an outpost built-in toggle. The `headlamp_enabled` /
+`headlamp_port` keys (and their CLI / MCP / SafeView surfaces) are retired:
+they only ever persisted a preference — no daemon code read them, so nothing
+was deployed, supervised or exposed by turning them on.
 
-- **File** (`agent.json`): `headlamp_enabled` (`*bool`, default off) and
-  `headlamp_port` (default `headlamp.DefaultLocalPort`, validated through
-  `headlamp.ValidateListenAddr` composition — loopback only).
-- **CLI**: `outpost builtins set --headlamp=on --headlamp-port N`.
-- **MCP**: `outpost_set_builtins` with `headlamp` / `headlamp_port` args.
-- **UI**: `SafeView.HeadlampEnabled` / `HeadlampPort` fields, toggled
-  through the admin UI's Built-ins page.
+The two halves are owned where they belong:
 
-On boot when enabled and the cluster control plane is on: run
-`headlamp.Deploy` against the plane, supervise the loopback port-forward
-(`ForwardArgs`), and auto-expose it over the mesh as `headlamp` — the same
-supervise-and-expose shape `startBashyServiceSupervisors` gives loom. A
-change triggers a **restart** (the deployment + forward are wired at boot).
+- **Deploy** — the appstore built-in (`outpost bundle install headlamp`),
+  whose `install-headlamp` Job applies this package's manifest; or
+  `headlamp.Deploy` directly against a plane's client.
+- **Reach** — a service unit (`bashy service`), one declaration the monitor
+  keeps running and outpost publishes while it is active:
+
+```yaml
+name: headlamp
+kind: service
+exec: [kubectl, --kubeconfig, "{settings.kubeconfig}", port-forward,
+       --address, 127.0.0.1, -n, headlamp, svc/headlamp, "{port}:80"]
+ports: [{name: http, port: 18466}]
+health: {tcp: true}
+restart:
+  policy: on-failure
+  backoff: {min: 1s, max: 30s, healthy_after: 30s}
+expose: {mesh: [{name: headlamp}]}
+enabled: false
+```
+
+`ForwardArgs` in this package stays the source of truth for that argv — it
+pins the forward to loopback, and `ValidateListenAddr` rejects any
+non-loopback bind, per the standing rule. `outpost builtins set --service
+headlamp=on` is the desired-state write; exposure appears and is withdrawn
+with the unit's state, so a dead forward stops advertising the mesh name.
 
 ## Evidence boundary — what is and is not proven
 
@@ -265,8 +281,9 @@ two-node cluster. Record results below when the procedure is executed.
   Must run a real k3s-agent node (not vknode) because `kubectl logs` and
   `kubectl exec` both require a real kubelet on the target node.
 - Both hosts must be on the same LAN or have mesh reachability.
-- Headlamp deployed on Host A (via `headlamp.Deploy` or the four-surface
-  toggle with `headlamp_enabled: true`).
+- Headlamp deployed on Host A (via `headlamp.Deploy` or `outpost bundle
+  install headlamp`), with the `headlamp` service unit enabled for the
+  loopback forward.
 
 ### Pass criterion
 

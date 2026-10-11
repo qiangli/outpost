@@ -1,12 +1,14 @@
 package svcunit
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -393,6 +395,7 @@ type recordingCap struct {
 	activated, configured, deactived int
 	lastCfg                          service.Config
 	activateErr                      error
+	healthErr                        error
 }
 
 func (c *recordingCap) Activate(_ context.Context, cfg service.Config) error {
@@ -418,7 +421,11 @@ func (c *recordingCap) Deactivate(context.Context) error {
 	return nil
 }
 
-func (c *recordingCap) Health(context.Context) error { return nil }
+func (c *recordingCap) Health(context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.healthErr
+}
 
 func internalUnit(name, capID string, enabled bool) fleet.Service {
 	return fleet.Service{
@@ -685,5 +692,85 @@ func TestSnapshotPassesThroughUnitsOutpostDoesNotPublish(t *testing.T) {
 	}
 	if len(snap.Units[0].Publishing) != 0 {
 		t.Fatalf("an untracked unit claims exposure: %v", snap.Units[0].Publishing)
+	}
+}
+
+// An enabled unit whose capability keeps refusing is re-activated on every
+// pass — that is how it recovers once the operator fixes the reason. The
+// WARNING, though, is logged once per distinct reason: at a 5 s cadence an
+// identical line forever would bury the state it reports. A changed reason
+// is logged again.
+func TestRepeatedActivationFailureIsLoggedOncePerReason(t *testing.T) {
+	cap := &recordingCap{activateErr: fmt.Errorf("no registration token")}
+	internal, err := Hosted(map[string]service.Capability{"outpost.registry": cap})
+	if err != nil {
+		t.Fatalf("hosted: %v", err)
+	}
+	var buf bytes.Buffer
+	src := &fakeSource{units: []fleet.Service{internalUnit("registry", "outpost.registry", true)}}
+	r := New(Deps{Source: src, Internal: internal, Secrets: fixedSecrets{"k"},
+		Log: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))})
+
+	for range 3 {
+		if err := r.ReloadAndReconcile(context.Background()); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+	}
+	if cap.activated != 3 {
+		t.Fatalf("capability activated %d times, want one attempt per pass", cap.activated)
+	}
+	if got := strings.Count(buf.String(), "activate failed"); got != 1 {
+		t.Fatalf("logged the same refusal %d times, want 1:\n%s", got, buf.String())
+	}
+
+	// A different reason is news.
+	cap.mu.Lock()
+	cap.activateErr = fmt.Errorf("forge unreachable")
+	cap.mu.Unlock()
+	if err := r.ReloadAndReconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := strings.Count(buf.String(), "activate failed"); got != 2 {
+		t.Fatalf("a changed refusal was swallowed:\n%s", buf.String())
+	}
+}
+
+// An in-process capability has no child for the monitor to watch, so when
+// its own Health says it stopped serving, the reconciler is the only thing
+// that can notice. It cycles the unit — and a capability that then refuses
+// is reported failed and publishes nothing, instead of sitting at "active"
+// forever with nothing behind it.
+func TestUnhealthyInternalCapabilityIsCycled(t *testing.T) {
+	cap := &recordingCap{}
+	internal, err := Hosted(map[string]service.Capability{"outpost.registry": cap})
+	if err != nil {
+		t.Fatalf("hosted: %v", err)
+	}
+	apps := newFakeApps()
+	src := &fakeSource{units: []fleet.Service{internalUnit("registry", "outpost.registry", true)}}
+	r := newTestReconciler(src, apps, newFakeMesh(), internal)
+	if err := r.ReloadAndReconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if cap.activated != 1 || len(apps.names()) != 1 {
+		t.Fatalf("not published after a healthy activate: activated=%d apps=%v", cap.activated, apps.names())
+	}
+
+	// It stops serving and cannot be brought back.
+	cap.mu.Lock()
+	cap.healthErr = fmt.Errorf("daemon exited")
+	cap.activateErr = fmt.Errorf("no registration token")
+	cap.mu.Unlock()
+	if err := r.ReloadAndReconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile after it died: %v", err)
+	}
+	if cap.deactived != 1 || cap.activated != 2 {
+		t.Fatalf("unhealthy capability was not cycled: deactivated=%d activated=%d", cap.deactived, cap.activated)
+	}
+	if st := r.Snapshot().Units[0]; st.State != service.Failed {
+		t.Fatalf("state = %q, want failed", st.State)
+	}
+	if len(apps.names()) != 0 {
+		t.Fatalf("a dead capability kept its route: %v", apps.names())
 	}
 }

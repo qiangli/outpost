@@ -285,20 +285,6 @@ type SafeView struct {
 	serviceSSO             map[string]string
 	BashyVersion           string    `json:"bashy_version,omitempty"`
 	ShardEnabled           bool      `json:"shard_enabled"`
-	ZotEnabled             bool      `json:"zot_enabled"`
-	ZotPort                int       `json:"zot_port,omitempty"`
-	SeaweedfsEnabled       bool      `json:"seaweedfs_enabled"`
-	SeaweedfsPort          int       `json:"seaweedfs_port,omitempty"`
-	KopiaEnabled           bool      `json:"kopia_enabled"`
-	KopiaPort              int       `json:"kopia_port,omitempty"`
-	ActrunnerEnabled       bool      `json:"actrunner_enabled"`
-	ActrunnerInstance      string    `json:"actrunner_instance,omitempty"`
-	ActrunnerLabels        string    `json:"actrunner_labels,omitempty"`
-	ActrunnerSandbox       bool      `json:"actrunner_sandbox"`
-	ActrunnerSandboxImage  string    `json:"actrunner_sandbox_image,omitempty"`
-	ActrunnerDockerHost    string    `json:"actrunner_docker_host,omitempty"`
-	HeadlampEnabled        bool      `json:"headlamp_enabled"`
-	HeadlampPort           int       `json:"headlamp_port,omitempty"`
 	CloudDOEnabled         bool      `json:"cloud_do_enabled"`
 	HasCloudDOToken        bool      `json:"has_cloud_do_token"`
 	OtelEnabled            bool      `json:"otel_enabled"`
@@ -406,20 +392,6 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		serviceSSO:             fc.ServiceSSO,
 		BashyVersion:           fc.BashyVersion,
 		ShardEnabled:           fc.ShardOn(),
-		ZotEnabled:             fc.ZotOn(),
-		ZotPort:                fc.ZotPort,
-		SeaweedfsEnabled:       fc.SeaweedfsOn(),
-		SeaweedfsPort:          fc.SeaweedfsPort,
-		KopiaEnabled:           fc.KopiaOn(),
-		KopiaPort:              fc.KopiaPort,
-		ActrunnerEnabled:       fc.ActrunnerOn(),
-		ActrunnerInstance:      fc.ActrunnerInstance,
-		ActrunnerLabels:        fc.ActrunnerLabels,
-		ActrunnerSandbox:       fc.ActrunnerSandboxOn(),
-		ActrunnerSandboxImage:  fc.ActrunnerSandboxImage,
-		ActrunnerDockerHost:    fc.ActrunnerDockerHost,
-		HeadlampEnabled:        fc.HeadlampOn(),
-		HeadlampPort:           fc.HeadlampPort,
 		CloudDOEnabled:         fc.CloudDOOn(),
 		HasCloudDOToken:        fc.CloudDOToken != "",
 		MeshPort:               fc.MeshPort,
