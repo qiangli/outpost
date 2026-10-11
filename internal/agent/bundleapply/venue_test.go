@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -154,6 +153,7 @@ func TestResolveVenueCloudboxReferenceNeedNotExist(t *testing.T) {
 func TestNewDynamicClientEnforcesVenueGuard(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	kubeDir := filepath.Join(home, ".kube")
 	if err := os.MkdirAll(kubeDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -178,6 +178,7 @@ func TestNewDynamicClientEnforcesVenueGuard(t *testing.T) {
 func TestCanonicalizePathExpandsTilde(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	target := filepath.Join(home, "cfg.yaml")
 	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
@@ -190,7 +191,7 @@ func TestCanonicalizePathExpandsTilde(t *testing.T) {
 	if got != want {
 		t.Fatalf("want %q, got %q", want, got)
 	}
-	if !strings.HasPrefix(got, string(filepath.Separator)) {
+	if !filepath.IsAbs(got) {
 		t.Fatalf("canonical path must be absolute, got %q", got)
 	}
 }

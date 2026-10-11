@@ -116,6 +116,7 @@ func newBundleFixture(t *testing.T) *bundleFixture {
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 	t.Setenv("XDG_CACHE_HOME", tmp)
 	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
 
 	peerDir := filepath.Join(tmp, ".kube", "outpost-control-plane")
 	if err := os.MkdirAll(peerDir, 0o755); err != nil {

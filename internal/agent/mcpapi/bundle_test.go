@@ -95,6 +95,7 @@ func newBundleTestMCP(t *testing.T, token string) (*httptest.Server, peerPaths) 
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 	t.Setenv("XDG_CACHE_HOME", tmp)
 
