@@ -9,6 +9,7 @@ labels:
     - outpost
     - service
 created: 2026-10-11T09:12:43.123921Z
+weave: 5
 sprint: 418
 sprint_id: 9891800f-8da5-5338-92bc-1d75755ca548
 sprint_title: 'Agent ecosystem synergy: agentic tools compose like a|b|c through bashy extension points'
@@ -29,3 +30,5 @@ Replacement assertions for every deleted regression: `cmd/outpost/capabilities_t
 Verify: `GOWORK=off go test -short -tags fb_archives ./...` green (the two load-flaky tests — runtime TestFRPCSupervisorRestartsAliveProcessWhenVisitorDisappears and shard TestStart_WiresLaunchesAndStops — fail identically on base cba5e68 under full-suite load and pass in isolation). linux/amd64 and windows/amd64 cross-builds pass. Embedded docs re-synced.
 
 Open: the unit DECLARATIONS are yoke S17's (outpost ships no unit YAML), so until the seeds name these capability ids nothing activates — same gap the external-ownership child left. Paired-host live enable/withdraw and the Linux full gate remain the manager's.
+
+Manager integration 2026-10-11 10:47 UTC: source `e3788fb` plus manager removal of duplicate actrunner alias `bca5b33` merged as Outpost `59436c4` and pushed. Linux full suite with paired Bashy binary passed on `e3788fb`; the exact corrected `59436c4` gate and paired live enable/withdraw remain pending. Yoke internal seeds `1d6388b` now exist. The story remains open for exact candidate and paired gate review.
