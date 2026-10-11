@@ -910,7 +910,8 @@ function buildAdvancedSettingsSection(cfg) {
     el('div', {style: 'margin-top:0.6rem'}, bvBtn),
     el('p', {class: 'hint', style: 'margin-top:0.3rem'},
       'Pin the bashy release the daemon auto-installs when bashy is missing ' +
-      '(the self-heal for supervised services like loom). Pin in production — ' +
+      '(the self-heal that also provides the service monitor, bashy supervisord). ' +
+      'Pin in production — ' +
       "an empty / 'latest' value means a restart can silently pull a new bashy. " +
       'An already-installed bashy on PATH is used as-is.'),
 
@@ -954,16 +955,11 @@ function renderSuggestions(host, suggestions, cfg) {
         addBtn.disabled = true;
         try {
           if (s.managed) {
-            const services = [...(cfg.bashy_services || [])].filter(x => x.name !== s.name);
-            services.push({
-              name: s.name,
-              enabled: true,
-              app_name: s.name,
-              app_port: s.port || 0,
-              require_login: true,
-              mesh_service: s.name === 'loom' ? 'git' : '',
-            });
-            await api('POST', 'api/config/builtins', {bashy_services: services});
+            // A managed suggestion is a declared service unit: enabling it is
+            // a desired-state write, and everything else about it (port,
+            // login, mesh names) already lives in its declaration. Applies
+            // live — the monitor starts it and the daemon publishes it.
+            await api('POST', 'api/config/builtins', {services: {[s.name]: true}});
           } else {
             await api('POST', 'api/apps', {
               name: s.name,
@@ -1166,43 +1162,102 @@ function buildFilesSubBlock(parent, cfg, status) {
   parent.append(scopeHint, scopeInput, el('div', {style: 'margin-top:0.4rem'}, scopeBtn));
 }
 
-function buildBashyAppsSubBlock(parent, cfg, status) {
-  const appsOn = !!cfg.bashy_apps_enabled;
-  const portIn = el('input', {
-    type: 'number',
-    min: '1',
-    max: '65535',
-    value: cfg.bashy_apps_port || 22749,
-    disabled: !appsOn,
-    style: 'width:7rem',
-  });
-  const save = el('button', {type: 'button', disabled: !appsOn}, 'Save port');
-  save.addEventListener('click', async () => {
-    const port = parseInt(portIn.value, 10);
-    if (!Number.isFinite(port) || port < 1 || port > 65535) {
-      msg('err', 'Port must be 1-65535.');
+// buildServicesBlock renders the host's service units: every declaration,
+// its desired state, the monitor's runtime state and what outpost currently
+// publishes for it.
+//
+// Nothing here is per-service. The rows come from GET /api/services, so a
+// seeded built-in, an in-process outpost capability and a YAML an operator
+// dropped in this morning all appear the same way, and a toggle is one
+// generic POST {services: {NAME: bool}} that applies live.
+function buildServicesBlock(parent, cfg) {
+  const section = el('fieldset', {});
+  section.append(el('legend', {}, 'Services'));
+  section.append(el('p', {class: 'hint', style: 'margin:0 0 0.5rem'},
+    'One YAML declaration per daemon. ',
+    el('code', {}, 'bashy service'),
+    ' owns the definitions, ',
+    el('code', {}, 'bashy supervisord'),
+    ' keeps enabled units running, and ',
+    el('code', {}, 'outpost supervisord'),
+    ' keeps that monitor alive. Outpost publishes each unit\'s declared app ' +
+    'route and mesh names while it is serving, and withdraws them when it is not. ' +
+    'Toggles apply immediately — no restart.'));
+  const list = el('div', {class: 'item-list'});
+  section.append(list);
+  parent.append(section);
+
+  list.append(el('div', {class: 'hint'}, 'Loading…'));
+  api('GET', 'api/services').then((view) => {
+    list.replaceChildren();
+    const units = (view && view.units) || [];
+    if (!units.length) {
+      list.append(el('div', {class: 'hint'},
+        'No service units are declared. `bashy service list` to check the registry.'));
       return;
     }
-    save.disabled = true;
+    if (view.monitor_reachable === false) {
+      list.append(el('div', {class: 'hint'},
+        'The service monitor did not answer, so STATE is the last value seen. ' +
+        'Check the bashy-supervisord log, or run `bashy supervisord` by hand.'));
+    }
+    for (const u of units) {
+      list.append(serviceRow(u));
+    }
+  }).catch((e) => {
+    list.replaceChildren(el('div', {class: 'hint'},
+      'Service units unavailable: ' + (e.message || 'unknown error')));
+  });
+}
+
+// STATE_TONE maps the monitor's closed state set onto a colour. `degraded`
+// is still serving (and still published), so it reads as a warning, not an
+// error.
+const STATE_TONE = {
+  active: '#4ade80', degraded: '#fbbf24', failed: '#fca5a5',
+  starting: '#93c5fd', stopping: '#93c5fd', inactive: '',
+};
+
+function serviceRow(u) {
+  const row = el('div', {class: 'item-row' + (u.enabled ? '' : ' dim')});
+  const state = u.state || '';
+  const expose = [];
+  if (u.app) expose.push('app:' + u.app);
+  for (const m of u.mesh || []) expose.push('mesh:' + m);
+  const published = (u.publishing || []).length;
+
+  row.append(
+    el('span', {class: 'label', style: 'min-width:9rem'}, u.name),
+    el('span', {class: 'hint', style: 'min-width:5rem'}, u.provider || ''),
+    el('span', {style: 'min-width:6rem;' + (STATE_TONE[state] ? 'color:' + STATE_TONE[state] : 'opacity:0.7')},
+      state || '(no monitor)'),
+    el('span', {class: 'grow hint'},
+      [u.description, (u.ports || []).join(','), expose.join(' ')].filter(Boolean).join(' · ')),
+  );
+  if (u.enabled && expose.length && !published) {
+    // The withdrawal the old supervisor never did, made visible: an enabled
+    // unit that declares an exposure but is not publishing is not reachable
+    // through the tunnel or the mesh right now.
+    row.append(el('span', {style: 'color:#fbbf24'}, 'not published'));
+  }
+  if (u.reason) {
+    row.append(el('span', {class: 'hint'}, u.reason));
+  }
+
+  const btn = el('button', {type: 'button'}, u.enabled ? 'Disable' : 'Enable');
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
     try {
-      const res = await api('POST', 'api/config/builtins', {bashy_apps_port: port});
-      msg('ok', 'Bashy Apps port saved.');
-      noteRestartPending(res);
+      await api('POST', 'api/config/builtins', {services: {[u.name]: !u.enabled}});
+      msg('ok', `${u.name} ${u.enabled ? 'disabled' : 'enabled'}.`);
+      render();
     } catch (e) {
-      msg('err', e.message || 'Save failed');
-    } finally {
-      save.disabled = !appsOn;
+      btn.disabled = false;
+      msg('err', e.message || 'Toggle failed');
     }
   });
-  parent.append(
-    el('div', {class: 'item-row' + (!appsOn ? ' dim' : '')},
-      el('span', {class: 'label'}, 'Loopback port ', el('code', {class: 'key-hint'}, 'bashy_apps_port')),
-      portIn,
-      save,
-    ),
-    el('p', {class: 'hint', style: 'margin:0.2rem 0 0'},
-      'Default 22749 (BASHY). Legacy explicit 8639 is preserved. This is not the OTel proxy port 31415.'),
-  );
+  row.append(btn);
+  return row;
 }
 
 // buildClusterSubBlock populates the top-level Cluster section:
@@ -2727,15 +2782,11 @@ function renderMain(status, cfg) {
      subBlock: buildSSHSubBlock},
     {key: 'files',     fileKey: 'files_enabled',     label: 'File Browser', enabled: cfg.files_enabled,
      subBlock: buildFilesSubBlock},
-    // meet is a supervised bashy service (a wrap-harness tool), not a core
-    // route or daemon proxy — but it publishes a user-facing cloudbox app
-    // tile, so it lives here under Built-in apps for discoverability. The
-    // POST {meet: bool} reaches the same BuiltinsParams surface as
-    // --meet / the MCP meet arg. The Command base (["meet","service"]) is
-    // pinned in DefaultBashyServices, so the toggle alone is enough.
-    {key: 'bashy_apps', fileKey: 'bashy_apps_enabled', label: 'Bashy Apps', enabled: cfg.bashy_apps_enabled,
-     subBlock: buildBashyAppsSubBlock},
-    {key: 'meet',      fileKey: 'meet_enabled',      label: 'Meet chat',   enabled: cfg.meet_enabled},
+    // Bashy Apps and Meet chat used to be two hardcoded rows here, each
+    // with its own agent.json key, port field and lifecycle. They are
+    // service UNITS now and live in the Services section below, which
+    // renders whatever the host declares — so a third-party daemon an
+    // operator just declared appears there with no change to this file.
   ];
   const agenticRows = [
     // ycode is supervised differently from podman/ollama: the row is
@@ -2766,6 +2817,10 @@ function renderMain(status, cfg) {
   built.append(el('p', {style: 'font-size:0.8rem;opacity:0.7;margin-top:0.8rem'},
     'Changes save automatically. Toggling a built-in restarts the outpost.'));
   panelInbound.append(built);
+
+  // Services: declarations, not toggles. Rendered from GET /api/services,
+  // so the host decides what appears here.
+  buildServicesBlock(panelInbound, cfg);
 
   const agentic = el('fieldset', {});
   agentic.append(el('legend', {}, 'Agentic platform'));
