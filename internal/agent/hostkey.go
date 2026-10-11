@@ -15,7 +15,8 @@ import (
 
 // LoadOrCreateHostKey returns outpost's persistent SSH host identity.
 // On first call it generates an ed25519 keypair and writes it to
-// <UserConfigDir>/matrix/ssh_host_ed25519 with mode 0600. Subsequent
+// <UserConfigDir>/matrix/ssh_host_ed25519 with mode 0600 (Windows: a
+// protected owner-only DACL — see restrictSecretFile). Subsequent
 // calls read the same file back.
 //
 // The key lives in its own file (not in agent.json) so that re-pairing
@@ -74,6 +75,13 @@ func writeHostKeyAtomic(path string, data []byte) error {
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
+	}
+	// Lock the owner-only ACL down before any key material is
+	// written; the security descriptor travels with the rename.
+	if err := restrictSecretFile(tmp); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("restrict host key permissions: %w", err)
 	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()

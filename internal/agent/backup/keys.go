@@ -13,8 +13,9 @@ import (
 // LoadOrCreateIdentity returns the outpost-local age X25519 identity
 // + matching recipient. On first call (no key file at path) a new
 // identity is generated and persisted (mode 0600, parent directory
-// mode 0700). The private key never leaves this host — only the
-// recipient ("age1...") is published, and cloudbox / peer outposts
+// mode 0700; Windows: a protected owner-only DACL — see
+// restrictSecretFile). The private key never leaves this host — only
+// the recipient ("age1...") is published, and cloudbox / peer outposts
 // see opaque ciphertext.
 //
 // Documented consequence: if this file is lost, every artifact
@@ -61,6 +62,13 @@ func LoadOrCreateIdentity(path string) (*age.X25519Identity, *age.X25519Recipien
 			return LoadOrCreateIdentity(abs)
 		}
 		return nil, nil, fmt.Errorf("backup: create age identity file: %w", err)
+	}
+	// Lock the owner-only ACL down before any key material is
+	// written (O_EXCL guarantees we own the just-created file).
+	if err := restrictSecretFile(abs); err != nil {
+		_ = f.Close()
+		_ = os.Remove(abs)
+		return nil, nil, fmt.Errorf("backup: restrict age identity permissions: %w", err)
 	}
 	if _, err := f.WriteString(id.String() + "\n"); err != nil {
 		f.Close()

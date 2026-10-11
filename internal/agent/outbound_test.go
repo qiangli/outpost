@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -668,15 +667,12 @@ func TestOutbound_CookiePersistRoundTrip(t *testing.T) {
 			if got != "the-cookie-"+path {
 				t.Errorf("read=%q, want %q", got, "the-cookie-"+path)
 			}
-			// Verify file mode is 0600 (bearer-equivalent credential).
+			// Confidentiality contract: POSIX 0600; on Windows the
+			// native equivalent — a protected, user-only DACL — is
+			// asserted by assertSecretPerm (bearer-equivalent
+			// credential).
 			full, _ := cookieCachePath(path)
-			st, err := os.Stat(full)
-			if err != nil {
-				t.Fatalf("stat: %v", err)
-			}
-			if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 { // no POSIX mode bits on Windows
-				t.Errorf("mode=%o, want 0600", st.Mode().Perm())
-			}
+			assertSecretPerm(t, full)
 			if err := removeCookieFile(path); err != nil {
 				t.Fatalf("remove: %v", err)
 			}
