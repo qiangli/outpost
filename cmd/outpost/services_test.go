@@ -415,3 +415,27 @@ func TestActrunnerCapabilityResolvesInstanceFromTheForgeUnit(t *testing.T) {
 		t.Fatalf("default labels = %q, want host:host", bare.labels)
 	}
 }
+
+func TestActrunnerCapabilityReusesRegistrationWithoutToken(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dataDir, ".runner"), []byte("existing registration"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cap := &actrunnerCapability{}
+	// A cancelled context keeps this contract check from starting a runner
+	// process or dialing the forge. The existing registration must pass the
+	// activation prerequisite without a registration token.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := cap.Activate(ctx, service.Config{
+		Unit: "actrunner", Settings: map[string]string{
+			"instance": "http://127.0.0.1:1", "data_dir": dataDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("activate existing registration without token: %v", err)
+	}
+	if err := cap.Deactivate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
