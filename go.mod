@@ -21,7 +21,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/pkg/sftp v1.13.10
-	github.com/qiangli/yoke v0.0.0-20261011170826-843fbfe3164c
+	github.com/qiangli/yoke v0.0.0-20261011233035-9bf57932e30a
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.53.0
 	github.com/spf13/cobra v1.10.2
@@ -212,9 +212,7 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
-	github.com/qiangli/coreutils v0.0.0-20261010190610-9ab2513fb087 // indirect
-	github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261011111637-f132e07015b7 // indirect
-	github.com/qiangli/yoke/pkg/oci v0.0.0-20261011111637-f132e07015b7 // indirect
+	github.com/qiangli/coreutils v0.0.0-20261011232922-f6f06c08ba64 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.1 // indirect
 	github.com/quic-go/webtransport-go v0.10.0 // indirect
@@ -294,7 +292,7 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 v3.0.0-20261010183127-da25e2efc36b
+replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 v3.0.0-20261011220423-0321fab37d54
 
 replace github.com/filebrowser/filebrowser/v2 => github.com/qiangli/filebrowser/v2 v2.0.0-20261009064700-9c1237190cff
 
@@ -311,6 +309,6 @@ replace github.com/ollama/ollama => github.com/qiangli/ollama v0.0.0-20261010173
 
 replace go.podman.io/podman/v6 => github.com/qiangli/podman/v6 v6.0.0-20261009064533-4a9784029284
 
-replace github.com/qiangli/yoke/pkg/llmgw => github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261011111637-f132e07015b7
+replace github.com/qiangli/yoke/pkg/llmgw => github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261011233035-9bf57932e30a
 
-replace github.com/qiangli/yoke/pkg/oci => github.com/qiangli/yoke/pkg/oci v0.0.0-20261011111637-f132e07015b7
+replace github.com/qiangli/yoke/pkg/oci => github.com/qiangli/yoke/pkg/oci v0.0.0-20261011233035-9bf57932e30a
