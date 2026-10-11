@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/qiangli/yoke/pkg/fleet"
 	"github.com/qiangli/yoke/pkg/service"
@@ -335,6 +336,58 @@ func TestRemovedUnitIsWithdrawn(t *testing.T) {
 	}
 	if len(apps.names()) != 0 || len(msh.names()) != 0 {
 		t.Fatalf("removed unit still published: apps=%v mesh=%v", apps.names(), msh.names())
+	}
+}
+
+func TestRunReloadsDeclarationsAddedOutsideOutpost(t *testing.T) {
+	apps, msh := newFakeApps(), newFakeMesh()
+	src := &fakeSource{units: []fleet.Service{webUnit("existing", true)},
+		statuses: []service.Status{{Unit: "existing", State: service.Active}}}
+	r := New(Deps{Source: src, Apps: apps, Mesh: msh, Secrets: fixedSecrets{"k"},
+		Interval: 10 * time.Millisecond, Log: quiet()})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	}()
+
+	deadline := time.After(time.Second)
+	for len(apps.names()) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("initial unit was not published")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	src.set([]fleet.Service{webUnit("existing", true), webUnit("fresh-custom", true)},
+		[]service.Status{{Unit: "existing", State: service.Active}, {Unit: "fresh-custom", State: service.Active}})
+	deadline = time.After(time.Second)
+	for {
+		if len(apps.names()) == 2 && len(msh.names()) == 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("new unit was not published by periodic reload: apps=%v mesh=%v", apps.names(), msh.names())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	src.set([]fleet.Service{webUnit("existing", true)},
+		[]service.Status{{Unit: "existing", State: service.Active}})
+	deadline = time.After(time.Second)
+	for {
+		if len(apps.names()) == 1 && len(msh.names()) == 1 {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("removed unit was not withdrawn by periodic reload: apps=%v mesh=%v", apps.names(), msh.names())
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
 

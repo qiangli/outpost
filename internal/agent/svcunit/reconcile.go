@@ -50,7 +50,7 @@ type Deps struct {
 	// is filled in by the reconciler so a capability's own failure shows up
 	// as a state change and withdraws its exposure.
 	Runtime service.Runtime
-	// Interval is the status poll period. Zero uses DefaultInterval.
+	// Interval is the declaration and status poll period. Zero uses DefaultInterval.
 	Interval time.Duration
 	Log      *slog.Logger
 }
@@ -62,7 +62,7 @@ type OwnerLink interface {
 	Report(st service.Status) error
 }
 
-// DefaultInterval is how often the monitor's structured status is re-read.
+// DefaultInterval is how often declarations and monitor status are re-read.
 // This is NOT the retired 30 s "grep bashy X status for the word stopped"
 // poller: no process is launched or judged here. It is the fallback refresh
 // for the exposure reconciler, short because withdrawing a failed unit's
@@ -80,9 +80,8 @@ type Reconciler struct {
 	kick chan struct{}
 
 	mu sync.Mutex
-	// units is the last declaration snapshot. Re-read on boot and on Kick,
-	// not on every status poll: a declaration only changes when something
-	// writes it, and every writer inside outpost calls Kick.
+	// units is the last declaration snapshot. Re-read on boot, on Kick and on
+	// the periodic pass: bashy service can write units outside outpost.
 	units []fleet.Service
 	// live is what is currently published, keyed by unit name.
 	live map[string]Exposure
@@ -189,11 +188,11 @@ func (r *Reconciler) Run(ctx context.Context) error {
 				continue
 			}
 			r.log.Info("service state", "unit", ev.Unit, "from", ev.From, "to", ev.To, "reason", ev.Reason)
-			if err := r.Reconcile(ctx); err != nil {
+			if err := r.ReloadAndReconcile(ctx); err != nil {
 				r.log.Warn("service exposure: reconcile after state event failed", "unit", ev.Unit, "err", err)
 			}
 		case <-tick.C:
-			if err := r.Reconcile(ctx); err != nil {
+			if err := r.ReloadAndReconcile(ctx); err != nil {
 				r.log.Warn("service exposure: periodic reconcile failed", "err", err)
 			}
 		}
