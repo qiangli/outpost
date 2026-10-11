@@ -238,70 +238,74 @@ type SafeView struct {
 	VNCAddr     string `json:"vnc_addr,omitempty"`
 	AdminAddr   string `json:"admin_addr,omitempty"`
 	// Wave 3A discovery + LAN-direct knobs (all default off).
-	DiscoveryEnabled        bool                `json:"discovery_enabled"`
-	SSHListenAddr           string              `json:"ssh_listen_addr,omitempty"`
-	DiscoveryHTTPListenAddr string              `json:"discovery_http_listen_addr,omitempty"`
-	PeerTrustPolicy         string              `json:"peer_trust_policy,omitempty"`
-	AssignedHostname        string              `json:"assigned_hostname,omitempty"`
-	OAuth2Email             string              `json:"oauth2_email,omitempty"`
-	AdminUsers              []string            `json:"admin_users"`
-	Apps                    []conf.AppConfig    `json:"apps"`
-	AppSecrets              []SecretPresence    `json:"app_secrets,omitempty"`
-	ShellEnabled            bool                `json:"shell_enabled"`
-	DesktopEnabled          bool                `json:"desktop_enabled"`
-	ClipboardEnabled        bool                `json:"clipboard_enabled"`
-	SSHEnabled              bool                `json:"ssh_enabled"`
-	SSHAllowLocalForward    bool                `json:"ssh_allow_local_forward"`
-	SSHAllowRemoteForward   bool                `json:"ssh_allow_remote_forward"`
-	SSHAllowAgentForward    bool                `json:"ssh_allow_agent_forward"`
-	SSHForwardSockets       []string            `json:"ssh_forward_sockets"`
-	SFTPEnabled             bool                `json:"sftp_enabled"`
-	FilesEnabled            bool                `json:"files_enabled"`
-	FilesAllowWrite         bool                `json:"files_allow_write"`
-	FilesScope              string              `json:"files_scope"`
-	ClientOnly              bool                `json:"client_only"`
-	Podman                  BuiltinView         `json:"podman"`
-	Sandbox                 BuiltinView         `json:"sandbox"`
-	Ollama                  BuiltinView         `json:"ollama"`
-	OllamaPoolEnabled       bool                `json:"ollama_pool_enabled"`
-	WarmServingEnabled      bool                `json:"warm_serving_enabled"`
-	WarmBudgetFrac          float64             `json:"warm_budget_frac,omitempty"`
-	WarmDesired             []string            `json:"warm_desired,omitempty"`
-	LANInferenceEnabled     bool                `json:"lan_inference_enabled"`
-	LANInferencePort        int                 `json:"lan_inference_port,omitempty"`
-	MeshEnabled             bool                `json:"mesh_enabled"`
-	MeshPort                int                 `json:"mesh_port,omitempty"`
-	BashyServices           []conf.BashyService `json:"bashy_services,omitempty"`
-	BashyServiceSecrets     []SecretPresence    `json:"bashy_service_secrets,omitempty"`
-	BashyAppsEnabled        bool                `json:"bashy_apps_enabled"`
-	BashyAppsPort           int                 `json:"bashy_apps_port,omitempty"`
-	BashyVersion            string              `json:"bashy_version,omitempty"`
-	ShardEnabled            bool                `json:"shard_enabled"`
-	LoomEnabled             bool                `json:"loom_enabled"`
-	LoomPort                int                 `json:"loom_port,omitempty"`
-	MeetEnabled             bool                `json:"meet_enabled"`
-	MeetPort                int                 `json:"meet_port,omitempty"`
-	ZotEnabled              bool                `json:"zot_enabled"`
-	ZotPort                 int                 `json:"zot_port,omitempty"`
-	SeaweedfsEnabled        bool                `json:"seaweedfs_enabled"`
-	SeaweedfsPort           int                 `json:"seaweedfs_port,omitempty"`
-	KopiaEnabled            bool                `json:"kopia_enabled"`
-	KopiaPort               int                 `json:"kopia_port,omitempty"`
-	ActrunnerEnabled        bool                `json:"actrunner_enabled"`
-	ActrunnerInstance       string              `json:"actrunner_instance,omitempty"`
-	ActrunnerLabels         string              `json:"actrunner_labels,omitempty"`
-	ActrunnerSandbox        bool                `json:"actrunner_sandbox"`
-	ActrunnerSandboxImage   string              `json:"actrunner_sandbox_image,omitempty"`
-	ActrunnerDockerHost     string              `json:"actrunner_docker_host,omitempty"`
-	HeadlampEnabled         bool                `json:"headlamp_enabled"`
-	HeadlampPort            int                 `json:"headlamp_port,omitempty"`
-	CloudDOEnabled          bool                `json:"cloud_do_enabled"`
-	HasCloudDOToken         bool                `json:"has_cloud_do_token"`
-	OtelEnabled             bool                `json:"otel_enabled"`
-	OtelPoolEnabled         bool                `json:"otel_pool_enabled"`
-	Ycode                   YcodeView           `json:"ycode"`
-	YcodeShareEnabled       bool                `json:"ycode_share_enabled"`
-	YcodeShareRequireLogin  bool                `json:"ycode_share_require_login"`
+	DiscoveryEnabled        bool             `json:"discovery_enabled"`
+	SSHListenAddr           string           `json:"ssh_listen_addr,omitempty"`
+	DiscoveryHTTPListenAddr string           `json:"discovery_http_listen_addr,omitempty"`
+	PeerTrustPolicy         string           `json:"peer_trust_policy,omitempty"`
+	AssignedHostname        string           `json:"assigned_hostname,omitempty"`
+	OAuth2Email             string           `json:"oauth2_email,omitempty"`
+	AdminUsers              []string         `json:"admin_users"`
+	Apps                    []conf.AppConfig `json:"apps"`
+	AppSecrets              []SecretPresence `json:"app_secrets,omitempty"`
+	ShellEnabled            bool             `json:"shell_enabled"`
+	DesktopEnabled          bool             `json:"desktop_enabled"`
+	ClipboardEnabled        bool             `json:"clipboard_enabled"`
+	SSHEnabled              bool             `json:"ssh_enabled"`
+	SSHAllowLocalForward    bool             `json:"ssh_allow_local_forward"`
+	SSHAllowRemoteForward   bool             `json:"ssh_allow_remote_forward"`
+	SSHAllowAgentForward    bool             `json:"ssh_allow_agent_forward"`
+	SSHForwardSockets       []string         `json:"ssh_forward_sockets"`
+	SFTPEnabled             bool             `json:"sftp_enabled"`
+	FilesEnabled            bool             `json:"files_enabled"`
+	FilesAllowWrite         bool             `json:"files_allow_write"`
+	FilesScope              string           `json:"files_scope"`
+	ClientOnly              bool             `json:"client_only"`
+	Podman                  BuiltinView      `json:"podman"`
+	Sandbox                 BuiltinView      `json:"sandbox"`
+	Ollama                  BuiltinView      `json:"ollama"`
+	OllamaPoolEnabled       bool             `json:"ollama_pool_enabled"`
+	WarmServingEnabled      bool             `json:"warm_serving_enabled"`
+	WarmBudgetFrac          float64          `json:"warm_budget_frac,omitempty"`
+	WarmDesired             []string         `json:"warm_desired,omitempty"`
+	LANInferenceEnabled     bool             `json:"lan_inference_enabled"`
+	LANInferencePort        int              `json:"lan_inference_port,omitempty"`
+	MeshEnabled             bool             `json:"mesh_enabled"`
+	MeshPort                int              `json:"mesh_port,omitempty"`
+	// Services is every declared service unit and its desired state. It
+	// replaces the hand-maintained `bashy_services`, `bashy_apps_enabled`,
+	// `loom_enabled` and `meet_enabled` rows: a new daemon is a declaration,
+	// not three more fields here. Runtime state lives on ServiceStatus,
+	// which reads the monitor.
+	Services []ServiceUnitView `json:"services,omitempty"`
+	// ServiceSecrets reports WHICH app routes hold a trusted-identity HMAC
+	// key, never the keys themselves.
+	ServiceSecrets []SecretPresence `json:"service_secrets,omitempty"`
+	// serviceSSO is the unredacted key map, carried unexported so it can
+	// never be marshalled: Redact turns it into ServiceSecrets and clears it.
+	serviceSSO             map[string]string
+	BashyVersion           string    `json:"bashy_version,omitempty"`
+	ShardEnabled           bool      `json:"shard_enabled"`
+	ZotEnabled             bool      `json:"zot_enabled"`
+	ZotPort                int       `json:"zot_port,omitempty"`
+	SeaweedfsEnabled       bool      `json:"seaweedfs_enabled"`
+	SeaweedfsPort          int       `json:"seaweedfs_port,omitempty"`
+	KopiaEnabled           bool      `json:"kopia_enabled"`
+	KopiaPort              int       `json:"kopia_port,omitempty"`
+	ActrunnerEnabled       bool      `json:"actrunner_enabled"`
+	ActrunnerInstance      string    `json:"actrunner_instance,omitempty"`
+	ActrunnerLabels        string    `json:"actrunner_labels,omitempty"`
+	ActrunnerSandbox       bool      `json:"actrunner_sandbox"`
+	ActrunnerSandboxImage  string    `json:"actrunner_sandbox_image,omitempty"`
+	ActrunnerDockerHost    string    `json:"actrunner_docker_host,omitempty"`
+	HeadlampEnabled        bool      `json:"headlamp_enabled"`
+	HeadlampPort           int       `json:"headlamp_port,omitempty"`
+	CloudDOEnabled         bool      `json:"cloud_do_enabled"`
+	HasCloudDOToken        bool      `json:"has_cloud_do_token"`
+	OtelEnabled            bool      `json:"otel_enabled"`
+	OtelPoolEnabled        bool      `json:"otel_pool_enabled"`
+	Ycode                  YcodeView `json:"ycode"`
+	YcodeShareEnabled      bool      `json:"ycode_share_enabled"`
+	YcodeShareRequireLogin bool      `json:"ycode_share_require_login"`
 	// YcodeShareSurfaces is the catalog rendered as effective state:
 	// every entry the SPA might offer, with the boolean folding the
 	// per-surface overlay against the catalog's DefaultOn. The SPA
@@ -398,15 +402,10 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		LANInferenceEnabled:    fc.LANInferenceOn(),
 		LANInferencePort:       fc.LANInferencePort,
 		MeshEnabled:            fc.MeshOn(),
-		BashyServices:          fc.BashyServices,
-		BashyAppsEnabled:       fc.BashyAppsOn(),
-		BashyAppsPort:          fc.BashyAppsPortOrDefault(),
+		Services:               serviceUnitViews(s.deps.Services),
+		serviceSSO:             fc.ServiceSSO,
 		BashyVersion:           fc.BashyVersion,
 		ShardEnabled:           fc.ShardOn(),
-		LoomEnabled:            fc.LoomOn(),
-		LoomPort:               fc.LoomPort,
-		MeetEnabled:            fc.MeetOn(),
-		MeetPort:               fc.MeetPort,
 		ZotEnabled:             fc.ZotOn(),
 		ZotPort:                fc.ZotPort,
 		SeaweedfsEnabled:       fc.SeaweedfsOn(),

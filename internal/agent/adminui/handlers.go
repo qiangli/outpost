@@ -132,12 +132,28 @@ func (s *Server) handleBuiltins(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	res, err := s.core.SetBuiltins(req)
+	res, err := s.core.SetBuiltins(c.Request.Context(), req)
 	if err != nil {
 		respondError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": res.OK, "restarting": res.RestartPending})
+	// services_applied says the service half took effect immediately, so the
+	// SPA shows "applied" instead of the sticky "Restart to apply" banner it
+	// used to show for a toggle that needed no restart at all.
+	c.JSON(http.StatusOK, gin.H{"ok": res.OK, "restarting": res.RestartPending,
+		"services_applied": res.ServicesApplied})
+}
+
+// handleServices is the host's service picture: every declared unit, its
+// desired state, and the monitor's structured runtime state — the
+// `bashy service status --json` view, rendered for the console.
+func (s *Server) handleServices(c *gin.Context) {
+	view, err := s.core.ServiceStatus()
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, view)
 }
 
 func (s *Server) handleListApps(c *gin.Context) {

@@ -25,9 +25,13 @@ const envSupervised = "OUTPOST_SUPERVISED"
 // supervisordCmd is the init half of the outpost binary: a tiny parent that
 // keeps exactly the outpost daemon (`<self> start`) and `bashy supervisord`
 // alive. The OS service (`outpost service install`) registers THIS command,
-// so both control-plane processes survive a reboot. Per-unit processes belong
-// exclusively to bashy supervisord; outpost must never grow a second service
-// monitor.
+// so both control-plane processes survive a reboot.
+//
+// Per-unit processes belong exclusively to `bashy supervisord`, and outpost
+// must never grow a second service monitor. It had two before this split —
+// this command's agent.json `supervised` list, and a 30 s per-service poller
+// inside the daemon — neither of which had a health check, a start limit, or
+// any way to withdraw a dead service's published routes.
 //
 // The daemon is launched with OUTPOST_SUPERVISED=1 in its env, which flips
 // its restart sites from self-re-exec (execSelfStart) to exit-and-let-the-
@@ -36,12 +40,36 @@ const envSupervised = "OUTPOST_SUPERVISED"
 func supervisordCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "supervisord",
-		Short: "Run the always-up supervisor that keeps the outpost daemon alive (registered by `outpost service install`)",
-		Long: `supervisord is the resilient parent half of the outpost binary. It runs
-the outpost daemon as a supervised child — restarting it on exit with a
-capped backoff — and is what the OS boot service launches so everything
-survives a reboot. Run in the foreground; the launchd/systemd/Task-Scheduler
-entry created by 'outpost service install' keeps it up.`,
+		Short: "Run init: keep the outpost daemon and the bashy service monitor alive (registered by `outpost service install`)",
+		Long: `outpost supervisord is INIT. It is systemd's role in the split, and it has
+exactly two children:
+
+  outpost start        the outpost daemon
+  bashy supervisord    the service monitor
+
+It restarts either one with a capped backoff and is what the OS boot service
+launches, so both survive a reboot. Run it in the foreground; the
+launchd/systemd/Task-Scheduler entry 'outpost service install' creates keeps
+it up.
+
+It never watches an individual service. That is the OTHER supervisord:
+
+  outpost supervisord  = init             (systemd)  — this command
+  bashy supervisord    = service monitor  (inetd)    — owns every unit's
+                                                       process, health,
+                                                       restart policy and
+                                                       start limits
+  bashy service        = unit definitions (systemctl) — declare, configure,
+                                                       enable, inspect
+
+So a service is declared with 'bashy service', kept running by
+'bashy supervisord', and the monitor itself is kept running by this command.
+The outpost daemon neither starts nor polls a service; it publishes each
+unit's declared app route and mesh names while the unit is active and
+withdraws them when it is not ('outpost services' shows both halves).
+
+A host without outpost runs 'bashy supervisord' under any init, or as a
+container's PID 1 with --pid1.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runSupervisord(cmd.Context())
 		},
@@ -123,13 +151,13 @@ func supervisordPrograms(self, bashy, daemonLogPath, bashyLogPath string) []*sup
 	}
 }
 
-// supervisordStatusCmd reports whether a supervisor is running (via its
-// pidfile). Full per-program state would need an IPC surface on the running
-// supervisor — out of scope for this pass.
+// supervisordStatusCmd reports whether INIT is running (via its pidfile).
+// Per-SERVICE state is not here and should not be: ask the monitor, through
+// `outpost services` or `bashy service status`.
 func supervisordStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "Report whether the outpost supervisor is running",
+		Short: "Report whether outpost init is running (for per-service state use `outpost services`)",
 		RunE: func(_ *cobra.Command, _ []string) error {
 			p, err := supervisordPidFilePath()
 			if err != nil {

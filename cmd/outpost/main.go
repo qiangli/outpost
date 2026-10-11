@@ -34,7 +34,6 @@ import (
 	kopia "github.com/qiangli/yoke/external/kopia"
 	seaweedfs "github.com/qiangli/yoke/external/seaweedfs"
 	zot "github.com/qiangli/yoke/external/zot"
-	"github.com/qiangli/yoke/pkg/secrets"
 
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/admincore"
@@ -120,7 +119,7 @@ func main() {
 		outboundCmd(), jobsCmd(), fgCmd(), bgCmd(), killCmd(), runCmd(),
 		clusterCmd(), departCmd(), poolCmd(), kubectlCmd(),
 		// MCP-client CLI parity (Phase 1.5):
-		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), unpairCmd(), restartCmd(), mcpCmd(), tokenCmd(),
+		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), servicesCmd(), unpairCmd(), restartCmd(), mcpCmd(), tokenCmd(),
 		remoteCmd(), meshCmd(), mirrorCmd(), shardCmd(), bundleCmd(), appstoreCmd(),
 		docsCmd(), gitCmd(), shellCmd(), versionCmd(), upgradeCmd(), rollbackCmd(), buildCmd(), bashyCmd(),
 		supervisordCmd(), serviceCmd(), doctorCmd(),
@@ -291,20 +290,15 @@ func startCmd() *cobra.Command {
 				slog.Warn("auto-generated sso_secret for trust_cloud_identity apps — paste the new value into each upstream app's config via `outpost apps secret <name>`",
 					"apps", strings.Join(minted, ","))
 			}
-			if minted, err := conf.EnsureBashyServiceSSOSecrets(cfgPath, fc, effectiveBashyServices(fc)); err != nil {
-				return fmt.Errorf("bashy service sso secrets: %w", err)
-			} else if len(minted) > 0 {
-				slog.Info("auto-generated sso_secret for trusted bashy services",
-					"services", strings.Join(minted, ","))
-			}
 
 			apps, err := buildAppRegistry(fc, cfg.Apps)
 			if err != nil {
 				return err
 			}
-			if err := registerBashyServiceApps(fc, apps); err != nil {
-				return err
-			}
+			// Service units are NOT registered here. Their app routes and
+			// mesh names are published by the exposure reconciler (see
+			// startServiceReconciler), which follows the monitor's state, so
+			// a unit that is disabled, failed or not yet up is not advertised.
 			// Built-in local-daemon proxies (podman, ollama, otel below).
 			// These are default-ON (see conf.PodmanOn) and DETECTION-GATED:
 			// we skip registration when the daemon isn't actually reachable,
@@ -1204,7 +1198,13 @@ func startCmd() *cobra.Command {
 				})
 			}
 
-			startBashyServiceSupervisors(g, gctx, fc, meshHost)
+			// Services: the daemon no longer starts, polls or stops any of
+			// them — `bashy supervisord` owns every unit's process. What it
+			// does own is publication (the unit's declared app route and
+			// mesh names, withdrawn when the unit stops being active) and
+			// the capabilities whose implementation is inside this process.
+			svcControl := startServiceReconciler(g, gctx, cfgPath, fc, apps, meshHost, outpostCapabilities())
+			core.SetServices(svcControl)
 
 			// Zot OCI registry (wrap-harness tool lifecycle): run Zot as a
 			// managed external binary on a loopback port + auto-expose it over the
@@ -1302,12 +1302,12 @@ func startCmd() *cobra.Command {
 				if cd, _ := conf.ResolveCacheDir(); cd != "" {
 					arData = filepath.Join(cd, "act_runner")
 				}
-				instance := fc.ActrunnerInstanceResolved()
+				instance := fc.ActrunnerInstanceResolved(localForgeURL(svcControl.Store, "loom"))
 				labels := fc.ActrunnerLabelsOrDefault()
 				token := fc.ActrunnerToken
 				g.Go(func() error {
 					if instance == "" {
-						slog.Warn("act_runner: no instance — set actrunner_instance or enable loom; skipping")
+						slog.Warn("act_runner: no instance — set actrunner_instance or `bashy service enable loom`; skipping")
 						return nil
 					}
 					// Supervise register + daemon with backoff. A build-only node
@@ -3697,333 +3697,6 @@ func buildAppRegistry(fc *conf.FileConfig, envSpecs string) (*agent.AppRegistry,
 		}
 	}
 	return reg, nil
-}
-
-func effectiveBashyServices(fc *conf.FileConfig) []conf.BashyService {
-	byName := map[string]conf.BashyService{}
-	for _, svc := range conf.DefaultBashyServices() {
-		byName[svc.Name] = svc
-	}
-	if fc != nil {
-		hasAppsServiceOverride := false
-		for _, svc := range fc.BashyServices {
-			if strings.TrimSpace(svc.Name) == "" {
-				continue
-			}
-			if svc.Name == "apps" {
-				hasAppsServiceOverride = true
-			}
-			if svc.AppName == "" {
-				svc.AppName = svc.Name
-			}
-			if def, ok := byName[svc.Name]; ok {
-				if !svc.EnabledSet && !svc.Enabled {
-					svc.Enabled = def.Enabled
-				}
-				if svc.AppPort == 0 {
-					svc.AppPort = def.AppPort
-				}
-				if svc.AppName == svc.Name && def.AppName != "" {
-					svc.AppName = def.AppName
-				}
-				if def.RequireLogin {
-					svc.RequireLogin = true
-				}
-				if def.MeshService != "" && svc.MeshService == "" {
-					svc.MeshService = def.MeshService
-				}
-			}
-			// Inherit the default Command base (e.g. sdlc → ["sdlc","service"]) so
-			// an operator can enable a service without re-declaring its argv.
-			if len(svc.Command) == 0 {
-				if def, ok := byName[svc.Name]; ok {
-					svc.Command = def.Command
-				}
-			}
-			if len(svc.Args) == 0 {
-				if def, ok := byName[svc.Name]; ok {
-					svc.Args = append([]string{}, def.Args...)
-				}
-			}
-			// Security properties required by a built-in are not optional
-			// defaults. In particular, meet's coopauth guard requires the
-			// signed identity contract even when the operator enables it through
-			// a terse bashy_services override.
-			if def, ok := byName[svc.Name]; ok && def.TrustCloudIdentity {
-				svc.TrustCloudIdentity = true
-			}
-			if def, ok := byName[svc.Name]; ok && def.ElevationRequired {
-				svc.ElevationRequired = true
-			}
-			byName[svc.Name] = svc
-		}
-		if fc.BashyServices != nil && !hasAppsServiceOverride && fc.BashyAppsEnabled == nil {
-			svc := byName["apps"]
-			svc.Enabled = false
-			byName["apps"] = svc
-		}
-		if fc.BashyAppsEnabled != nil {
-			svc := byName["apps"]
-			svc.Name = "apps"
-			svc.Enabled = *fc.BashyAppsEnabled
-			svc.Command = []string{"apps", "service"}
-			svc.AppName = "apps"
-			svc.AppPort = fc.BashyAppsPortOrDefault()
-			svc.RequireLogin = true
-			svc.ElevationRequired = true
-			svc.TrustCloudIdentity = true
-			byName["apps"] = svc
-		} else if svc := byName["apps"]; svc.Enabled && svc.AppPort == conf.DefaultBashyAppsPort && fc.BashyAppsPort > 0 {
-			svc.AppPort = fc.BashyAppsPort
-			byName["apps"] = svc
-		}
-		if fc.LoomOn() {
-			svc := byName["loom"]
-			svc.Name = "loom"
-			svc.Enabled = true
-			svc.AppName = "loom"
-			svc.AppPort = fc.LoomPortOrDefault()
-			svc.RequireLogin = true
-			svc.MeshService = "git"
-			byName["loom"] = svc
-		}
-		if fc.MeetOn() {
-			svc := byName["meet"]
-			svc.Name = "meet"
-			svc.Enabled = true
-			svc.AppName = "meet"
-			svc.AppPort = fc.MeetPortOrDefault()
-			svc.RequireLogin = true
-			svc.TrustCloudIdentity = true
-			byName["meet"] = svc
-		}
-	}
-	out := make([]conf.BashyService, 0, len(byName))
-	for _, svc := range byName {
-		out = append(out, svc)
-	}
-	return out
-}
-
-func registerBashyServiceApps(fc *conf.FileConfig, reg *agent.AppRegistry) error {
-	if reg == nil {
-		return nil
-	}
-	for _, svc := range effectiveBashyServices(fc) {
-		if !svc.Enabled || svc.AppPort <= 0 {
-			continue
-		}
-		name := svc.AppName
-		if name == "" {
-			name = svc.Name
-		}
-		if svc.TrustCloudIdentity && strings.TrimSpace(svc.SSOSecret) == "" {
-			return fmt.Errorf("bashy service app %q: trust_cloud_identity requires a non-empty sso_secret", name)
-		}
-		if err := reg.RegisterWithMeta(name, fmt.Sprintf("http://127.0.0.1:%d", svc.AppPort), agent.AppMeta{
-			RequireLogin:       svc.RequireLogin,
-			ElevationRequired:  svc.ElevationRequired,
-			TrustCloudIdentity: svc.TrustCloudIdentity,
-			SSOSecret:          svc.SSOSecret,
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func startBashyServiceSupervisors(g *errgroup.Group, ctx context.Context, fc *conf.FileConfig, meshHost *mesh.Host) {
-	if g == nil {
-		return
-	}
-	// Pin (or leave at latest) the bashy release the self-heal auto-install
-	// fetches when bashy is missing. Read once at boot; changing it schedules
-	// a restart, which re-enters here.
-	if fc != nil {
-		bashyResolver.SetVersion(fc.BashyVersion)
-	}
-	// Fleet auto-roll: reconcile an existing outpost-managed bashy to the matched
-	// version at boot, even on hosts with no enabled bashy service (they may still
-	// run bashy for deploy jobs). Best-effort; never blocks startup.
-	g.Go(func() error {
-		bashyResolver.ReconcileExisting(ctx)
-		return nil
-	})
-	for _, svc := range effectiveBashyServices(fc) {
-		if !svc.Enabled {
-			continue
-		}
-		svc := svc
-		g.Go(func() error {
-			return superviseBashyService(ctx, fc, svc, meshHost)
-		})
-	}
-}
-
-func superviseBashyService(ctx context.Context, fc *conf.FileConfig, svc conf.BashyService, meshHost *mesh.Host) error {
-	if svc.Name == "" {
-		return nil
-	}
-	addr := ""
-	if svc.AppPort > 0 {
-		addr = fmt.Sprintf("127.0.0.1:%d", svc.AppPort)
-		if meshHost != nil && svc.MeshService != "" {
-			meshHost.Forwarder().Expose(svc.MeshService, addr)
-			slog.Info("bashy service exposed over mesh", "service", svc.Name, "mesh_service", svc.MeshService, "addr", addr)
-		}
-	}
-	if err := startBashyService(ctx, fc, svc); err != nil {
-		slog.Warn("bashy service: start failed", "service", svc.Name, "err", err)
-	}
-	ticker := time.NewTicker(bashyServicePollInterval)
-	defer ticker.Stop()
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		if err := runBashyServiceCommand(stopCtx, svc, "stop", nil); err != nil {
-			slog.Warn("bashy service: stop failed", "service", svc.Name, "err", err)
-		}
-	}()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			ok, err := bashyServiceRunning(ctx, svc)
-			if err != nil || !ok {
-				if err := startBashyService(ctx, fc, svc); err != nil {
-					slog.Warn("bashy service: restart failed", "service", svc.Name, "err", err)
-				}
-			}
-		}
-	}
-}
-
-var bashyServicePollInterval = 30 * time.Second
-
-// bashyAppsLANBind is the --bind outpost hands the bashy Apps console. It is
-// the SYMBOLIC "lan", never an address outpost guessed: bashy resolves it to
-// the host's primary (default-route) private IPv4 every time the pair-gated
-// listener decides where to open, so the phone listener follows Wi-Fi/DHCP/
-// VPN transitions on its own. The previous shape — outpost picking the first
-// private IPv4 in interface-enumeration order at boot and passing it as a
-// literal — pinned the console to a secondary wired link whenever that
-// interface came up before Wi-Fi, and bashy then preserved the address
-// faithfully because the host still owned it. bashy Apps keeps its loopback
-// listener regardless, which is what the Cloudbox tunnel uses.
-const bashyAppsLANBind = "lan"
-
-func startBashyService(ctx context.Context, fc *conf.FileConfig, svc conf.BashyService) error {
-	args := append([]string{}, svc.Args...)
-	if svc.Name != "apps" && svc.RootURL != "" {
-		args = append(args, "--root-url", svc.RootURL)
-	} else if svc.Name == "loom" {
-		if root := bashyServiceCloudboxRoot(fc, svc); root != "" {
-			args = append(args, "--root-url", root)
-		}
-	}
-	if svc.Name == "loom" && svc.AppPort > 0 && svc.AppPort != 31880 {
-		args = append(args, "--port", strconv.Itoa(svc.AppPort))
-	}
-	if svc.Name == "apps" && svc.AppPort > 0 {
-		args = append(args, "--port", strconv.Itoa(svc.AppPort))
-		args = append(args, "--bind", bashyAppsLANBind)
-	}
-	return runBashyServiceCommand(ctx, svc, "start", args)
-}
-
-func bashyServiceRunning(ctx context.Context, svc conf.BashyService) (bool, error) {
-	out, err := outputBashyServiceCommand(ctx, svc, "status", nil)
-	if err != nil {
-		return false, err
-	}
-	text := strings.ToLower(string(out))
-	return !strings.Contains(text, "stopped") && !strings.Contains(text, "not running"), nil
-}
-
-func runBashyServiceCommand(ctx context.Context, svc conf.BashyService, verb string, extra []string) error {
-	_, err := outputBashyServiceCommand(ctx, svc, verb, extra)
-	return err
-}
-
-func outputBashyServiceCommand(ctx context.Context, svc conf.BashyService, verb string, extra []string) ([]byte, error) {
-	// Resolve (and, if missing, self-heal by auto-installing) the bashy binary
-	// rather than trusting it to be on the daemon's PATH. A launchd/systemd
-	// daemon has a narrow PATH, and a host may simply not have bashy yet.
-	bin, err := bashyResolver.Path(ctx)
-	if err != nil {
-		return nil, err
-	}
-	// The base argv is svc.Command when set (e.g. ["sdlc","service"] →
-	// `bashy sdlc service start`), else just the service name (`bashy loom start`).
-	base := svc.Command
-	if len(base) == 0 {
-		base = []string{svc.Name}
-	}
-	args := append([]string{}, base...)
-	args = append(args, verb)
-	args = append(args, extra...)
-	cmd := exec.CommandContext(ctx, bin, args...)
-	// Inject the host's cloudbox-vault secrets (rendered through the local
-	// binding template) into the long-running service process, so a service that
-	// needs GITHUB_TOKEN etc. gets it with no human step. Only at start — the
-	// verb that launches the daemon; status/stop are quick control calls polled
-	// every 30s and must not hit cloudbox each time. The child stays decoupled —
-	// it just reads env vars.
-	if verb == "start" {
-		// Join the existing OTel telemetry plane under this service's OWN
-		// service.name (loom, …) — not "outpost" — so its deploy activity is
-		// filterable when an agent supervises a deployment via the observability
-		// backend. No-op unless an OTLP endpoint is configured on the host.
-		extraEnv := telemetry.ChildEnv(svc.Name)
-		if svc.SecretsEnvOn() {
-			extraEnv = append(extraEnv, bashyServiceSecretsEnv(ctx, bin)...)
-		}
-		if len(extraEnv) > 0 {
-			cmd.Env = append(os.Environ(), extraEnv...)
-		}
-	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return out, fmt.Errorf("bashy service command %q failed: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-	}
-	return out, nil
-}
-
-// bashyServiceSecretsEnv runs `bashy secrets env` and returns "NAME=value"
-// entries for injection into a supervised service. Best-effort: any failure
-// (offline, no secrets token, no binding template) yields nil and the service
-// simply starts without injected secrets — matching `secrets env`'s own
-// never-break-startup contract. `.Output()` (stdout only) keeps stderr warnings
-// like "cloudbox unreachable; using cache" out of the parsed set.
-func bashyServiceSecretsEnv(ctx context.Context, bin string) []string {
-	out, err := exec.CommandContext(ctx, bin, "secrets", "env").Output()
-	if err != nil {
-		return nil
-	}
-	m := secrets.ParseEnv(out)
-	env := make([]string, 0, len(m))
-	for k, v := range m {
-		env = append(env, k+"="+v)
-	}
-	return env
-}
-
-func bashyServiceCloudboxRoot(fc *conf.FileConfig, svc conf.BashyService) string {
-	base := cloudboxHTTPBase(fc)
-	if base == "" || fc == nil || fc.AgentName == "" {
-		return ""
-	}
-	appName := svc.AppName
-	if appName == "" {
-		appName = svc.Name
-	}
-	u, err := url.Parse(base)
-	if err != nil {
-		return ""
-	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/matrix/h/" + url.PathEscape(fc.AgentName) + "/app/" + url.PathEscape(appName) + "/"
-	return u.String()
 }
 
 func registerCmd() *cobra.Command {

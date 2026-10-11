@@ -317,24 +317,6 @@ type FileConfig struct {
 	// survive a restart, which a one-shot `mesh dial` does not.
 	MeshConsumes []MeshConsume `json:"mesh_consumes,omitempty"`
 
-	// BashyServices are generic service lifecycles managed by outpost through
-	// the convention `bashy <name> start|status|stop`. When enabled, outpost
-	// starts the service, restarts it if status reports stopped, stops it on
-	// shutdown, and can publish it as both a cloudbox app and a mesh service.
-	BashyServices []BashyService `json:"bashy_services,omitempty"`
-
-	// BashyAppsEnabled opts the bashy Apps service in/out of the zero-config
-	// default. nil means "default it on only when bashy_services is absent";
-	// explicit false is a durable operator opt-out. The service itself is still
-	// capability-gated by bashy at runtime: a missing binary or missing Apps
-	// command logs an actionable status and the daemon continues.
-	BashyAppsEnabled *bool `json:"bashy_apps_enabled,omitempty"`
-
-	// BashyAppsPort is the loopback HTTP port for bashy Apps. Default 22749
-	// ("BASHY" on a telephone keypad). Legacy configs that already carried an
-	// app_port such as 8639 in bashy_services keep that explicit value.
-	BashyAppsPort int `json:"bashy_apps_port,omitempty"`
-
 	// BashyVersion pins the bashy release the daemon auto-installs when bashy
 	// is missing (the self-heal path for supervised services). Empty or
 	// "latest" fetches the newest release; a tag (e.g. "v0.3.0") pins it. In
@@ -342,27 +324,6 @@ type FileConfig struct {
 	// pull a new bashy. The pin governs only the auto-install of a MISSING
 	// bashy; an already-installed bashy on PATH is used as-is.
 	BashyVersion string `json:"bashy_version,omitempty"`
-
-	// LoomEnabled opts this outpost into running the loom git forge (Gitea) as a
-	// managed external binary (coreutils/external/loom via pkg/binmgr — not
-	// compiled in) on a loopback port, auto-exposed over the mesh as the `git`
-	// service. The wrap-harness "tool lifecycle" builtin. Default OFF.
-	LoomEnabled *bool `json:"loom_enabled,omitempty"`
-
-	// LoomPort is loom's loopback HTTP port (default 31880).
-	LoomPort int `json:"loom_port,omitempty"`
-
-	// MeetEnabled opts this outpost into running the meet web chat room (a
-	// Slack-style browser UI over `bashy meet`, served by bashy on a loopback
-	// port) as a supervised bashy service, published as a cloudbox app named
-	// `meet`. The service lifecycle lives under a subcommand, so the
-	// supervisor drives `bashy meet service {start,status,stop}` — NOT
-	// `bashy meet start` (which starts a deliberation session). Pinned via
-	// the Command base in DefaultBashyServices. Default OFF.
-	MeetEnabled *bool `json:"meet_enabled,omitempty"`
-
-	// MeetPort is meet's loopback HTTP port (default 8637).
-	MeetPort int `json:"meet_port,omitempty"`
 
 	// ZotEnabled opts this outpost into running the Zot OCI registry as a managed
 	// external binary (coreutils/external/zot via pkg/binmgr — not compiled in)
@@ -593,19 +554,12 @@ type FileConfig struct {
 	// internal/agent/outbound.go.
 	Outbound []OutboundConfig `json:"outbound,omitempty"`
 
-	// Supervised are extra long-running programs that `outpost supervisord`
-	// keeps alive next to the daemon, with the same restart-on-exit and
-	// capped backoff.
-	//
-	// This exists for reboot durability on every platform outpost runs on.
-	// `outpost run` covers only macOS (it shells out to launchctl), and a
-	// scheduler the operator has to restart by hand stops silently after a
-	// reboot — a stalled job then looks exactly like one with nothing to
-	// do. The OS service already starts supervisord at boot, so anything
-	// it owns returns with it, with no second launcher to keep in sync.
-	// The standing QA poller on an owned host is the motivating case; see
-	// docs/qa-poller-host-setup.md.
-	Supervised []SupervisedProgram `json:"supervised,omitempty"`
+	// ServiceSSO holds the per-app HMAC keys outpost signs trusted-identity
+	// headers with, keyed by the app route name a service unit's
+	// expose.app declares. Daemon-internal: minted on first use by
+	// EnsureServiceSSOSecret, never operator-authored, redacted from every
+	// read surface.
+	ServiceSSO map[string]string `json:"service_sso,omitempty"`
 
 	// Cluster, when present and explicitly Enabled, opts this outpost into
 	// DKS. Its runtime set may contain one real k3s agent plus one node for
@@ -1370,63 +1324,6 @@ func (fc *FileConfig) MirrorOn() bool {
 	return fc != nil && fc.Mirror != nil && fc.Mirror.Enabled && len(fc.Mirror.Jobs) > 0
 }
 
-// SupervisedProgram is one extra child process `outpost supervisord` keeps
-// alive. Maps onto internal/agent/supervisor.Program; the restart policy is
-// that package's (healthy-start gate + capped backoff) and is not tunable
-// per entry yet — add fields here if a real case needs it.
-type SupervisedProgram struct {
-	// Name identifies the program in supervisor logs. Defaults to the
-	// executable's base name when empty.
-	Name string `json:"name,omitempty"`
-	// Path is the executable, absolute. Args follow it.
-	Path string   `json:"path"`
-	Args []string `json:"args,omitempty"`
-	// Dir is the working directory. Empty inherits the supervisor's, which
-	// is rarely what a job wants — the QA poller writes a cwd-local .qa/
-	// log dir, so it must run from a writable directory of its own.
-	Dir string `json:"dir,omitempty"`
-	// Env entries are "KEY=VALUE", ADDED to the supervisor's environment
-	// rather than replacing it: these programs are operator-declared
-	// helpers that expect a normal environment (PATH, HOME) to inherit.
-	Env []string `json:"env,omitempty"`
-	// LogPath receives combined stdout+stderr, appended. Empty inherits
-	// the supervisor's streams, which on a service means the OS log.
-	LogPath string `json:"log_path,omitempty"`
-	// Enabled is pointer-bool so a missing field means enabled — an entry
-	// present in the config is meant to run unless explicitly turned off.
-	Enabled *bool `json:"enabled,omitempty"`
-}
-
-// On reports whether this entry should be started (missing field = on).
-func (sp SupervisedProgram) On() bool {
-	return sp.Enabled == nil || *sp.Enabled
-}
-
-// SupervisedPrograms returns the enabled, well-formed supervised entries.
-// Entries missing a Path are skipped with the reason, so one bad line in
-// agent.json can't stop the supervisor from starting the daemon.
-func (fc *FileConfig) SupervisedPrograms() ([]SupervisedProgram, []string) {
-	if fc == nil {
-		return nil, nil
-	}
-	var out []SupervisedProgram
-	var skipped []string
-	for i, sp := range fc.Supervised {
-		switch {
-		case !sp.On():
-			continue
-		case strings.TrimSpace(sp.Path) == "":
-			skipped = append(skipped, fmt.Sprintf("supervised[%d]: empty path", i))
-		default:
-			if sp.Name == "" {
-				sp.Name = filepath.Base(sp.Path)
-			}
-			out = append(out, sp)
-		}
-	}
-	return out, skipped
-}
-
 type AppConfig struct {
 	Name    string `json:"name"`
 	Icon    string `json:"icon,omitempty"`
@@ -1990,80 +1887,9 @@ func (fc *FileConfig) PeerPlaneOn() bool {
 	return fc != nil && fc.PeerPlaneEnabled != nil && *fc.PeerPlaneEnabled
 }
 
-// MeshOn reports whether this outpost runs the libp2p mesh data plane (the
-// peer node carrying authenticated, NAT-traversing peer↔peer streams). Opt-in
-// (default OFF) — gated on MeshEnabled=true AND a paired access token (cloudbox
-// is the rendezvous, so an unpaired host has no signaler to find peers through).
-func (fc *FileConfig) LoomOn() bool {
-	return fc != nil && fc.LoomEnabled != nil && *fc.LoomEnabled
-}
-
 // CloudDOOn reports whether Digital Ocean provider support is enabled.
 func (fc *FileConfig) CloudDOOn() bool {
 	return fc != nil && fc.CloudDOEnabled != nil && *fc.CloudDOEnabled
-}
-
-// LoomPortOrDefault returns the configured loom port, or 31880.
-func (fc *FileConfig) LoomPortOrDefault() int {
-	if fc != nil && fc.LoomPort > 0 {
-		return fc.LoomPort
-	}
-	return 31880
-}
-
-// MeetOn reports whether this outpost runs the meet web chat room as a
-// supervised bashy service (default OFF).
-func (fc *FileConfig) MeetOn() bool {
-	return fc != nil && fc.MeetEnabled != nil && *fc.MeetEnabled
-}
-
-// MeetPortOrDefault returns the configured meet port, or 8637.
-func (fc *FileConfig) MeetPortOrDefault() int {
-	if fc != nil && fc.MeetPort > 0 {
-		return fc.MeetPort
-	}
-	return 8637
-}
-
-// BashyAppsPortOrDefault returns the configured bashy Apps loopback port, or
-// 22749 ("BASHY" on a telephone keypad).
-func (fc *FileConfig) BashyAppsPortOrDefault() int {
-	if fc != nil && fc.BashyAppsPort > 0 {
-		return fc.BashyAppsPort
-	}
-	if fc != nil {
-		for _, svc := range fc.BashyServices {
-			if svc.Name == "apps" && svc.AppPort > 0 {
-				return svc.AppPort
-			}
-		}
-	}
-	return DefaultBashyAppsPort
-}
-
-// BashyAppsOn reports whether the bashy Apps service is intended to run.
-// Missing bashy_services means fresh/legacy default-on; a present list without
-// apps is treated as an operator-curated intent and stays off unless the
-// top-level bashy_apps_enabled knob explicitly opts in.
-func (fc *FileConfig) BashyAppsOn() bool {
-	if fc == nil {
-		return false
-	}
-	if fc.BashyAppsEnabled != nil {
-		return *fc.BashyAppsEnabled
-	}
-	if fc.BashyServices == nil {
-		return true
-	}
-	for _, svc := range fc.BashyServices {
-		if svc.Name == "apps" {
-			if svc.EnabledSet {
-				return svc.Enabled
-			}
-			return true
-		}
-	}
-	return false
 }
 
 func (fc *FileConfig) ZotOn() bool {
@@ -2137,20 +1963,22 @@ func (fc *FileConfig) ActrunnerLabelsOrDefault() string {
 }
 
 // ActrunnerInstanceResolved returns the Gitea base URL the runner registers
-// against: an explicit ActrunnerInstance wins; otherwise the local loom forge
-// (http://127.0.0.1:<loom_port>) when loom is on; else "" (caller must skip /
-// surface a clear error — a build-only node needs an explicit instance).
-func (fc *FileConfig) ActrunnerInstanceResolved() string {
+// against: an explicit actrunner_instance wins; otherwise localForge, which
+// the caller resolves from the loom unit's declaration when that unit is
+// enabled; else "" (caller must skip / surface a clear error — a build-only
+// node needs an explicit instance).
+//
+// The forge URL arrives as an argument because loom's port lives in its unit
+// declaration now, and fleet's registry sits ABOVE this package: conf holds
+// outpost's own settings, not the host's service units.
+func (fc *FileConfig) ActrunnerInstanceResolved(localForge string) string {
 	if fc == nil {
 		return ""
 	}
 	if fc.ActrunnerInstance != "" {
 		return fc.ActrunnerInstance
 	}
-	if fc.LoomOn() {
-		return fmt.Sprintf("http://127.0.0.1:%d", fc.LoomPortOrDefault())
-	}
-	return ""
+	return localForge
 }
 
 // MeshOn reports whether this outpost runs the libp2p mesh data plane (the peer
@@ -2192,102 +2020,6 @@ type MeshConsume struct {
 	// LocalAddr is the fixed local listen address (e.g. "127.0.0.1:31880") so the
 	// consuming config (actrunner_instance, etc.) stays stable. Empty → ephemeral.
 	LocalAddr string `json:"local_addr,omitempty"`
-}
-
-// BashyService is one generic local service supervised by outpost through the
-// convention `bashy <name> start|status|stop`. It can optionally be published
-// as a cloudbox app and as an outpost mesh service.
-type BashyService struct {
-	Name               string `json:"name"`
-	Enabled            bool   `json:"enabled"`
-	EnabledSet         bool   `json:"-"`
-	AppName            string `json:"app_name,omitempty"`
-	AppPort            int    `json:"app_port,omitempty"`
-	RequireLogin       bool   `json:"require_login,omitempty"`
-	ElevationRequired  bool   `json:"elevation_required,omitempty"`
-	TrustCloudIdentity bool   `json:"trust_cloud_identity,omitempty"`
-	// SSOSecret is the per-service HMAC key used by the existing trusted-header
-	// SSO contract. It must be non-empty whenever TrustCloudIdentity is true;
-	// boot provisioning persists a generated value before app registration.
-	SSOSecret   string   `json:"sso_secret,omitempty"`
-	MeshService string   `json:"mesh_service,omitempty"`
-	RootURL     string   `json:"root_url,omitempty"`
-	Args        []string `json:"args,omitempty"`
-	// Command overrides the base argv the supervisor invokes as
-	// `bashy <Command...> {start|status|stop}`. Empty defaults to [Name] (so
-	// loom → `bashy loom start`). Set it for services whose lifecycle lives under
-	// a subcommand, e.g. the SDLC loop uses ["sdlc","service"] →
-	// `bashy sdlc service start`.
-	Command []string `json:"command,omitempty"`
-	// SecretsEnv, unless explicitly false, makes the supervisor inject the host's
-	// `bashy secrets env` (the cloudbox vault rendered through the local binding
-	// template) into the service's environment at START — so a service that needs
-	// GITHUB_TOKEN etc. gets it with no human step now that the host is paired,
-	// while staying fully decoupled from the vault (it just reads env vars). Only
-	// at start (the verb that launches the long-running process); status/stop are
-	// quick control calls that must not hit cloudbox on every 30s poll. Opt out
-	// with "secrets_env": false.
-	SecretsEnv *bool `json:"secrets_env,omitempty"`
-}
-
-func (s *BashyService) UnmarshalJSON(data []byte) error {
-	type alias BashyService
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	var a alias
-	if err := json.Unmarshal(data, &a); err != nil {
-		return err
-	}
-	*s = BashyService(a)
-	_, s.EnabledSet = raw["enabled"]
-	return nil
-}
-
-// SecretsEnvOn reports whether the supervisor should inject `bashy secrets env`
-// into this service at start. Default ON (nil), opt out with secrets_env:false.
-func (s BashyService) SecretsEnvOn() bool { return s.SecretsEnv == nil || *s.SecretsEnv }
-
-const DefaultBashyAppsPort = 22749
-
-func DefaultBashyServices() []BashyService {
-	return []BashyService{
-		{Name: "loom", EnabledSet: true, AppName: "loom", AppPort: 31880, RequireLogin: true, MeshService: "git"},
-		// bashy Apps is the cooperative web app matrix for bashy-managed local
-		// tools. It binds only on loopback and is published through Outpost's
-		// existing app tunnel with OS-password elevation required. The default-on
-		// entry is applied only when bashy_services is absent or the top-level
-		// bashy_apps toggle opts in, so an existing curated bashy_services list is
-		// not broadened silently.
-		{Name: "apps", Enabled: true, EnabledSet: true, Command: []string{"apps", "service"}, Args: []string{"--pair"}, AppName: "apps", AppPort: DefaultBashyAppsPort, RequireLogin: true, ElevationRequired: true, TrustCloudIdentity: true},
-		// The meet web chat room (a Slack-style browser UI over `bashy meet`,
-		// served by bashy on a loopback port) as a supervised service, published
-		// as a cloudbox app named `meet`. TRAP: the service lifecycle lives under
-		// a subcommand — `bashy meet service {start,status,stop}` — NOT
-		// `bashy meet start` (which already exists and starts a deliberation
-		// session). The Command base below pins the subcommand so an operator
-		// who enables meet through the bashy_services array without re-declaring
-		// the argv still gets the daemon, not an accidental meeting. No
-		// MeshService: a personal chat room has no peer consumer. Opt-in
-		// (Enabled:false until fc.MeetOn() flips it in effectiveBashyServices).
-		{Name: "meet", EnabledSet: true, Command: []string{"meet", "service"}, AppName: "meet", AppPort: 8637, RequireLogin: true, TrustCloudIdentity: true},
-		// The always-on SDLC loop (the durable trigger daemon). Opt-in
-		// (Enabled:false): a host running unattended agent work sets Enabled +
-		// Args (repo/config paths) in agent.json. No AppPort/mesh — it is a
-		// background loop, not a proxied app. Supervised via
-		// `bashy sdlc service {start,status,stop}`.
-		{Name: "sdlc", EnabledSet: true, Command: []string{"sdlc", "service"}},
-		// The scheduler daemon (bashy's modern cron). Opt-in (Enabled:false):
-		// a host that runs scheduled jobs — e.g. the GitHub→loom issue mirror
-		// (`bashy schedule add --every 5m -- bashy sdlc mirror …`) — sets
-		// Enabled in agent.json so the jobs survive reboots. Inert by itself
-		// (fires whatever jobs the user registered); distinct from the `sdlc`
-		// conductor service, which is the sandboxed agent loop. No AppPort/mesh
-		// — a background loop, not a proxied app. Supervised via
-		// `bashy schedule {start,status,stop}`.
-		{Name: "schedule", EnabledSet: true, Command: []string{"schedule"}},
-	}
 }
 
 // ShardConfig is the Ollama sharding sub-feature config (under Ollama).
@@ -2654,53 +2386,44 @@ func EnsureAppSSOSecrets(path string, fc *FileConfig) ([]string, error) {
 	return minted, nil
 }
 
-// EnsureBashyServiceSSOSecrets provisions the same per-app HMAC secret for
-// enabled supervised services that publish an app with TrustCloudIdentity.
-// services is the effective service set after built-in defaults and toggles
-// have been applied. Generated values are copied into fc.BashyServices and
-// persisted so the proxy and supervised app keep the same identity key across
-// restarts. A built-in enabled only through a top-level toggle (such as meet)
-// gets a minimal override row containing its name and SSO settings.
-func EnsureBashyServiceSSOSecrets(path string, fc *FileConfig, services []BashyService) ([]string, error) {
+// EnsureServiceSSOSecret returns the per-app HMAC key outpost signs trusted
+// identity headers with for a service unit's app route, minting and
+// persisting one on first use.
+//
+// The key is OUTPOST'S, deliberately not the unit declaration's: a unit never
+// carries an inline secret (fleet.ServiceSecret is a vault reference), so
+// `expose.app.trust_cloud_identity: true` in YAML means "mint and use one"
+// and this is what mints it. Keyed by APP ROUTE name, because that is what
+// both sides of the contract — the proxy stamping the headers and the
+// upstream verifying them — agree on.
+//
+// It is persisted so the key survives a restart: a fresh key would silently
+// invalidate every signature the upstream had learned.
+func EnsureServiceSSOSecret(path string, fc *FileConfig, app string) (string, error) {
 	if fc == nil {
-		return nil, fmt.Errorf("nil FileConfig")
+		return "", fmt.Errorf("nil FileConfig")
 	}
-	byName := make(map[string]int, len(fc.BashyServices))
-	for i := range fc.BashyServices {
-		byName[fc.BashyServices[i].Name] = i
+	app = strings.TrimSpace(app)
+	if app == "" {
+		return "", fmt.Errorf("sso secret: empty app name")
 	}
-	var minted []string
-	for i := range services {
-		svc := &services[i]
-		if !svc.Enabled || !svc.TrustCloudIdentity || strings.TrimSpace(svc.SSOSecret) != "" {
-			continue
-		}
-		secret, err := newSSOSecret(svc.Name)
-		if err != nil {
-			return minted, err
-		}
-		svc.SSOSecret = secret
-		if j, ok := byName[svc.Name]; ok {
-			fc.BashyServices[j].TrustCloudIdentity = true
-			fc.BashyServices[j].SSOSecret = secret
-		} else {
-			fc.BashyServices = append(fc.BashyServices, BashyService{
-				Name:               svc.Name,
-				Enabled:            svc.Enabled,
-				EnabledSet:         svc.EnabledSet,
-				TrustCloudIdentity: true,
-				SSOSecret:          secret,
-			})
-			byName[svc.Name] = len(fc.BashyServices) - 1
-		}
-		minted = append(minted, svc.Name)
+	if secret := strings.TrimSpace(fc.ServiceSSO[app]); secret != "" {
+		return secret, nil
 	}
-	if len(minted) > 0 && path != "" {
+	secret, err := newSSOSecret(app)
+	if err != nil {
+		return "", err
+	}
+	if fc.ServiceSSO == nil {
+		fc.ServiceSSO = map[string]string{}
+	}
+	fc.ServiceSSO[app] = secret
+	if path != "" {
 		if err := SaveFile(path, fc); err != nil {
-			return minted, fmt.Errorf("save bashy service sso secrets: %w", err)
+			return "", fmt.Errorf("save service sso secret for %q: %w", app, err)
 		}
 	}
-	return minted, nil
+	return secret, nil
 }
 
 func newSSOSecret(name string) (string, error) {

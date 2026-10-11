@@ -67,10 +67,6 @@ func builtinsShowCmd() *cobra.Command {
 			fmt.Printf("  %-22s  %.2f\n", "warm_budget_frac", view.WarmBudgetFrac)
 			row("lan_inference", view.LANInferenceEnabled)
 			row("mesh", view.MeshEnabled)
-			row("loom", view.LoomEnabled)
-			row("meet", view.MeetEnabled)
-			row("bashy_apps", view.BashyAppsEnabled)
-			fmt.Printf("  %-22s  %d\n", "bashy_apps_port", view.BashyAppsPort)
 			row("zot", view.ZotEnabled)
 			row("seaweedfs", view.SeaweedfsEnabled)
 			row("kopia", view.KopiaEnabled)
@@ -85,6 +81,22 @@ func builtinsShowCmd() *cobra.Command {
 			row("cluster", view.Cluster.Enabled)
 			row("cluster_agent", view.Cluster.Agent)
 			fmt.Printf("  %-22s  %s\n", "cluster_virtual", strings.Join(view.Cluster.Virtual, ","))
+			// Services are DECLARATIONS, not built-in toggles: one row per
+			// unit the host knows about, whatever its provider or origin.
+			// `outpost services` shows the monitor's live state as well.
+			if len(view.Services) > 0 {
+				fmt.Println("Service units (desired state; `outpost services` for live state):")
+				for _, u := range view.Services {
+					expose := u.App
+					if len(u.Mesh) > 0 {
+						expose = strings.TrimPrefix(expose+" mesh:"+strings.Join(u.Mesh, "+"), " ")
+					}
+					if expose == "" {
+						expose = "-"
+					}
+					fmt.Printf("  %-22s  %-5t  %-9s  %s\n", u.Name, u.Enabled, u.Provider, expose)
+				}
+			}
 			return nil
 		},
 	}
@@ -105,12 +117,8 @@ func builtinsSetCmd() *cobra.Command {
 		meshPort                                                                                                                                                                       int
 		lanInference                                                                                                                                                                   string
 		lanInferencePort                                                                                                                                                               int
-		loom                                                                                                                                                                           string
-		loomPort                                                                                                                                                                       int
-		meet                                                                                                                                                                           string
-		meetPort                                                                                                                                                                       int
-		bashyApps                                                                                                                                                                      string
-		bashyAppsPort                                                                                                                                                                  int
+		services                                                                                                                                                                       []string
+		serviceSets                                                                                                                                                                    []string
 		bashyVersion                                                                                                                                                                   string
 		zot                                                                                                                                                                            string
 		zotPort                                                                                                                                                                        int
@@ -283,23 +291,15 @@ func builtinsSetCmd() *cobra.Command {
 			if cmd.Flags().Changed("shard-role") {
 				params.ShardRole = &shardRole
 			}
-			if params.Loom, err = parseToggle("loom", loom); err != nil {
-				return err
+			if len(services) > 0 {
+				if params.Services, err = parseServiceToggles(services); err != nil {
+					return err
+				}
 			}
-			if cmd.Flags().Changed("loom-port") {
-				params.LoomPort = &loomPort
-			}
-			if params.Meet, err = parseToggle("meet", meet); err != nil {
-				return err
-			}
-			if cmd.Flags().Changed("meet-port") {
-				params.MeetPort = &meetPort
-			}
-			if params.BashyApps, err = parseToggle("bashy-apps", bashyApps); err != nil {
-				return err
-			}
-			if cmd.Flags().Changed("bashy-apps-port") {
-				params.BashyAppsPort = &bashyAppsPort
+			if len(serviceSets) > 0 {
+				if params.ServiceSettings, err = parseServiceSets(serviceSets); err != nil {
+					return err
+				}
 			}
 			if cmd.Flags().Changed("bashy-version") {
 				params.BashyVersion = &bashyVersion
@@ -410,12 +410,8 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().IntVar(&meshPort, "mesh-port", 0, "TCP+QUIC listen port for the mesh host (0 = ephemeral)")
 	cmd.Flags().StringVar(&lanInference, "lan-inference", "", "on|off - serve local LLM inference directly to same-LAN callers (LAN-TRUST: no per-request auth; needs Ollama on + pairing; default off)")
 	cmd.Flags().IntVar(&lanInferencePort, "lan-inference-port", 0, "TCP port the LAN inference listener binds on 0.0.0.0 (0 = default 11436; must differ from the inference server's 11434 and bashy's own 11435 engine)")
-	cmd.Flags().StringVar(&loom, "loom", "", "on|off - run the loom git forge (Gitea, managed external binary) on loopback, auto-exposed over the mesh as 'git'")
-	cmd.Flags().IntVar(&loomPort, "loom-port", 0, "loom's loopback HTTP port (0 = default 31880)")
-	cmd.Flags().StringVar(&meet, "meet", "", "on|off - run the meet web chat room (Slack-style browser UI over 'bashy meet') on loopback as a cloudbox app 'meet' (supervised via 'bashy meet service')")
-	cmd.Flags().IntVar(&meetPort, "meet-port", 0, "meet's loopback HTTP port (0 = default 8637)")
-	cmd.Flags().StringVar(&bashyApps, "bashy-apps", "", "on|off - run bashy Apps on loopback as a Cloudbox app 'apps' (default on only when bashy_services is absent; requires OS-password elevation)")
-	cmd.Flags().IntVar(&bashyAppsPort, "bashy-apps-port", 0, "bashy Apps loopback HTTP port (0 = default 22749; legacy explicit 8639 app_port is preserved)")
+	cmd.Flags().StringSliceVar(&services, "service", nil, "NAME=on|off — desired state of a service unit (repeatable). The same write `bashy service enable|disable` performs; applies live, no outpost restart. `bashy service list` names the units.")
+	cmd.Flags().StringSliceVar(&serviceSets, "service-set", nil, "NAME.PATH=VALUE — override a field of a unit's declaration (repeatable), e.g. loom.ports.0.port=31900. The `bashy service set` write.")
 	cmd.Flags().StringVar(&bashyVersion, "bashy-version", "", "pin the bashy release the daemon auto-installs when bashy is missing (empty/'latest' = newest; e.g. v0.3.0). Pin in production.")
 	cmd.Flags().StringVar(&zot, "zot", "", "on|off - run the Zot OCI registry (managed external binary) on loopback, auto-exposed over the mesh as 'registry'")
 	cmd.Flags().IntVar(&zotPort, "zot-port", 0, "zot's loopback HTTP port (0 = default 5000)")
@@ -472,4 +468,51 @@ func parseToggle(name, raw string) (*bool, error) {
 		return &f, nil
 	}
 	return nil, fmt.Errorf("--%s: invalid value %q (expected on|off)", name, raw)
+}
+
+// parseServiceToggles reads the repeatable `--service NAME=on|off` flag into
+// the generic desired-state map. One flag covers every service — a seeded
+// built-in, an in-process outpost capability, a third-party unit an operator
+// declared this morning — which is why `--loom`, `--meet` and `--bashy-apps`
+// are gone rather than joined by a fourth.
+func parseServiceToggles(entries []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, e := range entries {
+		name, value, ok := strings.Cut(e, "=")
+		name, value = strings.TrimSpace(name), strings.TrimSpace(value)
+		if !ok || name == "" {
+			return nil, fmt.Errorf("--service %q: expected NAME=on|off", e)
+		}
+		on, err := parseToggle("service "+name, value)
+		if err != nil {
+			return nil, err
+		}
+		if on == nil {
+			return nil, fmt.Errorf("--service %q: expected on|off", e)
+		}
+		out[name] = *on
+	}
+	return out, nil
+}
+
+// parseServiceSets reads the repeatable `--service-set NAME.PATH=VALUE` flag.
+// The unit name is the first dotted segment; the rest is the path into the
+// declaration, exactly as `bashy service set NAME --set PATH=VALUE` takes it.
+func parseServiceSets(entries []string) (map[string]map[string]string, error) {
+	out := map[string]map[string]string{}
+	for _, e := range entries {
+		lhs, value, ok := strings.Cut(e, "=")
+		if !ok {
+			return nil, fmt.Errorf("--service-set %q: expected NAME.PATH=VALUE", e)
+		}
+		name, path, ok := strings.Cut(strings.TrimSpace(lhs), ".")
+		if !ok || name == "" || path == "" {
+			return nil, fmt.Errorf("--service-set %q: expected NAME.PATH=VALUE, e.g. loom.ports.0.port=31900", e)
+		}
+		if out[name] == nil {
+			out[name] = map[string]string{}
+		}
+		out[name][path] = value
+	}
+	return out, nil
 }
