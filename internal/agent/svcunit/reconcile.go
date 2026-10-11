@@ -202,7 +202,11 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 		eff := r.effectiveState(u, st, stale)
 		if eff != st.State {
 			st.Unit, st.Provider, st.State, st.Enabled = u.Name, u.ProviderName(), eff, u.Enabled
-			if stale && st.Reason == "" {
+			switch {
+			case !u.Enabled:
+				// Read from the local declaration; the monitor is not why.
+				st.Reason = "unit disabled"
+			case stale && st.Reason == "":
 				st.Reason = "service monitor unreachable"
 			}
 			states[u.Name] = st
@@ -235,7 +239,10 @@ func (r *Reconciler) readStates(ctx context.Context, units []fleet.Service) (map
 	out := map[string]service.Status{}
 	rows, err := r.deps.Source.Statuses(ctx)
 	if err != nil {
-		r.log.Debug("service exposure: monitor status unavailable", "err", err)
+		// Info, not Warn: on a host whose bashy predates the monitor this
+		// fires every tick, and an operator needs it visible once without a
+		// warning stream. The status surfaces report monitor_reachable.
+		r.log.Info("service exposure: monitor status unavailable", "err", err)
 		return out, true
 	}
 	for _, st := range rows {
@@ -380,25 +387,36 @@ func (r *Reconciler) applyExposure(u fleet.Service, state service.State) error {
 		}
 		return nil
 	}
-	if published && sameExposure(have, want) {
+	if published && sameExposure(have, r.publishable(want)) {
 		return nil
 	}
 	if published {
 		r.withdrawLocked(u.Name, "exposure changed")
 	}
-	if want.App != nil && r.deps.Apps != nil {
-		if err := r.deps.Apps.RegisterApp(want.App.Name, want.App.Target, want.App.Meta); err != nil {
-			return err
+	// What is recorded as live is what was actually published, not what the
+	// declaration asked for. A host with no mesh forwarder (mesh off, or
+	// unpaired) cannot publish a mesh name, and claiming one would tell an
+	// operator that a peer can reach a service no peer can reach.
+	done := want
+	done.Mesh = nil
+	if want.App != nil {
+		if r.deps.Apps == nil {
+			done.App = nil
+		} else {
+			if err := r.deps.Apps.RegisterApp(want.App.Name, want.App.Target, want.App.Meta); err != nil {
+				return err
+			}
+			r.log.Info("service exposed on the tunnel", "unit", u.Name, "app", want.App.Name, "target", want.App.Target)
 		}
-		r.log.Info("service exposed on the tunnel", "unit", u.Name, "app", want.App.Name, "target", want.App.Target)
 	}
 	if r.deps.Mesh != nil {
 		for _, m := range want.Mesh {
 			r.deps.Mesh.Expose(m.Name, m.Addr)
 			r.log.Info("service exposed on the mesh", "unit", u.Name, "mesh_service", m.Name, "addr", m.Addr)
 		}
+		done.Mesh = want.Mesh
 	}
-	r.live[u.Name] = want
+	r.live[u.Name] = done
 	return nil
 }
 
@@ -432,6 +450,19 @@ func (r *Reconciler) withdrawAll() {
 	for _, n := range names {
 		r.withdrawLocked(n, "outpost shutting down")
 	}
+}
+
+// publishable is want reduced to the surfaces this host actually has, so an
+// unchanged declaration compares equal to what was published.
+func (r *Reconciler) publishable(want Exposure) Exposure {
+	out := want
+	if r.deps.Apps == nil {
+		out.App = nil
+	}
+	if r.deps.Mesh == nil {
+		out.Mesh = nil
+	}
+	return out
 }
 
 func sameExposure(a, b Exposure) bool {
@@ -488,6 +519,18 @@ func (r *Reconciler) Snapshot() Snapshot {
 			row.Exposed = row.Publishing
 		}
 		snap.Units = append(snap.Units, row)
+	}
+	// Units outpost has no work for are still the operator's business: the
+	// monitor reported them, so pass its rows through rather than leaving a
+	// blank state next to the ones outpost tracks.
+	tracked := make(map[string]bool, len(r.units))
+	for _, u := range r.units {
+		tracked[u.Name] = true
+	}
+	for name, st := range r.states {
+		if !tracked[name] {
+			snap.Units = append(snap.Units, UnitState{Status: st})
+		}
 	}
 	sort.Slice(snap.Units, func(i, j int) bool { return snap.Units[i].Unit < snap.Units[j].Unit })
 	return snap

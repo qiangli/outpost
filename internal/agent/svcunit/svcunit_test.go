@@ -609,3 +609,84 @@ func unitNames(us []fleet.Service) []string {
 	}
 	return out
 }
+
+// A host with no mesh forwarder (mesh off, or unpaired) must not report a
+// mesh name as published. Claiming one tells an operator a peer can reach a
+// service that no peer can reach.
+func TestExposureOnlyClaimsSurfacesTheHostHas(t *testing.T) {
+	apps := newFakeApps()
+	src := &fakeSource{
+		units:    []fleet.Service{webUnit("gateway", true)},
+		statuses: []service.Status{{Unit: "gateway", State: service.Active}},
+	}
+	// Apps wired, mesh nil.
+	r := New(Deps{Source: src, Apps: apps, Secrets: fixedSecrets{"k"}, Log: quiet()})
+	if err := r.ReloadAndReconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	snap := r.Snapshot()
+	if len(snap.Units) != 1 {
+		t.Fatalf("snapshot = %+v", snap.Units)
+	}
+	if got := snap.Units[0].Publishing; len(got) != 1 || got[0] != "app:gateway" {
+		t.Fatalf("publishing = %v, want only the tunnel route", got)
+	}
+
+	// Symmetrically: mesh wired, no app registry.
+	msh := newFakeMesh()
+	r2 := New(Deps{Source: src, Mesh: msh, Secrets: fixedSecrets{"k"}, Log: quiet()})
+	if err := r2.ReloadAndReconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := r2.Snapshot().Units[0].Publishing; len(got) != 1 || got[0] != "mesh:gateway-mesh" {
+		t.Fatalf("publishing = %v, want only the mesh name", got)
+	}
+}
+
+// Reporting must not send an operator to the wrong log: a disabled unit is
+// inactive because the declaration says so, not because the monitor is down.
+func TestDisabledUnitReasonDoesNotBlameTheMonitor(t *testing.T) {
+	src := &fakeSource{units: []fleet.Service{webUnit("gateway", false)}, statErr: errors.New("no monitor")}
+	r := newTestReconciler(src, newFakeApps(), newFakeMesh(), nil)
+	if err := r.ReloadAndReconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	row := r.Snapshot().Units[0]
+	if row.State != service.Inactive {
+		t.Fatalf("state = %q, want inactive", row.State)
+	}
+	if row.Reason != "unit disabled" {
+		t.Fatalf("reason = %q, want the declaration's reason", row.Reason)
+	}
+}
+
+// A unit outpost has no work for — no exposure, no internal capability — is
+// still the operator's business. The monitor described it, so pass its row
+// through instead of leaving a blank state next to the tracked units.
+func TestSnapshotPassesThroughUnitsOutpostDoesNotPublish(t *testing.T) {
+	plain := fleet.Service{Name: "cron", Kind: fleet.KindService, Exec: []string{"d", "run"}, Enabled: true}
+	src := &fakeSource{
+		// Only the exposing unit is tracked; the monitor reports both.
+		units: []fleet.Service{webUnit("gateway", true)},
+		statuses: []service.Status{
+			{Unit: "gateway", State: service.Active},
+			{Unit: "cron", Provider: "process", Enabled: true, State: service.Failed, Reason: "start limit"},
+		},
+	}
+	_ = plain
+	r := newTestReconciler(src, newFakeApps(), newFakeMesh(), nil)
+	if err := r.ReloadAndReconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	snap := r.Snapshot()
+	if len(snap.Units) != 2 {
+		t.Fatalf("snapshot = %+v, want both units", snap.Units)
+	}
+	// Name-sorted: cron then gateway.
+	if snap.Units[0].Unit != "cron" || snap.Units[0].State != service.Failed {
+		t.Fatalf("untracked row = %+v", snap.Units[0])
+	}
+	if len(snap.Units[0].Publishing) != 0 {
+		t.Fatalf("an untracked unit claims exposure: %v", snap.Units[0].Publishing)
+	}
+}
