@@ -388,7 +388,6 @@ func (s *Server) SetBuiltins(ctx context.Context, p BuiltinsParams) (BuiltinsRes
 	// /admin/upgrade POST, so it doesn't need a restart to take
 	// effect. We still save through the same code path because the
 	// same FileConfig file owns the value.
-	updateModeOnly := p.UpdateMode != nil && !touchesBootOnlyConfig(p)
 	if p.UpdateMode != nil {
 		if !conf.ValidUpdateMode(*p.UpdateMode) {
 			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")
@@ -410,18 +409,24 @@ func (s *Server) SetBuiltins(ctx context.Context, p BuiltinsParams) (BuiltinsRes
 	// breaks batches of operator toggles), advertise RestartPending so
 	// the SPA can surface a sticky "Restart to apply" banner and let
 	// the operator pull the trigger when their batch is done.
-	// A call that ONLY moved service desired state needs no restart: the
-	// unit store, the monitor and the exposure reconciler already applied it.
-	serviceOnly := servicesChanged && p.UpdateMode == nil && !touchesBootOnlyConfig(p)
-	restart := fc.AgentName != "" && !updateModeOnly && !serviceOnly
+	// Only a boot-only toggle needs a restart. update_mode is live-read by
+	// the upgrade worker, and service desired state was already applied by
+	// the unit store, the monitor and the exposure reconciler — a call
+	// carrying just those two reports no restart, because none is coming.
+	restart := fc.AgentName != "" && touchesBootOnlyConfig(p)
 	return BuiltinsResult{OK: true, RestartPending: restart, ServicesApplied: servicesChanged}, nil
 }
 
 // touchesBootOnlyConfig reports whether p carries a FileConfig toggle that
 // the tunnel or a built-in route only reads at boot, and therefore needs a
-// daemon restart to observe. Both fast paths — update-mode-only and
-// services-only — are expressed against this one predicate so a new toggle
-// cannot be remembered in one of them and forgotten in the other.
+// daemon restart to observe.
+//
+// It is the single predicate the restart decision is made on, so a new
+// toggle cannot be remembered in one of several parallel conditions and
+// forgotten in another. Two kinds of field are deliberately absent from it:
+// update_mode, which the upgrade worker re-reads on every push, and
+// services/service_settings, which are applied live by the unit store, the
+// monitor and the exposure reconciler.
 func touchesBootOnlyConfig(p BuiltinsParams) bool {
-	return !(p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterAgent == nil && p.ClusterVirtual == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.Services == nil && p.ServiceSettings == nil && p.BashyVersion == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil && p.ActrunnerSandbox == nil && p.ActrunnerSandboxImage == nil && p.ActrunnerDockerHost == nil && p.CloudDOEnabled == nil && p.CloudDOToken == nil && p.Headlamp == nil && p.HeadlampPort == nil)
+	return !(p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterAgent == nil && p.ClusterVirtual == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.BashyVersion == nil && p.Zot == nil && p.ZotPort == nil && p.Seaweedfs == nil && p.SeaweedfsPort == nil && p.Kopia == nil && p.KopiaPort == nil && p.Actrunner == nil && p.ActrunnerInstance == nil && p.ActrunnerToken == nil && p.ActrunnerLabels == nil && p.ActrunnerSandbox == nil && p.ActrunnerSandboxImage == nil && p.ActrunnerDockerHost == nil && p.CloudDOEnabled == nil && p.CloudDOToken == nil && p.Headlamp == nil && p.HeadlampPort == nil)
 }

@@ -1,42 +1,19 @@
 package admincore
 
 import (
+	"context"
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
-func TestSetBuiltinsPersistsGenericBashyServices(t *testing.T) {
-	core, cfgPath := newTestCore(t)
-	services := []conf.BashyService{{
-		Name:         "loom",
-		Enabled:      true,
-		AppName:      "loom",
-		AppPort:      31880,
-		RequireLogin: true,
-		MeshService:  "git",
-	}}
-	res, err := core.SetBuiltins(BuiltinsParams{BashyServices: services})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.OK || !res.RestartPending {
-		t.Fatalf("unexpected result: %+v", res)
-	}
-	fc, err := conf.LoadFile(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(fc.BashyServices) != 1 || fc.BashyServices[0].Name != "loom" || !fc.BashyServices[0].Enabled {
-		t.Fatalf("bashy service not persisted: %+v", fc.BashyServices)
-	}
-}
-
 func TestSetBuiltinsPersistsBashyVersionPin(t *testing.T) {
 	core, cfgPath := newTestCore(t)
 	pin := "v0.3.0"
-	res, err := core.SetBuiltins(BuiltinsParams{BashyVersion: &pin})
+	res, err := core.SetBuiltins(context.Background(), BuiltinsParams{BashyVersion: &pin})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,14 +49,14 @@ func TestSetBuiltinsPersistsBashyVersionPin(t *testing.T) {
 func TestSetBuiltinsOptOutSurvivesLaterWrites(t *testing.T) {
 	core, cfgPath := newTestCore(t)
 	off := false
-	if _, err := core.SetBuiltins(BuiltinsParams{
+	if _, err := core.SetBuiltins(context.Background(), BuiltinsParams{
 		Podman: &off, Ollama: &off, Otel: &off,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	// An unrelated toggle — must not disturb the o3 opt-outs.
 	on := true
-	if _, err := core.SetBuiltins(BuiltinsParams{Shell: &on}); err != nil {
+	if _, err := core.SetBuiltins(context.Background(), BuiltinsParams{Shell: &on}); err != nil {
 		t.Fatal(err)
 	}
 	fc, err := conf.LoadFile(cfgPath)
@@ -123,7 +100,7 @@ func TestSetBuiltinsConcurrentClusterRuntimes(t *testing.T) {
 	core, cfgPath := newTestCore(t)
 	on := true
 	virtual := []string{"vk-native", "vk-podman", "vk-ollama"}
-	if _, err := core.SetBuiltins(BuiltinsParams{
+	if _, err := core.SetBuiltins(context.Background(), BuiltinsParams{
 		Cluster:        &on,
 		ClusterAgent:   &on,
 		ClusterVirtual: virtual,
@@ -146,7 +123,7 @@ func TestSetBuiltinsHeadlampParity(t *testing.T) {
 	core, cfgPath := newTestCore(t)
 	on := true
 	port := 18466
-	if _, err := core.SetBuiltins(BuiltinsParams{
+	if _, err := core.SetBuiltins(context.Background(), BuiltinsParams{
 		Headlamp:     &on,
 		HeadlampPort: &port,
 	}); err != nil {
@@ -171,7 +148,7 @@ func TestSetBuiltinsHeadlampParity(t *testing.T) {
 	}
 	// Disable: must also round-trip correctly.
 	off := false
-	if _, err := core.SetBuiltins(BuiltinsParams{Headlamp: &off}); err != nil {
+	if _, err := core.SetBuiltins(context.Background(), BuiltinsParams{Headlamp: &off}); err != nil {
 		t.Fatal(err)
 	}
 	fc, err = conf.LoadFile(cfgPath)
@@ -192,32 +169,58 @@ func TestSetBuiltinsHeadlampParity(t *testing.T) {
 	}
 }
 
-// A client that writes back the redacted bashy_services it read must not
-// wipe the stored SSO keys.
-func TestSetBuiltinsKeepsRedactedServiceSSOSecret(t *testing.T) {
+// A client that writes back what a redacted read gave it must not wipe the
+// stored trusted-identity keys.
+//
+// This used to need care: bashy_services was a whole array the caller
+// replaced, each row carrying an sso_secret that reads blanked, so a
+// round-trip could clear the key the cooperating upstream had learned. The
+// shape is gone — keys live in outpost's own service_sso map, which no
+// request field can reach — so the guarantee is now structural. Assert that
+// rather than the old merge behaviour.
+func TestServiceWritesCannotClearAStoredSSOKey(t *testing.T) {
 	core, cfgPath := newTestCore(t)
 	const secret = "synthetic-service-sso-secret-dddddddddddddd"
-	svc := conf.BashyService{Name: "loom", Enabled: true, AppName: "loom", TrustCloudIdentity: true, SSOSecret: secret}
-	if _, err := core.SetBuiltins(BuiltinsParams{BashyServices: []conf.BashyService{svc}}); err != nil {
-		t.Fatal(err)
-	}
-	view, err := core.SafeView()
-	if err != nil {
-		t.Fatal(err)
-	}
-	red := view.Redacted().BashyServices
-	if len(red) != 1 || red[0].SSOSecret != "" {
-		t.Fatalf("redacted read carried the secret: %+v", red)
-	}
-	red[0].AppPort = 31881
-	if _, err := core.SetBuiltins(BuiltinsParams{BashyServices: red}); err != nil {
-		t.Fatal(err)
-	}
 	fc, err := conf.LoadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fc.BashyServices) != 1 || fc.BashyServices[0].SSOSecret != secret || fc.BashyServices[0].AppPort != 31881 {
-		t.Fatalf("round trip lost the stored key or the edit: %+v", fc.BashyServices)
+	fc.ServiceSSO = map[string]string{"loom": secret}
+	if err := conf.SaveFile(cfgPath, fc); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := newStubOps("loom")
+	core.SetServices(ops)
+	if _, err := core.SetBuiltins(context.Background(), BuiltinsParams{
+		Services:        map[string]bool{"loom": true},
+		ServiceSettings: map[string]map[string]string{"loom": {"ports.0.port": "31881"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := conf.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ServiceSSO["loom"] != secret {
+		t.Fatalf("a service write disturbed the stored key: %+v", after.ServiceSSO)
+	}
+
+	// And a read never carries it — only its presence.
+	view, err := core.SafeView()
+	if err != nil {
+		t.Fatal(err)
+	}
+	red := view.Redacted()
+	blob, err := json.Marshal(red)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(blob), secret) {
+		t.Fatalf("a redacted read carried the key: %s", blob)
+	}
+	if len(red.ServiceSecrets) != 1 || red.ServiceSecrets[0].Name != "loom" || !red.ServiceSecrets[0].HasSSOSecret {
+		t.Fatalf("service_secrets = %+v, want one presence row for loom", red.ServiceSecrets)
 	}
 }

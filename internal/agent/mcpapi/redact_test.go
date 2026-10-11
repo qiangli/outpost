@@ -33,9 +33,7 @@ func TestConfigAndAppsReadsRedactNestedSecrets(t *testing.T) {
 		}, {
 			Name: "plain", Scheme: "http", Host: "127.0.0.1", Port: 10, Enabled: true,
 		}},
-		BashyServices: []conf.BashyService{{
-			Name: "svc", Enabled: true, TrustCloudIdentity: true, SSOSecret: fixtureSvcSecret,
-		}},
+		ServiceSSO: map[string]string{"svc": fixtureSvcSecret},
 	}
 	session := connectTestMCPWith(t, fc)
 
@@ -75,11 +73,8 @@ func TestConfigAndAppsReadsRedactNestedSecrets(t *testing.T) {
 	if len(view.AppSecrets) != 1 || view.AppSecrets[0] != wantApps[0] {
 		t.Errorf("app_secrets = %+v, want %+v", view.AppSecrets, wantApps)
 	}
-	if len(view.BashyServiceSecrets) != 1 || view.BashyServiceSecrets[0] != (admincore.SecretPresence{Name: "svc", HasSSOSecret: true}) {
-		t.Errorf("bashy_service_secrets = %+v", view.BashyServiceSecrets)
-	}
-	if len(view.BashyServices) != 1 || view.BashyServices[0].Name != "svc" || !view.BashyServices[0].TrustCloudIdentity {
-		t.Errorf("bashy service config lost: %+v", view.BashyServices)
+	if len(view.ServiceSecrets) != 1 || view.ServiceSecrets[0] != (admincore.SecretPresence{Name: "svc", HasSSOSecret: true}) {
+		t.Errorf("service_secrets = %+v", view.ServiceSecrets)
 	}
 
 	// The dedicated secret tool is the one sanctioned read and still works.

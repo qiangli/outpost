@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"slices"
-	"strings"
 	"testing"
 )
 
@@ -32,13 +30,7 @@ func TestFileConfigRoundTrip(t *testing.T) {
 			{Name: "jupyter", Scheme: "http", Host: "127.0.0.1", Port: 8888, Enabled: false, Icon: "/x.png"},
 			{Name: "podman", Scheme: "unix", Socket: "/run/user/1000/podman/podman.sock", Enabled: true, Role: "admin"},
 		},
-		BashyServices: []BashyService{{
-			Name:               "trusted-service",
-			Enabled:            true,
-			AppPort:            9999,
-			TrustCloudIdentity: true,
-			SSOSecret:          "service-secret",
-		}},
+		ServiceSSO: map[string]string{"trusted-service": "service-secret"},
 	}
 	if err := SaveFile(tmp, in); err != nil {
 		t.Fatalf("SaveFile: %v", err)
@@ -69,8 +61,8 @@ func TestFileConfigRoundTrip(t *testing.T) {
 	if !sockApp.IsSocket() {
 		t.Error("IsSocket() should return true for scheme=unix")
 	}
-	if len(out.BashyServices) != 1 || !out.BashyServices[0].TrustCloudIdentity || out.BashyServices[0].SSOSecret != "service-secret" {
-		t.Errorf("bashy service SSO fields did not round-trip: %+v", out.BashyServices)
+	if out.ServiceSSO["trusted-service"] != "service-secret" {
+		t.Errorf("service SSO keys did not round-trip: %+v", out.ServiceSSO)
 	}
 }
 
@@ -110,51 +102,6 @@ func TestNilFileConfigAccessors(t *testing.T) {
 	}
 }
 
-func TestSupervisedPrograms(t *testing.T) {
-	off := false
-	on := true
-	fc := &FileConfig{Supervised: []SupervisedProgram{
-		{Name: "qa-poller", Path: "/usr/local/bin/bashy", Args: []string{"qa-poller.sh"}, Dir: "/qa"},
-		{Path: "/opt/bin/helper"},                       // name defaults to base
-		{Name: "disabled", Path: "/x/y", Enabled: &off}, // explicitly off
-		{Name: "explicit-on", Path: "/z", Enabled: &on},
-		{Name: "broken"},                  // no path — skipped
-		{Name: "blank-path", Path: "   "}, // whitespace — skipped
-	}}
-
-	got, skipped := fc.SupervisedPrograms()
-	var names []string
-	for _, sp := range got {
-		names = append(names, sp.Name)
-	}
-	want := []string{"qa-poller", "helper", "explicit-on"}
-	if !slices.Equal(names, want) {
-		t.Errorf("enabled programs = %v, want %v", names, want)
-	}
-	if len(skipped) != 2 {
-		t.Errorf("expected 2 skipped entries, got %v", skipped)
-	}
-	// A malformed entry must be reported, not silently dropped — otherwise
-	// a typo in agent.json looks identical to a job with nothing to do.
-	for _, s := range skipped {
-		if !strings.Contains(s, "empty path") {
-			t.Errorf("skip reason should explain itself: %q", s)
-		}
-	}
-}
-
-// A missing "enabled" field means enabled: an entry someone added to the
-// config is meant to run.
-func TestSupervisedProgramOnDefaultsTrue(t *testing.T) {
-	if !(SupervisedProgram{Path: "/x"}).On() {
-		t.Error("missing enabled field should default to on")
-	}
-	off := false
-	if (SupervisedProgram{Path: "/x", Enabled: &off}).On() {
-		t.Error("enabled=false should be off")
-	}
-}
-
 // ClusterOn is OPT-IN (default off): joining hands a remote control plane
 // the right to schedule privileged work here, so it must be explicit. An
 // empty ClusterConfig{} (what reattach/Exchange create to stash creds)
@@ -177,14 +124,6 @@ func TestClusterOffByDefault(t *testing.T) {
 		if got := tc.fc.ClusterOn(); got != tc.want {
 			t.Errorf("%s: ClusterOn()=%v, want %v", tc.name, got, tc.want)
 		}
-	}
-}
-
-func TestSupervisedProgramsNilConfig(t *testing.T) {
-	var fc *FileConfig
-	got, skipped := fc.SupervisedPrograms()
-	if got != nil || skipped != nil {
-		t.Errorf("nil config should yield nothing, got %v / %v", got, skipped)
 	}
 }
 
@@ -352,64 +291,6 @@ func TestEnsureAppSSOSecrets(t *testing.T) {
 	}
 	if len(minted2) != 0 {
 		t.Errorf("second call minted = %v, want []", minted2)
-	}
-}
-
-func TestEnsureBashyServiceSSOSecrets(t *testing.T) {
-	tmp := filepath.Join(t.TempDir(), "agent.json")
-	fc := &FileConfig{
-		BashyServices: []BashyService{{
-			Name:               "custom",
-			Enabled:            true,
-			AppPort:            9000,
-			TrustCloudIdentity: true,
-		}},
-	}
-	services := []BashyService{
-		fc.BashyServices[0],
-		{Name: "meet", Enabled: true, AppPort: 8637, TrustCloudIdentity: true},
-		{Name: "disabled", TrustCloudIdentity: true},
-	}
-	if err := SaveFile(tmp, fc); err != nil {
-		t.Fatal(err)
-	}
-
-	minted, err := EnsureBashyServiceSSOSecrets(tmp, fc, services)
-	if err != nil {
-		t.Fatalf("EnsureBashyServiceSSOSecrets: %v", err)
-	}
-	if !slices.Equal(minted, []string{"custom", "meet"}) {
-		t.Fatalf("minted = %v, want [custom meet]", minted)
-	}
-	if len(fc.BashyServices) != 2 {
-		t.Fatalf("BashyServices length = %d, want 2", len(fc.BashyServices))
-	}
-	for _, svc := range fc.BashyServices {
-		if len(svc.SSOSecret) != 64 {
-			t.Errorf("%s SSOSecret length = %d, want 64", svc.Name, len(svc.SSOSecret))
-		}
-		if !svc.TrustCloudIdentity {
-			t.Errorf("%s lost TrustCloudIdentity", svc.Name)
-		}
-	}
-
-	loaded, err := LoadFile(tmp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(loaded.BashyServices) != 2 || loaded.BashyServices[1].SSOSecret != fc.BashyServices[1].SSOSecret {
-		t.Fatalf("bashy service SSO secrets not persisted: %+v", loaded.BashyServices)
-	}
-
-	minted, err = EnsureBashyServiceSSOSecrets(tmp, fc, []BashyService{
-		fc.BashyServices[0],
-		fc.BashyServices[1],
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(minted) != 0 {
-		t.Fatalf("second call minted = %v, want []", minted)
 	}
 }
 
@@ -605,6 +486,77 @@ func TestO3ExplicitTrueSurvivesRoundTrip(t *testing.T) {
 			t.Errorf("%s: nil after round trip, want an explicit true", name)
 		} else if !*p {
 			t.Errorf("%s: false after round trip, want true", name)
+		}
+	}
+}
+
+// EnsureServiceSSOSecret is the service-unit counterpart of
+// EnsureAppSSOSecrets: a unit declaring expose.app.trust_cloud_identity says
+// it WANTS an HMAC key (a declaration never holds an inline secret), and this
+// mints one keyed by app route, persists it, and returns the same value every
+// time after. A rotation on every boot would silently invalidate every
+// signature the cooperating upstream had learned.
+func TestEnsureServiceSSOSecret(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "agent.json")
+	fc := &FileConfig{AgentName: "dragon"}
+
+	first, err := EnsureServiceSSOSecret(tmp, fc, "console")
+	if err != nil {
+		t.Fatalf("EnsureServiceSSOSecret: %v", err)
+	}
+	if len(first) != 64 {
+		t.Fatalf("minted key len = %d, want 64 (32 hex bytes)", len(first))
+	}
+	again, err := EnsureServiceSSOSecret(tmp, fc, "console")
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if again != first {
+		t.Fatalf("key rotated on a second call: %q then %q", first, again)
+	}
+	other, err := EnsureServiceSSOSecret(tmp, fc, "rooms")
+	if err != nil {
+		t.Fatalf("second app: %v", err)
+	}
+	if other == first {
+		t.Fatal("two app routes share one key; a compromise of either would forge for both")
+	}
+
+	loaded, err := LoadFile(tmp)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	if loaded.ServiceSSO["console"] != first || loaded.ServiceSSO["rooms"] != other {
+		t.Fatalf("keys were not persisted: %+v", loaded.ServiceSSO)
+	}
+
+	if _, err := EnsureServiceSSOSecret(tmp, fc, "   "); err == nil {
+		t.Fatal("an empty app name was accepted")
+	}
+	if _, err := EnsureServiceSSOSecret(tmp, nil, "x"); err == nil {
+		t.Fatal("a nil config was accepted")
+	}
+}
+
+// act_runner's instance default is now supplied by the caller from the loom
+// unit's declaration; an explicit setting still wins and an absent forge
+// leaves it empty so the caller can say why it skipped.
+func TestActrunnerInstanceResolved(t *testing.T) {
+	cases := []struct {
+		name  string
+		fc    *FileConfig
+		forge string
+		want  string
+	}{
+		{"nil config", nil, "http://127.0.0.1:31880", ""},
+		{"no forge, no setting", &FileConfig{}, "", ""},
+		{"local forge", &FileConfig{}, "http://127.0.0.1:31880", "http://127.0.0.1:31880"},
+		{"explicit wins", &FileConfig{ActrunnerInstance: "https://forge.example.com"},
+			"http://127.0.0.1:31880", "https://forge.example.com"},
+	}
+	for _, tc := range cases {
+		if got := tc.fc.ActrunnerInstanceResolved(tc.forge); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }

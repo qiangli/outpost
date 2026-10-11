@@ -209,9 +209,9 @@ func secretServer(t *testing.T) *Server {
 			Name: "probe", Scheme: "http", Host: "127.0.0.1", Port: 9, Enabled: true,
 			ProvisioningToken: testProvToken, SSOSecret: testSSOSecret,
 		}},
-		BashyServices: []conf.BashyService{{
-			Name: "svc", Enabled: true, TrustCloudIdentity: true, SSOSecret: testSvcSecret,
-		}},
+		// A service unit's trusted-identity HMAC key, which lives in
+		// outpost's own config keyed by app route.
+		ServiceSSO: map[string]string{"svc": testSvcSecret},
 	})
 }
 
