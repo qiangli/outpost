@@ -3,14 +3,12 @@ id: d7f31dbff83b
 kind: feature
 title: 'S18 outpost as init: outpost supervisord runs only the daemon and bashy supervisord; exposure follows unit state; toggles call bashy service; old agent.json service config removed'
 seq: 1887
-status: assigned
+status: todo
 priority: p1
 labels:
     - outpost
     - bashy
 created: 2026-10-11T05:07:50.314316Z
-weave: 2
-assignee: codex-gpt5.6-terra
 sprint: 418
 sprint_id: 9891800f-8da5-5338-92bc-1d75755ca548
 sprint_title: 'Agent ecosystem synergy: agentic tools compose like a|b|c through bashy extension points'
