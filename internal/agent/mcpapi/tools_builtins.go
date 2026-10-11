@@ -77,7 +77,7 @@ type setBuiltinsOut struct {
 func (s *Server) registerBuiltinsTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "outpost_set_builtins",
-		Description: "Toggle built-in routes (shell/desktop/clipboard/ssh/sftp/files), the SSH-channel allow flags, the File Browser scope + write switch, and the local-daemon proxies (podman/ollama/otel are default-ON and detection-gated; the container sandbox, LLM pool and cluster join are opt-ins). Only fields present in the call are modified.",
+		Description: "Toggle built-in routes (shell/desktop/clipboard/ssh/sftp/files), the SSH-channel allow flags, the File Browser scope + write switch, and the local-daemon proxies (podman/ollama/otel are default-ON and detection-gated; the container sandbox, LLM pool and cluster join are opt-ins). Also the desired state of SERVICE UNITS via `services` and their declaration overrides via `service_settings` — those apply live (no restart), everything else sets restart_pending. Read the units first from the outpost://services resource. Only fields present in the call are modified.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in builtinsIn) (*mcp.CallToolResult, setBuiltinsOut, error) {
 		res, err := s.core.SetBuiltins(ctx, admincore.BuiltinsParams{
 			Shell:                  in.Shell,
