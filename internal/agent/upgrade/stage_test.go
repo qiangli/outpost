@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -31,7 +32,7 @@ func TestStageFromLocal(t *testing.T) {
 		t.Fatalf("body mismatch: %q", got)
 	}
 	info, _ := os.Stat(dst)
-	if info.Mode().Perm()&0o100 == 0 {
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o100 == 0 {
 		t.Fatalf("candidate not executable: %v", info.Mode())
 	}
 }

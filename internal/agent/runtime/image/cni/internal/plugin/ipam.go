@@ -211,12 +211,7 @@ func writeAllocation(path string, data []byte) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
-	dirFile, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer dirFile.Close()
-	return dirFile.Sync()
+	return syncDir(dir)
 }
 
 // nextIP returns base + offset as a 4-byte IPv4.

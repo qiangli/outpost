@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -58,9 +59,10 @@ line=$(sed -n "${count}p" "$FRPC_TEST_STATE")
 /bin/sleep 0.01
 `)
 
+	bashBin := findSupervisorBash(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "/bin/bash", embeddedImagePath(t, "frpc-supervisor.sh"))
+	cmd := exec.CommandContext(ctx, bashBin, embeddedImagePath(t, "frpc-supervisor.sh"))
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakes+":"+os.Getenv("PATH"),
 		"FRPC_BIN=frpc",
@@ -122,9 +124,10 @@ exit 0
 /bin/sleep 0.01
 `)
 
+	bashBin := findSupervisorBash(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "/bin/bash", embeddedImagePath(t, "frpc-supervisor.sh"))
+	cmd := exec.CommandContext(ctx, bashBin, embeddedImagePath(t, "frpc-supervisor.sh"))
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakes+":"+os.Getenv("PATH"),
 		"FRPC_BIN=frpc",
@@ -192,9 +195,10 @@ exit 0
 exit 0
 `)
 
+	bashBin := findSupervisorBash(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "/bin/bash", embeddedImagePath(t, "frpc-supervisor.sh"))
+	cmd := exec.CommandContext(ctx, bashBin, embeddedImagePath(t, "frpc-supervisor.sh"))
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakes+":"+os.Getenv("PATH"),
 		"FRPC_BIN=frpc",
@@ -343,8 +347,33 @@ exit 0
 	}
 }
 
+func findSupervisorBash(t *testing.T) string {
+	t.Helper()
+	if goruntime.GOOS == "windows" {
+		t.Skip("fake frpc executable uses a POSIX shell")
+	}
+	for _, candidate := range []string{
+		"/bin/bash",
+		"/usr/bin/bash",
+		"/usr/local/bin/bash",
+		"/opt/homebrew/bin/bash",
+	} {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	if p, err := exec.LookPath("bash"); err == nil {
+		return p
+	}
+	t.Skip("bash not found on this host; skipping frpc supervisor test")
+	return ""
+}
+
 func findDevTCPBash(t *testing.T) string {
 	t.Helper()
+	if goruntime.GOOS == "windows" {
+		t.Skip("fake frpc executable uses a POSIX shell")
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Skipf("cannot open test listener: %v", err)
@@ -354,8 +383,9 @@ func findDevTCPBash(t *testing.T) string {
 
 	for _, candidate := range []string{
 		"/bin/bash",
-		"/opt/homebrew/bin/bash",
+		"/usr/bin/bash",
 		"/usr/local/bin/bash",
+		"/opt/homebrew/bin/bash",
 	} {
 		if _, err := os.Stat(candidate); err == nil {
 			testScript := "echo >/dev/tcp/127.0.0.1/" + strconv.Itoa(port) + " 2>/dev/null"
@@ -363,6 +393,13 @@ func findDevTCPBash(t *testing.T) string {
 			if err := cmd.Run(); err == nil {
 				return candidate
 			}
+		}
+	}
+	if p, err := exec.LookPath("bash"); err == nil {
+		testScript := "echo >/dev/tcp/127.0.0.1/" + strconv.Itoa(port) + " 2>/dev/null"
+		cmd := exec.Command(p, "-c", testScript)
+		if err := cmd.Run(); err == nil {
+			return p
 		}
 	}
 	t.Skip("no bash with /dev/tcp support found on this host; skipping production-default probe test")
