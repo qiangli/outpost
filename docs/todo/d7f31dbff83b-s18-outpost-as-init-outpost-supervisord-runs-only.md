@@ -3,7 +3,7 @@ id: d7f31dbff83b
 kind: feature
 title: 'S18 outpost as init: outpost supervisord runs only the daemon and bashy supervisord; exposure follows unit state; toggles call bashy service; old agent.json service config removed'
 seq: 1887
-status: assigned
+status: done
 priority: p1
 labels:
     - outpost
@@ -13,6 +13,8 @@ assignee: claude-sonnet5.5
 sprint: 418
 sprint_id: 9891800f-8da5-5338-92bc-1d75755ca548
 sprint_title: 'Agent ecosystem synergy: agentic tools compose like a|b|c through bashy extension points'
+closed: 2026-10-11T21:21:54.213508Z
+closed_by: claude-opus5.5
 ---
 
 Design docs/bashy-service-design.md: inetd/systemd split - bashy service owns unit definitions and per-unit verbs; bashy supervisord (a bashy command, like inetd) is the service monitor; outpost supervisord (init, like systemd) starts and watches only the outpost daemon and bashy supervisord. Cross-repo (outpost + bashy + yoke). outpost supervisord (OS service via outpost service install) starts and watches exactly the outpost daemon and bashy supervisord, restarting either with backoff; it never watches individual services. Remove the 30s bashy_services poller (superviseBashyService, startBashyService, bashyServiceRunning in cmd/outpost/main.go) and the supervised programs list. Remove agent.json bashy_services, supervised, meet_enabled, loom_enabled and bashy_apps_enabled plus their readers and old lifecycle paths. Define all currently supported services directly as unit YAML; no generic migration, config conversion or old-key compatibility period (operator clarification 2026-10-10 PDT). The daemon registers matrix-tunnel apps (AppRegistry.RegisterWithMeta) and mesh exposures (Forwarder.Expose) from bashy service list --json and the monitor state events: failed or disabled units are withdrawn from tunnel and mesh (today a dead service stays exposed). outpost builtins set, MCP outpost_set_builtins and the admin UI call bashy service enable|disable|set and apply live (today SetBuiltins only returns RestartPending while the CLI claims a restart). Admin UI and MCP show bashy service status --json; unwired internal/agent/apphealth is retired or folded in. Help text distinguishes outpost supervisord (init) from bashy supervisord (service monitor). Acceptance: on a paired host, enabling meet via outpost builtins set exposes /matrix/h/HOST/app/meet/ without an outpost restart; killing bashy supervisord makes outpost restart it and units are re-adopted; a crash-looping unit ends failed and is withdrawn from tunnel and mesh; old agent.json service keys/readers are removed and all currently supported services work from new-format unit definitions; outpost go test -short green.
