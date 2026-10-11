@@ -23,20 +23,21 @@ type YcodeSurface struct {
 	// cleanly against an empty request path.
 	Path string
 
-	// Label is what the SPA toggle row says — human-readable.
+	// Label is what the SPA offers in the surface picker — human-readable.
 	Label string
 
-	// DefaultOn means the surface is enabled when YcodeShareSurfaces
-	// in FileConfig is nil OR has no entry for this Name. Only `ycode`
-	// (the chat) is default-on — turning ycode_share on without any
-	// other config should land the operator on a useful surface.
+	// DefaultOn means the surface is published when the ycode unit's
+	// `settings.share` names no surface at all. Only `ycode` (the chat) is
+	// default-on — enabling the unit without further configuration should
+	// land the operator on a useful surface.
 	DefaultOn bool
 }
 
 // YcodeSurfaces returns the catalog of ycode-backed UI surfaces in
-// stable order. main.go iterates and registers each one whose
-// EnabledIn(fc) returns true; the SPA renders one toggle row per
-// entry.
+// stable order. The ycode service unit's capability iterates it and
+// publishes each surface its `settings.share` list selects (or the
+// DefaultOn set when the list is empty); the SPA offers the catalog so an
+// operator can write that list.
 //
 // Phase-scoped to chat-style entry points for now:
 //   - ycode         → /chat/         the polished chat ycode itself
@@ -64,21 +65,4 @@ func YcodeSurfaces() []YcodeSurface {
 		{Name: "ycode-canvas", Path: "/ycode/canvas/", Label: "ycode Canvas (a2ui)"},
 		{Name: "ycode-classic", Path: "/ycode/", Label: "ycode (classic SPA)"},
 	}
-}
-
-// YcodeSurfaceEnabled folds the catalog's DefaultOn with the
-// per-surface overlay map. Returns true when the operator opted in,
-// or when the surface is in the default-on set and the operator
-// hasn't overridden. Reads safely from a nil map.
-func YcodeSurfaceEnabled(overlay map[string]bool, name string) bool {
-	for _, s := range YcodeSurfaces() {
-		if s.Name != name {
-			continue
-		}
-		if v, ok := overlay[name]; ok {
-			return v
-		}
-		return s.DefaultOn
-	}
-	return false
 }

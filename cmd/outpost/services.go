@@ -162,8 +162,8 @@ func (s serviceSecrets) SSOSecret(app string) (string, error) {
 //
 // apps may be nil (nothing to publish to) and meshHost may be nil (mesh off);
 // the reconciler simply has one fewer surface to reconcile.
-func startServiceReconciler(g *errgroup.Group, ctx context.Context, cfgPath string, fc *conf.FileConfig,
-	apps *agent.AppRegistry, meshHost *mesh.Host) *serviceControl {
+func startServiceReconciler(g *errgroup.Group, ctx context.Context, store *svcunit.Store, cfgPath string, fc *conf.FileConfig,
+	apps *agent.AppRegistry, meshHost *mesh.Host, deps capabilityDeps) *serviceControl {
 
 	// Pin (or leave at latest) the bashy release the self-heal auto-install
 	// fetches. Read once at boot; changing it schedules a restart, which
@@ -179,14 +179,16 @@ func startServiceReconciler(g *errgroup.Group, ctx context.Context, cfgPath stri
 		return nil
 	})
 
-	store := serviceStore()
-	// The in-process capabilities this daemon hosts. They are built here
-	// because what they need from the host — the forge a CI runner defaults
-	// to — is read from the unit store, which is the same store the
-	// reconciler reads declarations from.
-	caps := outpostCapabilities(capabilityDeps{
-		Forge: func(unit string) string { return localForgeURL(store, unit) },
-	})
+	if store == nil {
+		store = serviceStore()
+	}
+	// The in-process capabilities this daemon hosts. The caller built each
+	// one with the live objects only it has (the app registry, the mesh
+	// forwarder, the load sensor); the one thing resolved here is the forge
+	// a CI runner defaults to, which is read from the unit store — the same
+	// store the reconciler reads declarations from.
+	deps.Forge = func(unit string) string { return localForgeURL(store, unit) }
+	caps := outpostCapabilities(deps)
 	internal, err := svcunit.Hosted(caps)
 	if err != nil {
 		// A duplicate capability id is a programming error in the wiring
@@ -196,18 +198,18 @@ func startServiceReconciler(g *errgroup.Group, ctx context.Context, cfgPath stri
 		internal = nil
 	}
 
-	deps := svcunit.Deps{
+	rdeps := svcunit.Deps{
 		Source:   store,
 		Secrets:  serviceSecrets{path: cfgPath, fc: fc},
 		Internal: internal,
 	}
 	if apps != nil {
-		deps.Apps = appExposer{reg: apps}
+		rdeps.Apps = appExposer{reg: apps}
 	}
 	if meshHost != nil {
-		deps.Mesh = meshExposer{host: meshHost}
+		rdeps.Mesh = meshExposer{host: meshHost}
 	}
-	r := svcunit.New(deps)
+	r := svcunit.New(rdeps)
 	g.Go(func() error { return r.Run(ctx) })
 
 	if ids := internalCapabilityIDs(caps); len(ids) > 0 {
@@ -227,6 +229,34 @@ func internalCapabilityIDs(caps map[string]service.Capability) []string {
 		}
 	}
 	return out
+}
+
+// capabilityEnabled reports whether this host has an ENABLED unit declaring
+// the given in-process capability id.
+//
+// It keys off the CAPABILITY, never a unit name: the name belongs to the
+// operator (two `outpost.ollama` units on different sockets are legal), the
+// capability id is the cross-repo contract. One read of declared desired
+// state, used by the few daemon decisions that are not themselves units —
+// bringing up the mesh and peer plane for sharding, and reporting whether
+// the LLM pool is wanted in `outpost pool status`.
+func capabilityEnabled(st *svcunit.Store, capID string) bool {
+	if st == nil {
+		return false
+	}
+	units, _ := st.All()
+	for _, u := range units {
+		if u.IsRetired() || !u.Enabled {
+			continue
+		}
+		if u.ProviderName() != fleet.ServiceProviderInternal {
+			continue
+		}
+		if u.Capability == capID {
+			return true
+		}
+	}
+	return false
 }
 
 // localForgeURL is the git-forge base URL a dependent unit (act_runner) uses

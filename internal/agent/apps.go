@@ -261,6 +261,16 @@ func (r *AppRegistry) AddIntercept(name, prefix string, h http.Handler) {
 	r.intercepts[name] = append(r.intercepts[name], appIntercept{prefix: prefix, handler: h})
 }
 
+// InterceptCount reports how many intercept handlers are mounted under one
+// app. AddIntercept appends, so a caller that re-registers a decorated mount
+// has to withdraw it first or stack a second handler on the same prefix;
+// this is what lets a test hold that invariant.
+func (r *AppRegistry) InterceptCount(name string) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.intercepts[name])
+}
+
 // SetProxyWrap attaches a middleware applied to the reverse-proxy
 // handler when /app/<name>/<rest> proxies a non-intercept request.
 // Passing nil clears any existing wrapper. Useful for instrumentation

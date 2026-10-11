@@ -109,10 +109,28 @@ resource until `configured` settles.
 - `outpost_set_builtins` — partial-update toggle for `shell`, `desktop`,
   `clipboard`, `ssh`, `ssh_allow_local_forward`,
   `ssh_allow_remote_forward`, `ssh_allow_agent_forward`,
-  `ssh_forward_sockets`, `sftp`, `podman`, `ollama`, `ollama_pool`,
-  `cluster`, `otel`, `otel_pool`, `ycode_share`,
-  `ycode_share_require_login`, `ycode_share_surfaces`, `update_mode`.
-  Only fields actually present are mutated.
+  `ssh_forward_sockets`, `sftp`, `mesh`, `mesh_port`, `cluster`,
+  `cluster_agent`, `cluster_virtual`, `update_mode`, `auto_rollback`,
+  `bashy_version`, `cloud_do_enabled`, `cloud_do_token` — plus the
+  generic service pair `services` and `service_settings`. Only fields
+  actually present are mutated.
+
+  Everything outpost used to carry a dedicated arg for is a **service
+  unit** now, switched through `services` and configured through
+  `service_settings`: the File Browser, the raw podman passthrough, the
+  filtered container sandbox, the Ollama proxy and its LLM-pool
+  participation, the considerate warm plane, the model-sharding plane,
+  the same-LAN inference listener, and the observability and ycode
+  surfaces. Read `outpost://services` first for the unit names, their
+  capability ids and their current settings, then:
+
+  ```json
+  {"services": {"ollama": true, "ollama-pool": true},
+   "service_settings": {"warm": {"settings.budget_frac": "0.5"}}}
+  ```
+
+  Service writes apply **live** (`services_applied: true`, no restart);
+  the remaining `agent.json` toggles report `restart_pending`.
 
 ### Cluster
 

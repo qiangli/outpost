@@ -21,15 +21,31 @@ import (
 //
 // Body: WarmRequest{model, mode} where mode ∈ load | shard | unload.
 // Reply: WarmResponse{status, active_model, busy, warm_budget_bytes}.
-func MountRoute(rg *gin.RouterGroup, e *Executor) {
-	if e == nil {
+// MountRoute mounts POST /admin/warm.
+//
+// executor is resolved PER REQUEST rather than captured, because the
+// warm-serving plane is a service unit now: the operator can enable or
+// disable it live, and the route must not be a boot-time snapshot of
+// whether it happened to be on. A request that arrives while the unit is
+// not active gets 503 with the reason, which cloudbox can act on — the old
+// boot-time nil check left the route unmounted and answered 404, which is
+// indistinguishable from an outpost too old to warm anything.
+func MountRoute(rg *gin.RouterGroup, executor func() *Executor) {
+	if executor == nil {
 		return
 	}
-	rg.POST("/admin/warm", warmHandler(e))
+	rg.POST("/admin/warm", warmHandler(executor))
 }
 
-func warmHandler(e *Executor) gin.HandlerFunc {
+func warmHandler(executor func() *Executor) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		e := executor()
+		if e == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error": "warm serving is not active on this host — enable its service unit (`outpost builtins set --service warm=on`)",
+			})
+			return
+		}
 		var req WarmRequest
 		if err := c.BindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request: " + err.Error()})

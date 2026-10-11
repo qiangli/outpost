@@ -269,6 +269,12 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 	// current settings are untouched. Distinct *bool per field so a later
 	// deref-assign can't flip them together. (Cluster is already opt-in by
 	// default via ClusterOn, so it needs no explicit write.)
+	//
+	// The File Browser and the podman proxy are NOT written here any more:
+	// they are service units, and a unit's starting posture is its
+	// declaration's `enabled` bit — one place, the same one `bashy service
+	// enable` writes. A second copy here would be a fresh-pairing override
+	// of a decision the seed already states.
 	off := func() *bool { b := false; return &b }
 	fc := &conf.FileConfig{
 		AgentName:            ex.AgentName,
@@ -285,8 +291,6 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		DesktopEnabled:       off(),
 		ClipboardEnabled:     off(),
 		SSHEnabled:           off(),
-		FilesEnabled:         off(),
-		PodmanEnabled:        off(),
 	}
 	// Carry the cluster-join bits onto the persisted ClusterConfig
 	// when cloudbox returned them. Mode stays empty here — the

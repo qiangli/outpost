@@ -4,12 +4,46 @@ import (
 	"github.com/qiangli/yoke/pkg/service"
 )
 
-// capabilityDeps is what the in-process capabilities need from the daemon's
-// wiring: values resolved on this host that a declaration cannot carry.
+// Capability ids — the cross-repo contract between a unit declaration's
+// `capability:` field and the subsystem this daemon hosts for it
+// (docs/settings.md, "Contract notes for the unit seeds"). The id is the
+// stable name; a unit's NAME is the operator's, so nothing here keys off it.
+const (
+	capFiles        = "outpost.files"
+	capPodman       = "outpost.podman"
+	capSandbox      = "outpost.sandbox"
+	capOllama       = "outpost.ollama"
+	capOllamaPool   = "outpost.ollama-pool"
+	capWarm         = "outpost.warm"
+	capShard        = "outpost.shard"
+	capLANInference = "outpost.lan-inference"
+	capOtel         = "outpost.otel"
+	capYcode        = "outpost.ycode"
+	capActrunner    = "outpost.actrunner"
+)
+
+// capabilityDeps is the set of in-process capabilities the daemon
+// constructed, plus the values only the daemon can resolve.
+//
+// Each field is nil-tolerant: a capability the daemon could not build (no
+// app registry on a client-only host, no mesh for sharding) is simply not
+// registered, and its unit then reports "capability is not registered"
+// rather than silently doing nothing.
 type capabilityDeps struct {
 	// Forge resolves a local git-forge unit's loopback URL (localForgeURL),
 	// the default instance for a CI runner that declares none.
 	Forge func(unit string) string
+
+	Files        *filesCapability
+	Podman       *podmanCapability
+	Sandbox      *sandboxCapability
+	Ollama       *ollamaCapability
+	OllamaPool   *ollamaPoolCapability
+	Warm         *warmCapability
+	Shard        *shardCapability
+	LANInference *lanInferenceCapability
+	Otel         *otelCapability
+	Ycode        *ycodeCapability
 }
 
 // outpostCapabilities is the set of in-process capabilities this daemon
@@ -29,26 +63,49 @@ type capabilityDeps struct {
 // command, a port and a data dir, which `provider: process` expresses
 // completely — so the monitor owns their children and outpost owns only
 // their publication (`expose.app` / `expose.mesh`), with no code here at
-// all. A capability is warranted when activation needs something only this
-// process can do: see capability_actrunner.go for the one case and why.
+// all. A capability is warranted when activation needs something only THIS
+// process can do, and every entry below clears that bar for a stated
+// reason:
 //
-// The subsystems still carrying their own boot wiring — the File Browser
-// mount, the container sandbox, the podman/ollama proxies — move here the
-// same way: a declaration (yoke S17) plus one entry below.
+//   - files        — the handler is compiled into this binary.
+//   - podman       — the socket is detected here and is platform-dependent.
+//   - sandbox      — same socket, plus an in-process filter, capacity
+//     intercept and image prewarmer wrapping one app route.
+//   - ollama       — the daemon URL is detected here; the mount carries the
+//     `llm` descriptor, the in-flight counter and a capacity intercept.
+//   - ollama-pool  — pushes this host's registry using the SAME counter the
+//     proxy's capacity probe reports, so the two cannot disagree.
+//   - warm         — drives in-process model residency off a load sensor
+//     shared with cluster placement.
+//   - shard        — rides this process's libp2p forwarder and peer plane.
+//   - lan-inference— an in-process reverse proxy on a declared LAN port.
+//   - otel / ycode — the proxy URL and bearer come from ycode's own
+//     manifest, and each surface needs a bearer-injecting proxy wrap.
+//   - actrunner    — a provisioning handshake with no declarable hook; see
+//     capability_actrunner.go.
 func outpostCapabilities(deps capabilityDeps) map[string]service.Capability {
+	caps := map[string]service.Capability{}
+	add := func(id string, c service.Capability, ok bool) {
+		if ok {
+			caps[id] = c
+		}
+	}
+	add(capFiles, deps.Files, deps.Files != nil)
+	add(capPodman, deps.Podman, deps.Podman != nil)
+	add(capSandbox, deps.Sandbox, deps.Sandbox != nil)
+	add(capOllama, deps.Ollama, deps.Ollama != nil)
+	add(capOllamaPool, deps.OllamaPool, deps.OllamaPool != nil)
+	add(capWarm, deps.Warm, deps.Warm != nil)
+	add(capShard, deps.Shard, deps.Shard != nil)
+	add(capLANInference, deps.LANInference, deps.LANInference != nil)
+	add(capOtel, deps.Otel, deps.Otel != nil)
+	add(capYcode, deps.Ycode, deps.Ycode != nil)
+
 	ci := &actrunnerCapability{
 		Forge:      deps.Forge,
 		VaultEnv:   loadVaultSecretsEnv,
 		DockerHost: resolveActrunnerDockerHost,
 	}
-	return map[string]service.Capability{
-		// Canonical id. The alias is the name the capability's role would
-		// suggest, registered so a unit seed written against either spelling
-		// binds instead of failing with "capability is not registered" —
-		// the ids are a cross-repo contract (docs/settings.md, "Contract
-		// notes for the unit seeds") and outpost answers to both halves of
-		// it rather than to whichever one it guessed.
-		"outpost.actrunner": ci,
-		"outpost.ci":        ci,
-	}
+	caps[capActrunner] = ci
+	return caps
 }

@@ -106,17 +106,6 @@ type FileConfig struct {
 	ClipboardEnabled *bool `json:"clipboard_enabled,omitempty"`
 	SSHEnabled       *bool `json:"ssh_enabled,omitempty"`
 
-	// Files builtin — embedded File Browser, the GUI sibling of /shell +
-	// /ssh for remote view/download. Default ON like the other
-	// outpost-owned route builtins above (it serves an in-process handler,
-	// not an external daemon). Read-only + download-only by default;
-	// FilesAllowWrite flips every write op (create/upload, modify, rename,
-	// delete) together and is meant to be a LAN/admin-plane decision.
-	// FilesScope is the root directory the browser is confined to (empty =
-	// the OS user's home).
-	FilesEnabled    *bool  `json:"files_enabled,omitempty"`
-	FilesScope      string `json:"files_scope,omitempty"`
-	FilesAllowWrite bool   `json:"files_allow_write,omitempty"`
 	// FilesSigningKey is the JWT signing key the embedded (stateless,
 	// DB-less) File Browser uses for its session tokens. Persisted here so
 	// the key is stable across daemon restarts — otherwise every restart
@@ -171,117 +160,16 @@ type FileConfig struct {
 	// ignored — the master switch wins.
 	SSHForwardSockets []string `json:"ssh_forward_sockets,omitempty"`
 
-	// Built-in proxies for local daemons. Default ON (nil ⇒ on) — a paired
-	// host should be useful with zero configuration, and both proxies are
-	// detection-gated at boot: when the daemon isn't running the built-in
-	// simply isn't registered (logged, never fatal). The UI greys these
-	// toggles out when the daemon isn't actually running on this host.
-	//
-	// Pointer-bool, NOT plain bool, and that is load-bearing: with
-	// `omitempty` a plain-bool false marshals to ABSENT, i.e. byte-identical
-	// to never-set. Under a default-ON rule that would silently resurrect
-	// the service the operator just turned off on the very next save/load.
-	// A *bool distinguishes unset (nil ⇒ default on) from explicit false
-	// (written as `false`, honored forever). See TestExplicitFalse*RoundTrip.
-	PodmanEnabled *bool `json:"podman_enabled,omitempty"`
-	OllamaEnabled *bool `json:"ollama_enabled,omitempty"`
-
-	// SandboxEnabled gates the safe-by-default container "sandbox" proxy
-	// — a FILTERED libpod/docker endpoint (strips privileged / host
-	// namespaces / host binds / added caps / devices, injects resource
-	// caps) distinct from the raw, admin-only /app/podman/ passthrough.
-	// This is the mount a thin client or an untrusted tenant talks to.
-	// Off by default — unlike the raw podman/ollama/otel proxies (which
-	// are default-on and only reachable by the paired owner), the sandbox
-	// widens WHO may run containers on this host, so it stays an explicit
-	// opt-in (plain bool: unset and false mean the same thing here).
-	SandboxEnabled bool `json:"sandbox_enabled,omitempty"`
-
-	// Sandbox resource policy. Zero values mean "no explicit limit" — the
-	// filter then leaves the caller's value (or the daemon default)
-	// untouched. The escape knobs (privileged, host ns, …) are NOT
-	// tunable: the sandbox mount always strips them.
-	//
-	//   SandboxMaxMemoryMB    per-container memory ceiling, MiB (0 = off)
-	//   SandboxCPUs           per-container CPU cap, cores (0 = off)
-	//   SandboxPidsLimit      per-container process cap (0 = off)
-	//   SandboxMaxContainers  advertised concurrency ceiling (0 = unset)
-	//   SandboxAllowedImages  optional image allowlist (exact or repo/*;
-	//                         empty = any image)
-	//   SandboxScratchDir     single host path prefix under which bind
-	//                         mounts are allowed (empty = forbid host
-	//                         binds entirely; named volumes/tmpfs always ok)
-	SandboxMaxMemoryMB   int64    `json:"sandbox_max_memory_mb,omitempty"`
-	SandboxCPUs          float64  `json:"sandbox_cpus,omitempty"`
-	SandboxPidsLimit     int64    `json:"sandbox_pids_limit,omitempty"`
-	SandboxMaxContainers int      `json:"sandbox_max_containers,omitempty"`
-	SandboxAllowedImages []string `json:"sandbox_allowed_images,omitempty"`
-	SandboxScratchDir    string   `json:"sandbox_scratch_dir,omitempty"`
-
-	// SandboxPrewarmImages is the set of images the prewarmer keeps pulled
-	// on the local podman daemon so a remote sandbox create+start skips the
-	// (dominant) image-pull cost. Empty falls back to the non-wildcard
-	// entries of SandboxAllowedImages — pre-pulling exactly what callers
-	// are allowed to run. Empty + no allowlist disables prewarming.
-	SandboxPrewarmImages []string `json:"sandbox_prewarm_images,omitempty"`
-
-	// OllamaPoolEnabled gates whether this outpost participates in
-	// cloudbox's virtual LLM pool — the watcher pushes the local
-	// /api/tags inventory to cloudbox and the /app/ollama/_pool/capacity
-	// endpoint is mounted. Distinct from OllamaEnabled: the user can
-	// expose their local Ollama as a per-host app (a private endpoint
-	// only they reach) without contributing it to the shared multi-host
-	// pool friends and other paired hosts can route to. Pointer-bool
-	// with OllamaPoolOn() helper so existing configs (written before
-	// pooling shipped) default to on whenever OllamaEnabled is on —
-	// the most useful behavior for the typical operator.
-	OllamaPoolEnabled *bool `json:"ollama_pool_enabled,omitempty"`
-
-	// WarmServingEnabled opts this outpost into the adaptive, considerate,
-	// always-on warm-serving plane: it keeps a small, conservative set of
-	// LLM models WARM (resident, zero cold-start) but YIELDS (unloads) the
-	// moment the user is busy with other work, restoring them when idle.
-	// Pointer-bool with WarmServingOn() so existing configs (written before
-	// warm serving shipped) default to ON whenever Ollama is on — the
-	// useful behavior. Explicit false opts out. The boot path additionally
-	// gates on pairing (cloudbox is what asks a host to warm a model).
-	WarmServingEnabled *bool `json:"warm_serving_enabled,omitempty"`
-
-	// WarmBudgetFrac is the fraction of usable memory the host will
-	// dedicate to warm preload (the conservative resident set). Default
-	// 0.33 (WarmBudgetFracOrDefault) — leaves ~2/3 for the OS + the user's
-	// own apps (e.g. ~10 GB on a 32 GB host). Clamped to (0,1]; out-of-range
-	// falls back to the default. The budget drops to 0 whenever the host is
-	// busy, so this is the idle-time ceiling, not a reservation.
-	WarmBudgetFrac float64 `json:"warm_budget_frac,omitempty"`
-
 	// WarmDesired is the persisted DESIRED warm set — the models cloudbox
 	// last asked this host to keep warm. The considerate supervisor unloads
 	// this set while the host is busy and restores it (within the current
 	// warm budget) once idle. Persisted so the intent survives restarts.
-	WarmDesired []string `json:"warm_desired,omitempty"`
-
-	// LANInferenceEnabled opts this outpost into serving its local LLM
-	// inference DIRECTLY to same-LAN callers, bypassing the cloudbox relay
-	// for lower latency. When on, the daemon binds a LAN-reachable listener
-	// (0.0.0.0:LANInferencePort) that reverse-proxies the OpenAI /v1 + /api
-	// surface to the local inference server (127.0.0.1:11434 — Ollama, or
-	// the shard leader's llama-server), and advertises that URL to cloudbox
-	// in the LLM-pool registry push (RegistryPushPayload.LANEndpoint).
 	//
-	// This is a LAN-TRUST endpoint: it is NOT authenticated per-request, so
-	// enabling it means the operator acknowledges their LAN is trusted.
-	// Untrusted / org networks should leave it OFF and use the Bearer-authed
-	// cloudbox /v1 gateway instead. Default OFF (explicit opt-in); also
-	// requires the local Ollama proxy on + pairing (cloudbox is what hands
-	// the LAN endpoint to same-LAN callers), same as OllamaPoolEnabled.
-	LANInferenceEnabled *bool `json:"lan_inference_enabled,omitempty"`
-
-	// LANInferencePort is the TCP port the LAN inference listener binds on
-	// all interfaces (0.0.0.0). Default DefaultLANInferencePort (11436) —
-	// deliberately distinct from the inference server's own 11434 and
-	// bashy's own 11435 engine so none of the three collide.
-	LANInferencePort int `json:"lan_inference_port,omitempty"`
+	// Runtime state, not configuration: cloudbox drives it through POST
+	// /admin/warm and the warm unit's executor persists it here. The warm
+	// plane's own settings (its memory budget) live on its service unit's
+	// declaration, not in this file.
+	WarmDesired []string `json:"warm_desired,omitempty"`
 
 	// PeerPlaneEnabled opts this outpost into the p2p peer-plane locality
 	// service: announce interface candidates to cloudbox's signaler, run a
@@ -337,12 +225,6 @@ type FileConfig struct {
 	// like other secrets (presence reported as has_cloud_do_token).
 	CloudDOToken string `json:"cloud_do_token,omitempty"`
 
-	// Shard configures the Ollama sharding sub-feature: serve a model bigger
-	// than any single node by splitting it across mesh peers via llama.cpp
-	// RPC carried over the mesh forwarder. Under Ollama; default off.
-	// See docs/ollama-sharding-builtin-plan.md.
-	Shard *ShardConfig `json:"shard,omitempty"`
-
 	// ClusterLLMEndpoint is the base URL of an intra-home
 	// distributed-inference backend (GPUStack first; any runtime that
 	// publishes the same OpenAI /v1-openai surface later) that this home
@@ -362,72 +244,6 @@ type FileConfig struct {
 	// management API is auth-gated — so the filter stays inert until a key
 	// is supplied. Redacted from SafeView like other secrets.
 	ClusterLLMAPIKey string `json:"cluster_llm_api_key,omitempty"`
-
-	// OtelEnabled gates the observability built-in apps that proxy
-	// ycode's embedded Prometheus / Alertmanager / VictoriaLogs /
-	// Jaeger / Perses stack through the matrix tunnel. Default ON
-	// (nil ⇒ on): the surfaces only materialize when the local
-	// observability proxy is actually detected, so on a host without
-	// the stack this costs nothing and logs one line. Every surface
-	// still requires the per-app matrix_elev cookie.
-	//
-	// Pointer-bool for the same reason as PodmanEnabled/OllamaEnabled:
-	// under a default-ON rule a plain bool + omitempty would erase an
-	// explicit opt-out on the next save. See OtelOn.
-	OtelEnabled *bool `json:"otel_enabled,omitempty"`
-
-	// OtelPoolEnabled controls whether cloudbox is allowed to federate
-	// queries across this outpost. Distinct from OtelEnabled the same
-	// way OllamaPoolEnabled is from OllamaEnabled: an operator can
-	// expose the surfaces privately (per-host access only) without
-	// contributing to the fleet-wide dashboard. Pointer-bool with
-	// OtelPoolOn() so existing configs default to on whenever
-	// OtelEnabled is on.
-	OtelPoolEnabled *bool `json:"otel_pool_enabled,omitempty"`
-
-	// YcodeEnabled gates outpost's ycode-aware features (the
-	// YcodeShare surfaces below, the OTel proxy wiring in main.go).
-	// Detection-only — outpost never spawns or restarts `ycode
-	// serve`. The operator manages ycode's lifecycle directly so
-	// the flags they launched it with stay intact; outpost just
-	// reads the manifest and reports state.
-	//
-	// ycode is the under-the-hood agentic engine outpost delegates
-	// to for inference / podman / Gitea; one `ycode serve` per OS
-	// user account. Distributed as a separate binary; the admin UI
-	// surfaces a download link when no binary is found, mirroring
-	// ycode's own TUI install flow.
-	YcodeEnabled bool `json:"ycode_enabled,omitempty"`
-
-	// YcodeShareEnabled gates whether ycode's home/landing page (the
-	// SPA served at /ycode/ on ycode's bearer-authed proxy) is exposed
-	// through the matrix tunnel as a regular `ycode` built-in app.
-	// When on, cloudbox renders a tile and users can open the ycode UI
-	// from the portal; when off, ycode stays purely-local and unreachable
-	// through cloudbox. Pointer-bool with YcodeShareOn() helper so the
-	// default is on whenever ycode itself is on — the typical operator
-	// who turned ycode on probably wants to reach it remotely too.
-	YcodeShareEnabled *bool `json:"ycode_share_enabled,omitempty"`
-
-	// YcodeShareRequireLogin controls the cloudbox-side OS-password
-	// elevation gate for the `ycode` built-in app. Default false
-	// (matches custom-app conventions): owners of the host reach their
-	// own ycode in one click. Flip to true to require an OS-password
-	// elevation hop the way /shell and /desktop do — useful when the
-	// host is shared with non-trivially-trusted users. Pointer-bool so
-	// the absent-key case folds to the safer default ("no extra dance
-	// for owners"); explicit true is honored.
-	YcodeShareRequireLogin *bool `json:"ycode_share_require_login,omitempty"`
-
-	// YcodeShareSurfaces is the per-surface opt-in overlay for the
-	// ycode-share catalog (see internal/agent/otel/ycode_surfaces.go).
-	// Map keys are tile names (`ycode`, `ycode-canvas`, `ycode-ollama`,
-	// `ycode-git`, `ycode-memos`, `ycode-graph`); values are explicit
-	// on/off. Absent keys fall back to the catalog's DefaultOn — today
-	// only `ycode` (the chat) is default-on, so an operator who just
-	// flips ycode_share_enabled gets the chat tile and nothing else
-	// until they opt in to additional surfaces from the SPA.
-	YcodeShareSurfaces map[string]bool `json:"ycode_share_surfaces,omitempty"`
 
 	// UpdateMode is the per-host policy for cloudbox-pushed
 	// self-upgrades at POST /admin/upgrade. Three values:
@@ -1461,10 +1277,6 @@ func (fc *FileConfig) ClipboardOn() bool {
 // SSHOn — runtime default ON; new pairings get explicit false, see ShellOn.
 func (fc *FileConfig) SSHOn() bool { return fc == nil || fc.SSHEnabled == nil || *fc.SSHEnabled }
 
-// FilesOn reports whether the embedded File Browser builtin should mount.
-// Runtime default ON; new pairings get explicit false, see ShellOn.
-func (fc *FileConfig) FilesOn() bool { return fc == nil || fc.FilesEnabled == nil || *fc.FilesEnabled }
-
 // SSHAllowLocalForwardOn reports whether the SSH server should honor
 // `direct-tcpip` channel-open requests (stock `ssh -L` / `ssh -D`).
 // Missing field (old configs) defaults to true — the channel is still
@@ -1495,69 +1307,12 @@ func (fc *FileConfig) SSHAllowAgentForwardOn() bool {
 	return fc == nil || fc.SSHAllowAgentForward == nil || *fc.SSHAllowAgentForward
 }
 
-// PodmanOn reports whether the built-in podman proxy is enabled in this
-// config. Default ON when the key is absent (never chosen) — the boot
-// path only registers the mount when the daemon is actually detected,
-// so "on" costs nothing on a host without podman. An explicit false in
-// the config file is honored (that is what the *bool buys us).
-// PodmanOn — runtime default ON; new pairings get explicit false (see
-// ShellOn). The socket is root-equivalent, so beyond the opt-in-for-new
-// posture it is ALWAYS gated by RequireLogin at the proxy regardless of
-// this toggle (see the podman builtin registration).
-func (fc *FileConfig) PodmanOn() bool {
-	return fc != nil && (fc.PodmanEnabled == nil || *fc.PodmanEnabled)
-}
-
-// OllamaOn reports whether the built-in Ollama proxy is enabled.
-// Default ON when unset, explicit false honored — see PodmanOn.
-func (fc *FileConfig) OllamaOn() bool {
-	return fc != nil && (fc.OllamaEnabled == nil || *fc.OllamaEnabled)
-}
-
-// SandboxOn reports whether the filtered container sandbox proxy is
-// enabled. Off by default — it both needs the podman socket and widens
-// who can run containers, so it requires explicit opt-in.
-func (fc *FileConfig) SandboxOn() bool { return fc != nil && fc.SandboxEnabled }
-
 // ClusterLLMOn reports whether an intra-home distributed-inference
 // backend endpoint is configured, i.e. whether the outpost should probe
 // for a cluster and advertise it on the registry push. Detection is
 // purely opt-in via a non-empty ClusterLLMEndpoint.
 func (fc *FileConfig) ClusterLLMOn() bool {
 	return fc != nil && strings.TrimSpace(fc.ClusterLLMEndpoint) != ""
-}
-
-// YcodeOn reports whether outpost's ycode-aware features (share
-// surfaces, OTel wiring) are enabled. Detection-only — outpost
-// never spawns or restarts `ycode serve`. Plain bool, no implicit
-// default. See YcodeEnabled in the struct doc.
-func (fc *FileConfig) YcodeOn() bool { return fc != nil && fc.YcodeEnabled }
-
-// YcodeShareOn reports whether ycode's home/landing page should be
-// exposed through the matrix tunnel as a `ycode` built-in app. Returns
-// false when ycode itself is off (the share is a strict extension of
-// the per-host proxy). When YcodeShareEnabled is nil, the default is
-// to follow YcodeOn — operators who turned ycode on probably want it
-// reachable. Explicit false (operator turned it off) is honored.
-func (fc *FileConfig) YcodeShareOn() bool {
-	if !fc.YcodeOn() {
-		return false
-	}
-	if fc.YcodeShareEnabled == nil {
-		return true
-	}
-	return *fc.YcodeShareEnabled
-}
-
-// YcodeShareRequireLoginOn reports whether the cloudbox-side OS-password
-// elevation gate should fire for the `ycode` built-in app. Default false
-// — owners reach their own ycode without the OS-password popup; flipping
-// to true makes cloudbox treat ycode like /shell or /desktop.
-func (fc *FileConfig) YcodeShareRequireLoginOn() bool {
-	if fc == nil || fc.YcodeShareRequireLogin == nil {
-		return false
-	}
-	return *fc.YcodeShareRequireLogin
 }
 
 // ClusterOn reports whether this outpost should join the cloudbox
@@ -1722,85 +1477,6 @@ func ValidUpdateMode(s string) bool {
 	return false
 }
 
-// OllamaPoolOn reports whether this outpost should join cloudbox's LLM
-// pool. Returns false when Ollama itself is off (the pool is a strict
-// extension of the per-host proxy). When OllamaPoolEnabled is nil, the
-// default is to follow OllamaOn — pooling is the useful behavior, and
-// configs written before pooling shipped should opt in automatically.
-// Explicit false (operator turned it off) is honored.
-func (fc *FileConfig) OllamaPoolOn() bool {
-	if !fc.OllamaOn() {
-		return false
-	}
-	if fc.OllamaPoolEnabled == nil {
-		return true
-	}
-	return *fc.OllamaPoolEnabled
-}
-
-// WarmServingOn reports whether this outpost runs the considerate
-// warm-serving plane. Like OllamaPoolOn it is a strict extension of the
-// local Ollama proxy — false when Ollama is off. When WarmServingEnabled
-// is nil the default is ON (keeping a conservative resident set warm is
-// the useful behavior, and it's considerate by construction — it yields
-// on busy). Explicit false opts out. The boot path additionally gates on
-// pairing (cloudbox is what asks a host to warm a model).
-func (fc *FileConfig) WarmServingOn() bool {
-	if !fc.OllamaOn() {
-		return false
-	}
-	if fc.WarmServingEnabled == nil {
-		return true
-	}
-	return *fc.WarmServingEnabled
-}
-
-// WarmBudgetFracOrDefault returns the configured warm-budget fraction,
-// or 0.33 when unset / out of the (0,1] range.
-func (fc *FileConfig) WarmBudgetFracOrDefault() float64 {
-	if fc != nil && fc.WarmBudgetFrac > 0 && fc.WarmBudgetFrac <= 1 {
-		return fc.WarmBudgetFrac
-	}
-	return 0.33
-}
-
-// LANInferenceOn reports whether this outpost serves its local LLM
-// inference directly to same-LAN callers (the lan_inference toggle). Like
-// OllamaPoolOn it is a strict extension of the local Ollama proxy — false
-// when Ollama is off. Unlike the pool, it defaults OFF (nil ⇒ off): it is
-// a LAN-TRUST endpoint (no per-request auth), so it must be an explicit
-// opt-in by an operator who accepts that their LAN is trusted. The boot
-// path additionally gates on inference being reachable and on pairing
-// (cloudbox is what advertises the LAN endpoint to same-LAN callers).
-func (fc *FileConfig) LANInferenceOn() bool {
-	if !fc.OllamaOn() {
-		return false
-	}
-	if fc.LANInferenceEnabled == nil {
-		return false // default OFF — explicit opt-in for a LAN-trust listener
-	}
-	return *fc.LANInferenceEnabled
-}
-
-// DefaultLANInferencePort is the loopback-adjacent port the same-LAN
-// inference listener binds on 0.0.0.0 when unconfigured. It must stay
-// distinct from every model port on the host: 11434 (the host Ollama the
-// listener reverse-proxies), 11435 (bashy's own Ollama engine — yoke
-// DefaultManagedPort, also the door raw engine's OLLAMA_HOST), and 24556
-// (the llm model door). Sprint 379 Y2 moved it off 11435, which bound the
-// same port as bashy's engine.
-const DefaultLANInferencePort = 11436
-
-// LANInferencePortOrDefault returns the configured LAN inference listen
-// port, or DefaultLANInferencePort (kept distinct from the inference
-// server's own 11434 and bashy's own 11435 engine).
-func (fc *FileConfig) LANInferencePortOrDefault() int {
-	if fc != nil && fc.LANInferencePort > 0 {
-		return fc.LANInferencePort
-	}
-	return DefaultLANInferencePort
-}
-
 // PeerPlaneOn reports whether this outpost runs the p2p peer-plane locality
 // service: announce interface candidates to cloudbox's signaler, run a probe
 // responder, and measure RTT to peers to classify TP/LAN/WAN tiers. Opt-in
@@ -1853,80 +1529,6 @@ type MeshConsume struct {
 	// LocalAddr is the fixed local listen address (e.g. "127.0.0.1:31880") so the
 	// consuming config (actrunner_instance, etc.) stays stable. Empty → ephemeral.
 	LocalAddr string `json:"local_addr,omitempty"`
-}
-
-// ShardConfig is the Ollama sharding sub-feature config (under Ollama).
-type ShardConfig struct {
-	// Enabled is a tri-state opt-out: nil → the zero-config default (ON for a
-	// paired, Ollama-on node — an owner-registered node "just works" as a shard
-	// participant); explicit false opts out; true forces on. Mirrors
-	// OllamaPoolEnabled.
-	Enabled *bool `json:"enabled,omitempty"`
-	// Peers is the selected worker hostnames; empty or "auto" = every
-	// reachable same-vicinity mesh peer.
-	Peers []string `json:"peers,omitempty"`
-	// Role is "auto" (default; most-VRAM host leads), "leader", or "worker".
-	Role string `json:"role,omitempty"`
-	// NodeBytes is this node's model-memory budget (VRAM + usable RAM). The
-	// auto-trigger shards a local model larger than this; 0 → auto-trigger OFF
-	// (an operator opt-in — sharding can still be driven explicitly).
-	NodeBytes uint64 `json:"node_bytes,omitempty"`
-	// ServerBin / WorkerBin are this node's Prima binaries (llama-server for a
-	// leader, llama-cli for a worker). Empty → forming fails until deployed.
-	ServerBin string `json:"server_bin,omitempty"`
-	WorkerBin string `json:"worker_bin,omitempty"`
-}
-
-// ShardOn reports whether Ollama sharding is enabled. Zero-config by design:
-// ON by default for a paired, Ollama-on node (an owner-registered node "just
-// works" as a shard participant); explicit Shard.Enabled=false opts out. It
-// states the INTENT — the mesh data plane it rides is auto-enabled as a
-// dependency (see MeshNeeded), so zero-config sharding needs no separate
-// mesh opt-in.
-func (fc *FileConfig) ShardOn() bool {
-	if !fc.OllamaOn() || fc.AccessToken == "" {
-		return false // sharding needs Ollama + a cloudbox pairing (owner-registered)
-	}
-	if fc.Shard != nil && fc.Shard.Enabled != nil {
-		return *fc.Shard.Enabled // explicit opt-in/out honored
-	}
-	return true // zero-config default
-}
-
-// MeshNeeded reports whether the libp2p mesh data plane must run — either
-// explicitly enabled (MeshOn) or implicitly because sharding (which rides it)
-// is on. The daemon gates mesh startup on this so zero-config sharding brings
-// its own transport up without a separate opt-in.
-func (fc *FileConfig) MeshNeeded() bool {
-	return fc.MeshOn() || fc.ShardOn()
-}
-
-// PeerPlaneNeeded reports whether the peer-plane locality service must run —
-// either explicitly enabled (PeerPlaneOn) or implicitly because sharding (which
-// discovers its same-LAN ring via the peer-plane) is on. Gating on this lets
-// zero-config sharding bring up its discovery service without a separate opt-in.
-func (fc *FileConfig) PeerPlaneNeeded() bool {
-	return fc.PeerPlaneOn() || fc.ShardOn()
-}
-
-// OtelOn reports whether the built-in observability proxies are enabled.
-// Default ON when unset, explicit false honored — see PodmanOn. The boot
-// path skips registration when no local observability proxy is detected.
-func (fc *FileConfig) OtelOn() bool {
-	return fc != nil && (fc.OtelEnabled == nil || *fc.OtelEnabled)
-}
-
-// OtelPoolOn reports whether this outpost participates in cloudbox's
-// federated dashboard / alert fan-out. Mirrors OllamaPoolOn: false when
-// OtelOn() is false; defaults to on when OtelPoolEnabled is nil.
-func (fc *FileConfig) OtelPoolOn() bool {
-	if !fc.OtelOn() {
-		return false
-	}
-	if fc.OtelPoolEnabled == nil {
-		return true
-	}
-	return *fc.OtelPoolEnabled
 }
 
 // SaveFile writes fc atomically (write+rename) to path, creating parents.

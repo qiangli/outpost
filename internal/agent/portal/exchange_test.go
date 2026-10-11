@@ -69,16 +69,31 @@ func TestExchangeSecureDefaultsForNewHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
-	if fc.ShellOn() || fc.DesktopOn() || fc.ClipboardOn() || fc.SSHOn() || fc.FilesOn() || fc.PodmanOn() {
-		t.Errorf("new host should be opt-in (all off): shell=%v desktop=%v clip=%v ssh=%v files=%v podman=%v",
-			fc.ShellOn(), fc.DesktopOn(), fc.ClipboardOn(), fc.SSHOn(), fc.FilesOn(), fc.PodmanOn())
+	if fc.ShellOn() || fc.DesktopOn() || fc.ClipboardOn() || fc.SSHOn() {
+		t.Errorf("new host should be opt-in (all off): shell=%v desktop=%v clip=%v ssh=%v",
+			fc.ShellOn(), fc.DesktopOn(), fc.ClipboardOn(), fc.SSHOn())
 	}
-	// Cluster is opt-in too; ollama/otel are deliberately left default-on.
+	// Cluster is opt-in too.
 	if fc.ClusterOn() {
 		t.Error("new host: cluster should be off (opt-in)")
 	}
-	if !fc.OllamaOn() || !fc.OtelOn() {
-		t.Error("ollama/otel should remain default-on (not part of the host-access opt-in set)")
+	// The File Browser and the podman proxy were written off here as well.
+	// They are service units now, so their starting posture is their
+	// declaration's `enabled` bit and Exchange must not write a second copy
+	// of that decision into agent.json — a fresh pairing carries no
+	// service-related key at all.
+	raw, err := json.Marshal(fc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var keys map[string]any
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, retired := range []string{"files_enabled", "podman_enabled", "ollama_enabled", "otel_enabled"} {
+		if _, ok := keys[retired]; ok {
+			t.Errorf("Exchange wrote retired service key %q — those live on the unit declaration now", retired)
+		}
 	}
 }
 

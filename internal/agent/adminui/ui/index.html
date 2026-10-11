@@ -1100,68 +1100,6 @@ function buildSSHSubBlock(parent, cfg, status) {
   parent.append(sockHint, sockInput, el('div', {style: 'margin-top:0.4rem'}, sockBtn));
 }
 
-// buildFilesSubBlock populates the children behind the File Browser
-// twister: the write-enable toggle (read-only by default) and the
-// confined-root scope. Both gate on cfg.files_enabled. files_allow_write
-// is deliberately only settable here on the loopback admin plane — it is
-// the LAN-gated control that keeps "read-only by default" a real
-// guarantee, so we surface a warning next to it.
-function buildFilesSubBlock(parent, cfg, status) {
-  const filesOn = !!cfg.files_enabled;
-
-  // write-enable toggle
-  const wrow = el('div', {class: 'item-row' + (!filesOn ? ' dim' : '')});
-  const wsw = switchEl({checked: !!cfg.files_allow_write && filesOn, disabled: !filesOn});
-  wsw.input.addEventListener('change', async () => {
-    const newVal = wsw.input.checked;
-    wsw.input.disabled = true;
-    try {
-      const res = await api('POST', 'api/config/builtins', {files_allow_write: newVal});
-      msg('ok', `File editing ${newVal ? 'enabled' : 'disabled'}.`);
-      noteRestartPending(res);
-      wsw.input.disabled = !filesOn;
-    } catch (e) {
-      wsw.input.checked = !newVal;
-      wsw.input.disabled = !filesOn;
-      msg('err', e.message || 'Save failed');
-    }
-  });
-  wrow.append(
-    wsw.wrap,
-    el('span', {class: 'label'}, 'Allow editing (upload/edit/rename/delete) ', el('code', {class: 'key-hint'}, 'files_allow_write')),
-  );
-  if (!filesOn) wrow.append(el('span', {class: 'hint'}, '(enable File Browser first)'));
-  parent.append(wrow);
-  parent.append(el('p', {class: 'hint', style: 'margin:0.1rem 0 0.5rem'},
-    'Off = read-only + download-only (recommended). This switch lives only on this local admin plane, so a cloud-vouched user cannot enable writes remotely.'));
-
-  // scope (confined root)
-  parent.append(el('h4', {}, 'Scope ', el('code', {class: 'key-hint'}, 'files_scope')));
-  const scopeHint = el('p', {class: 'hint', style: 'margin:0.1rem 0 0.3rem'},
-    'Root directory the browser is confined to. Empty = the OS user’s home.');
-  const scopeInput = el('input', {
-    type: 'text',
-    value: cfg.files_scope || '',
-    placeholder: '(home)',
-    disabled: !filesOn,
-    style: !filesOn ? 'opacity:0.6' : '',
-  });
-  const scopeBtn = el('button', {type: 'button', disabled: !filesOn}, 'Save scope');
-  scopeBtn.addEventListener('click', async () => {
-    scopeBtn.disabled = true;
-    try {
-      const res = await api('POST', 'api/config/builtins', {files_scope: scopeInput.value.trim()});
-      msg('ok', 'Scope saved.');
-      noteRestartPending(res);
-    } catch (e) {
-      msg('err', e.message || 'Save failed');
-    } finally {
-      scopeBtn.disabled = !filesOn;
-    }
-  });
-  parent.append(scopeHint, scopeInput, el('div', {style: 'margin-top:0.4rem'}, scopeBtn));
-}
-
 // buildServicesBlock renders the host's service units: every declaration,
 // its desired state, the monitor's runtime state and what outpost currently
 // publishes for it.
@@ -1231,8 +1169,12 @@ function serviceRow(u) {
     el('span', {class: 'hint', style: 'min-width:5rem'}, u.provider || ''),
     el('span', {style: 'min-width:6rem;' + (STATE_TONE[state] ? 'color:' + STATE_TONE[state] : 'opacity:0.7')},
       state || '(no monitor)'),
+    // The capability id is shown for an internal unit because that is the
+    // cross-repo contract the declaration binds to, and what docs/settings.md
+    // documents the unit's settings under. The unit NAME is the operator's.
     el('span', {class: 'grow hint'},
-      [u.description, (u.ports || []).join(','), expose.join(' ')].filter(Boolean).join(' · ')),
+      [u.description, u.capability, (u.ports || []).join(','), expose.join(' ')]
+        .filter(Boolean).join(' · ')),
   );
   if (u.enabled && expose.length && !published) {
     // The withdrawal the old supervisor never did, made visible: an enabled
@@ -1264,7 +1206,12 @@ function serviceRow(u) {
 // cluster status, concurrent runtime selection, join toggle, and
 // kubeconfig readiness.
 function buildClusterSubBlock(parent, cfg, status) {
-  const podmanOn = !!(cfg.podman && cfg.podman.enabled);
+  // The gate is podman being DETECTED on this host, not the podman proxy
+  // unit being enabled. The cluster runtime dials the libpod socket
+  // directly (startClusterRunner resolves it itself); it never went
+  // through the /app/podman/ mount, so requiring that mount was always a
+  // stricter gate than the dependency.
+  const podmanAvailable = !!(cfg.podman && cfg.podman.available);
   const cv = cfg.cluster || {};
 
   // --- cluster status banner ----------------------------------------------
@@ -1363,7 +1310,7 @@ function buildClusterSubBlock(parent, cfg, status) {
   const paired = !!(status && status.configured);
   const hasRuntime = !!cv.agent || selectedVirtual.size > 0;
   const needsPodman = !!cv.agent || selectedVirtual.has('vk-podman');
-  const clusterGateOK = paired && hasRuntime && (!needsPodman || podmanOn);
+  const clusterGateOK = paired && hasRuntime && (!needsPodman || podmanAvailable);
   const csw = switchEl({checked: clusterOn && clusterGateOK, disabled: !clusterGateOK});
   csw.input.addEventListener('change', async () => {
     const newVal = csw.input.checked;
@@ -1387,8 +1334,8 @@ function buildClusterSubBlock(parent, cfg, status) {
     clusterRow.append(el('span', {class: 'hint'}, '(pair this host first)'));
   } else if (!hasRuntime) {
     clusterRow.append(el('span', {class: 'hint'}, '(select and save at least one runtime first)'));
-  } else if (needsPodman && !podmanOn) {
-    clusterRow.append(el('span', {class: 'hint'}, '(agent and vk-podman require Podman)'));
+  } else if (needsPodman && !podmanAvailable) {
+    clusterRow.append(el('span', {class: 'hint'}, '(agent and vk-podman need a podman daemon on this host — none detected)'));
   } else {
     clusterRow.append(el('span', {class: 'hint'},
       'cloudbox auto-fetches a kubeconfig using the saved access_token on next boot. Token + CA never leave this machine.'));
@@ -1730,184 +1677,77 @@ function buildControlPlaneBlock(parent, cv, paired) {
   render();
 }
 
-// buildOllamaSubBlock populates the children behind the Ollama
-// twister: the LLM-pool participation toggle plus (when the pool is
-// running) the live watcher diagnostic. All Ollama-related state in
-// one place — matches the SSH/Podman twister pattern.
-function buildYcodeSubBlock(parent, cfg, status) {
+// buildAgenticPlatformSection renders what this host HAS for the agentic
+// platform — ycode's install/run state, the detected podman and Ollama
+// endpoints, the live LLM-pool diagnostic and the observability surfaces
+// this build publishes.
+//
+// It has no toggles, and that is the change: ycode-share, the podman and
+// Ollama proxies, the container sandbox, the LLM pool, the warm and shard
+// planes, the LAN inference listener and the OTel federation were nine
+// switches here, each with its own agent.json key, gating rule and
+// restart-pending banner. They are service units now and live in the
+// Services section, which renders whatever the host declares. What stays
+// here is the one thing a declaration cannot report: whether the daemon is
+// installed and answering.
+function buildAgenticPlatformSection(cfg, status) {
+  const fs = el('fieldset', {});
+  fs.append(el('legend', {}, 'Agentic platform'));
+  fs.append(el('p', {class: 'hint', style: 'margin:0 0 0.6rem'},
+    'What this host provides. Switch the matching service unit on in ',
+    el('strong', {}, 'Services'),
+    ' to publish it — podman and Ollama can be your own standalone daemons or be supplied by ycode; outpost proxies whichever is live.'));
+
+  // ycode: detection only. outpost never spawns or restarts `ycode serve` —
+  // the operator owns its lifecycle (and the flags it was started with).
   const y = cfg.ycode || {};
-
-  // Share toggle — mirrors the ollama_pool pattern. Default on when
-  // ycode itself is on (server returns ycode_share_enabled folding the
-  // pointer-bool nil case to YcodeOn). Disabled when ycode is off
-  // because the share is a strict extension of the per-host proxy.
-  const shareRow = el('div', {class: 'item-row' + (!y.enabled ? ' dim' : '')});
-  const sw = switchEl({checked: !!cfg.ycode_share_enabled && !!y.enabled, disabled: !y.enabled});
-  sw.input.addEventListener('change', async () => {
-    const newVal = sw.input.checked;
-    sw.input.disabled = true;
-    try {
-      const res = await api('POST', 'api/config/builtins', {ycode_share: newVal});
-      msg('ok', `ycode share ${newVal ? 'on' : 'off'}.`);
-      noteRestartPending(res);
-      sw.input.disabled = !y.enabled;
-    } catch (e) {
-      sw.input.checked = !newVal;
-      sw.input.disabled = !y.enabled;
-      msg('err', e.message || 'Save failed');
-    }
-  });
-  shareRow.append(
-    sw.wrap,
-    el('span', {class: 'label'}, 'Share ycode UI via cloudbox ', el('code', {class: 'key-hint'}, 'ycode_share_enabled')),
-  );
-  if (!y.enabled) shareRow.append(el('span', {class: 'hint'}, '(enable ycode first)'));
-  parent.append(shareRow);
-
-  // Require-login toggle for the `ycode` app — mirrors the per-app
-  // "require login" flag custom apps have. Default off (owner walks
-  // in via cookie auth); flip on to make cloudbox demand OS-password
-  // elevation the way /shell and /desktop do. Disabled when the share
-  // itself is off because there'd be nothing to gate.
-  const shareOn = !!cfg.ycode_share_enabled && !!y.enabled;
-  const loginRow = el('div', {class: 'item-row' + (!shareOn ? ' dim' : '')});
-  const lsw = switchEl({checked: !!cfg.ycode_share_require_login && shareOn, disabled: !shareOn});
-  lsw.input.addEventListener('change', async () => {
-    const newVal = lsw.input.checked;
-    lsw.input.disabled = true;
-    try {
-      const res = await api('POST', 'api/config/builtins', {ycode_share_require_login: newVal});
-      msg('ok', `ycode require-login ${newVal ? 'on' : 'off'}.`);
-      noteRestartPending(res);
-      lsw.input.disabled = !shareOn;
-    } catch (e) {
-      lsw.input.checked = !newVal;
-      lsw.input.disabled = !shareOn;
-      msg('err', e.message || 'Save failed');
-    }
-  });
-  loginRow.append(
-    lsw.wrap,
-    el('span', {class: 'label'}, 'Require OS-password elevation ', el('code', {class: 'key-hint'}, 'ycode_share_require_login')),
-  );
-  if (!shareOn) loginRow.append(el('span', {class: 'hint'}, '(turn on Share ycode UI first)'));
-  parent.append(loginRow);
-
-  // Per-surface toggle checklist. The server hands us the catalog +
-  // effective state as cfg.ycode_share_surfaces; we render one switch
-  // row per entry. Operators flip canvas/ollama/git/memos/graph here.
-  // The map_partial-merge admincore semantics mean each toggle POSTs
-  // just its own key — other surfaces stay where they were.
-  const surfaces = Array.isArray(cfg.ycode_share_surfaces) ? cfg.ycode_share_surfaces : [];
-  if (surfaces.length > 0) {
-    const surfBox = el('div', {style: 'margin-top:0.5rem;padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;background:#2563eb11;font-size:0.85rem;'});
-    surfBox.append(el('div', {style: 'font-weight:600;margin-bottom:0.3rem'}, 'Surfaces'));
-    for (const surf of surfaces) {
-      const r = el('div', {class: 'item-row' + (!shareOn ? ' dim' : '')});
-      const ssw = switchEl({checked: !!surf.enabled && shareOn, disabled: !shareOn});
-      ssw.input.addEventListener('change', async () => {
-        const newVal = ssw.input.checked;
-        ssw.input.disabled = true;
-        try {
-          const res = await api('POST', 'api/config/builtins', {ycode_share_surfaces: {[surf.name]: newVal}});
-          msg('ok', `${surf.label} ${newVal ? 'on' : 'off'}.`);
-          noteRestartPending(res);
-          ssw.input.disabled = !shareOn;
-        } catch (e) {
-          ssw.input.checked = !newVal;
-          ssw.input.disabled = !shareOn;
-          msg('err', e.message || 'Save failed');
-        }
-      });
-      r.append(
-        ssw.wrap,
-        el('span', {class: 'label'}, surf.label, ' ', el('code', {class: 'key-hint'}, surf.name)),
-      );
-      surfBox.append(r);
-    }
-    surfBox.append(el('div', {class: 'hint', style: 'margin-top:0.4rem'},
-      'Each surface becomes a tile at ',
-      el('code', {class: 'key-hint'}, '/h/<host>/app/<name>/'),
-      '. Operators pick which ones to expose.'));
-    parent.append(surfBox);
+  const ybox = el('div', {style: 'padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;font-size:0.85rem;margin-bottom:0.6rem'});
+  ybox.append(el('div', {style: 'font-weight:600;margin-bottom:0.3rem'}, 'ycode'));
+  const ystate = !y.platform_supported ? 'no binary for this OS/arch yet'
+               : y.running             ? (y.api_endpoint || 'running')
+               : y.installed           ? 'installed, not running'
+               : y.stale_manifest      ? 'stale manifest'
+               : 'not installed';
+  ybox.append(el('div', {}, ystate));
+  if (y.version) ybox.append(el('div', {class: 'hint'}, 'version ' + y.version));
+  if (y.binary_path) ybox.append(el('div', {class: 'hint'}, y.binary_path));
+  if (y.platform_supported && !y.running) {
+    ybox.append(el('div', {class: 'hint', style: 'margin-top:0.3rem'},
+      'Run ', el('code', {class: 'key-hint'}, 'ycode serve'), ' to start it — outpost will not start it for you.'));
   }
+  if (!y.installed && y.download_url) {
+    ybox.append(el('div', {style: 'margin-top:0.3rem'},
+      el('a', {href: y.download_url, target: '_blank', rel: 'noopener'}, 'Download ycode')));
+  }
+  fs.append(ybox);
 
-  const box = el('div', {style: 'margin-top:0.5rem;padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;background:#2563eb11;font-size:0.85rem;'});
-  const grid = el('div', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.2rem 0.75rem'});
-  const kv = (k, v) => {
-    grid.append(el('span', {style: 'opacity:0.7'}, k));
-    grid.append(el('span', {style: 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace'}, v || '—'));
+  // Local daemon detection. `available` is informational: a unit may be
+  // enabled before its daemon exists, and the capability reports the
+  // refusal on the unit's status row rather than failing silently.
+  const detBox = el('div', {style: 'padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;font-size:0.85rem;margin-bottom:0.6rem'});
+  detBox.append(el('div', {style: 'font-weight:600;margin-bottom:0.3rem'}, 'Detected local daemons'));
+  const dgrid = el('div', {style: 'display:grid;grid-template-columns:max-content max-content 1fr;gap:0.2rem 0.75rem'});
+  const drow = (label, d) => {
+    d = d || {};
+    dgrid.append(el('span', {style: 'opacity:0.7'}, label));
+    dgrid.append(el('span', {}, d.available ? 'available' : 'not detected'));
+    const src = d.target ? (daemonSourceLabel(d.target) || '') : '';
+    dgrid.append(el('span', {style: 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace'},
+      (d.target || '—') + (src ? ' ' + src : '')));
   };
-  const stateLabel = y.running ? 'running'
-                    : y.installed ? 'installed (not running)'
-                    : y.stale_manifest ? 'stale manifest (no live process)'
-                    : !y.platform_supported ? 'not available for this OS/arch'
-                    : 'not installed';
-  kv('State', stateLabel);
-  if (y.platform_supported) {
-    kv('Binary', y.binary_path);
-    if (y.api_endpoint) kv('Endpoint', y.api_endpoint);
-    if (y.version) kv('Version', y.version);
-  }
-  box.append(grid);
-  // Download link: shown when the platform is supported and the
-  // binary isn't found. Always-visible "Get latest" link otherwise
-  // for upgrade discoverability.
-  if (y.download_url) {
-    const linkText = (!y.installed && y.platform_supported) ? 'Download ycode' : 'Latest releases';
-    box.append(
-      el('div', {style: 'margin-top:0.5rem'},
-        el('a', {href: y.download_url, target: '_blank', rel: 'noopener'}, linkText),
-      ),
-    );
-  }
-  if (!y.platform_supported) {
-    box.append(el('div', {class: 'hint', style: 'margin-top:0.4rem'},
-      'ycode hasn\'t shipped a binary for your OS+arch yet. Tracked: darwin/amd64 + windows/amd64 (need podman/buildah refactor upstream).'));
-  } else if (y.enabled && !y.running && y.installed) {
-    box.append(el('div', {class: 'hint', style: 'margin-top:0.4rem'},
-      'ycode is installed but not running. Run ',
-      el('code', {class: 'key-hint'}, 'ycode serve'),
-      ' to start it — outpost will not start it for you.'));
-  }
-  parent.append(box);
-}
+  drow('podman', cfg.podman);
+  drow('ollama', cfg.ollama);
+  detBox.append(dgrid);
+  fs.append(detBox);
 
-function buildOllamaSubBlock(parent, cfg, status) {
-  const ollamaOn = !!(cfg.ollama && cfg.ollama.enabled);
-  const row = el('div', {class: 'item-row' + (!ollamaOn ? ' dim' : '')});
-  const sw = switchEl({checked: !!cfg.ollama_pool_enabled && ollamaOn, disabled: !ollamaOn});
-  sw.input.addEventListener('change', async () => {
-    const newVal = sw.input.checked;
-    sw.input.disabled = true;
-    try {
-      const res = await api('POST', 'api/config/builtins', {ollama_pool: newVal});
-      msg('ok', `Ollama pool ${newVal ? 'on' : 'off'}.`);
-      noteRestartPending(res);
-      sw.input.disabled = !ollamaOn;
-    } catch (e) {
-      sw.input.checked = !newVal;
-      sw.input.disabled = !ollamaOn;
-      msg('err', e.message || 'Save failed');
-    }
-  });
-  row.append(
-    sw.wrap,
-    el('span', {class: 'label'}, 'Share Ollama with LLM pool ', el('code', {class: 'key-hint'}, 'ollama_pool_enabled')),
-  );
-  if (!ollamaOn) row.append(el('span', {class: 'hint'}, '(enable Ollama first)'));
-  parent.append(row);
-
-  // LLM pool diagnostic — render only when pool participation is
-  // actually wired. Shows the watcher's last-push state + the live
-  // in-flight counter so the operator can confirm cloudbox is
-  // hearing from this outpost without log-spelunking. Moved here
-  // from a standalone block beneath Built-ins so all Ollama state
-  // lives behind one twister.
+  // LLM pool diagnostic — the watcher's last-push state and the live
+  // in-flight counter, so an operator can confirm cloudbox is hearing from
+  // this host without log-spelunking. `enabled` comes from the live
+  // capability now, so it is absent exactly when the pool unit is not up.
   const pool = cfg.llm_pool || {};
   if (pool.enabled) {
-    const poolBox = el('div', {style: 'margin-top:0.6rem;padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;background:#2563eb11;font-size:0.85rem;'});
-    poolBox.append(el('div', {style: 'font-weight:600;margin-bottom:0.3rem'}, 'Pool diagnostic'));
+    const poolBox = el('div', {style: 'padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;background:#2563eb11;font-size:0.85rem;margin-bottom:0.6rem'});
+    poolBox.append(el('div', {style: 'font-weight:600;margin-bottom:0.3rem'}, 'LLM pool diagnostic'));
     const grid = el('div', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.2rem 0.75rem'});
     const kv = (k, v) => {
       grid.append(el('span', {style: 'opacity:0.7'}, k));
@@ -1916,65 +1756,25 @@ function buildOllamaSubBlock(parent, cfg, status) {
     const ago = ts => {
       if (!ts || ts.startsWith('0001')) return '— (never)';
       const t = new Date(ts);
-      const s = Math.max(0, Math.round((Date.now() - t.getTime()) / 1000));
-      if (s < 60) return s + 's ago';
-      if (s < 3600) return Math.round(s/60) + 'm ago';
-      return Math.round(s/3600) + 'h ago';
+      const sec = Math.max(0, Math.round((Date.now() - t.getTime()) / 1000));
+      if (sec < 60) return sec + 's ago';
+      if (sec < 3600) return Math.round(sec/60) + 'm ago';
+      return Math.round(sec/3600) + 'h ago';
     };
     kv('Watcher', pool.running ? 'running' : 'stopped');
     kv('Last push', ago(pool.last_push_at) + (pool.last_models != null ? ` (${pool.last_models} models)` : ''));
     kv('Pushes', String(pool.push_count || 0));
-    if (pool.max_parallel) {
-      kv('In flight', `${pool.in_flight || 0} / ${pool.max_parallel}`);
-    }
-    if (pool.last_error) {
-      kv('Last error', pool.last_error);
-    }
+    if (pool.max_parallel) kv('In flight', `${pool.in_flight || 0} / ${pool.max_parallel}`);
+    if (pool.last_error) kv('Last error', pool.last_error);
     if (pool.cloudbox_url) kv('Cloudbox', pool.cloudbox_url);
-    if (pool.ollama_url)   kv('Ollama',   pool.ollama_url);
+    if (pool.ollama_url) kv('Ollama', pool.ollama_url);
     poolBox.append(grid);
-    parent.append(poolBox);
+    fs.append(poolBox);
   }
-}
 
-// buildOtelSubBlock populates the children behind the OTel twister:
-// the fleet-federation toggle plus a static list of the surfaces this
-// outpost exposes when enabled. The surfaces are a thin reverse-proxy
-// over ycode's embedded Prometheus / Alertmanager / VictoriaLogs /
-// Jaeger / Perses stack — each becomes /h/<host>/app/otel-<surface>/
-// through cloudbox, gated by the standard per-app matrix_elev cookie.
-// The pool toggle mirrors ollama_pool semantics: opt-in to allow
-// fleet-wide consumers (e.g. a dashboard deployed on the DKS cluster)
-// to reach this host's data plane.
-function buildOtelSubBlock(parent, cfg, status) {
-  const otelOn = !!cfg.otel_enabled;
-  const row = el('div', {class: 'item-row' + (!otelOn ? ' dim' : '')});
-  const sw = switchEl({checked: !!cfg.otel_pool_enabled && otelOn, disabled: !otelOn});
-  sw.input.addEventListener('change', async () => {
-    const newVal = sw.input.checked;
-    sw.input.disabled = true;
-    try {
-      const res = await api('POST', 'api/config/builtins', {otel_pool: newVal});
-      msg('ok', `OTel pool ${newVal ? 'on' : 'off'}.`);
-      noteRestartPending(res);
-      sw.input.disabled = !otelOn;
-    } catch (e) {
-      sw.input.checked = !newVal;
-      sw.input.disabled = !otelOn;
-      msg('err', e.message || 'Save failed');
-    }
-  });
-  row.append(
-    sw.wrap,
-    el('span', {class: 'label'}, 'Share with fleet observability ', el('code', {class: 'key-hint'}, 'otel_pool_enabled')),
-  );
-  if (!otelOn) row.append(el('span', {class: 'hint'}, '(enable OTel first)'));
-  parent.append(row);
-
-  // Static surface list. Each row is one of the five sub-paths the
-  // outpost exposes when OTel is on and ycode is running. Cloudbox URL
-  // is templated only when the host is paired — pre-pairing the operator
-  // sees the local path so they know what's being exposed.
+  // Observability surfaces this build publishes while its unit is active.
+  // Cloudbox URL is templated only when the host is paired — pre-pairing
+  // the operator sees the local path so they know what would be exposed.
   const cloudboxURL = (cfg.cloudbox_url || '').replace(/\/+$/, '');
   const agentName = cfg.agent_name || (status && status.agent_name) || '';
   const surfaces = [
@@ -1984,57 +1784,43 @@ function buildOtelSubBlock(parent, cfg, status) {
     {name: 'otel-traces',     desc: 'Jaeger query'},
     {name: 'otel-dashboard',  desc: 'Perses dashboards'},
   ];
-  const surfaceBox = el('div', {style: 'margin-top:0.6rem;padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;background:#2563eb11;font-size:0.85rem;'});
-  surfaceBox.append(el('div', {style: 'font-weight:600;margin-bottom:0.3rem'}, 'Exposed surfaces'));
+  const surfaceBox = el('div', {style: 'padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;font-size:0.85rem'});
+  surfaceBox.append(el('div', {style: 'font-weight:600;margin-bottom:0.3rem'}, 'Observability surfaces'));
   const sg = el('div', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.2rem 0.75rem'});
-  for (const s of surfaces) {
-    const target = (cloudboxURL && agentName)
-      ? `${cloudboxURL}/h/${agentName}/app/${s.name}/`
-      : `/app/${s.name}/`;
-    sg.append(el('span', {style: 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace'}, s.name));
-    sg.append(el('span', {style: 'opacity:0.7'}, s.desc));
-    sg.append(el('span', {}));
-    sg.append(el('span', {style: 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;opacity:0.7;font-size:0.8rem'}, target));
+  for (const srf of surfaces) {
+    sg.append(el('span', {style: 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace'}, srf.name));
+    const where = cloudboxURL && agentName
+      ? `${cloudboxURL}/matrix/h/${agentName}/app/${srf.name}/`
+      : `/app/${srf.name}/`;
+    sg.append(el('span', {}, srf.desc, ' ', el('span', {class: 'hint'}, where)));
   }
   surfaceBox.append(sg);
-  surfaceBox.append(el('div', {class: 'hint', style: 'margin-top:0.4rem'},
-    'Each surface is a reverse proxy onto ycode\'s embedded observability stack. ' +
-    'Data plane lights up only when ycode is running.'));
-  parent.append(surfaceBox);
+  surfaceBox.append(el('p', {class: 'hint', style: 'margin:0.4rem 0 0'},
+    'Published while the observability service unit is active and a local proxy is detected. Each surface still requires the per-app login elevation.'));
+  fs.append(surfaceBox);
 
-  // Fleet observability — show the cluster-side push URLs cloudbox
-  // provisioned for this outpost (populated at register time from the
-  // Exchange response). When present, ycode's collector is expected to
-  // remote_write metrics / push logs / OTLP-export traces to these URLs
-  // through the tailscale overlay. Empty URLs mean the cluster
-  // observability bundle isn't installed yet — render a hint pointing
-  // at the AppStore.
-  if (otelOn) {
-    const cv = cfg.cluster || {};
-    const remotes = [
-      {key: 'metrics_remote_url', label: 'Metrics → VictoriaMetrics', url: cv.metrics_remote_url},
-      {key: 'logs_remote_url',    label: 'Logs → VictoriaLogs',       url: cv.logs_remote_url},
-      {key: 'traces_remote_url',  label: 'Traces → Jaeger',           url: cv.traces_remote_url},
-    ];
-    const anyConfigured = remotes.some(r => !!r.url);
-    const remoteBox = el('div', {style: 'margin-top:0.6rem;padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;background:#2563eb11;font-size:0.85rem;'});
-    remoteBox.append(el('div', {style: 'font-weight:600;margin-bottom:0.3rem'}, 'Fleet aggregation (cluster push targets)'));
-    if (anyConfigured) {
-      const rg = el('div', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.2rem 0.75rem'});
-      for (const r of remotes) {
-        rg.append(el('span', {style: 'opacity:0.7'}, r.label));
-        rg.append(el('span', {style: 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.8rem'}, r.url || '—'));
-      }
-      remoteBox.append(rg);
-      remoteBox.append(el('div', {class: 'hint', style: 'margin-top:0.4rem'},
-        'ycode\'s collector remote_writes here through the tailscale overlay. Perses on the cluster reads from the same store.'));
-    } else {
-      remoteBox.append(el('div', {class: 'hint'},
-        'No cluster observability stack registered yet. Install the observability bundle from cloudbox\'s AppStore and re-pair this outpost to receive push URLs.'));
+  // ycode UI surfaces this build can publish. Which ones are published is
+  // the ycode unit's `settings.share` list (empty = the default-on set).
+  const ycodeSurfaces = Array.isArray(cfg.ycode_share_surfaces) ? cfg.ycode_share_surfaces : [];
+  if (ycodeSurfaces.length) {
+    const box = el('div', {style: 'margin-top:0.6rem;padding:0.5rem 0.7rem;border:1px solid #8884;border-radius:6px;font-size:0.85rem'});
+    box.append(el('div', {style: 'font-weight:600;margin-bottom:0.3rem'}, 'ycode UI surfaces'));
+    const g2 = el('div', {style: 'display:grid;grid-template-columns:max-content 1fr;gap:0.2rem 0.75rem'});
+    for (const srf of ycodeSurfaces) {
+      g2.append(el('span', {style: 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace'}, srf.name));
+      g2.append(el('span', {}, srf.label || srf.path,
+        srf.default_on ? el('span', {class: 'hint'}, 'published by default') : ''));
     }
-    parent.append(remoteBox);
+    box.append(g2);
+    box.append(el('p', {class: 'hint', style: 'margin:0.4rem 0 0'},
+      'Select which to publish with ',
+      el('code', {class: 'key-hint'}, 'settings.share'),
+      ' on the ycode service unit (empty = the default-on set, `all` = every surface).'));
+    fs.append(box);
   }
+  return fs;
 }
+
 
 // fmtDuration renders ms-since as a tight human label
 // ("2h13m", "47s", "3d4h"). Used by the Update tab's
@@ -2480,64 +2266,19 @@ function daemonSourceLabel(target) {
   return target.includes('/.agents/ycode/') ? 'via ycode' : 'standalone';
 }
 
-// renderBuiltinRows — shared loop for the "Built-in apps" and
-// "Agentic platform" fieldsets. Each item is one of:
-//   - core toggle: {key, fileKey, label, enabled, subBlock?}
-//   - daemon proxy: {key, fileKey, label, daemon: BuiltinView, subBlock?}
-//   - ycode status: {key, fileKey, label, ycode: YcodeView, subBlock?}
-//   - placeholder: {placeholder: true, label, hint} — renders permanently
-//     dim with a disabled switch; no POST fires when clicked. Used for
-//     the OTel "coming soon" slot.
+// renderBuiltinRows — the loop for the "Built-in apps" fieldset. Each item
+// is one core toggle: {key, fileKey, label, enabled, subBlock?}.
+//
+// It used to also render daemon-proxy and ycode-status rows, with an
+// availability probe, a "via ycode" source hint, a cross-row `gatedBy`
+// rule, and a re-render-after-toggle so a child switch's disabled state
+// stayed honest. All of that existed because podman, Ollama, ycode and the
+// LLM pool were toggles here; they are service units now, so what is left
+// is a switch, a label and an optional nested block.
 function renderBuiltinRows(parent, items, cfg, status) {
   for (const item of items) {
-    if (item.placeholder) {
-      const row = el('div', {class: 'item-row dim'});
-      const sw = switchEl({checked: false, disabled: true});
-      row.append(
-        sw.wrap,
-        el('span', {class: 'label'}, item.label),
-        el('span', {class: 'hint'}, item.hint || ''),
-      );
-      parent.append(row);
-      continue;
-    }
-    const isDaemon = !!item.daemon;
-    const isYcode  = !!item.ycode;
-    // gatedBy: the row mirrors another built-in's enablement (e.g. the
-    // Ollama-pool toggle only makes sense when Ollama itself is on).
-    // Treated as a daemon-like disabled state so the visual cue is
-    // consistent.
-    const isGated = !!item.gatedBy;
-    const gateOK = !isGated || !!item.gatedBy.enabled;
-    const enabled = isDaemon ? !!item.daemon.enabled
-                  : isYcode  ? !!item.ycode.enabled
-                  : !!item.enabled;
-    // available is informational (drives the dim styling + status hint),
-    // NOT a gate on the toggle. Pre-enabling a daemon proxy whose socket
-    // isn't reachable yet is a legitimate workflow: outpost's boot path
-    // (buildAppRegistry) silently skips unavailable daemons, so flipping
-    // the toggle on persists the intent and the next restart picks the
-    // daemon up once the operator starts it. The only genuinely
-    // un-toggleable cases are: (a) ycode on an OS/arch ycode doesn't
-    // build for, and (b) a child toggle whose parent is off
-    // (Ollama-pool when Ollama is off). Everything else stays operable.
-    // ycode bundles both podman + ollama internally; when ycode is
-    // running (i.e. operator enabled it AND the supervisor reports
-    // it up), treat its child daemons as "available" even if the
-    // direct DetectPodman / DetectOllama probes haven't seen the
-    // socket / port yet (ycode binds lazily). Without this the
-    // podman + ollama rows render dim with "(not detected)" the
-    // moment ycode is the engine source — confusing because the
-    // operator just enabled ycode precisely to provide them.
-    const ycodeUp = !!(cfg.ycode && cfg.ycode.enabled && cfg.ycode.running);
-    const providedByYcode = isDaemon && ycodeUp && (item.key === 'podman' || item.key === 'ollama');
-    const directlyAvailable = isDaemon ? !!item.daemon.available
-                    : isYcode  ? !!item.ycode.platform_supported
-                    : true;
-    const available = directlyAvailable || providedByYcode;
-    const disabled = (isYcode && !available) || (isGated && !gateOK);
-    const row = el('div', {class: 'item-row' + (disabled || (isDaemon && !available) ? ' dim' : '')});
-    const sw = switchEl({checked: enabled && gateOK, disabled: disabled});
+    const row = el('div', {class: 'item-row'});
+    const sw = switchEl({checked: !!item.enabled});
     sw.input.addEventListener('change', async () => {
       const newVal = sw.input.checked;
       sw.input.disabled = true;
@@ -2545,78 +2286,24 @@ function renderBuiltinRows(parent, items, cfg, status) {
         const res = await api('POST', 'api/config/builtins', {[item.key]: newVal});
         msg('ok', `${item.label} ${newVal ? 'on' : 'off'}.`);
         noteRestartPending(res);
-        sw.input.disabled = disabled;
-        // Re-render after toggles that gate other rows. The Cluster
-        // "Join" switch depends on podman being on, and Ollama-pool
-        // depends on Ollama; without a re-render the disabled state
-        // of those downstream switches stays stale until the next
-        // manual refresh. Cheap to do (a single GET /api/config) and
-        // keeps the UI honest about what's currently allowed.
-        if (item.key === 'podman' || item.key === 'ollama' || item.key === 'ycode') {
-          render();
-        }
       } catch (e) {
         sw.input.checked = !newVal;
-        sw.input.disabled = disabled;
         msg('err', e.message || 'Save failed');
+      } finally {
+        sw.input.disabled = false;
       }
     });
-    // Label + canonical key subtext. The key subtext is what an
-    // operator searches for in agent.json or types as a --<key> CLI
-    // flag (after dropping `_enabled`), so surfacing it visibly here
-    // keeps the SPA/CLI/MCP vocabulary aligned without forcing the
-    // human-facing label to be ugly.
+    // Label + canonical key subtext. The key subtext is what an operator
+    // searches for in agent.json or types as a --<key> CLI flag (after
+    // dropping `_enabled`), so surfacing it keeps the SPA/CLI/MCP
+    // vocabulary aligned without forcing an ugly human-facing label.
     row.append(
       sw.wrap,
-      el('span', {class: 'label'},
-        item.label,
-        ' ',
-        el('code', {class: 'key-hint'}, item.fileKey),
-      ),
+      el('span', {class: 'label'}, item.label, ' ', el('code', {class: 'key-hint'}, item.fileKey)),
     );
-    if (isDaemon) {
-      if (providedByYcode && !directlyAvailable) {
-        // Direct probe didn't see the daemon's socket / port, but
-        // ycode is up and bundles this daemon. Show "via ycode" so
-        // the operator understands the daemon is in fact reachable.
-        row.append(el('span', {class: 'hint'}, 'via ycode'));
-      } else if (!available) {
-        // Probe didn't find a daemon at boot. The toggle is still
-        // operable so the operator can pre-enable; the hint spells
-        // out that nothing's proxied until the daemon comes up.
-        const tried = item.daemon.target ? ` (tried ${item.daemon.target})` : '';
-        row.append(el('span', {class: 'hint'}, 'not detected' + tried));
-      } else if (item.daemon.target) {
-        row.append(el('span', {class: 'hint'}, item.daemon.target));
-        const src = daemonSourceLabel(item.daemon.target);
-        if (src) row.append(el('span', {class: 'hint'}, src));
-      }
-    }
-    if (isYcode) {
-      // Right-side hint mirrors detect.go's State output. Order
-      // matters: platform check first so unsupported platforms
-      // don't show misleading install advice.
-      if (!item.ycode.platform_supported) {
-        row.append(el('span', {class: 'hint'}, 'ycode not available for this OS/arch'));
-      } else if (item.ycode.running) {
-        row.append(el('span', {class: 'hint'}, item.ycode.api_endpoint || 'running'));
-      } else if (item.ycode.installed) {
-        row.append(el('span', {class: 'hint'}, 'installed; will start on next restart'));
-      } else if (item.ycode.stale_manifest) {
-        row.append(el('span', {class: 'hint'}, 'stale manifest — will clean up on start'));
-      } else {
-        row.append(el('span', {class: 'hint'}, 'not installed'));
-      }
-    }
-    if (isGated && !gateOK) {
-      // gateHint is row-specific; falls back to the Ollama-pool hint for
-      // back-compat with rows that don't set one.
-      row.append(el('span', {class: 'hint'}, item.gateHint || '(enable Ollama first)'));
-    }
     // If this row has nested settings, append a chevron + a collapsed
-    // sub-block container. The sub-block is built lazily on first
-    // expand so we never pay for DOM that the operator hasn't asked
-    // to see; once built, expand/collapse is just toggling .hidden.
+    // sub-block container. The sub-block is built lazily on first expand
+    // so we never pay for DOM the operator hasn't asked to see.
     let subContainer = null;
     if (item.subBlock) {
       const chev = el('button', {
@@ -2751,26 +2438,24 @@ function renderMain(status, cfg) {
   panelPair.append(buildMCPCredentialsSection());
   panelPair.append(buildAdvancedSettingsSection(cfg));
 
-  // Built-in apps section — two fieldsets, one per logical cluster:
-  //   1. "Built-in apps" — shell / desktop / clipboard / ssh
-  //      (the always-there outpost-native services)
-  //   2. "Agentic platform" — ycode / podman / ollama / OTel
-  //      (the bring-your-own-engine cluster — each can run as a
-  //      standalone daemon OR be supplied by ycode; outpost detects
-  //      whichever is live)
-  // Both fieldsets render via renderBuiltinRows() so the row markup,
-  // auto-save POST, restart-pending banner, sub-block chevron, and
-  // dim/available logic stay byte-for-byte identical to today's
-  // single-fieldset layout.
-
+  // Built-in apps — the always-there, outpost-native routes. One
+  // fieldset, one toggle each, because each IS a route this process
+  // mounts at boot and nothing else can.
+  //
+  // The agentic-platform cluster that used to be a second fieldset of
+  // toggles here (ycode / podman / ollama / OTel, plus the File Browser
+  // row above) is gone: every one of them is a service unit now, switched
+  // in the Services section below, and what is left to show about them —
+  // whether the daemon is installed and answering — is read-only, in
+  // buildAgenticPlatformSection.
+  //
   // Each row carries:
   //   key     — JSON field on POST /api/config/builtins (REST/MCP arg)
   //   fileKey — agent.json key (canonical name; usually `<key>_enabled`)
   //   label   — human-readable display
   //   subBlock(parent, cfg) — optional; builds nested DOM (sub-toggles,
   //     textareas, status banners) revealed by a chevron twister next
-  //     to the row. Used to nest SSH-channel knobs under SSH and the
-  //     cluster/kubeconfig surface under Podman.
+  //     to the row.
   // The fileKey is rendered as a small subtext so an operator switching
   // between the SPA, the CLI (--<fileKey> minus _enabled), and the MCP
   // tool args / agent.json can match concepts up at a glance.
@@ -2780,33 +2465,6 @@ function renderMain(status, cfg) {
     {key: 'clipboard', fileKey: 'clipboard_enabled', label: 'Clipboard', enabled: cfg.clipboard_enabled},
     {key: 'ssh',       fileKey: 'ssh_enabled',       label: 'SSH',       enabled: cfg.ssh_enabled,
      subBlock: buildSSHSubBlock},
-    {key: 'files',     fileKey: 'files_enabled',     label: 'File Browser', enabled: cfg.files_enabled,
-     subBlock: buildFilesSubBlock},
-    // Bashy Apps and Meet chat used to be two hardcoded rows here, each
-    // with its own agent.json key, port field and lifecycle. They are
-    // service UNITS now and live in the Services section below, which
-    // renders whatever the host declares — so a third-party daemon an
-    // operator just declared appears there with no change to this file.
-  ];
-  const agenticRows = [
-    // ycode is supervised differently from podman/ollama: the row is
-    // toggleable even when ycode isn't running (the toggle turns on
-    // outpost-side supervision; the next outpost restart spawns the
-    // process if installed). The sub-block surfaces install state +
-    // a download link when no binary is found. Listed first so the
-    // operator reads top-to-bottom as "engine, then what it provides".
-    {key: 'ycode',     fileKey: 'ycode_enabled',     label: 'ycode',     ycode: cfg.ycode || {},
-     subBlock: buildYcodeSubBlock},
-    {key: 'podman',    fileKey: 'podman_enabled',    label: 'Podman',    daemon: cfg.podman || {}},
-    {key: 'ollama',    fileKey: 'ollama_enabled',    label: 'Ollama',    daemon: cfg.ollama || {},
-     subBlock: buildOllamaSubBlock},
-    // OTel row hidden from the SPA again — the per-host views work
-    // (otel-prometheus, otel-logs, otel-alerts, otel-traces,
-    // otel-dashboard tiles publish when otel_enabled is on) but the
-    // SPA-level toggle invites UX confusion until the OTel story has
-    // a proper home. CLI/MCP can still flip the toggle for operators
-    // who specifically need the per-host views.
-    // Re-expose by inserting the same `{key: 'otel', ...}` entry here.
   ];
 
   const built = el('fieldset', {});
@@ -2819,17 +2477,14 @@ function renderMain(status, cfg) {
   panelInbound.append(built);
 
   // Services: declarations, not toggles. Rendered from GET /api/services,
-  // so the host decides what appears here.
+  // so the host decides what appears here — including the surfaces outpost
+  // itself hosts in-process (the File Browser, the podman and sandbox
+  // container mounts, the Ollama proxy and its pool, the warm and shard
+  // planes, the same-LAN inference listener, the observability and ycode
+  // surfaces). Toggling one applies live; there is no restart banner.
   buildServicesBlock(panelInbound, cfg);
 
-  const agentic = el('fieldset', {});
-  agentic.append(el('legend', {}, 'Agentic platform'));
-  const agenticList = el('div', {class: 'item-list'});
-  renderBuiltinRows(agenticList, agenticRows, cfg, status);
-  agentic.append(agenticList);
-  agentic.append(el('p', {style: 'font-size:0.8rem;opacity:0.7;margin-top:0.8rem'},
-    'Podman and Ollama can run as your own standalone daemons OR be managed by ycode — outpost detects whichever is live and shows the source next to each row.'));
-  panelInbound.append(agentic);
+  panelInbound.append(buildAgenticPlatformSection(cfg, status));
 
   // (update_mode selector lives on the dedicated Update tab; this
   // panel stays focused on routes + daemon-proxy toggles.)

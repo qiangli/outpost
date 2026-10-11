@@ -278,7 +278,33 @@ func (p *Profiler) Busy() bool {
 }
 
 // WarmBudgetFrac returns the configured warm-budget fraction.
-func (p *Profiler) WarmBudgetFrac() float64 { return p.cfg.Frac }
+func (p *Profiler) WarmBudgetFrac() float64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cfg.Frac
+}
+
+// SetWarmBudgetFrac moves the warm-budget fraction on a running profiler.
+//
+// The profiler is a SENSOR shared by every consumer that needs to know
+// whether the host is busy, so the fraction cannot be fixed at
+// construction: the warm-serving unit's declaration owns it, and a
+// `bashy service set warm --set settings.budget_frac=…` must take effect
+// without cycling the sampler and losing its learned baseline. Values
+// outside (0,1] are ignored, the same rule New applies.
+func (p *Profiler) SetWarmBudgetFrac(f float64) {
+	if f <= 0 || f > 1 {
+		return
+	}
+	p.mu.Lock()
+	p.cfg.Frac = f
+	p.mu.Unlock()
+}
+
+// WarmBudgetFracDefault is the fraction of usable memory dedicated to warm
+// preload when nothing declares one — a third, leaving ~2/3 for the OS and
+// the user's own apps.
+const WarmBudgetFracDefault = warmBudgetFracDefault
 
 // WarmBudgetBytes is the conservative memory the host will dedicate to
 // warm preload: Frac × usableMem, or exactly 0 while Busy() (full
@@ -288,7 +314,7 @@ func (p *Profiler) WarmBudgetBytes(usableMem uint64) int64 {
 	if p.Busy() {
 		return 0
 	}
-	b := float64(usableMem) * p.cfg.Frac
+	b := float64(usableMem) * p.WarmBudgetFrac()
 	if b <= 0 {
 		return 0
 	}
