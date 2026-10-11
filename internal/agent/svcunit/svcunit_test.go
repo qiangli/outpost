@@ -568,30 +568,27 @@ func TestKickIsNonBlockingAndCoalesces(t *testing.T) {
 
 // ---- monitor: the one thing outpost cannot answer locally ----
 
-// The monitor client must read the status surface as the CLI emits it, in
-// both the bare-array and fleet-envelope shapes.
+// The monitor client must read the exact status document the Bashy S16 CLI
+// emits. A fleet-list envelope must fail instead of silently hiding units.
 func TestMonitorReadsStatuses(t *testing.T) {
-	for name, body := range map[string]string{
-		"bare array": `[{"unit":"gateway","provider":"process","enabled":true,"state":"active","pid":91}]`,
-		"envelope":   `{"kind":"service","items":[{"unit":"gateway","provider":"process","enabled":true,"state":"active","pid":91}]}`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			var argv []string
-			m := &Monitor{Run: func(_ context.Context, args ...string) ([]byte, error) {
-				argv = args
-				return []byte(body), nil
-			}}
-			sts, err := m.Statuses(context.Background())
-			if err != nil {
-				t.Fatalf("statuses: %v", err)
-			}
-			if fmt.Sprint(argv) != fmt.Sprint([]string{"service", "status", "--json"}) {
-				t.Fatalf("argv = %v", argv)
-			}
-			if len(sts) != 1 || sts[0].State != service.Active || sts[0].PID != 91 {
-				t.Fatalf("statuses = %+v", sts)
-			}
-		})
+	var argv []string
+	var body = `{"schema_version":"bashy-service-status-v1","monitor":{"running":true},"units":[{"unit":"gateway","provider":"process","enabled":true,"state":"active","pid":91}]}`
+	m := &Monitor{Run: func(_ context.Context, args ...string) ([]byte, error) {
+		argv = args
+		return []byte(body), nil
+	}}
+	sts, err := m.Statuses(context.Background())
+	if err != nil {
+		t.Fatalf("statuses: %v", err)
+	}
+	if fmt.Sprint(argv) != fmt.Sprint([]string{"service", "status", "--json"}) {
+		t.Fatalf("argv = %v", argv)
+	}
+	if len(sts) != 1 || sts[0].State != service.Active || sts[0].PID != 91 {
+		t.Fatalf("statuses = %+v", sts)
+	}
+	if _, err := decodeStatusUnits([]byte(`{"items":[]}`)); err == nil {
+		t.Fatal("fleet list envelope was silently accepted as service status")
 	}
 }
 

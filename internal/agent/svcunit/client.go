@@ -99,33 +99,30 @@ func (m *Monitor) Statuses(ctx context.Context) ([]service.Status, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := decodeRows[service.Status](out)
+	rows, err := decodeStatusUnits(out)
 	if err != nil {
 		return nil, fmt.Errorf("svcunit: decode service status: %w", err)
 	}
 	return rows, nil
 }
 
-// decodeRows accepts either the kind-tagged envelope fleet's --json writers
-// emit (`{"items":[…]}`) or a bare JSON array, so a change of the list
-// envelope cannot silently blank outpost's view of the host.
-func decodeRows[T any](data []byte) ([]T, error) {
-	trimmed := strings.TrimSpace(string(data))
-	if trimmed == "" || trimmed == "null" {
-		return nil, nil
+// decodeStatusUnits consumes the exact document emitted by S16's
+// `bashy service status --json`. A missing units field is a contract error,
+// never an empty healthy host: silently accepting another envelope would
+// withdraw every live route on the next reconcile.
+func decodeStatusUnits(data []byte) ([]service.Status, error) {
+	var doc struct {
+		Units json.RawMessage `json:"units"`
 	}
-	if strings.HasPrefix(trimmed, "[") {
-		var rows []T
-		if err := json.Unmarshal([]byte(trimmed), &rows); err != nil {
-			return nil, err
-		}
-		return rows, nil
-	}
-	var env struct {
-		Items []T `json:"items"`
-	}
-	if err := json.Unmarshal([]byte(trimmed), &env); err != nil {
+	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil, err
 	}
-	return env.Items, nil
+	if doc.Units == nil {
+		return nil, fmt.Errorf("service status document has no units field")
+	}
+	var rows []service.Status
+	if err := json.Unmarshal(doc.Units, &rows); err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
