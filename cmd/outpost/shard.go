@@ -258,15 +258,21 @@ func (d *peerPlaneDiscoverer) peerPlatforms(ctx context.Context) map[string]stri
 	return out
 }
 
-// newShardManager builds the shard manager when sharding is on and the mesh +
-// peer-plane are both up; nil otherwise (the daemon then starts nothing).
-func newShardManager(fc *conf.FileConfig, meshHost *mesh.Host, peerSvc *peerplane.Service, rdv *mesh.Rendezvous) *shard.Manager {
-	if !fc.ShardOn() || meshHost == nil || peerSvc == nil {
-		return nil
+// newShardManager builds the shard manager from the unit's declaration plus
+// this host's mesh wiring. It REFUSES with a reason rather than returning a
+// silent nil: an enabled `outpost.shard` unit on a host with no mesh, no peer
+// plane or no pairing is an operator-visible misconfiguration, and the old
+// `ShardOn()` gate hid it behind "sharding not enabled on this host".
+func newShardManager(fc *conf.FileConfig, ss shardSettings, meshHost *mesh.Host, peerSvc *peerplane.Service, rdv *mesh.Rendezvous) (*shard.Manager, error) {
+	if meshHost == nil {
+		return nil, fmt.Errorf("shard: the libp2p mesh data plane is not up — sharding carries its RPC over it (`outpost builtins set --mesh=on`)")
+	}
+	if peerSvc == nil {
+		return nil, fmt.Errorf("shard: the peer plane is not up — sharding discovers its same-LAN ring through it")
 	}
 	cb := cloudboxHTTPBase(fc)
 	if cb == "" {
-		return nil
+		return nil, fmt.Errorf("shard: this host is not paired — the shard ring is discovered through cloudbox")
 	}
 	disc := &peerPlaneDiscoverer{
 		svc:      peerSvc,
@@ -277,12 +283,8 @@ func newShardManager(fc *conf.FileConfig, meshHost *mesh.Host, peerSvc *peerplan
 	if rdv != nil {
 		disc.rdvPeerID = rdv.PeerIDForHost
 	}
-	var bins shard.ServeBins
-	var nodeBytes uint64
-	if fc.Shard != nil {
-		bins = shard.ServeBins{ServerBin: fc.Shard.ServerBin, WorkerBin: fc.Shard.WorkerBin}
-		nodeBytes = fc.Shard.NodeBytes
-	}
+	bins := shard.ServeBins{ServerBin: ss.ServerBin, WorkerBin: ss.WorkerBin}
+	nodeBytes := ss.NodeBytes
 	if nodeBytes == 0 {
 		nodeBytes = detectShardBudget() // zero-config: the node measures its own capacity
 	}
@@ -303,9 +305,9 @@ func newShardManager(fc *conf.FileConfig, meshHost *mesh.Host, peerSvc *peerplan
 		LocalLoad: func() ([]shard.LocalModel, uint64) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			return ollamaLocalModels(ctx, "http://127.0.0.1:11434"), nodeBytes
+			return ollamaLocalModels(ctx, defaultOllamaURL), nodeBytes
 		},
-	})
+	}), nil
 }
 
 // ollamaLocalModels queries the local ollama /api/tags for this node's models +

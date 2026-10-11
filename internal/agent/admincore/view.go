@@ -20,14 +20,22 @@ import (
 // (podman/ollama). Enabled reflects the saved config; Available is the
 // live detection result so the SPA can grey out the toggle when the
 // daemon isn't running.
+// BuiltinView is what the host HAS, not what is switched on: whether a
+// local daemon was detected and where it answers.
+//
+// There is no Enabled field any more. Whether outpost proxies the daemon is
+// a service unit's desired state (`services` below, joined with the
+// monitor's view on ServiceStatus), and carrying a second copy here would
+// be exactly the drift the unit model exists to remove. Detection stays,
+// because "podman is not installed on this host" is the one thing a
+// declaration can never tell an operator.
 type BuiltinView struct {
-	Enabled   bool   `json:"enabled"`
 	Available bool   `json:"available"`
 	Target    string `json:"target,omitempty"`
 }
 
-func toBuiltinView(enabled bool, bt agent.BuiltinTarget) BuiltinView {
-	v := BuiltinView{Enabled: enabled, Available: bt.Available}
+func toBuiltinView(bt agent.BuiltinTarget) BuiltinView {
+	v := BuiltinView{Available: bt.Available}
 	switch bt.Scheme {
 	case "unix", "npipe":
 		if bt.Socket != "" {
@@ -114,7 +122,6 @@ type ClusterView struct {
 // vocabulary. Detection-only — outpost never spawns or restarts
 // ycode itself.
 type YcodeView struct {
-	Enabled           bool   `json:"enabled"`
 	Running           bool   `json:"running"`
 	Installed         bool   `json:"installed"`
 	StaleManifest     bool   `json:"stale_manifest"`
@@ -125,39 +132,34 @@ type YcodeView struct {
 	DownloadURL       string `json:"download_url"`
 }
 
-// YcodeShareSurfaceView is one row in the SPA's ycode-share toggle
-// list — the catalog entry's metadata plus the effective on/off
-// state (after applying per-surface overlay against catalog default).
+// YcodeShareSurfaceView is one entry of the ycode surface CATALOG: what
+// this outpost build knows how to publish, and which entries it publishes
+// when the unit's `settings.share` names none.
+//
+// It is no longer a toggle row. Which surfaces are published is one
+// declared list (`settings.share` on the ycode unit), so the SPA offers the
+// catalog and writes that list rather than a per-surface boolean map.
 type YcodeShareSurfaceView struct {
 	Name      string `json:"name"`
 	Path      string `json:"path"`
 	Label     string `json:"label"`
-	Enabled   bool   `json:"enabled"`
 	DefaultOn bool   `json:"default_on"`
 }
 
-// toYcodeShareSurfacesView walks the catalog and folds the per-surface
-// overlay against each entry's DefaultOn, producing the effective
-// state the SPA renders. Always returns the full catalog so the UI
-// can show every available toggle, including disabled ones.
-func toYcodeShareSurfacesView(overlay map[string]bool) []YcodeShareSurfaceView {
+// ycodeShareSurfacesView is the catalog this build can publish.
+func ycodeShareSurfacesView() []YcodeShareSurfaceView {
 	cat := otel.YcodeSurfaces()
 	out := make([]YcodeShareSurfaceView, 0, len(cat))
 	for _, s := range cat {
 		out = append(out, YcodeShareSurfaceView{
-			Name:      s.Name,
-			Path:      s.Path,
-			Label:     s.Label,
-			Enabled:   otel.YcodeSurfaceEnabled(overlay, s.Name),
-			DefaultOn: s.DefaultOn,
+			Name: s.Name, Path: s.Path, Label: s.Label, DefaultOn: s.DefaultOn,
 		})
 	}
 	return out
 }
 
-func toYcodeView(enabled bool, info ycode.Info) YcodeView {
+func toYcodeView(info ycode.Info) YcodeView {
 	v := YcodeView{
-		Enabled:           enabled,
 		PlatformSupported: info.PlatformSupported,
 		BinaryPath:        info.BinaryPath,
 		APIEndpoint:       info.APIEndpoint,
@@ -256,21 +258,15 @@ type SafeView struct {
 	SSHAllowAgentForward    bool             `json:"ssh_allow_agent_forward"`
 	SSHForwardSockets       []string         `json:"ssh_forward_sockets"`
 	SFTPEnabled             bool             `json:"sftp_enabled"`
-	FilesEnabled            bool             `json:"files_enabled"`
-	FilesAllowWrite         bool             `json:"files_allow_write"`
-	FilesScope              string           `json:"files_scope"`
 	ClientOnly              bool             `json:"client_only"`
-	Podman                  BuiltinView      `json:"podman"`
-	Sandbox                 BuiltinView      `json:"sandbox"`
-	Ollama                  BuiltinView      `json:"ollama"`
-	OllamaPoolEnabled       bool             `json:"ollama_pool_enabled"`
-	WarmServingEnabled      bool             `json:"warm_serving_enabled"`
-	WarmBudgetFrac          float64          `json:"warm_budget_frac,omitempty"`
-	WarmDesired             []string         `json:"warm_desired,omitempty"`
-	LANInferenceEnabled     bool             `json:"lan_inference_enabled"`
-	LANInferencePort        int              `json:"lan_inference_port,omitempty"`
-	MeshEnabled             bool             `json:"mesh_enabled"`
-	MeshPort                int              `json:"mesh_port,omitempty"`
+	// Podman and Ollama report DETECTION only — whether the daemon is
+	// installed and reachable on this host. Whether outpost proxies it is
+	// the matching service unit's desired state, in Services below.
+	Podman      BuiltinView `json:"podman"`
+	Ollama      BuiltinView `json:"ollama"`
+	WarmDesired []string    `json:"warm_desired,omitempty"`
+	MeshEnabled bool        `json:"mesh_enabled"`
+	MeshPort    int         `json:"mesh_port,omitempty"`
 	// Services is every declared service unit and its desired state. It
 	// replaces the hand-maintained `bashy_services`, `bashy_apps_enabled`,
 	// `loom_enabled` and `meet_enabled` rows: a new daemon is a declaration,
@@ -282,20 +278,13 @@ type SafeView struct {
 	ServiceSecrets []SecretPresence `json:"service_secrets,omitempty"`
 	// serviceSSO is the unredacted key map, carried unexported so it can
 	// never be marshalled: Redact turns it into ServiceSecrets and clears it.
-	serviceSSO             map[string]string
-	BashyVersion           string    `json:"bashy_version,omitempty"`
-	ShardEnabled           bool      `json:"shard_enabled"`
-	CloudDOEnabled         bool      `json:"cloud_do_enabled"`
-	HasCloudDOToken        bool      `json:"has_cloud_do_token"`
-	OtelEnabled            bool      `json:"otel_enabled"`
-	OtelPoolEnabled        bool      `json:"otel_pool_enabled"`
-	Ycode                  YcodeView `json:"ycode"`
-	YcodeShareEnabled      bool      `json:"ycode_share_enabled"`
-	YcodeShareRequireLogin bool      `json:"ycode_share_require_login"`
-	// YcodeShareSurfaces is the catalog rendered as effective state:
-	// every entry the SPA might offer, with the boolean folding the
-	// per-surface overlay against the catalog's DefaultOn. The SPA
-	// renders one toggle row per entry; the value drives the switch.
+	serviceSSO      map[string]string
+	BashyVersion    string    `json:"bashy_version,omitempty"`
+	CloudDOEnabled  bool      `json:"cloud_do_enabled"`
+	HasCloudDOToken bool      `json:"has_cloud_do_token"`
+	Ycode           YcodeView `json:"ycode"`
+	// YcodeShareSurfaces is the CATALOG this build can publish, for the SPA
+	// to offer when writing the ycode unit's `settings.share` list.
 	YcodeShareSurfaces []YcodeShareSurfaceView `json:"ycode_share_surfaces"`
 	UpdateMode         string                  `json:"update_mode"`
 	LLMPool            LLMPoolStatusView       `json:"llm_pool"`
@@ -372,43 +361,27 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		SSHAllowAgentForward:    fc.SSHAllowAgentForwardOn(),
 		SSHForwardSockets:       sshSockets,
 		SFTPEnabled:             fc.SFTPOn(),
-		FilesEnabled:            fc.FilesOn(),
-		FilesAllowWrite:         fc.FilesAllowWrite,
-		FilesScope:              fc.FilesScope,
 		ClientOnly:              fc.ClientOnly,
-		Podman:                  toBuiltinView(fc.PodmanOn(), s.detector.Podman()),
-		// Sandbox shares the podman socket — availability is the podman
-		// probe; enabled is its own toggle.
-		Sandbox:                toBuiltinView(fc.SandboxOn(), s.detector.Podman()),
-		Ollama:                 toBuiltinView(fc.OllamaOn(), s.detector.Ollama()),
-		OllamaPoolEnabled:      fc.OllamaPoolOn(),
-		WarmServingEnabled:     fc.WarmServingOn(),
-		WarmBudgetFrac:         fc.WarmBudgetFracOrDefault(),
-		WarmDesired:            fc.WarmDesired,
-		LANInferenceEnabled:    fc.LANInferenceOn(),
-		LANInferencePort:       fc.LANInferencePort,
-		MeshEnabled:            fc.MeshOn(),
-		Services:               serviceUnitViews(s.deps.Services),
-		serviceSSO:             fc.ServiceSSO,
-		BashyVersion:           fc.BashyVersion,
-		ShardEnabled:           fc.ShardOn(),
-		CloudDOEnabled:         fc.CloudDOOn(),
-		HasCloudDOToken:        fc.CloudDOToken != "",
-		MeshPort:               fc.MeshPort,
-		OtelEnabled:            fc.OtelOn(),
-		OtelPoolEnabled:        fc.OtelPoolOn(),
-		Ycode:                  toYcodeView(fc.YcodeOn(), ycode.Detect()),
-		YcodeShareEnabled:      fc.YcodeShareOn(),
-		YcodeShareRequireLogin: fc.YcodeShareRequireLoginOn(),
-		YcodeShareSurfaces:     toYcodeShareSurfacesView(fc.YcodeShareSurfaces),
-		UpdateMode:             fc.UpdateModeName(),
-		LLMPool:                s.llmPoolStatusView(fc),
-		PeerTiers:              s.PeerTiers(),
-		Mesh:                   s.MeshStatus(),
-		AppHealth:              s.AppHealth(),
-		ClusterLLM:             s.clusterLLMView(fc),
-		Cluster:                toClusterView(fc),
-		Outbound:               s.outboundList(),
+		Podman:                  toBuiltinView(s.detector.Podman()),
+		Ollama:                  toBuiltinView(s.detector.Ollama()),
+		WarmDesired:             fc.WarmDesired,
+		MeshEnabled:             fc.MeshOn(),
+		Services:                serviceUnitViews(s.deps.Services),
+		serviceSSO:              fc.ServiceSSO,
+		BashyVersion:            fc.BashyVersion,
+		CloudDOEnabled:          fc.CloudDOOn(),
+		HasCloudDOToken:         fc.CloudDOToken != "",
+		MeshPort:                fc.MeshPort,
+		Ycode:                   toYcodeView(ycode.Detect()),
+		YcodeShareSurfaces:      ycodeShareSurfacesView(),
+		UpdateMode:              fc.UpdateModeName(),
+		LLMPool:                 s.llmPoolStatusView(fc),
+		PeerTiers:               s.PeerTiers(),
+		Mesh:                    s.MeshStatus(),
+		AppHealth:               s.AppHealth(),
+		ClusterLLM:              s.clusterLLMView(fc),
+		Cluster:                 toClusterView(fc),
+		Outbound:                s.outboundList(),
 		Defaults: map[string]string{
 			"server_url": "https://ai.dhnt.io",
 			"name":       defaultName,
@@ -427,15 +400,16 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 }
 
 // llmPoolStatusView returns the live pool diagnostic for the admin UI.
-// When the pool isn't wired (LLMPoolStatus closure nil) or pool
-// participation is off in the config, returns just {Enabled:false}.
-func (s *Server) llmPoolStatusView(fc *conf.FileConfig) LLMPoolStatusView {
+//
+// Enabled now comes from the LIVE capability, not from a config key: the
+// closure reports the ollama unit's actual state, so the diagnostic can no
+// longer say "enabled" about a pool whose unit is disabled or whose daemon
+// went away. An unwired closure (test paths) reports the zero view.
+func (s *Server) llmPoolStatusView(*conf.FileConfig) LLMPoolStatusView {
 	if s.deps.LLMPoolStatus == nil {
-		return LLMPoolStatusView{Enabled: fc.OllamaPoolOn()}
+		return LLMPoolStatusView{}
 	}
-	v := s.deps.LLMPoolStatus()
-	v.Enabled = fc.OllamaPoolOn()
-	return v
+	return s.deps.LLMPoolStatus()
 }
 
 // ClusterLLMView is the operator-facing snapshot of the intra-home

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -18,9 +19,19 @@ import (
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 )
 
-// TestBuiltinsTogglePodmanOllama — toggling podman/ollama via /api/config/builtins
-// persists to the FileConfig and is reflected in /api/config.
-func TestBuiltinsTogglePodmanOllama(t *testing.T) {
+// TestBuiltinsPodmanOllamaAreServiceUnits — the REST surface no longer
+// carries a podman or ollama toggle, and /api/config reports them as
+// DETECTION only.
+//
+// It used to POST {"podman":true,"ollama":true} and assert the flags
+// persisted to agent.json. Both proxies are in-process service units now
+// (`outpost.podman`, `outpost.ollama`), so the write that turns one on is
+// the generic service write exercised by the next test. The regression
+// this replaces: a stale caller still sending the old field must not get an
+// "ok" for a write that silently went nowhere — encoding/json drops unknown
+// fields, so the assertion is that nothing service-shaped lands in
+// agent.json and that the view carries no `enabled` to mislead the SPA.
+func TestBuiltinsPodmanOllamaAreServiceUnits(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "agent.json")
 	// Seed a configured (paired) FileConfig so requireSession bypass is
@@ -43,38 +54,66 @@ func TestBuiltinsTogglePodmanOllama(t *testing.T) {
 	}
 
 	w = doJSON(s, http.MethodPost, "/api/config/builtins",
-		map[string]any{"podman": true, "ollama": true}, cookie)
+		map[string]any{"podman": true, "ollama": true, "ollama_pool": true,
+			"files": true, "files_allow_write": true, "warm_budget_frac": 0.5,
+			"lan_inference": true, "shard": true, "otel_pool": true}, cookie)
 	if w.Code != http.StatusOK {
-		t.Fatalf("toggle podman/ollama on: %d %s", w.Code, w.Body.String())
+		t.Fatalf("a legacy toggle body should still parse: %d %s", w.Code, w.Body.String())
 	}
-
-	fc, err := conf.LoadFile(configPath)
+	raw, err := os.ReadFile(configPath)
 	if err != nil {
-		t.Fatalf("reload: %v", err)
+		t.Fatal(err)
 	}
-	if !fc.PodmanOn() || !fc.OllamaOn() {
-		t.Fatalf("flags not persisted: PodmanOn=%v OllamaOn=%v", fc.PodmanOn(), fc.OllamaOn())
+	var keys map[string]any
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		t.Fatalf("unmarshal saved config: %v", err)
+	}
+	for _, retired := range []string{
+		"podman_enabled", "ollama_enabled", "ollama_pool_enabled",
+		"files_enabled", "files_allow_write", "warm_budget_frac",
+		"lan_inference_enabled", "shard", "otel_pool_enabled",
+	} {
+		if _, ok := keys[retired]; ok {
+			t.Errorf("a legacy builtins POST wrote retired key %q — those live on the unit declaration now", retired)
+		}
 	}
 
-	// /api/config should reflect podman + ollama as enabled. Available may
-	// be true or false depending on the test box; we only assert Enabled
-	// here.
+	// /api/config reports what the host HAS, not what is switched on. There
+	// is no `enabled` field to disagree with the unit's desired state.
 	w = doJSON(s, http.MethodGet, "/api/config", nil, cookie)
 	if w.Code != http.StatusOK {
 		t.Fatalf("get config: %d %s", w.Code, w.Body.String())
 	}
-	var view struct {
-		Podman builtinView `json:"podman"`
-		Ollama builtinView `json:"ollama"`
-	}
+	var view map[string]json.RawMessage
 	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
 		t.Fatalf("unmarshal: %v body=%s", err, w.Body.String())
 	}
-	if !view.Podman.Enabled {
-		t.Fatalf("podman.enabled = false, want true")
+	for _, daemon := range []string{"podman", "ollama"} {
+		blob, ok := view[daemon]
+		if !ok {
+			t.Fatalf("/api/config dropped the %s detection row", daemon)
+		}
+		var det map[string]any
+		if err := json.Unmarshal(blob, &det); err != nil {
+			t.Fatalf("%s row: %v", daemon, err)
+		}
+		if _, ok := det["enabled"]; ok {
+			t.Errorf("%s detection row still carries `enabled` — desired state is the unit's", daemon)
+		}
+		if _, ok := det["available"]; !ok {
+			t.Errorf("%s detection row lost `available`", daemon)
+		}
 	}
-	if !view.Ollama.Enabled {
-		t.Fatalf("ollama.enabled = false, want true")
+	for _, retired := range []string{
+		"files_enabled", "files_allow_write", "files_scope", "sandbox",
+		"ollama_pool_enabled", "warm_serving_enabled", "warm_budget_frac",
+		"lan_inference_enabled", "lan_inference_port", "shard_enabled",
+		"otel_enabled", "otel_pool_enabled", "ycode_share_enabled",
+		"ycode_share_require_login",
+	} {
+		if _, ok := view[retired]; ok {
+			t.Errorf("/api/config still reports retired row %q", retired)
+		}
 	}
 }
 
@@ -138,18 +177,19 @@ func TestBuiltinsToggleServiceUnitREST(t *testing.T) {
 	}
 }
 
-// TestBuiltinsToggleOllamaPool — pool participation is a separate
-// toggle from Ollama itself. Default-on when Ollama is on, but a user
-// can explicitly opt out to keep their local Ollama private.
-func TestBuiltinsToggleOllamaPool(t *testing.T) {
+// TestBuiltinsConfigureServiceUnitREST — what replaced the per-service
+// toggles: the pool, the warm budget, the File Browser's write switch and
+// scope, the sandbox caps and the shard ring are all `service_settings`
+// writes on a unit declaration, and the response reports them applied LIVE.
+//
+// This is the regression floor for the retired
+// TestBuiltinsToggleOllamaPool / files / warm / lan_inference REST tests:
+// one assertion over the generic path covers every one of them, because
+// nothing in this layer knows which unit is which.
+func TestBuiltinsConfigureServiceUnitREST(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "agent.json")
-	// Pair + enable Ollama so the pool toggle is operative.
-	on := true
-	if err := conf.SaveFile(configPath, &conf.FileConfig{
-		AgentName:     "h",
-		OllamaEnabled: &on,
-	}); err != nil {
+	if err := conf.SaveFile(configPath, &conf.FileConfig{AgentName: "h"}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	user, err := hostauth.CurrentUser()
@@ -157,44 +197,61 @@ func TestBuiltinsToggleOllamaPool(t *testing.T) {
 		t.Skip("cannot determine OS user")
 	}
 	s := newTestServer(t, configPath, map[string]string{user: "secret"}, nil)
+	svc := newFakeServiceOps("ollama", "ollama-pool", "files", "warm")
+	s.core.SetServices(svc)
 	w := doJSON(s, http.MethodPost, "/api/login", map[string]string{"user": user, "password": "secret"}, "")
 	cookie := extractCookie(w, cookieName)
 	if cookie == "" {
 		t.Fatal("missing session cookie after login")
 	}
 
-	// /api/config reflects pool default-on when Ollama is on.
-	w = doJSON(s, http.MethodGet, "/api/config", nil, cookie)
-	var view struct {
-		OllamaPoolEnabled bool `json:"ollama_pool_enabled"`
-	}
-	_ = json.Unmarshal(w.Body.Bytes(), &view)
-	if !view.OllamaPoolEnabled {
-		t.Fatal("pool default should be on when Ollama is on")
-	}
-
-	// Operator opts out.
-	w = doJSON(s, http.MethodPost, "/api/config/builtins",
-		map[string]any{"ollama_pool": false}, cookie)
+	w = doJSON(s, http.MethodPost, "/api/config/builtins", map[string]any{
+		"services": map[string]any{"ollama": true, "ollama-pool": true, "files": true, "warm": true},
+		"service_settings": map[string]any{
+			"files": map[string]string{"settings.allow_write": "true", "settings.scope": "/srv"},
+			"warm":  map[string]string{"settings.budget_frac": "0.5"},
+		},
+	}, cookie)
 	if w.Code != http.StatusOK {
-		t.Fatalf("toggle pool off: %d %s", w.Code, w.Body.String())
+		t.Fatalf("configure service units: %d %s", w.Code, w.Body.String())
 	}
-	fc, _ := conf.LoadFile(configPath)
-	if fc.OllamaPoolOn() {
-		t.Fatal("pool should be off after explicit opt-out")
+	var res struct {
+		OK              bool `json:"ok"`
+		Restarting      bool `json:"restarting"`
+		ServicesApplied bool `json:"services_applied"`
 	}
-
-	// Opting back in by passing true through.
-	w = doJSON(s, http.MethodPost, "/api/config/builtins",
-		map[string]any{"ollama_pool": true}, cookie)
-	if w.Code != http.StatusOK {
-		t.Fatalf("toggle pool on: %d %s", w.Code, w.Body.String())
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
 	}
-	fc, _ = conf.LoadFile(configPath)
-	if !fc.OllamaPoolOn() {
-		t.Fatal("pool should be on after explicit opt-in")
+	if !res.OK || !res.ServicesApplied {
+		t.Fatalf("result = %+v, want ok + services_applied", res)
 	}
-	_ = on
+	if res.Restarting {
+		t.Fatal("a service write claimed a restart it does not need")
+	}
+	for _, name := range []string{"ollama", "ollama-pool", "files", "warm"} {
+		if !svc.enabled[name] {
+			t.Errorf("desired state for %q was not written: %+v", name, svc.enabled)
+		}
+	}
+	if svc.fields["files"]["settings.allow_write"] != "true" ||
+		svc.fields["files"]["settings.scope"] != "/srv" {
+		t.Errorf("File Browser settings were not written: %+v", svc.fields["files"])
+	}
+	if svc.fields["warm"]["settings.budget_frac"] != "0.5" {
+		t.Errorf("warm budget was not written: %+v", svc.fields["warm"])
+	}
+	// Nothing service-shaped reached agent.json: the declaration is the only
+	// copy of those settings.
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, retired := range []string{"files_scope", "files_allow_write", "warm_budget_frac", "ollama_pool_enabled"} {
+		if strings.Contains(string(raw), retired) {
+			t.Errorf("agent.json gained retired key %q: %s", retired, raw)
+		}
+	}
 }
 
 // TestUpsertAppAcceptsURL — POST /api/apps with a single "url" field

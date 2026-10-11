@@ -15,7 +15,7 @@ const (
 )
 
 // Surfaces returns the ordered list of ycode observability surfaces
-// outpost exposes when OtelOn() is true. Order is significant only for
+// outpost exposes while the `outpost.otel` unit is active. Order is significant only for
 // log output (prometheus first because it's the most-queried) — every
 // caller iterates the slice and treats each independently.
 func Surfaces() []string {

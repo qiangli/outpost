@@ -349,7 +349,9 @@ Constraints / behavior:
 
 ### Built-in proxy apps (`internal/agent/builtin_apps.go`)
 
-Optional local-daemon proxies: `podman` and `ollama`. `DetectPodman()` probes the usual rootless/root socket paths; `DetectOllama()` probes `http://127.0.0.1:11434`. The returned `BuiltinTarget{Available bool, Socket/URL string}` lets the admin UI grey out toggles for daemons that aren't installed (still showing "tried <path>"). When enabled they register into the same `AppRegistry` as user-defined apps at boot, so flipping `PodmanEnabled` / `OllamaEnabled` from the admin UI triggers a self-restart.
+Optional local-daemon proxies: `podman` and `ollama`. `DetectPodman()` probes the usual rootless/root socket paths; `DetectOllama()` probes `http://127.0.0.1:11434`. The returned `BuiltinTarget{Available bool, Socket/URL string}` is what the admin UI renders as host DETECTION (it no longer carries an `Enabled` field).
+
+**Both are service units now**, not boot toggles: `outpost.podman` and `outpost.ollama` (`cmd/outpost/capability_podman.go`, `capability_ollama.go`). The capability registers the mount from the detected endpoint on Activate and unregisters it on Deactivate, and its Health re-probes — so a daemon the operator stopped takes its app route (and, for ollama, the `llm` advertisement cloudbox routes inference by) with it, instead of leaving a tile that 502s. There is no `podman_enabled` / `ollama_enabled` key; `settings.socket` / `settings.url` are the operator's override for a non-standard endpoint.
 
 **`BuiltinTarget.Scheme` is authoritative — never hardcode `"unix"` at a
 registration site.** Podman's endpoint is platform-dependent, and
@@ -374,14 +376,14 @@ can't find `win-sshproxy.exe` (see the cluster section below).
 
 ### Container sandbox provider (`internal/agent/sandbox/`)
 
-A third built-in, `sandbox` (`BuiltinSandbox`, gated on `SandboxEnabled`, default off), registers a SEPARATE app on the same podman socket `DetectPodman()` finds — but wraps the proxy with a **filter** so it is safe to expose to a thin client or an untrusted tenant, unlike the raw `/app/podman/` passthrough (which stays admin-only for trusted self-use). The package mirrors `internal/agent/ollama/`:
+A third mount, `sandbox` (`BuiltinSandbox`, the `outpost.sandbox` unit), registers a SEPARATE app on the same podman socket `DetectPodman()` finds — but wraps the proxy with a **filter** so it is safe to expose to a thin client or an untrusted tenant, unlike the raw `/app/podman/` passthrough (which stays admin-only for trusted self-use). The package mirrors `internal/agent/ollama/`:
 
 - `filter.go` — the security core. An `http` middleware that vets `POST .../containers/create` and `.../exec` bodies in BOTH wire shapes (docker-compat PascalCase `HostConfig`, and libpod lowercase SpecGenerator — ycode's gateway drives the latter). It denies `privileged`, host network/PID/IPC/UTS/user/cgroup namespaces, host bind mounts outside `ScratchHostPrefix`, added capabilities, device passthrough, and confinement-disabling `security-opt`/`selinux_opt`; it injects/clamps per-request memory/CPU/pids caps. Default-deny: an unparseable create body is rejected, never forwarded.
-- `policy.go` — `Policy{MaxMemoryBytes, NanoCPUs, PidsLimit, MaxContainers, AllowedImages, ScratchHostPrefix}`, built in `main.go` from the `sandbox_*` FileConfig fields. Escape knobs are NOT tunable — the mount always strips them.
+- `policy.go` — `Policy{MaxMemoryBytes, NanoCPUs, PidsLimit, MaxContainers, AllowedImages, ScratchHostPrefix}`, built by `sandboxPolicy(cfg)` from the unit's `settings` (`max_memory_mb`, `cpus`, `pids_limit`, `max_containers`, `allowed_images`, `scratch_dir`). Escape knobs are NOT declarable — the mount always strips them, so no setting can widen the sandbox.
 - `service.go` / `counter.go` / `types.go` — glue + in-flight counter + the `CapacityReport` wire shape. `WrapProxy` runs `filter → counter → proxy`; `CapacityHandler` serves `/app/sandbox/_pool/capacity`.
 - `prewarm.go` — a self-contained libpod image client (stdlib only, no vknode dependency) that pre-pulls the runnable images (`sandbox_prewarm_images`, defaulting to the concrete `sandbox_allowed_images` entries) so a remote create+start skips the image-pull cost — the dominant cold-start latency. A transparent pre-warmed *container* pool can't work at the raw-docker layer (the caller picks image/cmd/env at create time), so pre-pulling is the correct Phase-A warm. Started under the errgroup in `main.go` (like the ollama watcher); readiness surfaces in `CapacityReport.WarmImages`.
 
-Boot wiring (next to the podman/ollama blocks in `cmd/outpost/main.go`) is symmetric with ollama: `RegisterFromConfig({Name:"sandbox", Scheme:"unix", Socket, RequireLogin:true})` then `SetCapabilities("sandbox", {Type:"sandbox"})` + `SetProxyWrap(svc.WrapProxy)` + `AddIntercept("/_pool/capacity", svc.CapacityHandler())`. Cloudbox discovers sandbox hosts via the `{type:"sandbox"}` capability on `/apps` and can probe the capacity endpoint for load-aware routing — the same pattern the LLM pool uses. The four-surface toggle (`sandbox_enabled`) is wired through `admincore.SetBuiltins`, the `outpost_set_builtins` MCP arg, and `builtins set --sandbox`; see `docs/settings.md` for the policy fields.
+Wiring lives in `sandboxCapability.Activate` (symmetric with ollama): `RegisterFromConfig({Name:"sandbox", Scheme: bt.Scheme, Socket, RequireLogin:true})` then `SetCapabilities("sandbox", {Type:"sandbox"})` + `SetProxyWrap(svc.WrapProxy)` + `AddIntercept("/_pool/capacity", svc.CapacityHandler())`, plus the prewarmer goroutine. Cloudbox discovers sandbox hosts via the `{type:"sandbox"}` capability on `/apps` and can probe the capacity endpoint for load-aware routing — the same pattern the LLM pool uses. A policy change applies LIVE (Configure rebuilds the filter; the filter reads the policy per request), so `--service-set sandbox.settings.max_memory_mb=2048` needs no restart. See `docs/settings.md` for the full settings table.
 
 ### Fleet inventory push (`internal/agent/fleetreg/`)
 
@@ -416,7 +418,7 @@ via `assetring.FolderDir`, which is all an inventory needs.
 
 ### Ollama LLM pool (`internal/agent/ollama/`)
 
-Beyond the per-host `/app/ollama/...` proxy described above, an outpost can join a **multi-host virtual LLM pool** that cloudbox fronts as a single OpenAI-compatible endpoint (`/v1/chat/completions`, `/v1/models`, etc.). The pool routes by model presence: a request for `llama3.2:1b` lands on whichever participating outpost actually has that model loaded. The outpost-side contribution is three small surfaces — registry push, capacity hint, and capabilities advertisement — all wired only when `fc.OllamaPoolOn()` (default-on whenever `OllamaEnabled` is on; explicit-off keeps the local Ollama private).
+Beyond the per-host `/app/ollama/...` proxy described above, an outpost can join a **multi-host virtual LLM pool** that cloudbox fronts as a single OpenAI-compatible endpoint (`/v1/chat/completions`, `/v1/models`, etc.). The pool routes by model presence: a request for `llama3.2:1b` lands on whichever participating outpost actually has that model loaded. The outpost-side contribution is three small surfaces — registry push, capacity hint, and capabilities advertisement — all owned by the `outpost.ollama-pool` unit, a strict extension of the `outpost.ollama` proxy unit (its declaration carries `requires:` the proxy, and activation refuses with that reason when the proxy is down).
 
 - **Registry push (`internal/agent/ollama/watcher.go`)** — every 30 s the watcher GETs the local daemon's `/api/tags`, diffs against the last published snapshot, and (on change OR every 5 min as a heartbeat) POSTs to `<cloudbox>/api/v1/llm/registry` with `Authorization: Bearer <access_token>`. Payload is `RegistryPushPayload{agent_name, version, heartbeat_at, models:[], capacity:{}}` defined in `types.go`. A 401 from cloudbox returns `ErrAuthRevoked` (pairing was pulled cloud-side); 5xx / network errors back off exponentially (5 s → 5 min cap) and retry. No access_token == no-op (the watcher logs once and blocks on ctx). Started under the same errgroup as the tunnel in `cmd/outpost/main.go`.
 - **Capacity probe (`/app/ollama/_pool/capacity`)** — a per-app intercept mounted on the same `/app/ollama/*` tree the daemon proxy uses, so cloudbox reaches it through the existing per-(host, app) `matrix_elev` cookie authority. Returns `CapacityReport{max_parallel, in_flight}` as JSON. `max_parallel` is read once at boot from `$OLLAMA_NUM_PARALLEL` (default 4); `in_flight` is a live atomic counter incremented by `Counter.Wrap` for the duration of any request whose path matches a generation endpoint (`/api/chat`, `/api/generate`, `/api/embed*`, `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`). Non-generation paths (`/api/tags`, `/api/show`, `/api/ps`) pass through without bumping the counter. Same counter is shared with the watcher so push payload + capacity endpoint report identical numbers.
@@ -427,7 +429,7 @@ Beyond the per-host `/app/ollama/...` proxy described above, an outpost can join
 - `SetProxyWrap(name, func(http.Handler) http.Handler)` — wraps the reverse proxy with middleware. Used for the in-flight counter. Passing nil clears.
 - `SetCapabilities(name, *AppCapabilities)` — decorates an existing entry with a typed-app descriptor. No-op when name is unknown (so a typo at boot doesn't crash).
 
-`OllamaPoolEnabled *bool` in `FileConfig` is the operator toggle (admin UI surfaces it under the Ollama row, dimmed when Ollama itself is off). Pool participation requires Ollama enabled + AccessToken present (paired). Push protocol contract lives in `internal/agent/ollama/types.go` — cloudbox decodes the same types from the request body.
+The `outpost.ollama-pool` unit's `enabled` bit is the operator switch (`outpost builtins set --service ollama-pool=on`; the admin UI's Services section renders it). Pool participation needs the proxy unit active + a cloudbox pairing. The push payload folds in the warm budget from the `outpost.warm` unit, the direct-LAN URL from the `outpost.lan-inference` unit's **bound** port, and the sharded-model descriptor from the `outpost.shard` unit's live manager — each read through that capability rather than from a config key, so a unit the operator just disabled stops being advertised. Push protocol contract lives in `internal/agent/ollama/types.go` — cloudbox decodes the same types from the request body.
 
 ### Intra-home distributed inference / sharding (`internal/agent/clusterllm/`)
 
@@ -598,10 +600,11 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   `bashy supervisord` (S16/S19 in flight). Until they ship, the daemon's
   declaration reads find only the embedded seeds and the status call fails, so
   exposure degrades as documented above. The subsystems that still carry their
-  own boot wiring (files, sandbox, podman/ollama proxies) move behind the
-  internal provider by adding a declaration (S17) plus one entry in
-  `outpostCapabilities()` — no other outpost change. The wrapped EXTERNAL
-  tools are already off that list (next bullet).
+  own boot wiring move behind the internal provider by adding a declaration
+  (S17) plus one entry in `outpostCapabilities()` — no other outpost
+  change. The wrapped EXTERNAL tools are already off that list (next
+  bullet), and so, as of Sprint 418 S18, are **all eleven in-process
+  surfaces** (the bullet after it).
 - **Wrapped external tools are service units, not outpost toggles (Sprint 418
   S18 child).** Zot (OCI registry: images + Ollama models), SeaweedFS (object
   store / S3 gateway), Kopia (snapshot-backup repo) and the Headlamp loopback
@@ -618,7 +621,61 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   code exposed once and never withdrew), a failed fetch is **retried** under
   the unit's restart policy (it used to log once and give up until the next
   daemon restart), and the port exists in **one** place.
-- **act_runner — the one in-process capability (`outpost.actrunner`, alias
+- **The retained in-process surfaces are service units too (Sprint 418 S18
+  child).** Eleven subsystems keep their implementation inside the daemon
+  but take their declaration, settings, enablement, status and exposure
+  from the SAME machinery as a seeded built-in or a third-party YAML:
+  `outpost.files` (the embedded File Browser; `settings.{scope,allow_write}`),
+  `outpost.podman` (the raw admin-only libpod passthrough),
+  `outpost.sandbox` (the filtered mount + capacity intercept + image
+  prewarmer), `outpost.ollama` (the per-host proxy + `llm` descriptor +
+  in-flight counter), `outpost.ollama-pool` (the registry push),
+  `outpost.warm` (`settings.budget_frac`), `outpost.shard`
+  (`settings.{role,peers,node_bytes,server_bin,worker_bin}`),
+  `outpost.lan-inference` (a LAN listener on its **declared** port),
+  `outpost.otel` (`settings.pool`), `outpost.ycode`
+  (`settings.{share,require_login}`) and `outpost.actrunner` (next bullet).
+  One file each: `cmd/outpost/capability_*.go`, registered in
+  `outpostCapabilities()`.
+
+  They are capabilities rather than process units because activation needs
+  something only this process can do — a compiled-in handler, a detected
+  and platform-dependent socket, a manifest-read bearer, this process's
+  libp2p forwarder, a load sensor shared with cluster placement. What the
+  declaration owns is everything decidable.
+
+  **Retired outright, no compatibility reader:** `agent.json`'s `files_*`
+  (except the daemon-internal `files_signing_key`), `podman_enabled`,
+  `sandbox_*`, `ollama_enabled`, `ollama_pool_enabled`,
+  `warm_serving_enabled`, `warm_budget_frac` (`warm_desired` stays — it is
+  runtime state `/admin/warm` drives), `lan_inference_*`, `otel_*`,
+  `ycode_*` and the whole `shard` block; `conf.ShardConfig`,
+  `FilesOn`/`PodmanOn`/`SandboxOn`/`OllamaOn`/`OllamaPoolOn`/
+  `WarmServingOn`/`WarmBudgetFracOrDefault`/`LANInferenceOn`/
+  `LANInferencePortOrDefault`/`OtelOn`/`OtelPoolOn`/`YcodeOn`/
+  `YcodeShareOn`/`YcodeShareRequireLoginOn`/`ShardOn`/`MeshNeeded`/
+  `PeerPlaneNeeded`; `otel.YcodeSurfaceEnabled`; their admincore params,
+  SafeView rows, MCP args, CLI flags and SPA toggles. `BuiltinView` lost
+  its `Enabled` field — it reports DETECTION only, because desired state
+  is the unit's.
+
+  Three things got better, and they are why this is not tidying: a
+  capability whose backend vanishes **withdraws its routes** (each Health
+  re-probes — socket connect, `/api/tags`, the ycode manifest — and a
+  failing one is cycled, where boot-time detection could only decide
+  once); an enabled unit with no backend **refuses with the reason** on
+  `outpost services` instead of logging one line and looking fine; and a
+  setting exists in **one** place, so `--service-set
+  sandbox.settings.max_memory_mb=2048` cannot drift from what the filter
+  reads. Two daemon decisions still read declared desired state, because
+  the mesh and peer plane are core functions rather than units:
+  `capabilityEnabled(store, capShard)` brings both up when an enabled unit
+  declares the shard capability — one read keyed off the capability id,
+  replacing the `ShardOn()` cascade. `POST /admin/warm` now resolves the
+  executor per request and answers 503-with-reason while the unit is down
+  (it used to be unmounted, i.e. a 404 indistinguishable from an old
+  outpost).
+- **act_runner — the provisioning-handshake capability (`outpost.actrunner`, alias
   `outpost.ci`; `cmd/outpost/capability_actrunner.go`).** The CI executor of
   the local-p2p-CICD loop (dhnt/docs/local-p2p-cicd.md): loom Actions +
   act_runner + zot, one Gitea Actions run gating both humans and the weave
@@ -637,7 +694,7 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   loom/zot it exposes nothing — it **dials OUT** to Gitea, NAT/mesh-friendly.
   An unresolvable instance or token is now a **refusal** with the reason (the
   old block logged "skipping" and left an enabled service looking fine while
-  nothing ran). See `docs/settings.md` → "Wrapped external tools".
+  nothing ran). See `docs/settings.md` → "In-process capabilities".
 - **Mobility-aware directory mirror (`FileConfig.Mirror`, `internal/agent/mirror`).**
   A continuous one-way live replica — distinct from `backup` (age-encrypted
   scheduled snapshots → cloudbox). Each `MirrorJob{Source, Service, LANOnly}`

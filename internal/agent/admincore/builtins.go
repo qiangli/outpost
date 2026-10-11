@@ -25,37 +25,19 @@ type BuiltinsParams struct {
 	SSHAllowAgentForward  *bool    `json:"ssh_allow_agent_forward,omitempty"`
 	SSHForwardSockets     []string `json:"ssh_forward_sockets,omitempty"`
 	SFTP                  *bool    `json:"sftp,omitempty"`
-	// Files builtin (embedded File Browser). Files toggles the mount;
-	// FilesAllowWrite flips read-only⇄read-write (all write ops together);
-	// FilesScope sets the confined root (nil = leave unchanged, empty
-	// string = the OS user's home). FilesAllowWrite is intentionally only
-	// settable here on the loopback admin plane — the cloud-facing surface
-	// has no path to it, which is what keeps "read-only by default" a real
-	// guarantee rather than a default.
-	Files           *bool   `json:"files,omitempty"`
-	FilesAllowWrite *bool   `json:"files_allow_write,omitempty"`
-	FilesScope      *string `json:"files_scope,omitempty"`
-	Podman          *bool   `json:"podman,omitempty"`
-	Sandbox         *bool   `json:"sandbox,omitempty"`
-	Ollama          *bool   `json:"ollama,omitempty"`
-	OllamaPool      *bool   `json:"ollama_pool,omitempty"`
-	// WarmServing toggles the adaptive, considerate warm-serving plane:
-	// keep a small conservative set of models resident (zero cold-start),
-	// yielding (unloading) whenever the host is busy with the user's own
-	// work and restoring when idle. Default ON for a paired Ollama node.
-	// WarmBudgetFrac sets the fraction of usable memory dedicated to warm
-	// preload (clamped to (0,1]; default 0.33). nil = leave unchanged.
-	WarmServing            *bool           `json:"warm_serving,omitempty"`
-	WarmBudgetFrac         *float64        `json:"warm_budget_frac,omitempty"`
-	Otel                   *bool           `json:"otel,omitempty"`
-	OtelPool               *bool           `json:"otel_pool,omitempty"`
-	Ycode                  *bool           `json:"ycode,omitempty"`
-	YcodeShare             *bool           `json:"ycode_share,omitempty"`
-	YcodeShareRequireLogin *bool           `json:"ycode_share_require_login,omitempty"`
-	YcodeShareSurfaces     map[string]bool `json:"ycode_share_surfaces,omitempty"`
-	Cluster                *bool           `json:"cluster,omitempty"`
-	ClusterAgent           *bool           `json:"cluster_agent,omitempty"`
-	ClusterVirtual         []string        `json:"cluster_virtual,omitempty"`
+	// The File Browser, the podman and sandbox container mounts, the Ollama
+	// proxy and its pool, the warm plane, the shard plane, the same-LAN
+	// inference listener and the observability / ycode surfaces are NOT
+	// fields here any more. Each was a toggle plus a handful of config keys
+	// that needed their own reader, lifecycle and exposure code; they are
+	// in-process service units now (capability `outpost.<name>`), so they
+	// are switched through Services and configured through ServiceSettings
+	// below — the same two writes a seeded built-in or a third-party daemon
+	// takes. Removing them is what makes "a new daemon needs no outpost
+	// change" true rather than aspirational.
+	Cluster        *bool    `json:"cluster,omitempty"`
+	ClusterAgent   *bool    `json:"cluster_agent,omitempty"`
+	ClusterVirtual []string `json:"cluster_virtual,omitempty"`
 	// UpdateMode is one of "auto" / "manual" / "never" (see
 	// conf.UpdateMode* constants). Pointer-string so nil = "leave
 	// unchanged"; non-nil with an invalid value is rejected by
@@ -69,22 +51,6 @@ type BuiltinsParams struct {
 	// TCP+QUIC listen port (0 = ephemeral). nil = leave unchanged.
 	Mesh     *bool `json:"mesh,omitempty"`
 	MeshPort *int  `json:"mesh_port,omitempty"`
-	// LANInference toggles the same-LAN direct-inference listener: a
-	// LAN-reachable reverse proxy to the local inference server, advertised
-	// to cloudbox so same-LAN callers reach this host's LLM directly (lower
-	// latency, bypassing the relay). LANInferencePort sets its listen port
-	// (0 = default 11436). This is a LAN-TRUST endpoint (no per-request
-	// auth) — an explicit opt-in. nil = leave unchanged.
-	LANInference     *bool `json:"lan_inference,omitempty"`
-	LANInferencePort *int  `json:"lan_inference_port,omitempty"`
-	// Shard is the Ollama sharding sub-feature: serve a model bigger than one
-	// node by splitting it across mesh peers. nil = leave unchanged; *bool=false
-	// opts OUT of the zero-config default (on for an owner-registered Ollama
-	// node). ShardPeers selects worker hostnames (nil = leave; empty/["auto"] =
-	// every same-LAN peer); ShardRole is "auto"/"leader"/"worker".
-	Shard      *bool    `json:"shard,omitempty"`
-	ShardPeers []string `json:"shard_peers,omitempty"`
-	ShardRole  *string  `json:"shard_role,omitempty"`
 	// Services is the generic desired-state write over service units: unit
 	// name -> enabled. It is the ONLY way outpost turns a service on or off,
 	// and it is the same write `bashy service enable|disable` performs — one
@@ -96,6 +62,11 @@ type BuiltinsParams struct {
 	// own config key, reader, lifecycle and exposure code; they are seeded
 	// unit DECLARATIONS now, so a third-party daemon an operator just
 	// declared is configured through this same map with no outpost change.
+	// The in-process outpost surfaces (the File Browser, the container
+	// mounts, the Ollama proxy and pool, the warm and shard planes, the
+	// same-LAN inference listener, the observability and ycode surfaces)
+	// went the same way: they are units whose capability happens to live
+	// inside this process, and nothing here knows which is which.
 	//
 	// Applies LIVE: the running monitor reconciles the new desired state and
 	// outpost's exposure reconciler republishes, so a toggle does not need
@@ -180,65 +151,11 @@ func (s *Server) SetBuiltins(ctx context.Context, p BuiltinsParams) (BuiltinsRes
 	if p.SFTP != nil {
 		fc.SFTPEnabled = p.SFTP
 	}
-	if p.Files != nil {
-		fc.FilesEnabled = p.Files
-	}
-	if p.FilesAllowWrite != nil {
-		fc.FilesAllowWrite = *p.FilesAllowWrite
-	}
-	if p.FilesScope != nil {
-		fc.FilesScope = *p.FilesScope
-	}
-	if p.Podman != nil {
-		fc.PodmanEnabled = p.Podman
-	}
-	if p.Sandbox != nil {
-		fc.SandboxEnabled = *p.Sandbox
-	}
-	if p.Ollama != nil {
-		fc.OllamaEnabled = p.Ollama
-	}
-	if p.OllamaPool != nil {
-		fc.OllamaPoolEnabled = p.OllamaPool
-	}
-	if p.WarmServing != nil {
-		fc.WarmServingEnabled = p.WarmServing
-	}
-	if p.WarmBudgetFrac != nil {
-		if *p.WarmBudgetFrac <= 0 || *p.WarmBudgetFrac > 1 {
-			return BuiltinsResult{}, badRequest("warm_budget_frac must be in the range (0, 1]")
-		}
-		fc.WarmBudgetFrac = *p.WarmBudgetFrac
-	}
 	if p.Mesh != nil {
 		fc.MeshEnabled = p.Mesh
 	}
 	if p.MeshPort != nil {
 		fc.MeshPort = *p.MeshPort
-	}
-	if p.LANInference != nil {
-		fc.LANInferenceEnabled = p.LANInference
-	}
-	if p.LANInferencePort != nil {
-		fc.LANInferencePort = *p.LANInferencePort
-	}
-	if p.Shard != nil {
-		if fc.Shard == nil {
-			fc.Shard = &conf.ShardConfig{}
-		}
-		fc.Shard.Enabled = p.Shard
-	}
-	if p.ShardPeers != nil {
-		if fc.Shard == nil {
-			fc.Shard = &conf.ShardConfig{}
-		}
-		fc.Shard.Peers = p.ShardPeers
-	}
-	if p.ShardRole != nil {
-		if fc.Shard == nil {
-			fc.Shard = &conf.ShardConfig{}
-		}
-		fc.Shard.Role = *p.ShardRole
 	}
 	if p.BashyVersion != nil {
 		fc.BashyVersion = strings.TrimSpace(*p.BashyVersion)
@@ -248,32 +165,6 @@ func (s *Server) SetBuiltins(ctx context.Context, p BuiltinsParams) (BuiltinsRes
 	}
 	if p.CloudDOToken != nil {
 		fc.CloudDOToken = *p.CloudDOToken
-	}
-	if p.Otel != nil {
-		fc.OtelEnabled = p.Otel
-	}
-	if p.OtelPool != nil {
-		fc.OtelPoolEnabled = p.OtelPool
-	}
-	if p.Ycode != nil {
-		fc.YcodeEnabled = *p.Ycode
-	}
-	if p.YcodeShare != nil {
-		fc.YcodeShareEnabled = p.YcodeShare
-	}
-	if p.YcodeShareRequireLogin != nil {
-		fc.YcodeShareRequireLogin = p.YcodeShareRequireLogin
-	}
-	if p.YcodeShareSurfaces != nil {
-		// Merge: caller's partial map overrides existing keys; other
-		// keys are preserved. This lets the SPA toggle one surface at
-		// a time without sending the whole catalog state back.
-		if fc.YcodeShareSurfaces == nil {
-			fc.YcodeShareSurfaces = map[string]bool{}
-		}
-		for k, v := range p.YcodeShareSurfaces {
-			fc.YcodeShareSurfaces[k] = v
-		}
 	}
 	if p.Cluster != nil {
 		if fc.Cluster == nil {
@@ -346,5 +237,5 @@ func (s *Server) SetBuiltins(ctx context.Context, p BuiltinsParams) (BuiltinsRes
 // services/service_settings, which are applied live by the unit store, the
 // monitor and the exposure reconciler.
 func touchesBootOnlyConfig(p BuiltinsParams) bool {
-	return !(p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Files == nil && p.FilesAllowWrite == nil && p.FilesScope == nil && p.Podman == nil && p.Sandbox == nil && p.Ollama == nil && p.OllamaPool == nil && p.WarmServing == nil && p.WarmBudgetFrac == nil && p.Otel == nil && p.OtelPool == nil && p.Ycode == nil && p.YcodeShare == nil && p.YcodeShareRequireLogin == nil && p.YcodeShareSurfaces == nil && p.Cluster == nil && p.ClusterAgent == nil && p.ClusterVirtual == nil && p.Mesh == nil && p.MeshPort == nil && p.LANInference == nil && p.LANInferencePort == nil && p.BashyVersion == nil && p.CloudDOEnabled == nil && p.CloudDOToken == nil)
+	return !(p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Cluster == nil && p.ClusterAgent == nil && p.ClusterVirtual == nil && p.Mesh == nil && p.MeshPort == nil && p.BashyVersion == nil && p.CloudDOEnabled == nil && p.CloudDOToken == nil)
 }

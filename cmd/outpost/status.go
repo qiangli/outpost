@@ -107,18 +107,21 @@ func statusCmd() *cobra.Command {
 			row("ssh", cfg.SSHEnabled)
 			row("ssh_allow_local_fwd", cfg.SSHAllowLocalForward)
 			row("sftp", cfg.SFTPEnabled)
-			row("podman", cfg.Podman.Enabled)
-			row("ollama", cfg.Ollama.Enabled)
-			row("ollama_pool", cfg.OllamaPoolEnabled)
-			row("otel", cfg.OtelEnabled)
-			row("otel_pool", cfg.OtelPoolEnabled)
-			row("ycode_share", cfg.YcodeShareEnabled)
-			row("ycode_share_require_login", cfg.YcodeShareRequireLogin)
-			for _, s := range cfg.YcodeShareSurfaces {
-				row("  "+s.Name, s.Enabled)
-			}
+			row("mesh", cfg.MeshEnabled)
 			row("cluster", cfg.Cluster.Enabled)
 			fmt.Printf("  %-22s  %s\n", "update_mode", cfg.UpdateMode)
+			// The podman proxy, the container sandbox, the Ollama proxy and
+			// its pool, the warm and shard planes, the LAN inference
+			// listener, the File Browser and the observability / ycode
+			// surfaces are service units — `outpost services` is where
+			// their desired state and live state are reported together.
+			if len(cfg.Services) > 0 {
+				fmt.Println()
+				fmt.Println("Service units (desired state; `outpost services` for live state)")
+				for _, u := range cfg.Services {
+					fmt.Printf("  %-22s  %-5t  %s\n", u.Name, u.Enabled, u.Provider)
+				}
+			}
 			fmt.Println()
 			fmt.Println("Apps")
 			if len(cfg.Apps) == 0 {

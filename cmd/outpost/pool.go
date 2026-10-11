@@ -106,12 +106,16 @@ type poolStatusModel struct {
 
 func poolReport(ctx context.Context, fc *conf.FileConfig) poolStatusReport {
 	cfgPath, _ := conf.DefaultConfigPath()
+	store := serviceStore()
 	st := poolStatusReport{
-		ConfigPath:     cfgPath,
-		Paired:         fc.AgentName != "",
-		AgentName:      fc.AgentName,
-		OllamaEnabled:  fc.OllamaOn(),
-		PoolEnabled:    fc.OllamaPoolOn(),
+		ConfigPath: cfgPath,
+		Paired:     fc.AgentName != "",
+		AgentName:  fc.AgentName,
+		// Desired state comes from the unit declarations — the same place
+		// `bashy service enable` writes and the daemon reads — not from a
+		// second copy in agent.json.
+		OllamaEnabled:  capabilityEnabled(store, capOllama),
+		PoolEnabled:    capabilityEnabled(store, capOllamaPool),
 		HasAccessToken: fc.AccessToken != "",
 		CloudboxURL:    cloudboxHTTPBase(fc),
 		OllamaURL:      "http://127.0.0.1:11434",
@@ -124,7 +128,7 @@ func poolReport(ctx context.Context, fc *conf.FileConfig) poolStatusReport {
 	st.OllamaReached = bt.Available
 
 	if !st.OllamaEnabled {
-		st.Notes = append(st.Notes, "Ollama built-in is OFF in agent.json — toggle it on in the admin UI.")
+		st.Notes = append(st.Notes, "The Ollama proxy unit is disabled — `outpost builtins set --service <unit>=on` (see `outpost services`).")
 	}
 	if st.OllamaEnabled && !st.OllamaReached {
 		st.Notes = append(st.Notes, "Ollama daemon not reachable at "+st.OllamaURL+" — set $OLLAMA_HOST or start `ollama serve`.")

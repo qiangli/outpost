@@ -39,22 +39,27 @@ func TestSetBuiltinsPersistsBashyVersionPin(t *testing.T) {
 // opt-out trap, exercised through the real write path (SetBuiltins →
 // SaveFile → LoadFile) rather than the struct alone.
 //
-// podman/ollama/otel default ON when their key is absent. So "off" is
-// only representable as an explicit false on disk. This test turns each
-// off, then performs an UNRELATED SetBuiltins write (the common case:
-// the operator toggles something else, or the SPA saves the form) and
-// asserts the opt-out is still there afterwards. With a plain bool +
-// omitempty the second write drops the key and the services silently
-// come back on.
+// The route built-ins default ON when their key is absent. So "off" is only
+// representable as an explicit false on disk. This test turns each off, then
+// performs an UNRELATED SetBuiltins write (the common case: the operator
+// toggles something else, or the SPA saves the form) and asserts the opt-out
+// is still there afterwards. With a plain bool + omitempty the second write
+// drops the key and the routes silently come back on.
+//
+// It used to assert this over podman/ollama/otel. Those are service units
+// now: their desired state is one boolean on a declaration, written through
+// Services, so there is no omitempty to erase it — the regression this test
+// guards cannot exist for them, and the remaining FileConfig toggles are
+// where it still can.
 func TestSetBuiltinsOptOutSurvivesLaterWrites(t *testing.T) {
 	core, cfgPath := newTestCore(t)
 	off := false
 	if _, err := core.SetBuiltins(context.Background(), BuiltinsParams{
-		Podman: &off, Ollama: &off, Otel: &off,
+		Desktop: &off, SSH: &off, SFTP: &off, Mesh: &off,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// An unrelated toggle — must not disturb the o3 opt-outs.
+	// An unrelated toggle — must not disturb the opt-outs.
 	on := true
 	if _, err := core.SetBuiltins(context.Background(), BuiltinsParams{Shell: &on}); err != nil {
 		t.Fatal(err)
@@ -63,32 +68,77 @@ func TestSetBuiltinsOptOutSurvivesLaterWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fc.PodmanOn() || fc.OllamaOn() || fc.OtelOn() {
-		t.Fatalf("opt-out erased by a later write: podman=%v ollama=%v otel=%v",
-			fc.PodmanOn(), fc.OllamaOn(), fc.OtelOn())
+	if fc.DesktopOn() || fc.SSHOn() || fc.SFTPOn() || fc.MeshOn() {
+		t.Fatalf("opt-out erased by a later write: desktop=%v ssh=%v sftp=%v mesh=%v",
+			fc.DesktopOn(), fc.SSHOn(), fc.SFTPOn(), fc.MeshOn())
 	}
 	// The SafeView the SPA and `outpost status` render must agree.
 	sv := core.toSafeView(fc)
-	if sv.Podman.Enabled || sv.Ollama.Enabled || sv.OtelEnabled {
-		t.Fatalf("SafeView disagrees with the config: podman=%v ollama=%v otel=%v",
-			sv.Podman.Enabled, sv.Ollama.Enabled, sv.OtelEnabled)
+	if sv.DesktopEnabled || sv.SSHEnabled || sv.SFTPEnabled || sv.MeshEnabled {
+		t.Fatalf("SafeView disagrees with the config: desktop=%v ssh=%v sftp=%v mesh=%v",
+			sv.DesktopEnabled, sv.SSHEnabled, sv.SFTPEnabled, sv.MeshEnabled)
 	}
 }
 
-// TestSetBuiltinsFreshConfigDefaultsO3On — a bare config (no keys set)
-// reports podman/ollama/otel on at runtime, and cluster off. NOTE: the
-// secure opt-in defaults for podman/shell/etc. are applied at PAIRING
-// (portal.NewFromExchange writes explicit false), not at this runtime
-// layer — so a bare LoadFile still reflects the legacy default-on.
-func TestSetBuiltinsFreshConfigDefaultsO3On(t *testing.T) {
+// TestSetBuiltinsRejectsRetiredServiceParams — the retired per-service
+// toggles must be GONE from the write surface, not quietly accepted and
+// dropped. BuiltinsParams is JSON-decoded from the REST body and the MCP
+// tool args, so an operator or agent still sending `podman: false` or
+// `warm_budget_frac: 0.5` would otherwise get an "ok" for a write that
+// never happened.
+//
+// Go's encoding/json ignores unknown fields, which is exactly the silent
+// failure to rule out: the assertion is on the STRUCT, so a field
+// reintroduced here fails the build of this test's expectation rather than
+// shipping a second copy of a unit's setting.
+func TestSetBuiltinsRejectsRetiredServiceParams(t *testing.T) {
+	retired := []string{
+		"files", "files_allow_write", "files_scope",
+		"podman", "sandbox", "ollama", "ollama_pool",
+		"warm_serving", "warm_budget_frac",
+		"otel", "otel_pool",
+		"ycode", "ycode_share", "ycode_share_require_login", "ycode_share_surfaces",
+		"lan_inference", "lan_inference_port",
+		"shard", "shard_peers", "shard_role",
+	}
+	// Every field is omitempty, so an empty value marshals to {} — assert on
+	// the TYPE's field set instead of on a sample encoding.
+	rt := reflect.TypeOf(BuiltinsParams{})
+	have := map[string]bool{}
+	for i := 0; i < rt.NumField(); i++ {
+		tag := rt.Field(i).Tag.Get("json")
+		if name, _, _ := strings.Cut(tag, ","); name != "" {
+			have[name] = true
+		}
+	}
+	for _, name := range retired {
+		if have[name] {
+			t.Errorf("BuiltinsParams still carries %q — it is a service unit's setting now, "+
+				"configured through ServiceSettings", name)
+		}
+	}
+	// And the generic pair that replaced them must be there.
+	for _, name := range []string{"services", "service_settings"} {
+		if !have[name] {
+			t.Errorf("BuiltinsParams is missing %q — the generic service write surface", name)
+		}
+	}
+}
+
+// TestSetBuiltinsFreshConfigRouteDefaults — a bare config (no keys set)
+// reports the outpost-native routes on at runtime, and cluster off. NOTE:
+// the secure opt-in defaults are applied at PAIRING (portal.Exchange writes
+// explicit false), not at this runtime layer — so a bare LoadFile still
+// reflects the legacy default-on.
+func TestSetBuiltinsFreshConfigRouteDefaults(t *testing.T) {
 	core, cfgPath := newTestCore(t)
 	fc, err := conf.LoadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !fc.PodmanOn() || !fc.OllamaOn() || !fc.OtelOn() {
-		t.Fatalf("fresh config: podman=%v ollama=%v otel=%v, want all on",
-			fc.PodmanOn(), fc.OllamaOn(), fc.OtelOn())
+	if !fc.ShellOn() || !fc.DesktopOn() || !fc.ClipboardOn() || !fc.SSHOn() {
+		t.Fatalf("fresh config: shell=%v desktop=%v clipboard=%v ssh=%v, want all on",
+			fc.ShellOn(), fc.DesktopOn(), fc.ClipboardOn(), fc.SSHOn())
 	}
 	if fc.ClusterOn() {
 		t.Fatalf("fresh config: cluster on, want opt-in")

@@ -11,7 +11,6 @@ import (
 	"maps"
 	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/exec"
@@ -23,7 +22,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/filebrowser/filebrowser/v2/fbembed"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
@@ -43,7 +41,6 @@ import (
 	"github.com/qiangli/outpost/internal/agent/mesh"
 	agentmirror "github.com/qiangli/outpost/internal/agent/mirror"
 	"github.com/qiangli/outpost/internal/agent/ollama"
-	"github.com/qiangli/outpost/internal/agent/otel"
 	"github.com/qiangli/outpost/internal/agent/overlaykey"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
 	"github.com/qiangli/outpost/internal/agent/peerimage"
@@ -52,11 +49,9 @@ import (
 	"github.com/qiangli/outpost/internal/agent/recipebuilder"
 	"github.com/qiangli/outpost/internal/agent/repair"
 	"github.com/qiangli/outpost/internal/agent/runtime"
-	"github.com/qiangli/outpost/internal/agent/sandbox"
 	"github.com/qiangli/outpost/internal/agent/selfcheck"
 	"github.com/qiangli/outpost/internal/agent/shard"
 	"github.com/qiangli/outpost/internal/agent/sysinfo"
-	"github.com/qiangli/outpost/internal/agent/sysload"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
 	"github.com/qiangli/outpost/internal/agent/userkube"
 	"github.com/qiangli/outpost/internal/agent/vknode"
@@ -293,231 +288,35 @@ func startCmd() *cobra.Command {
 			// mesh names are published by the exposure reconciler (see
 			// startServiceReconciler), which follows the monitor's state, so
 			// a unit that is disabled, failed or not yet up is not advertised.
-			// Built-in local-daemon proxies (podman, ollama, otel below).
-			// These are default-ON (see conf.PodmanOn) and DETECTION-GATED:
-			// we skip registration when the daemon isn't actually reachable,
-			// so a host that has never installed podman/Ollama boots exactly
-			// as before — one log line, no error. o3 is an offer, never a
-			// dependency.
 			//
-			// The skip is logged at Info when the default put us here and at
-			// Warn only when the operator explicitly asked for the proxy: a
-			// laptop with no podman is normal, a config that says
-			// podman_enabled=true with no daemon is a real misconfiguration.
-			missingBackend := func(explicit bool, msg string, args ...any) {
-				if explicit {
-					slog.Warn(msg, args...)
-					return
-				}
-				slog.Info(msg, args...)
+			// Nor are the in-process capabilities started here. The local-daemon
+			// proxies (podman, the filtered sandbox, ollama), the embedded File
+			// Browser, the observability and ycode surfaces, the LAN inference
+			// listener, the warm plane and the shard plane were each a
+			// `if fc.XOn() { detect; register }` block in this function, behind
+			// its own agent.json boolean, with no way to notice that the daemon
+			// it proxies went away. They are service UNITS now
+			// (capability_*.go): the declaration carries their settings and
+			// their `enabled` bit, the reconciler drives activation, and each
+			// one's Health withdraws its routes when its backend disappears.
+			// Construction below only hands each capability the live objects
+			// (the app registry, the mesh, the load sensor) that no declaration
+			// could carry.
+			caps := capabilityDeps{
+				Files: &filesCapability{
+					Apps: apps,
+					// The session signing key is outpost's secret, persisted so
+					// File Browser sessions survive a daemon restart; a unit's
+					// `secrets` are vault REFERENCES and cannot hold it.
+					SigningKey: func() ([]byte, error) { return conf.EnsureFilesSigningKey(cfgPath, fc) },
+				},
+				Podman:  &podmanCapability{Apps: apps},
+				Sandbox: &sandboxCapability{Apps: apps},
+				Ollama:  &ollamaCapability{Apps: apps},
+				Otel:    &otelCapability{Apps: apps},
+				Ycode:   &ycodeCapability{Apps: apps},
 			}
-			if fc.PodmanOn() {
-				if bt := agent.DetectPodman(); bt.Available && bt.Socket != "" {
-					if err := apps.RegisterFromConfig(conf.AppConfig{
-						// Scheme comes from the detector, never a literal: on
-						// Windows podman's endpoint is a named pipe, so a
-						// hardcoded "unix" would register an unreachable app.
-						Name: agent.BuiltinPodman, Scheme: bt.Scheme, Socket: bt.Socket,
-						// RequireLogin MUST be set explicitly: the raw podman
-						// socket is root-equivalent. Role:"admin" alone does
-						// NOT gate it — Role→RequireLogin only happens in
-						// NewFromJSON's migrateLegacyRole, which this in-code
-						// AppConfig bypasses, so it was reaching cloudbox's
-						// anonymous (require_login=false) proxy path.
-						Role: "admin", RequireLogin: true, Enabled: true,
-					}); err != nil {
-						slog.Warn("podman builtin: register", "err", err)
-					} else {
-						slog.Info("podman builtin: registered", "socket", bt.Socket)
-					}
-				} else {
-					missingBackend(fc.PodmanEnabled != nil, "podman builtin: no podman socket detected — skipping (outpost continues without it)")
-				}
-			}
-			// Filtered container "sandbox" proxy. Shares the podman socket
-			// with the raw passthrough above but registers a SEPARATE app
-			// whose proxy is wrapped by the sandbox filter (strips
-			// privileged / host namespaces / host binds / added caps /
-			// devices, injects resource caps). This is the mount a thin
-			// client or an untrusted tenant talks to; the raw /app/podman/
-			// stays admin-only for trusted self-use. Decorated like the
-			// ollama mount: capability advertisement (so cloudbox can
-			// discover + pool sandbox hosts) + capacity intercept + the
-			// filter/counter proxy wrap. The prewarmer (started under the
-			// errgroup below) keeps the runnable images pulled.
-			var sbPrewarmer *sandbox.Prewarmer
-			if fc.SandboxOn() {
-				if bt := agent.DetectPodman(); bt.Available && bt.Socket != "" {
-					if err := apps.RegisterFromConfig(conf.AppConfig{
-						Name: agent.BuiltinSandbox, Scheme: bt.Scheme, Socket: bt.Socket,
-						RequireLogin: true, Enabled: true,
-					}); err != nil {
-						slog.Warn("sandbox builtin: register", "err", err)
-					} else {
-						slog.Info("sandbox builtin: registered", "socket", bt.Socket)
-						policy := sandbox.Policy{
-							MaxMemoryBytes:    fc.SandboxMaxMemoryMB * 1024 * 1024,
-							NanoCPUs:          int64(fc.SandboxCPUs * 1e9),
-							PidsLimit:         fc.SandboxPidsLimit,
-							MaxContainers:     fc.SandboxMaxContainers,
-							AllowedImages:     fc.SandboxAllowedImages,
-							ScratchHostPrefix: fc.SandboxScratchDir,
-						}
-						sbSvc := sandbox.NewService(policy)
-						apps.SetCapabilities(agent.BuiltinSandbox, &agent.AppCapabilities{Type: sandbox.CapabilityType})
-						apps.SetProxyWrap(agent.BuiltinSandbox, sbSvc.WrapProxy)
-						apps.AddIntercept(agent.BuiltinSandbox, "/_pool/capacity", sbSvc.CapacityHandler())
-						// Image prewarmer: pull the runnable images so a
-						// remote create+start skips the pull cost. Default
-						// to the allowlist when no explicit prewarm list is
-						// set — pre-pulling exactly what callers may run.
-						if imgs := sandboxPrewarmImages(fc); len(imgs) > 0 {
-							sbPrewarmer = sandbox.NewPrewarmer(bt.Socket, imgs)
-							sbSvc.SetPrewarmer(sbPrewarmer)
-						}
-					}
-				} else {
-					slog.Warn("sandbox builtin enabled but podman daemon not detected — skipping")
-				}
-			}
-			// Ollama pool service, populated when the built-in ollama
-			// proxy registers below. Threaded into the watcher startup
-			// later in this function so the same Counter feeds both the
-			// /_pool/capacity probe and the push registry payload.
-			var (
-				ollamaSvc *ollama.Service
-				ollamaURL string
-			)
-			// clusterDetector is the (cached) probe for an intra-home
-			// distributed-inference backend (GPUStack first). Constructed
-			// once when an endpoint is configured and shared by the
-			// registry-push watcher (advertises the cluster to cloudbox)
-			// and the admincore SafeView (renders it in the admin UI /
-			// `outpost status`). Nil when ClusterLLMEndpoint is empty —
-			// every single-machine outpost — so nothing probes.
-			var clusterDetector *clusterllm.Detector
-			if fc.ClusterLLMOn() {
-				clusterDetector = clusterllm.NewDetector(clusterllm.Config{
-					Endpoint: fc.ClusterLLMEndpoint,
-					APIKey:   fc.ClusterLLMAPIKey,
-				}, 0, nil)
-			}
-			if fc.OllamaOn() {
-				if bt := agent.DetectOllama(); bt.Available && bt.URL != "" {
-					ollamaURL = bt.URL
-					u, perr := url.Parse(bt.URL)
-					if perr == nil {
-						host := u.Hostname()
-						port := 0
-						if p := u.Port(); p != "" {
-							port, _ = strconv.Atoi(p)
-						}
-						if port == 0 {
-							port = 80
-						}
-						if err := apps.RegisterFromConfig(conf.AppConfig{
-							Name: agent.BuiltinOllama, Scheme: u.Scheme, Host: host, Port: port,
-							Role: "admin", Enabled: true,
-						}); err != nil {
-							slog.Warn("ollama builtin: register", "err", err)
-						} else {
-							slog.Info("ollama builtin: registered", "target", bt.URL)
-							// Decorate the registered ollama mount so the
-							// pool router on cloudbox can find it (capabilities)
-							// AND wire the per-request counter + capacity probe
-							// (intercept + proxy wrap). Both pieces stay no-ops
-							// when fc.OllamaPoolOn() is false — the watcher
-							// is what actually publishes; the counter just
-							// observes locally. The marginal cost of always
-							// instrumenting is one atomic per generation
-							// request, which is invisible next to the
-							// upstream Ollama latency.
-							apps.SetCapabilities(agent.BuiltinOllama, &agent.AppCapabilities{Type: "llm"})
-							ollamaSvc = ollama.NewService(ollama.NewCounter())
-							apps.SetProxyWrap(agent.BuiltinOllama, ollamaSvc.WrapProxy)
-							apps.AddIntercept(agent.BuiltinOllama, "/_pool/capacity", ollamaSvc.CapacityHandler())
-						}
-					}
-				} else {
-					missingBackend(fc.OllamaEnabled != nil, "ollama builtin: no Ollama daemon detected — skipping (outpost continues without it)")
-				}
-			}
-
-			// OTel surfaces. ycode's bearer-authed proxy at 127.0.0.1:31415
-			// fronts an embedded Prometheus / Alertmanager / VictoriaLogs /
-			// Jaeger / Perses stack. We expose each as its own built-in app
-			// — reusing the per-host matrix_elev cookie machinery — with
-			// the ycode bearer injected by a SetProxyWrap so cloudbox-side
-			// callers don't need to learn ycode credentials. The local
-			// surfaces are also what DKS-deployed observability apps
-			// scrape via the matrix tunnel when they need per-host drill-
-			// down (the fleet-wide story is push-based remote_write
-			// directly to cluster services — see FileConfig.Cluster.*).
-			// Skips silently when ycode isn't running, mirroring the
-			// podman/ollama "enabled but daemon absent" handling above.
-			if fc.OtelOn() {
-				if t := otel.Detect(); t.Available {
-					wrap := otel.BearerInjector(t.Token)
-					for _, surface := range otel.Surfaces() {
-						target := t.ProxyURL + otel.SubPath(surface)
-						if err := apps.RegisterWithMeta(
-							surface, target,
-							agent.AppMeta{
-								RequireLogin: true,
-								Capabilities: &agent.AppCapabilities{Type: surface},
-							},
-						); err != nil {
-							slog.Warn("otel builtin: register", "surface", surface, "err", err)
-							continue
-						}
-						slog.Info("otel builtin: registered", "surface", surface, "target", target)
-						apps.SetProxyWrap(surface, wrap)
-					}
-				} else {
-					missingBackend(fc.OtelEnabled != nil, "otel builtin: no local observability proxy detected — skipping (outpost continues without it)", "manifest", t.ManifestPath)
-				}
-			}
-
-			// ycode UI share. When YcodeShareOn (default on whenever ycode
-			// is enabled), iterate the ycode surfaces catalog and register
-			// each opted-in surface as its own per-tile built-in app
-			// (`ycode` for chat, `ycode-canvas`, `ycode-ollama`, etc.).
-			// The per-surface overlay is FileConfig.YcodeShareSurfaces;
-			// catalog defaults supply the rest. Cloudbox's DefaultApps
-			// lists `ycode` so the chat tile renders automatically; the
-			// other tiles appear once the operator opts in from the SPA.
-			//
-			// RequireLogin=false by default for these owner-targeted
-			// agentic surfaces (matches custom-app conventions; cloudbox's
-			// hostAuthGate still gates non-owners via HostShare). Operators
-			// who want OS-password elevation flip ycode_share_require_login
-			// — it applies to ALL ycode surfaces uniformly.
-			if fc.YcodeOn() && fc.YcodeShareOn() {
-				if t := otel.Detect(); t.Available {
-					wrap := otel.BearerInjector(t.Token)
-					requireLogin := fc.YcodeShareRequireLoginOn()
-					for _, s := range otel.YcodeSurfaces() {
-						if !otel.YcodeSurfaceEnabled(fc.YcodeShareSurfaces, s.Name) {
-							continue
-						}
-						target := t.ProxyURL + s.Path
-						if err := apps.RegisterWithMeta(
-							s.Name, target,
-							agent.AppMeta{
-								RequireLogin: requireLogin,
-								Capabilities: &agent.AppCapabilities{Type: s.Name},
-							},
-						); err != nil {
-							slog.Warn("ycode builtin: register", "surface", s.Name, "err", err)
-							continue
-						}
-						slog.Info("ycode builtin: registered", "surface", s.Name, "target", target)
-						apps.SetProxyWrap(s.Name, wrap)
-					}
-				} else {
-					slog.Warn("ycode share enabled but ycode proxy not detected — skipping", "manifest", t.ManifestPath)
-				}
-			}
+			caps.LANInference = &lanInferenceCapability{Ollama: caps.Ollama.Target}
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
@@ -563,17 +362,33 @@ func startCmd() *cobra.Command {
 			// even when fc.Outbound is empty.
 			outbound.AutoReconnect()
 
-			// LLM-pool status closure: nil-safe wrapper around the
-			// ollama service so the admin UI's /api/config refresh
-			// can render a live pool diagnostic. When Ollama isn't
-			// enabled (ollamaSvc nil) the closure returns the
-			// zero view, which the SPA renders as "(disabled)".
+			// clusterDetector is the (cached) probe for an intra-home
+			// distributed-inference backend (GPUStack first). Constructed
+			// once when an endpoint is configured and shared by the
+			// registry-push pool capability (advertises the cluster to
+			// cloudbox) and the admincore SafeView (renders it in the admin
+			// UI / `outpost status`). Nil when ClusterLLMEndpoint is empty —
+			// every single-machine outpost — so nothing probes.
+			var clusterDetector *clusterllm.Detector
+			if fc.ClusterLLMOn() {
+				clusterDetector = clusterllm.NewDetector(clusterllm.Config{
+					Endpoint: fc.ClusterLLMEndpoint,
+					APIKey:   fc.ClusterLLMAPIKey,
+				}, 0, nil)
+			}
+
+			// LLM-pool status closure: nil-safe wrapper around the ollama
+			// proxy capability so the admin UI's /api/config refresh can
+			// render a live pool diagnostic. While the ollama unit is not
+			// active the closure returns the zero view, which the SPA
+			// renders as "(disabled)".
 			llmPoolStatus := func() admincore.LLMPoolStatusView {
-				if ollamaSvc == nil {
+				st, ok := caps.Ollama.Status()
+				if !ok {
 					return admincore.LLMPoolStatusView{}
 				}
-				st := ollamaSvc.Status()
 				return admincore.LLMPoolStatusView{
+					Enabled:     true,
 					Running:     st.Watcher.Running,
 					LastPushAt:  st.Watcher.LastPushAt,
 					LastModels:  st.Watcher.LastModels,
@@ -586,12 +401,22 @@ func startCmd() *cobra.Command {
 				}
 			}
 
+			// The unit registry, read once here for the two daemon decisions
+			// that are not themselves units: sharding rides the libp2p mesh
+			// and the peer plane, so an enabled shard unit brings both up
+			// without a second opt-in. Reading DECLARED desired state for
+			// that is the unit model working as intended — the old
+			// `fc.ShardOn()` cascade read a config key that no longer
+			// exists.
+			svcStore := serviceStore()
+			shardWanted := capabilityEnabled(svcStore, capShard)
+
 			// Peer-plane locality service (opt-in, OFF by default). Created
 			// here so its measured-tier snapshot can render into SafeView +
 			// the outpost_peer_tiers MCP tool; started in the errgroup below.
 			// Self-disables when unpaired.
 			var peerPlaneSvc *peerplane.Service
-			if fc.PeerPlaneNeeded() && fc.AccessToken != "" {
+			if (fc.PeerPlaneOn() || shardWanted) && fc.AccessToken != "" {
 				if cb := cloudboxHTTPBase(fc); cb != "" {
 					peerPlaneSvc = peerplane.New(peerplane.Config{
 						AgentName:   cfg.AgentName,
@@ -626,7 +451,7 @@ func startCmd() *cobra.Command {
 			// relay (or cloudbox unreachable at boot) just means no relay leg;
 			// same-LAN/same-vicinity still connects directly.
 			var meshRelays []string
-			if fc.MeshNeeded() && fc.AccessToken != "" {
+			if (fc.MeshOn() || shardWanted) && fc.AccessToken != "" {
 				if cb := cloudboxHTTPBase(fc); cb != "" {
 					rc := &peerplane.Client{BaseURL: cb, Token: fc.AccessToken, HC: &http.Client{Timeout: 10 * time.Second}}
 					rctx, rcancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -637,7 +462,7 @@ func startCmd() *cobra.Command {
 				}
 			}
 			var meshHost *mesh.Host
-			if fc.MeshNeeded() && fc.AccessToken != "" {
+			if (fc.MeshOn() || shardWanted) && fc.AccessToken != "" {
 				mh, merr := mesh.New(mesh.Config{
 					AgentName:  fc.AgentName,
 					ListenPort: fc.MeshPort,
@@ -787,12 +612,33 @@ func startCmd() *cobra.Command {
 				}
 			}
 
-			// Shard manager — keeps a launch-ready candidate ring up to date
+			// Shard plane — keeps a launch-ready candidate ring up to date
 			// and (over the mesh) tells peers to lead / reports readiness.
-			// Constructed here (not at its errgroup start below) so the
-			// admincore shard closures can capture it. nil when sharding /
-			// mesh / pairing isn't all on. Started in the errgroup further down.
-			shardMgr := newShardManager(fc, meshHost, peerPlaneSvc, meshRdv)
+			// A service unit (`outpost.shard`): the declaration carries the
+			// ring role, peer selection, node budget and prima binaries, and
+			// its `enabled` bit is the only switch. Wired here because what
+			// it needs — this process's mesh forwarder, peer plane and
+			// rendezvous — is resolved on this host, and an enabled unit on
+			// a host missing any of them now reports WHY instead of
+			// answering "not enabled" without a reason.
+			caps.Shard = &shardCapability{
+				Build: func(ss shardSettings) (*shard.Manager, error) {
+					return newShardManager(fc, ss, meshHost, peerPlaneSvc, meshRdv)
+				},
+				// LAN peer-to-peer model transfer: serve THIS node's on-disk
+				// model store (manifests + blobs) read-only over the mesh, so
+				// a peer provisioning a model it lacks fetches the GGUF from
+				// here instead of re-pulling from the ollama registry. Exposed
+				// WHILE the shard unit is active and withdrawn when it is not
+				// — the old boot wiring exposed it once and never withdrew.
+				ServeBlobs: func() (func(), error) {
+					if meshHost == nil {
+						return nil, nil
+					}
+					return serveModelBlobs(meshHost.Forwarder())
+				},
+			}
+			shardMgr := caps.Shard.Manager
 
 			// resolveShardPeer maps a host name to its mesh ShardPeer via the
 			// cloudbox peer/connect rendezvous (mirrors peerPlaneDiscoverer).
@@ -813,15 +659,16 @@ func startCmd() *cobra.Command {
 			}
 			// shardTrigger tells <host> to LEAD a shard for <model> over the mesh.
 			shardTrigger := func(ctx context.Context, host, model string) error {
-				if shardMgr == nil {
-					return fmt.Errorf("sharding not enabled on this host (needs pairing + mesh + sharding on)")
+				mgr := shardMgr()
+				if mgr == nil {
+					return errShardUnitInactive
 				}
 				if host == "" || host == "self" || host == "local" {
 					// Lead the shard from THIS node, using its own ring — no mesh
 					// self-dial. Long-running (self-provision pulls the model), so
 					// background it on a detached context and return immediately.
 					go func() {
-						if err := shardMgr.Orchestrate(context.Background(), model, 11434, nil); err != nil {
+						if err := mgr.Orchestrate(context.Background(), model, 11434, nil); err != nil {
 							slog.Warn("shard: local lead failed", "model", model, "err", err)
 						}
 					}()
@@ -831,35 +678,37 @@ func startCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return shardMgr.TellLead(ctx, peer, model, 11434)
+				return mgr.TellLead(ctx, peer, model, 11434)
 			}
 			// shardStatus returns the local node's (host=="") or a peer's readiness.
 			shardStatus := func(ctx context.Context, host string) (any, error) {
-				if shardMgr == nil {
-					return nil, fmt.Errorf("sharding not enabled on this host (needs pairing + mesh + sharding on)")
+				mgr := shardMgr()
+				if mgr == nil {
+					return nil, errShardUnitInactive
 				}
 				if host == "" {
-					return shardMgr.LocalStatus(), nil
+					return mgr.LocalStatus(), nil
 				}
 				peer, err := resolveShardPeer(ctx, host)
 				if err != nil {
 					return nil, err
 				}
-				return shardMgr.PingPeer(ctx, peer)
+				return mgr.PingPeer(ctx, peer)
 			}
 			// shardLog returns the local node's (host=="") or a peer's prima logs.
 			shardLog := func(ctx context.Context, host string) (string, error) {
-				if shardMgr == nil {
-					return "", fmt.Errorf("sharding not enabled on this host (needs pairing + mesh + sharding on)")
+				mgr := shardMgr()
+				if mgr == nil {
+					return "", errShardUnitInactive
 				}
 				if host == "" {
-					return shardMgr.RecentPrimaLogs(200), nil
+					return mgr.RecentPrimaLogs(200), nil
 				}
 				peer, err := resolveShardPeer(ctx, host)
 				if err != nil {
 					return "", err
 				}
-				return shardMgr.PeerLog(ctx, peer)
+				return mgr.PeerLog(ctx, peer)
 			}
 
 			// Construct the shared business-logic layer first. The same
@@ -994,55 +843,28 @@ func startCmd() *cobra.Command {
 				return fmt.Errorf("admincore: %w", err)
 			}
 
-			// Considerate warm-serving plane (P3). The sysload profiler
-			// samples CPU/memory/load, learns a per-hour-of-day baseline,
-			// and answers Busy() / WarmBudgetBytes(); the warm executor
-			// keeps a small conservative set of models resident (zero
-			// cold-start) but YIELDS to the user's own work the moment the
-			// host is busy, restoring when idle. Default ON for a paired
-			// Ollama node (WarmServingOn); opt out with
-			// warm_serving_enabled=false. Wired below into the watcher push
-			// (WarmBudgetBytes/Busy advertisement) and the /admin/warm
-			// route, and started in the errgroup.
-			var (
-				loadProfiler *sysload.Profiler
-				warmExec     *warm.Executor
-				hostMemTotal uint64
-			)
-			if fc.WarmServingOn() || (fc.ClusterOn() && len(fc.Cluster.VirtualRuntimes()) > 0) {
-				var sysloadPath string
-				if cd, _ := conf.ResolveCacheDir(); cd != "" {
-					sysloadPath = filepath.Join(cd, "sysload.json")
-				}
-				loadProfiler = sysload.New(sysload.Config{
-					Path: sysloadPath,
-					Frac: fc.WarmBudgetFracOrDefault(),
-				})
-			}
-			if fc.WarmServingOn() {
-				hostMemTotal = sysinfo.Collect("").MemTotalBytes
-				// The executor drives the local Ollama daemon (+ the shard
-				// manager, when wired) and persists the desired warm set
-				// through admincore. Only on a paired host — cloudbox is what
-				// asks a host to warm a model.
-				if fc.AccessToken != "" {
-					warmOllamaURL := ollamaURL
-					if warmOllamaURL == "" {
-						warmOllamaURL = "http://127.0.0.1:11434"
-					}
-					var shardCtl warm.ShardControl
-					if shardMgr != nil {
-						shardCtl = shardMgr // avoid a non-nil interface wrapping a nil *Manager
-					}
-					warmExec = warm.New(warm.Config{
-						Ollama:         warm.NewOllamaClient(warmOllamaURL),
-						Shard:          shardCtl,
-						Gauge:          loadProfiler,
-						UsableMem:      func() uint64 { return hostMemTotal },
-						Desired:        fc.WarmDesired,
-						PersistDesired: core.SetWarmDesired,
-					})
-				}
+			// Considerate warm-serving plane (P3) — a service unit
+			// (`outpost.warm`). The executor keeps a small conservative set
+			// of models resident (zero cold-start) but YIELDS to the user's
+			// own work the moment the host is busy, restoring when idle.
+			//
+			// The sysload profiler it judges "busy" by is a SENSOR, not a
+			// service: cluster placement needs the same samples for a
+			// different reason, and two samplers would mean two writers of
+			// one state file. So the plane below owns exactly one, started
+			// on first use by whichever consumer asks first.
+			loadPlane := &sysloadPlane{}
+			caps.Warm = &warmCapability{
+				Load:   loadPlane.Profiler,
+				Ollama: caps.Ollama.Target,
+				Shard:  caps.Shard.ShardControl,
+				// The desired warm SET is runtime state cloudbox drives
+				// through POST /admin/warm, not a declared setting; it is
+				// persisted through admincore so the write serializes
+				// against the config mutex.
+				PersistDesired: core.SetWarmDesired,
+				Desired:        func() []string { return fc.WarmDesired },
+				Paired:         func() bool { return fc.AccessToken != "" },
 			}
 
 			// Cloudbox-pushed CI-repair trigger (POST /admin/repair). Only on
@@ -1174,6 +996,10 @@ func startCmd() *cobra.Command {
 			fmt.Fprintf(os.Stderr, "MCP endpoint: %s/mcp/  (bearer: %s)\n", adminSrv.URL(), mcpToken)
 
 			g, gctx := errgroup.WithContext(ctx)
+			// The load sensor samples for the lifetime of the daemon, so it
+			// is bound to the errgroup's context rather than to whichever
+			// unit activation happened to start it.
+			loadPlane.ctx = gctx
 			g.Go(func() error {
 				fmt.Fprintf(os.Stderr, "Admin UI: %s\n", adminSrv.URL())
 				slog.Info("outpost: admin ui listening", "url", adminSrv.URL())
@@ -1192,14 +1018,6 @@ func startCmd() *cobra.Command {
 				})
 			}
 
-			// Services: the daemon no longer starts, polls or stops any of
-			// them — `bashy supervisord` owns every unit's process. What it
-			// does own is publication (the unit's declared app route and
-			// mesh names, withdrawn when the unit stops being active) and
-			// the capabilities whose implementation is inside this process.
-			svcControl := startServiceReconciler(g, gctx, cfgPath, fc, apps, meshHost)
-			core.SetServices(svcControl)
-
 			// Mobility-aware continuous directory mirror: each job mirrors a local
 			// dir to a peer's mesh service, but ONLY while the pair is reachable
 			// (and same-LAN / directly-connected when lan_only) — it pauses when
@@ -1217,115 +1035,6 @@ func startCmd() *cobra.Command {
 					sup.Run(gctx, jobs)
 					return nil
 				})
-			}
-
-			// Files builtin — embedded File Browser (GUI sibling of /shell +
-			// /ssh). In-process handler on a random loopback port, registered
-			// as the "files" http app so it rides the existing per-app gate
-			// (require_login, lan_only_paths, identity stamping). Read-only +
-			// download-only unless files_allow_write is set. Registered here
-			// (not in the boot builtin block above) because it needs a
-			// listener whose lifetime is tied to the errgroup context.
-			if fc.FilesOn() {
-				scope := fc.FilesScope
-				if scope == "" {
-					if home, herr := os.UserHomeDir(); herr == nil {
-						scope = home
-					}
-				}
-				// The embedded File Browser is stateless (no DB): scope +
-				// write mode come from config, and UI prefs live in the
-				// user's browser (localStorage). The only state worth keeping
-				// is the session signing key — persisted in agent.json so
-				// File Browser sessions survive a daemon restart.
-				signingKey, kerr := conf.EnsureFilesSigningKey(cfgPath, fc)
-				if kerr != nil {
-					slog.Warn("files builtin: signing key", "err", kerr)
-				}
-				if h, closer, ferr := fbembed.New(fbembed.Options{
-					Scope: scope, AllowWrite: fc.FilesAllowWrite, SigningKey: signingKey,
-				}); ferr != nil {
-					slog.Warn("files builtin: init", "err", ferr)
-				} else if ln, lerr := net.Listen("tcp", "127.0.0.1:0"); lerr != nil {
-					slog.Warn("files builtin: listen", "err", lerr)
-					_ = closer()
-				} else {
-					port := ln.Addr().(*net.TCPAddr).Port
-					filesSrv := &http.Server{Handler: h}
-					g.Go(func() error {
-						if serr := filesSrv.Serve(ln); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
-							return serr
-						}
-						return nil
-					})
-					g.Go(func() error {
-						<-gctx.Done()
-						sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-						defer cancel()
-						_ = filesSrv.Shutdown(sctx)
-						return closer()
-					})
-					if rerr := apps.RegisterFromConfig(conf.AppConfig{
-						Name: agent.BuiltinFiles, Scheme: "http", Host: "127.0.0.1", Port: port,
-						RequireLogin: true, IndexPath: "/", Enabled: true,
-						// No /api/users LAN-fence needed: the embed is stateless
-						// (no DB). Perm/scope come from config and every write to
-						// the in-memory user no-ops, so a client can't enable
-						// write or change scope. UI prefs (view mode, dotfiles,
-						// theme…) persist in the user's browser (localStorage),
-						// not server-side, so they're naturally per-device.
-					}); rerr != nil {
-						slog.Warn("files builtin: register", "err", rerr)
-					} else {
-						slog.Info("files builtin: registered", "scope", scope, "write", fc.FilesAllowWrite, "port", port)
-					}
-				}
-			}
-			// LAN inference listener — same-LAN direct inference (P2P
-			// serving plane P0). When the operator opted in (lan_inference),
-			// bind a LAN-reachable listener that reverse-proxies the OpenAI
-			// /v1 + Ollama /api surface to the local inference server
-			// (127.0.0.1:11434 — Ollama, or the shard leader's llama-server),
-			// so a same-LAN caller reaches this host's LLM directly, bypassing
-			// the cloudbox relay for lower latency. This is a LAN-TRUST
-			// endpoint: it is NOT authenticated per-request — the operator
-			// opting in accepts that the LAN is trusted. Untrusted / org
-			// networks leave it off and use the Bearer-authed cloudbox /v1
-			// gateway. Non-fatal: a bind failure logs + degrades (the daemon
-			// keeps running; only the direct-LAN shortcut is unavailable).
-			if fc.LANInferenceOn() {
-				target := ollamaURL
-				if target == "" {
-					target = "http://127.0.0.1:11434"
-				}
-				lanPort := fc.LANInferencePortOrDefault()
-				if tu, perr := url.Parse(target); perr != nil {
-					slog.Warn("lan inference: bad target URL — skipping", "target", target, "err", perr)
-				} else {
-					rp := httputil.NewSingleHostReverseProxy(tu)
-					mux := http.NewServeMux()
-					mux.Handle("/v1/", rp)
-					mux.Handle("/api/", rp)
-					addr := fmt.Sprintf("0.0.0.0:%d", lanPort)
-					if ln, lerr := net.Listen("tcp", addr); lerr != nil {
-						slog.Warn("lan inference: listen failed — continuing without direct-LAN inference", "addr", addr, "err", lerr)
-					} else {
-						lanSrv := &http.Server{Handler: mux}
-						slog.Info("lan inference: serving direct same-LAN inference (LAN-trust, no per-request auth)", "addr", addr, "target", target)
-						g.Go(func() error {
-							if serr := lanSrv.Serve(ln); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
-								return serr
-							}
-							return nil
-						})
-						g.Go(func() error {
-							<-gctx.Done()
-							sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-							defer cancel()
-							return lanSrv.Shutdown(sctx)
-						})
-					}
-				}
 			}
 
 			// Folder-watcher scheduler. Runs whether or not Backup
@@ -1363,45 +1072,6 @@ func startCmd() *cobra.Command {
 					}
 					return nil
 				})
-			}
-
-			// Shard manager — keeps a launch-ready candidate ring up to date
-			// (same-LAN owner peers discovered via the peer-plane). Discovery
-			// only; forming a shard is gated on a too-big model (v1d).
-			// Constructed earlier (so the admincore shard closures capture it);
-			// started here under the errgroup.
-			if shardMgr != nil {
-				g.Go(func() error {
-					if err := shardMgr.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
-						slog.Warn("shard manager: exited", "err", err)
-					}
-					return nil
-				})
-				// LAN peer-to-peer model transfer: serve THIS node's on-disk model
-				// store (manifests + blobs) read-only over the mesh, so a peer
-				// provisioning a model it lacks fetches the GGUF from here instead
-				// of re-pulling from the ollama registry. Mirrors ServeControl.
-				if meshHost != nil {
-					if cleanup, err := serveModelBlobs(meshHost.Forwarder()); err != nil {
-						slog.Warn("model-blobs: serve failed", "err", err)
-					} else {
-						g.Go(func() error {
-							<-gctx.Done()
-							cleanup()
-							return nil
-						})
-					}
-				}
-			}
-
-			// Considerate warm-serving plane: the load profiler (samples +
-			// learns the baseline) and the warm supervisor (the yield/restore
-			// loop). Both self-disable when their gate wasn't met (nil).
-			if loadProfiler != nil {
-				g.Go(func() error { return loadProfiler.Run(gctx) })
-			}
-			if warmExec != nil {
-				g.Go(func() error { return warmExec.RunSupervisor(gctx) })
 			}
 
 			// DKS image-recipe build agent (P3 of docs/dks-image-recipe-
@@ -1560,7 +1230,7 @@ func startCmd() *cobra.Command {
 					upgrade.MountRoute(rg, upgradeWorker)
 				},
 				MountWarmRoute: func(rg *gin.RouterGroup) {
-					warm.MountRoute(rg, warmExec)
+					warm.MountRoute(rg, caps.Warm.Executor)
 				},
 				MountRepairRoute: func(rg *gin.RouterGroup) {
 					repair.MountRoute(rg, repairExec)
@@ -1699,95 +1369,54 @@ func startCmd() *cobra.Command {
 			}
 			startDiscovery(gctx, g, fc, cfg, sshHostKey)
 
-			// Ollama pool watcher — only spins up when the user opted
-			// into the shared pool AND the local Ollama proxy actually
-			// registered (ollamaSvc != nil). The watcher itself tolerates
-			// an empty access_token (just blocks on ctx) so unpaired
-			// hosts in a half-configured state don't crash; the gate
-			// here is mostly to avoid the "watcher started but did
-			// nothing" log noise.
-			if fc.OllamaPoolOn() && ollamaSvc != nil {
-				cbBase := cloudboxHTTPBase(fc)
-				if cbBase == "" {
-					slog.Warn("ollama pool: cloudbox URL is empty — watcher disabled")
-				} else {
-					if ollamaURL == "" {
-						ollamaURL = "http://127.0.0.1:11434"
-					}
-					// Capacity source is the Service, not the Counter: Service
-					// composes the v2 CapacityReport (counter snapshot + the
-					// watcher's own /api/ps cache for loaded_models/swapping)
-					// so the registry push and the /_pool/capacity probe
-					// emit the same shape. Service.SetWatcher below closes
-					// the loop; Snapshot tolerates a nil watcher and just
-					// returns the counter snapshot until then.
-					ocfg := ollama.Config{
-						AgentName:   cfg.AgentName,
-						Version:     agent.ReadBuildInfo().Short(),
-						OllamaURL:   ollamaURL,
-						CloudboxURL: cbBase,
-						AccessToken: fc.AccessToken,
-						Capacity:    ollamaSvc,
-					}
-					// Bashy's own Ollama engine (127.0.0.1:11435) keeps a
-					// separate model store from the host daemon: register
-					// its models with the pool too, so a bashy-managed pull
-					// shows up in the cloud registry. Best-effort per tick
-					// (a host without the engine just skips it); dropped
-					// when it duplicates the primary URL. Sprint 379 Y2.
-					if bu := ollama.BashyOllamaURL(); bu != "" {
-						ocfg.ExtraOllamaURLs = []string{bu}
-					}
-					// Warm-serving advertisement: fold this host's live
-					// warm-preload budget (0 when busy) + busy state into each
-					// registry push so cloudbox can make considerate warm
-					// decisions. Advisory — the /admin/warm executor re-checks
-					// the live budget before actually loading.
-					if loadProfiler != nil {
-						ocfg.WarmStatus = func() (int64, bool) {
-							return loadProfiler.WarmBudgetBytes(hostMemTotal), loadProfiler.Busy()
-						}
-					}
-					// Same-LAN direct inference: when the operator opted in,
-					// advertise this host's LAN inference URL so cloudbox can
-					// hand it to same-LAN callers (they reach the LLM directly,
-					// bypassing the relay). Empty when no private LAN IPv4 is
-					// found — omitempty drops the field and cloudbox advertises
-					// nothing. The listener itself is wired below in the errgroup.
-					if fc.LANInferenceOn() {
-						ocfg.LANEndpoint = ollama.LANEndpoint(fc.LANInferencePortOrDefault())
-					}
-					// When an intra-home cluster backend is configured,
-					// attach its descriptor source so each push advertises
-					// "this home can serve a model up to N bytes" to
-					// cloudbox's tier-0 router. Absent ⇒ single-machine
-					// push, unchanged.
+			// Ollama pool — participation in cloudbox's multi-host virtual
+			// LLM pool, a service unit (`outpost.ollama-pool`). It is a
+			// strict extension of the per-host proxy: the declaration
+			// carries `requires: [<the ollama unit>]`, and activation
+			// refuses with that reason when the proxy is not up.
+			//
+			// Everything the push payload folds in is resolved through the
+			// other capabilities rather than re-read from config, so a unit
+			// the operator just disabled stops being advertised: the warm
+			// budget comes from the warm unit, the direct-LAN endpoint from
+			// the LAN inference unit's BOUND port, and the sharded-model
+			// descriptor from the shard unit's live manager.
+			caps.OllamaPool = &ollamaPoolCapability{
+				Ollama:      caps.Ollama,
+				AgentName:   func() string { return cfg.AgentName },
+				Cloudbox:    func() string { return cloudboxHTTPBase(fc) },
+				AccessToken: func() string { return fc.AccessToken },
+				Warm:        caps.Warm.Status,
+				LANEndpoint: caps.LANInference.Endpoint,
+				Cluster: func(base ollama.ClusterSource) ollama.ClusterSource {
+					// An intra-home cluster backend advertises "this home can
+					// serve a model up to N bytes" to cloudbox's tier-0
+					// router; an actively-served shard advertises the model
+					// itself so routing sends requests for it here.
 					if clusterDetector != nil {
-						ocfg.Cluster = clusterSourceAdapter{clusterDetector}
+						base = clusterSourceAdapter{clusterDetector}
 					}
-					// Advertise an actively-served sharded model into the pool
-					// so cloudbox's routing/LB sends requests for it to this
-					// (leader) node — sharding fuses into the existing pool.
-					if shardMgr != nil {
-						ocfg.Cluster = shardClusterSource{base: ocfg.Cluster, mgr: shardMgr}
+					if mgr := shardMgr(); mgr != nil {
+						base = shardClusterSource{base: base, mgr: mgr}
 					}
-					w, werr := ollama.New(ocfg)
-					if werr != nil {
-						slog.Warn("ollama pool: watcher init failed", "err", werr)
-					} else {
-						// Hand the watcher to the service so Status()
-						// reports last-push state + capacity through
-						// one accessor.
-						ollamaSvc.SetWatcher(w)
-						g.Go(func() error {
-							if err := w.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
-								slog.Warn("ollama pool: watcher exited", "err", err)
-							}
-							return nil
-						})
-					}
-				}
+					return base
+				},
 			}
+
+			// Services: the daemon no longer starts, polls or stops any of
+			// them — `bashy supervisord` owns every unit's process. What it
+			// does own is publication (the unit's declared app route and
+			// mesh names, withdrawn when the unit stops being active) and
+			// the capabilities whose implementation is inside this process.
+			//
+			// Started HERE, after every capability above is constructed:
+			// the reconciler is what activates them, so a capability built
+			// later would never be registered and its unit would report
+			// "capability is not registered" on a daemon that in fact hosts
+			// it.
+			svcControl := startServiceReconciler(g, gctx, svcStore, cfgPath, fc, apps, meshHost, caps)
+			core.SetServices(svcControl)
+
 			// Fleet-upgrade pull trigger — the catch-up half of the
 			// rollout. The push trigger (cloudbox POSTing /admin/upgrade
 			// during a release fan-out) only reaches hosts online at
@@ -1834,19 +1463,6 @@ func startCmd() *cobra.Command {
 						})
 					}
 				}
-			}
-
-			// Sandbox image prewarmer — keeps the runnable images pulled so
-			// a remote sandbox create+start skips the pull cost. Started
-			// here under the errgroup; ctx cancellation stops it. Nil when
-			// the sandbox builtin is off or no images are configured.
-			if sbPrewarmer != nil {
-				g.Go(func() error {
-					if err := sbPrewarmer.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
-						slog.Warn("sandbox prewarm: exited", "err", err)
-					}
-					return nil
-				})
 			}
 
 			// Roadmap #11: cloudbox-as-CA host cert refresh.
@@ -1985,7 +1601,7 @@ func startCmd() *cobra.Command {
 					// restarted the daemon. Runs in the background so bringing
 					// a cold runtime up never holds the tunnel or admin UI.
 					g.Go(func() error {
-						joinClusterWithRetry(gctx, g, fc, cfgPath, apps, peerPlaneSvc, loadProfiler)
+						joinClusterWithRetry(gctx, g, fc, cfgPath, apps, peerPlaneSvc, loadPlane)
 						return nil
 					})
 				}
@@ -2510,28 +2126,6 @@ func logPeerOverlayFetch(node string, haveKey bool, err error) {
 	}
 }
 
-// sandboxPrewarmImages resolves the image set the prewarmer keeps pulled.
-// An explicit SandboxPrewarmImages wins; otherwise it falls back to the
-// concrete (non-wildcard) entries of the SandboxAllowedImages allowlist —
-// pre-pulling exactly the images a caller is permitted to run. A wildcard
-// allowlist entry ("repo/*") names no concrete image, so it's skipped.
-func sandboxPrewarmImages(fc *conf.FileConfig) []string {
-	if fc == nil {
-		return nil
-	}
-	if len(fc.SandboxPrewarmImages) > 0 {
-		return fc.SandboxPrewarmImages
-	}
-	var out []string
-	for _, img := range fc.SandboxAllowedImages {
-		if strings.Contains(img, "*") {
-			continue
-		}
-		out = append(out, img)
-	}
-	return out
-}
-
 // startClusterRunner validates fc.Cluster, detects the local podman
 // socket, and launches vknode.Run on g. Setup errors return; the
 // long-running loop's errors flow through the errgroup the same way
@@ -2553,13 +2147,13 @@ func sandboxPrewarmImages(fc *conf.FileConfig) []string {
 //
 // Returns once the join succeeds; startClusterRunner owns the long-lived
 // goroutines from that point on.
-func joinClusterWithRetry(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service, loadProfiler *sysload.Profiler) {
+func joinClusterWithRetry(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service, load *sysloadPlane) {
 	const (
 		firstDelay = 5 * time.Second
 		maxDelay   = 2 * time.Minute
 	)
 	for attempt, delay := 1, firstDelay; ; attempt++ {
-		err := startClusterRunner(ctx, g, fc, cfgPath, apps, peerSvc, loadProfiler)
+		err := startClusterRunner(ctx, g, fc, cfgPath, apps, peerSvc, load)
 		if err == nil {
 			return
 		}
@@ -2579,7 +2173,7 @@ func joinClusterWithRetry(ctx context.Context, g *errgroup.Group, fc *conf.FileC
 	}
 }
 
-func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service, loadProfiler *sysload.Profiler) error {
+func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service, load *sysloadPlane) error {
 	nodeBase := fc.ClusterNodeName()
 	if nodeBase == "" {
 		return errors.New("ClusterNodeName empty (agent_name unset?)")
@@ -2818,10 +2412,13 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 				func(runCtx context.Context) error {
 					slog.Info("cluster: virtual node joining", "node", spec.node, "host", hostName,
 						"backend", spec.mode, "apiserver", kubeCfg.Host, "podman_socket", podmanSock)
+					// Virtual-node placement wants this host's live load, so
+					// asking for the profiler here is what STARTS the shared
+					// sensor on a cluster host whose warm unit is off.
 					var hostLoad func() vknode.HostLoad
-					if loadProfiler != nil {
+					if prof := load.Profiler(); prof != nil {
 						hostLoad = func() vknode.HostLoad {
-							sample := loadProfiler.Current()
+							sample := prof.Current()
 							return vknode.HostLoad{
 								At: sample.At, CPUPercent: sample.CPUPercent, MemAvailFrac: sample.MemAvailFrac,
 							}

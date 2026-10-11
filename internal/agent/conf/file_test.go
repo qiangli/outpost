@@ -9,6 +9,8 @@ import (
 
 // TestFileConfigRoundTrip — write a full FileConfig (apps + toggles) to
 // disk, read it back, and assert every field survives.
+func bp(b bool) *bool { return &b }
+
 func TestFileConfigRoundTrip(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), "agent.json")
 	on := true
@@ -149,98 +151,6 @@ func TestSaveFileAtomic(t *testing.T) {
 	}
 }
 
-// TestOllamaPoolOn — pool participation is gated by OllamaOn, but
-// once that's true the default with no explicit toggle is "on" so the
-// user opts into pooling implicitly by enabling Ollama.
-func TestOllamaPoolOn(t *testing.T) {
-	off := false
-	on := true
-	for _, tt := range []struct {
-		name string
-		fc   *FileConfig
-		want bool
-	}{
-		{"nil-fc", nil, false},
-		{"ollama-off", &FileConfig{OllamaEnabled: bp(false)}, false},
-		{"ollama-on-pool-unset", &FileConfig{OllamaEnabled: bp(true)}, true},
-		{"ollama-on-pool-explicit-on", &FileConfig{OllamaEnabled: bp(true), OllamaPoolEnabled: &on}, true},
-		{"ollama-on-pool-explicit-off", &FileConfig{OllamaEnabled: bp(true), OllamaPoolEnabled: &off}, false},
-		{"ollama-off-pool-on-ignored", &FileConfig{OllamaEnabled: bp(false), OllamaPoolEnabled: &on}, false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.fc.OllamaPoolOn(); got != tt.want {
-				t.Errorf("OllamaPoolOn()=%v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-// TestLANInferenceOn — same-LAN direct inference is gated by OllamaOn
-// AND, unlike the pool, defaults OFF (nil ⇒ off) because it is a LAN-trust
-// endpoint that must be an explicit opt-in.
-func TestLANInferenceOn(t *testing.T) {
-	off := false
-	on := true
-	for _, tt := range []struct {
-		name string
-		fc   *FileConfig
-		want bool
-	}{
-		{"nil-fc", nil, false},
-		{"ollama-off", &FileConfig{OllamaEnabled: bp(false)}, false},
-		{"ollama-on-lan-unset-default-off", &FileConfig{OllamaEnabled: bp(true)}, false},
-		{"ollama-on-lan-explicit-on", &FileConfig{OllamaEnabled: bp(true), LANInferenceEnabled: &on}, true},
-		{"ollama-on-lan-explicit-off", &FileConfig{OllamaEnabled: bp(true), LANInferenceEnabled: &off}, false},
-		{"ollama-off-lan-on-ignored", &FileConfig{OllamaEnabled: bp(false), LANInferenceEnabled: &on}, false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.fc.LANInferenceOn(); got != tt.want {
-				t.Errorf("LANInferenceOn()=%v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-// TestLANInferencePortOrDefault — 11436 default, configured value wins.
-func TestLANInferencePortOrDefault(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		fc   *FileConfig
-		want int
-	}{
-		{"nil-fc", nil, DefaultLANInferencePort},
-		{"unset", &FileConfig{}, DefaultLANInferencePort},
-		{"zero", &FileConfig{LANInferencePort: 0}, DefaultLANInferencePort},
-		{"explicit", &FileConfig{LANInferencePort: 12000}, 12000},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.fc.LANInferencePortOrDefault(); got != tt.want {
-				t.Errorf("LANInferencePortOrDefault()=%d, want %d", got, tt.want)
-			}
-		})
-	}
-}
-
-// TestLANInferencePortAvoidsReservedPorts — the LAN listener default must
-// not collide with any loopback model port on the host: 11434 is the host
-// Ollama, 11435 is bashy's own Ollama engine (yoke DefaultManagedPort, the
-// door's raw-engine OLLAMA_HOST), 24556 is the llm model door. Sprint 379
-// Y2: the old 11435 default bound the same port as bashy's engine.
-func TestLANInferencePortAvoidsReservedPorts(t *testing.T) {
-	reserved := map[int]string{
-		11434: "host Ollama",
-		11435: "bashy managed Ollama engine (yoke DefaultManagedPort)",
-		24556: "llm model door",
-	}
-	got := (&FileConfig{}).LANInferencePortOrDefault()
-	if owner, ok := reserved[got]; ok {
-		t.Errorf("LANInferencePortOrDefault()=%d collides with %s", got, owner)
-	}
-	if got != DefaultLANInferencePort {
-		t.Errorf("LANInferencePortOrDefault()=%d, want DefaultLANInferencePort=%d", got, DefaultLANInferencePort)
-	}
-}
-
 // TestEnsureAppSSOSecrets — boot-time safety net. Apps with
 // TrustCloudIdentity:true but no SSOSecret get a freshly minted
 // 32-byte hex secret; persisted to disk; other apps untouched.
@@ -371,52 +281,52 @@ func TestJoinTarget_PeerThenLeaveFallsBackToCloudbox(t *testing.T) {
 	}
 }
 
-// TestO3BuiltinsDefaultOn — with none of the keys set, the o3 built-ins
-// (podman / ollama / otel) report ON at runtime: the opt-in posture is
-// applied to NEW pairings at Exchange, not via the runtime default, so
-// existing/legacy configs are unchanged. Cluster stays OFF: joining hands
-// a remote control plane the right to schedule work here — a choice, not a
-// default. See the PodmanOn / ClusterOn doc comments.
-func TestO3BuiltinsDefaultOn(t *testing.T) {
+// A config with no toggle keys at all must report the outpost-native route
+// built-ins ON at runtime: the opt-in posture is applied to NEW pairings at
+// Exchange, not via the runtime default, so existing/legacy configs are
+// unchanged by an upgrade. Cluster stays OFF: joining hands a remote control
+// plane the right to schedule work here — a choice, not a default.
+//
+// The podman / ollama / otel proxies used to be asserted here too. They are
+// service units now, so their default posture is their declaration's
+// `enabled` bit and there is nothing in FileConfig to assert about them.
+func TestRouteBuiltinsDefaultOn(t *testing.T) {
 	fc := &FileConfig{}
-	if !fc.PodmanOn() || !fc.OllamaOn() || !fc.OtelOn() {
-		t.Errorf("unset o3 keys: podman=%v ollama=%v otel=%v, want all true",
-			fc.PodmanOn(), fc.OllamaOn(), fc.OtelOn())
+	if !fc.ShellOn() || !fc.DesktopOn() || !fc.ClipboardOn() || !fc.SSHOn() || !fc.SFTPOn() {
+		t.Errorf("unset route keys: shell=%v desktop=%v clipboard=%v ssh=%v sftp=%v, want all true",
+			fc.ShellOn(), fc.DesktopOn(), fc.ClipboardOn(), fc.SSHOn(), fc.SFTPOn())
+	}
+	if !fc.MeshOn() {
+		t.Errorf("MeshOn() = false for an unset config; the mesh defaults on for a paired host")
 	}
 	if fc.ClusterOn() {
 		t.Errorf("ClusterOn() = true for an unset config; cluster must stay opt-in")
 	}
-	// Sandbox is NOT part of the flip — it widens who may run containers.
-	if fc.SandboxOn() {
-		t.Errorf("SandboxOn() = true for an unset config; sandbox must stay opt-in")
-	}
-	// A nil config still reports off everywhere (no panics, no defaults
-	// conjured out of a missing config).
 	var nilfc *FileConfig
-	if nilfc.PodmanOn() || nilfc.OllamaOn() || nilfc.OtelOn() || nilfc.ClusterOn() {
-		t.Errorf("nil config reported an o3 built-in as on")
+	if nilfc.ClusterOn() {
+		t.Errorf("nil config reported the cluster join as on")
 	}
 }
 
-// TestO3ExplicitFalseSurvivesRoundTrip — THE regression test for the
+// TestExplicitFalseSurvivesRoundTrip — THE regression test for the
 // opt-out-that-erases-itself trap.
 //
-// The o3 enable keys carry `omitempty`. Were they plain `bool`, an
-// operator's explicit false would marshal to ABSENT — byte-identical to
-// never-set — so the very next load would apply the default-ON rule and
-// silently restart the service they just turned off. Pointer-bool is what
-// keeps unset / true / false distinguishable, and this test pins that:
-// the JSON must literally contain `false`, and the reloaded config must
-// still report off. Repeat the save/load cycle to catch a decay that only
-// shows up on the second write.
-func TestO3ExplicitFalseSurvivesRoundTrip(t *testing.T) {
+// The enable keys carry `omitempty`. Were they plain `bool`, an operator's
+// explicit false would marshal to ABSENT — byte-identical to never-set — so
+// the very next load would apply the default-ON rule and silently restore the
+// route they just turned off. Pointer-bool is what keeps unset / true / false
+// distinguishable, and this test pins that: the JSON must literally contain
+// `false`, and the reloaded config must still report off. Repeat the
+// save/load cycle to catch a decay that only shows up on the second write.
+func TestExplicitFalseSurvivesRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.json")
 	off := false
 	if err := SaveFile(path, &FileConfig{
-		AgentName:     "opted-out",
-		PodmanEnabled: &off,
-		OllamaEnabled: &off,
-		OtelEnabled:   &off,
+		AgentName:    "opted-out",
+		ShellEnabled: &off,
+		SSHEnabled:   &off,
+		SFTPEnabled:  &off,
+		MeshEnabled:  &off,
 	}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -430,12 +340,12 @@ func TestO3ExplicitFalseSurvivesRoundTrip(t *testing.T) {
 		if err := json.Unmarshal(raw, &keys); err != nil {
 			t.Fatalf("cycle %d: unmarshal: %v", cycle, err)
 		}
-		for _, k := range []string{"podman_enabled", "ollama_enabled", "otel_enabled"} {
+		for _, k := range []string{"shell_enabled", "ssh_enabled", "sftp_enabled", "mesh_enabled"} {
 			v, ok := keys[k]
 			if !ok {
 				t.Fatalf("cycle %d: %q absent from the saved JSON — an explicit "+
 					"opt-out was erased by omitempty; the default-ON rule will "+
-					"resurrect the service on next load. Raw: %s", cycle, k, raw)
+					"resurrect the route on next load. Raw: %s", cycle, k, raw)
 			}
 			if string(v) != "false" {
 				t.Fatalf("cycle %d: %q = %s, want false", cycle, k, v)
@@ -446,9 +356,9 @@ func TestO3ExplicitFalseSurvivesRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("cycle %d: load: %v", cycle, err)
 		}
-		if got.PodmanOn() || got.OllamaOn() || got.OtelOn() {
-			t.Fatalf("cycle %d: opt-out lost: podman=%v ollama=%v otel=%v",
-				cycle, got.PodmanOn(), got.OllamaOn(), got.OtelOn())
+		if got.ShellOn() || got.SSHOn() || got.SFTPOn() || got.MeshOn() {
+			t.Fatalf("cycle %d: opt-out lost: shell=%v ssh=%v sftp=%v mesh=%v",
+				cycle, got.ShellOn(), got.SSHOn(), got.SFTPOn(), got.MeshOn())
 		}
 		// Save the loaded config straight back — this is what every
 		// admin-UI/CLI write does (load, mutate one field, save). It is
@@ -459,17 +369,17 @@ func TestO3ExplicitFalseSurvivesRoundTrip(t *testing.T) {
 	}
 }
 
-// TestO3ExplicitTrueSurvivesRoundTrip — the mirror case. An explicit
-// true is redundant with the default today, but it must persist as a
-// real `true` so a future default change can't silently flip it either.
-func TestO3ExplicitTrueSurvivesRoundTrip(t *testing.T) {
+// TestExplicitTrueSurvivesRoundTrip — the mirror case. An explicit true is
+// redundant with the default today, but it must persist as a real `true` so a
+// future default change can't silently flip it either.
+func TestExplicitTrueSurvivesRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.json")
 	on := true
 	if err := SaveFile(path, &FileConfig{
-		AgentName:     "opted-in",
-		PodmanEnabled: &on,
-		OllamaEnabled: &on,
-		OtelEnabled:   &on,
+		AgentName:    "opted-in",
+		ShellEnabled: &on,
+		SSHEnabled:   &on,
+		MeshEnabled:  &on,
 	}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -478,9 +388,9 @@ func TestO3ExplicitTrueSurvivesRoundTrip(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	for name, p := range map[string]*bool{
-		"podman_enabled": got.PodmanEnabled,
-		"ollama_enabled": got.OllamaEnabled,
-		"otel_enabled":   got.OtelEnabled,
+		"shell_enabled": got.ShellEnabled,
+		"ssh_enabled":   got.SSHEnabled,
+		"mesh_enabled":  got.MeshEnabled,
 	} {
 		if p == nil {
 			t.Errorf("%s: nil after round trip, want an explicit true", name)
@@ -538,14 +448,18 @@ func TestEnsureServiceSSOSecret(t *testing.T) {
 	}
 }
 
-// Every long-lived external service — the Zot registry, the SeaweedFS S3
-// gateway, the Kopia backup repo, the Gitea CI runner, the Headlamp forward —
-// is a service UNIT now, declared in fleet's registry rings and controlled by
-// its `enabled` bit. The agent.json keys that used to start them are retired
-// outright, with no compatibility reader (operator clarification 2026-10-10):
-// a stale config carrying them must parse cleanly and forget them, so an
-// upgraded host cannot keep a second, invisible copy of a port or a token
-// that nothing honours.
+// Every long-lived service — the external ones (the Zot registry, the
+// SeaweedFS S3 gateway, the Kopia backup repo, the Gitea CI runner, the
+// Headlamp forward) AND the ones outpost hosts in-process (the File Browser,
+// the podman and sandbox container mounts, the Ollama proxy and its pool, the
+// warm and shard planes, the same-LAN inference listener, the observability
+// and ycode surfaces) — is a service UNIT now, declared in fleet's registry
+// rings and controlled by its `enabled` bit plus its `settings`. The
+// agent.json keys that used to configure them are retired outright, with no
+// compatibility reader (operator clarification 2026-10-10): a stale config
+// carrying them must parse cleanly and forget them, so an upgraded host
+// cannot keep a second, invisible copy of a port, a budget or a token that
+// nothing honours.
 func TestRetiredExternalServiceKeysAreNotRead(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), "agent.json")
 	stale := []byte(`{
@@ -557,7 +471,21 @@ func TestRetiredExternalServiceKeysAreNotRead(t *testing.T) {
 	  "actrunner_token": "tok", "actrunner_labels": "host:host",
 	  "actrunner_sandbox": true, "actrunner_sandbox_image": "img",
 	  "actrunner_docker_host": "unix:///x.sock",
-	  "headlamp_enabled": true, "headlamp_port": 18466
+	  "headlamp_enabled": true, "headlamp_port": 18466,
+	  "files_enabled": true, "files_scope": "/srv", "files_allow_write": true,
+	  "podman_enabled": true,
+	  "sandbox_enabled": true, "sandbox_max_memory_mb": 2048, "sandbox_cpus": 2,
+	  "sandbox_pids_limit": 256, "sandbox_max_containers": 4,
+	  "sandbox_allowed_images": ["alpine:3"], "sandbox_scratch_dir": "/tmp/sb",
+	  "sandbox_prewarm_images": ["alpine:3"],
+	  "ollama_enabled": true, "ollama_pool_enabled": true,
+	  "warm_serving_enabled": true, "warm_budget_frac": 0.5,
+	  "lan_inference_enabled": true, "lan_inference_port": 11436,
+	  "otel_enabled": true, "otel_pool_enabled": true,
+	  "ycode_enabled": true, "ycode_share_enabled": true,
+	  "ycode_share_require_login": true,
+	  "ycode_share_surfaces": {"ycode-canvas": true},
+	  "shard": {"enabled": true, "role": "leader", "node_bytes": 17179869184}
 	}`)
 	if err := os.WriteFile(tmp, stale, 0o600); err != nil {
 		t.Fatal(err)
@@ -588,6 +516,17 @@ func TestRetiredExternalServiceKeysAreNotRead(t *testing.T) {
 		"actrunner_token", "actrunner_labels", "actrunner_sandbox",
 		"actrunner_sandbox_image", "actrunner_docker_host",
 		"headlamp_enabled", "headlamp_port",
+		"files_enabled", "files_scope", "files_allow_write",
+		"podman_enabled",
+		"sandbox_enabled", "sandbox_max_memory_mb", "sandbox_cpus",
+		"sandbox_pids_limit", "sandbox_max_containers", "sandbox_allowed_images",
+		"sandbox_scratch_dir", "sandbox_prewarm_images",
+		"ollama_enabled", "ollama_pool_enabled",
+		"warm_serving_enabled", "warm_budget_frac",
+		"lan_inference_enabled", "lan_inference_port",
+		"otel_enabled", "otel_pool_enabled",
+		"ycode_enabled", "ycode_share_enabled", "ycode_share_require_login",
+		"ycode_share_surfaces", "shard",
 	} {
 		if _, ok := raw[key]; ok {
 			t.Errorf("retired key %q survived a load/save round trip", key)

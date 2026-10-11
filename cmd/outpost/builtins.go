@@ -18,7 +18,7 @@ import (
 func builtinsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "builtins",
-		Short: "Show or toggle built-in routes (shell/desktop/clipboard/ssh/sftp/podman/ollama/ollama-pool/otel/ycode-share/cluster)",
+		Short: "Show or toggle built-in routes (shell/desktop/clipboard/ssh/sftp), the mesh, the cluster join, and the desired state of service units",
 	}
 	cmd.AddCommand(builtinsShowCmd(), builtinsSetCmd())
 	return cmd
@@ -52,33 +52,28 @@ func builtinsShowCmd() *cobra.Command {
 			row("ssh", view.SSHEnabled)
 			row("ssh_allow_local_fwd", view.SSHAllowLocalForward)
 			row("sftp", view.SFTPEnabled)
-			row("files", view.FilesEnabled)
-			row("files_allow_write", view.FilesAllowWrite)
-			scope := view.FilesScope
-			if scope == "" {
-				scope = "(home)"
-			}
-			fmt.Printf("  %-22s  %s\n", "files_scope", scope)
-			row("podman", view.Podman.Enabled)
-			row("sandbox", view.Sandbox.Enabled)
-			row("ollama", view.Ollama.Enabled)
-			row("ollama_pool", view.OllamaPoolEnabled)
-			row("warm_serving", view.WarmServingEnabled)
-			fmt.Printf("  %-22s  %.2f\n", "warm_budget_frac", view.WarmBudgetFrac)
-			row("lan_inference", view.LANInferenceEnabled)
 			row("mesh", view.MeshEnabled)
-			row("otel", view.OtelEnabled)
-			row("otel_pool", view.OtelPoolEnabled)
-			row("ycode_share", view.YcodeShareEnabled)
-			row("ycode_share_require_login", view.YcodeShareRequireLogin)
-			for _, s := range view.YcodeShareSurfaces {
-				row("  "+s.Name, s.Enabled)
-			}
 			row("cluster", view.Cluster.Enabled)
 			row("cluster_agent", view.Cluster.Agent)
 			fmt.Printf("  %-22s  %s\n", "cluster_virtual", strings.Join(view.Cluster.Virtual, ","))
+			// Local-daemon DETECTION, not a toggle: whether outpost proxies
+			// podman or Ollama is its unit's desired state, printed below.
+			fmt.Println("Detected on this host:")
+			detected := func(name string, v admincore.BuiltinView) {
+				target := v.Target
+				if target == "" {
+					target = "-"
+				}
+				fmt.Printf("  %-22s  %-5t  %s\n", name, v.Available, target)
+			}
+			detected("podman", view.Podman)
+			detected("ollama", view.Ollama)
 			// Services are DECLARATIONS, not built-in toggles: one row per
-			// unit the host knows about, whatever its provider or origin.
+			// unit the host knows about, whatever its provider or origin —
+			// including the ones outpost itself hosts in-process (the File
+			// Browser, the container mounts, the Ollama proxy and pool, the
+			// warm and shard planes, the LAN inference listener, the
+			// observability and ycode surfaces).
 			// `outpost services` shows the monitor's live state as well.
 			if len(view.Services) > 0 {
 				fmt.Println("Service units (desired state; `outpost services` for live state):")
@@ -102,30 +97,19 @@ func builtinsShowCmd() *cobra.Command {
 
 func builtinsSetCmd() *cobra.Command {
 	var (
-		shell, desktop, clipboard, ssh, sshLocalFwd, sshRemoteFwd, sshAgentFwd, sftp, podman, sandbox, ollama, ollamaPool, otel, otelPool, ycodeShare, ycodeShareRequireLogin, cluster string
-		files, filesAllowWrite, filesScope                                                                                                                                             string
-		clusterAgent                                                                                                                                                                   string
-		clusterVirtual                                                                                                                                                                 []string
-		updateMode, autoUpgradeLegacy, autoRollback                                                                                                                                    string
-		warmServing                                                                                                                                                                    string
-		warmBudgetFrac                                                                                                                                                                 float64
-		mesh                                                                                                                                                                           string
-		meshPort                                                                                                                                                                       int
-		lanInference                                                                                                                                                                   string
-		lanInferencePort                                                                                                                                                               int
-		services                                                                                                                                                                       []string
-		serviceSets                                                                                                                                                                    []string
-		bashyVersion                                                                                                                                                                   string
-		cloudDO                                                                                                                                                                        string
-		cloudDOToken                                                                                                                                                                   string
-		sshForwardSockets                                                                                                                                                              []string
-		clearSSHForwardSockets                                                                                                                                                         bool
-		ycodeShareSurfaces                                                                                                                                                             map[string]string
-	)
-	var (
-		shard      string
-		shardRole  string
-		shardPeers []string
+		shell, desktop, clipboard, ssh, sshLocalFwd, sshRemoteFwd, sshAgentFwd, sftp, cluster string
+		clusterAgent                                                                          string
+		clusterVirtual                                                                        []string
+		updateMode, autoUpgradeLegacy, autoRollback                                           string
+		mesh                                                                                  string
+		meshPort                                                                              int
+		services                                                                              []string
+		serviceSets                                                                           []string
+		bashyVersion                                                                          string
+		cloudDO                                                                               string
+		cloudDOToken                                                                          string
+		sshForwardSockets                                                                     []string
+		clearSSHForwardSockets                                                                bool
 	)
 	cmd := &cobra.Command{
 		Use:   "set",
@@ -133,7 +117,13 @@ func builtinsSetCmd() *cobra.Command {
 		Long: `Each flag accepts on|off|true|false|1|0. Example:
 
   outpost builtins set --ssh=off --sftp=off
-  outpost builtins set --ollama=on --ollama-pool=on
+
+Everything outpost used to carry its own flag for is a service unit now —
+switch it with --service and configure it with --service-set:
+
+  outpost builtins set --service files=on --service-set files.settings.allow_write=true
+  outpost builtins set --service ollama=on --service ollama-pool=on
+  outpost builtins set --service warm=on --service-set warm.settings.budget_frac=0.5
 `,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			params := admincore.BuiltinsParams{}
@@ -161,57 +151,6 @@ func builtinsSetCmd() *cobra.Command {
 			}
 			if params.SFTP, err = parseToggle("sftp", sftp); err != nil {
 				return err
-			}
-			if params.Files, err = parseToggle("files", files); err != nil {
-				return err
-			}
-			if params.FilesAllowWrite, err = parseToggle("files-allow-write", filesAllowWrite); err != nil {
-				return err
-			}
-			if cmd.Flags().Changed("files-scope") {
-				params.FilesScope = &filesScope
-			}
-			if params.Podman, err = parseToggle("podman", podman); err != nil {
-				return err
-			}
-			if params.Sandbox, err = parseToggle("sandbox", sandbox); err != nil {
-				return err
-			}
-			if params.Ollama, err = parseToggle("ollama", ollama); err != nil {
-				return err
-			}
-			if params.OllamaPool, err = parseToggle("ollama-pool", ollamaPool); err != nil {
-				return err
-			}
-			if params.WarmServing, err = parseToggle("warm-serving", warmServing); err != nil {
-				return err
-			}
-			if cmd.Flags().Changed("warm-budget-frac") {
-				params.WarmBudgetFrac = &warmBudgetFrac
-			}
-			if params.Otel, err = parseToggle("otel", otel); err != nil {
-				return err
-			}
-			if params.OtelPool, err = parseToggle("otel-pool", otelPool); err != nil {
-				return err
-			}
-			if params.YcodeShare, err = parseToggle("ycode-share", ycodeShare); err != nil {
-				return err
-			}
-			if params.YcodeShareRequireLogin, err = parseToggle("ycode-share-require-login", ycodeShareRequireLogin); err != nil {
-				return err
-			}
-			if len(ycodeShareSurfaces) > 0 {
-				params.YcodeShareSurfaces = map[string]bool{}
-				for k, v := range ycodeShareSurfaces {
-					b, perr := parseToggle("ycode-share-surface "+k, v)
-					if perr != nil {
-						return perr
-					}
-					if b != nil {
-						params.YcodeShareSurfaces[k] = *b
-					}
-				}
 			}
 			if params.Cluster, err = parseToggle("cluster", cluster); err != nil {
 				return err
@@ -257,21 +196,6 @@ func builtinsSetCmd() *cobra.Command {
 			if cmd.Flags().Changed("mesh-port") {
 				params.MeshPort = &meshPort
 			}
-			if params.LANInference, err = parseToggle("lan-inference", lanInference); err != nil {
-				return err
-			}
-			if cmd.Flags().Changed("lan-inference-port") {
-				params.LANInferencePort = &lanInferencePort
-			}
-			if params.Shard, err = parseToggle("shard", shard); err != nil {
-				return err
-			}
-			if cmd.Flags().Changed("shard-peers") {
-				params.ShardPeers = shardPeers
-			}
-			if cmd.Flags().Changed("shard-role") {
-				params.ShardRole = &shardRole
-			}
 			if len(services) > 0 {
 				if params.Services, err = parseServiceToggles(services); err != nil {
 					return err
@@ -303,9 +227,6 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&desktop, "desktop", "", "on|off")
 	cmd.Flags().StringVar(&clipboard, "clipboard", "", "on|off")
 	cmd.Flags().StringVar(&ssh, "ssh", "", "on|off")
-	cmd.Flags().StringVar(&shard, "shard", "", "on|off — Ollama sharding; default on for a paired node, this opts out")
-	cmd.Flags().StringSliceVar(&shardPeers, "shard-peers", nil, "worker hostnames (empty/auto = every same-LAN peer)")
-	cmd.Flags().StringVar(&shardRole, "shard-role", "", "auto|leader|worker")
 	// Canonical names match the file/MCP key (ssh_allow_local_forward etc.);
 	// the old shorter spellings stay as deprecated aliases so existing
 	// scripts don't break.
@@ -319,20 +240,6 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&sshAgentFwd, "ssh-agent-fwd", "", "deprecated alias for --ssh-allow-agent-forward")
 	_ = cmd.Flags().MarkDeprecated("ssh-agent-fwd", "use --ssh-allow-agent-forward")
 	cmd.Flags().StringVar(&sftp, "sftp", "", "on|off")
-	cmd.Flags().StringVar(&files, "files", "", "on|off — built-in File Browser (remote view/download)")
-	cmd.Flags().StringVar(&filesAllowWrite, "files-allow-write", "", "on|off — allow upload/edit/rename/delete in File Browser (default off = read-only; LAN-gated control)")
-	cmd.Flags().StringVar(&filesScope, "files-scope", "", "root directory File Browser is confined to (empty = OS user home)")
-	cmd.Flags().StringVar(&podman, "podman", "", "on|off — raw admin-only podman passthrough (default on; skipped when no podman socket is found)")
-	cmd.Flags().StringVar(&sandbox, "sandbox", "", "on|off — filtered container sandbox (strips privileged/host-ns/binds/caps/devices; needs podman)")
-	cmd.Flags().StringVar(&ollama, "ollama", "", "on|off — built-in Ollama proxy (default on; skipped when no Ollama daemon is found)")
-	cmd.Flags().StringVar(&ollamaPool, "ollama-pool", "", "on|off — share local Ollama with cloudbox's pool")
-	cmd.Flags().StringVar(&warmServing, "warm-serving", "", "on|off — considerate always-on warm serving: keep a small model set resident, yield when the host is busy (default on for a paired Ollama node)")
-	cmd.Flags().Float64Var(&warmBudgetFrac, "warm-budget-frac", 0, "fraction of usable memory dedicated to warm preload (0<frac<=1; default 0.33; drops to 0 when the host is busy)")
-	cmd.Flags().StringVar(&otel, "otel", "", "on|off — expose the local embedded Prom/Alertmanager/VLogs/Jaeger stack as built-in apps (default on; skipped when no local observability proxy is found)")
-	cmd.Flags().StringVar(&otelPool, "otel-pool", "", "on|off — allow cloudbox to federate queries across this host's observability stack")
-	cmd.Flags().StringVar(&ycodeShare, "ycode-share", "", "on|off — expose ycode's home/landing page through the matrix tunnel (default on when ycode is on)")
-	cmd.Flags().StringVar(&ycodeShareRequireLogin, "ycode-share-require-login", "", "on|off — require cloudbox OS-password elevation for the 'ycode' app (default off; on = OS password popup like /shell)")
-	cmd.Flags().StringToStringVar(&ycodeShareSurfaces, "ycode-share-surface", nil, "Toggle a ycode-share surface, repeatable: --ycode-share-surface ycode-canvas=on --ycode-share-surface ycode-git=on")
 	cmd.Flags().StringVar(&cluster, "cluster", "", "on|off — join cloudbox virtual-podman cluster (opt-in: hands a remote control plane the right to schedule work on this host)")
 	cmd.Flags().StringVar(&clusterAgent, "cluster-agent", "", "on|off — run one real k3s-agent Node")
 	cmd.Flags().StringSliceVar(&clusterVirtual, "cluster-virtual", nil, "virtual-kubelet backends to run concurrently: vk-podman,vk-native,vk-ollama (replaces the complete set)")
@@ -344,8 +251,6 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&clearSSHForwardSockets, "clear-ssh-forward-sockets", false, "Reset ssh-forward-sockets to the auto-detect default set")
 	cmd.Flags().StringVar(&mesh, "mesh", "", "on|off - libp2p mesh data plane (peer-to-peer transport under shard-RPC/peer-backup; needs pairing)")
 	cmd.Flags().IntVar(&meshPort, "mesh-port", 0, "TCP+QUIC listen port for the mesh host (0 = ephemeral)")
-	cmd.Flags().StringVar(&lanInference, "lan-inference", "", "on|off - serve local LLM inference directly to same-LAN callers (LAN-TRUST: no per-request auth; needs Ollama on + pairing; default off)")
-	cmd.Flags().IntVar(&lanInferencePort, "lan-inference-port", 0, "TCP port the LAN inference listener binds on 0.0.0.0 (0 = default 11436; must differ from the inference server's 11434 and bashy's own 11435 engine)")
 	cmd.Flags().StringSliceVar(&services, "service", nil, "NAME=on|off — desired state of a service unit (repeatable). The same write `bashy service enable|disable` performs; applies live, no outpost restart. `bashy service list` names the units.")
 	cmd.Flags().StringSliceVar(&serviceSets, "service-set", nil, "NAME.PATH=VALUE — override a field of a unit's declaration (repeatable), e.g. loom.ports.0.port=31900. The `bashy service set` write.")
 	cmd.Flags().StringVar(&bashyVersion, "bashy-version", "", "pin the bashy release the daemon auto-installs when bashy is missing (empty/'latest' = newest; e.g. v0.3.0). Pin in production.")

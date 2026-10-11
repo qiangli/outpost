@@ -103,18 +103,7 @@ tool, or wipe `agent.json` by hand.
 | SSH `-A` agent-fwd | `ssh_allow_agent_forward` | `builtins set --ssh-allow-agent-forward` (alias: `--ssh-agent-fwd`) | Pair tab > Advanced | `outpost_set_builtins` | Restart |
 | SSH forward-sockets allowlist | `ssh_forward_sockets` | `builtins set --ssh-forward-socket /path ...` | Pair tab > Advanced | `outpost_set_builtins` | Restart |
 | SFTP subsystem | `sftp_enabled` | `builtins set --sftp` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
-| File Browser | `files_enabled` | `builtins set --files` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
-| File Browser write access | `files_allow_write` | `builtins set --files-allow-write` | Inbound > Built-ins > File Browser | `outpost_set_builtins` | Restart |
-| File Browser scope (root) | `files_scope` | `builtins set --files-scope <path>` | Inbound > Built-ins > File Browser | `outpost_set_builtins` | Restart |
-| Podman daemon proxy (raw) | `podman_enabled` | `builtins set --podman` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
-| Container sandbox (filtered) | `sandbox_enabled` | `builtins set --sandbox` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
-| Ollama daemon proxy | `ollama_enabled` | `builtins set --ollama` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
-| Ollama LLM-pool participation | `ollama_pool_enabled` | `builtins set --ollama-pool` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
-| Warm serving (considerate) | `warm_serving_enabled` | `builtins set --warm-serving` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
-| Warm budget fraction | `warm_budget_frac` | `builtins set --warm-budget-frac` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Warm desired set (persisted) | `warm_desired` | — (managed by `/admin/warm`) | — | — | Live |
-| Same-LAN direct inference | `lan_inference_enabled` | `builtins set --lan-inference` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
-| Same-LAN direct inference port | `lan_inference_port` | `builtins set --lan-inference-port` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 | Service unit desired state | unit YAML `enabled` | `builtins set --service NAME=on\|off` | Inbound > Services | `outpost_set_builtins` (`services`) | Live |
 | Service unit declaration override | unit YAML (any field) | `builtins set --service-set NAME.PATH=V` | Inbound > Services | `outpost_set_builtins` (`service_settings`) | Live |
 | Service trusted-identity HMAC keys | `service_sso` (daemon-internal) | — (minted on first publication) | presence only | presence only | Live |
@@ -124,33 +113,41 @@ tool, or wipe `agent.json` by hand.
 | Cloudbox-pushed self-upgrade | `update_mode` | `builtins set --update=auto\|manual\|never` | Inbound > Built-ins | `outpost_set_builtins` | Live |
 | Auto-rollback watchdog (destructive revert) | `auto_rollback_enabled` | `builtins set --auto-rollback=on\|off` | Inbound > Built-ins | `outpost_set_builtins` | Live |
 
-All built-in toggles default to ON when the JSON key is absent (old
-configs) so an upgrade doesn't silently disable features. That now
-includes the o3 proxies — `podman_enabled`, `ollama_enabled` and
-`otel_enabled` — so a freshly paired host is useful with zero
-configuration. They are *detection/capability-gated*: outpost registers
-each mount only when the backing daemon is actually reachable, and a host
-without podman / Ollama / an observability proxy logs a visible status and
-carries on. o3 is never a dependency; nothing fails to start because it is
-missing.
+All built-in route toggles default to ON when the JSON key is absent (old
+configs) so an upgrade doesn't silently disable features. The remaining
+`agent.json` opt-in is `cluster.enabled` (hands a remote control plane the
+right to schedule workloads here).
+
+Because the route keys are default-ON, "off" is only representable as an
+explicit `false` on disk — they are pointer-bools so an opt-out is written
+literally and survives every later config write. Do not "simplify" them to
+plain `bool`: with `omitempty` a false marshals to absent, and the next
+load would read absent as the default and turn the route back on.
 
 **Service units are not built-in toggles and do not follow that rule.** A
 unit's `enabled` is a declaration field, and a seeded unit ships
 `enabled: false`: a service runs because someone asked for it. See
 "Service units" below.
 
-The remaining opt-ins (default OFF, explicit choice required) are
-`sandbox_enabled` (widens *who* may run containers on the host),
-`lan_inference_enabled` (a LAN-trust listener with no per-request auth)
-and `cluster.enabled` (hands a remote control plane the right to schedule
-workloads here).
-
-Because the o3 keys are default-ON, "off" is only representable as an
-explicit `false` on disk — those three are pointer-bools so an opt-out
-is written literally and survives every later config write. Do not
-"simplify" them to plain `bool`: with `omitempty` a false marshals to
-absent, and the next load would read absent as the default and turn the
-service back on.
+Nine things used to be rows in the table above and are **service units**
+now, each with a `provider: internal` declaration whose capability lives
+inside the daemon: the File Browser (`outpost.files`), the raw podman
+passthrough (`outpost.podman`), the filtered container sandbox
+(`outpost.sandbox`), the Ollama proxy (`outpost.ollama`) and its pool
+participation (`outpost.ollama-pool`), the considerate warm plane
+(`outpost.warm`), the model-sharding plane (`outpost.shard`), the same-LAN
+direct-inference listener (`outpost.lan-inference`), and the observability
+and ycode surfaces (`outpost.otel`, `outpost.ycode`). Switch one with
+`builtins set --service NAME=on|off`, configure it with
+`--service-set NAME.settings.KEY=VALUE`, and read its state from
+`outpost services`. Their `agent.json` keys — `files_*`, `podman_enabled`,
+`sandbox_*`, `ollama_enabled`, `ollama_pool_enabled`, `warm_serving_enabled`,
+`warm_budget_frac`, `lan_inference_*`, `otel_*`, `ycode_*` and the whole
+`shard` block — are **removed outright, with no compatibility reader**: a
+stale config carrying them parses cleanly and forgets them, so a host
+cannot keep a second invisible copy of a port, a budget or a posture that
+nothing honours. See "In-process capabilities" below for each unit's
+settings.
 
 ### Service units
 
@@ -301,9 +298,62 @@ tool's own (`binmgr` resolves and sha256-verifies the release named by
 `yoke/external/<tool>`), reachable either through the `bashy <tool>` front
 door a process unit execs or through a unit's own `download:` pin.
 
-#### The one in-process capability — `outpost.actrunner`
+### In-process capabilities
 
-act_runner is the exception, because three of its inputs are not declarable:
+A `provider: internal` unit owned by `outpost` names a capability
+registered inside the daemon. It has **no child process and no pid**
+(`service.Status.PID` stays 0, by contract — wrapping one in a fake
+executable so the monitor could spawn it would make the status lie), its
+`enabled` bit is the only switch, and everything it can be configured with
+is `settings` on its declaration.
+
+The bar for being a capability rather than a process unit is narrow:
+activation must need something only this process can do. Zot, SeaweedFS,
+Kopia and the Headlamp forward do not clear it — a command, a port and a
+data dir is exactly what `provider: process` expresses. These eleven do,
+each for a stated reason:
+
+| Capability | What it publishes | Why it is in-process | `settings` |
+|---|---|---|---|
+| `outpost.files` | app `files` (require_login, index `/`) | the embedded File Browser handler is compiled into this binary; there is no command to exec | `scope` (confined root; empty = the OS user's home), `allow_write` (flips create/upload/modify/rename/delete together; default off = read-only + download-only) |
+| `outpost.podman` | app `podman` (role admin, require_login) | the libpod socket is **detected** here and is platform-dependent — a Windows podman answers on a named pipe, so a declared path would be wrong on the next host | `socket` (override for a non-standard endpoint; empty = detect) |
+| `outpost.sandbox` | app `sandbox` (require_login) + `sandbox` capability descriptor + `/_pool/capacity` | same socket, but the proxy is wrapped by an in-process filter and an in-flight counter, and an image prewarmer runs beside it | `max_memory_mb`, `cpus`, `pids_limit`, `max_containers`, `allowed_images`, `scratch_dir`, `prewarm_images`, `socket` |
+| `outpost.ollama` | app `ollama` (role admin) + `llm` capability descriptor + `/_pool/capacity` | the daemon URL is detected here (it may be the operator's, bashy's or ycode's), and the mount carries a proxy wrap and an intercept | `url` (override; empty = detect, else `$OLLAMA_HOST`) |
+| `outpost.ollama-pool` | nothing — it pushes OUT to cloudbox | the push must report the **same** in-flight counter the proxy's capacity probe serves, or the two disagree | — (`requires:` the ollama unit) |
+| `outpost.warm` | nothing — it drives model residency | it loads and unloads models in the local daemon off a load sensor shared with cluster placement | `budget_frac` (fraction of usable memory for warm preload; `(0,1]`, default 0.33) |
+| `outpost.shard` | mesh model-store service for peer provisioning | it rides this process's libp2p forwarder, peer plane and mesh peer id | `role` (`auto`/`leader`/`worker`), `peers`, `node_bytes`, `server_bin`, `worker_bin` |
+| `outpost.lan-inference` | a LAN-bound listener on its declared port | an in-process reverse proxy; the port is declared so fleet checks it for conflicts | `target` (upstream; empty = the ollama unit's target, else `127.0.0.1:11434`); the port comes from `ports` |
+| `outpost.otel` | apps `otel-prometheus`, `otel-logs`, `otel-alerts`, `otel-traces`, `otel-dashboard` | the proxy URL and its bearer come from ycode's own manifest, and each surface needs a bearer-injecting proxy wrap | `pool` (allow cloudbox to federate queries / fan out alert rules; default on) |
+| `outpost.ycode` | apps `ycode`, `ycode-canvas`, `ycode-classic` | same manifest-detected proxy and bearer injection | `share` (which surfaces to publish: a list, `all`, or empty = the catalog's default-on set), `require_login` (cloudbox OS-password elevation; default off) |
+| `outpost.actrunner` (alias `outpost.ci`) | nothing — it dials OUT to the forge | see below | see the table below |
+
+Every one of them **refuses activation with the reason** when its backend
+is missing — an undetected podman socket, a stopped Ollama, an unreachable
+ycode proxy, a host with no mesh — and the unit then reports `failed` on
+`outpost services` with that reason. The retired boot code logged one line
+and carried on, which left an enabled feature looking fine while it served
+nothing.
+
+They also **withdraw their routes when the backend goes away**: each
+capability's health check re-probes (socket connect, `/api/tags`, the ycode
+manifest), and a failing one is cycled, so the unit stops reporting active
+and the exposure reconciler unpublishes. Boot-time detection could only
+ever decide once.
+
+```bash
+outpost builtins set --service files=on \
+  --service-set files.settings.allow_write=true \
+  --service-set files.settings.scope=/srv/shared
+outpost builtins set --service ollama=on --service ollama-pool=on
+outpost builtins set --service warm=on --service-set warm.settings.budget_frac=0.5
+outpost builtins set --service ycode=on --service-set ycode.settings.share=all
+outpost services                     # declared, wanted, running, published
+```
+
+#### `outpost.actrunner` in detail
+
+act_runner needed the most explaining, because three of its inputs are not
+declarable:
 
 - `act_runner register` is a **provisioning handshake** (instance + token +
   labels) that must succeed, and be retried, before the daemon can run at
@@ -315,8 +365,7 @@ act_runner is the exception, because three of its inputs are not declarable:
 - Its job environment carries the operator's **vault** secrets, so a CI
   deploy step inherits `GITHUB_TOKEN` without a per-repo secret.
 
-So it is a `provider: internal` unit owned by `outpost`, and everything
-decidable stays in the declaration:
+Everything decidable stays in the declaration:
 
 | Declaration | Meaning | Default |
 |---|---|---|
@@ -342,16 +391,30 @@ fine while nothing ran.
 The declarations themselves live in fleet's embedded seeds (yoke), not here —
 outpost ships no unit YAML. Two things in that contract are outpost's half:
 
-1. **Capability ids.** The daemon registers `outpost.actrunner`, and the
-   alias `outpost.ci` for the same capability, so a seed written against
-   either spelling binds instead of failing with "capability is not
-   registered in outpost". `outpost services` lists what is registered.
+1. **Capability ids.** The daemon registers exactly these, and a seed must
+   name one of them in `capability:` or it binds to nothing and reports
+   "capability is not registered":
+
+   `outpost.files`, `outpost.podman`, `outpost.sandbox`, `outpost.ollama`,
+   `outpost.ollama-pool`, `outpost.warm`, `outpost.shard`,
+   `outpost.lan-inference`, `outpost.otel`, `outpost.ycode`,
+   `outpost.actrunner` (alias `outpost.ci`).
+
+   The id is the contract; the unit **name** is the operator's, so nothing
+   in outpost keys off it. `outpost services` lists each unit's capability
+   next to its state.
 2. **A provisioning (pre-start) hook is missing from the schema.** A unit
    can declare `exec`, `download`, `health` and `restart`, but not "run
    this once, successfully, before the service may start". That gap is the
    whole reason act_runner is an in-process capability rather than
    `exec: [bashy, act-runner, daemon, …]`. If fleet grows a pre-start verb,
    act_runner becomes a process unit and this capability goes away.
+3. **Two daemon decisions read declared desired state.** The libp2p mesh
+   and the peer plane are not units (they are core daemon functions), but
+   sharding rides both — so at boot the daemon asks the registry whether any
+   **enabled** unit declares `outpost.shard`, and brings them up if one
+   does. That is one read of the declarations, keyed off the capability id;
+   it replaces the retired `ShardOn()` cascade over `agent.json`.
 
 ### Headlamp operating UI (peer DKS plane)
 
@@ -382,32 +445,39 @@ auth boundary and verification procedure.
 
 ### Same-LAN direct inference (LAN-trust)
 
-`lan_inference_enabled` binds a **LAN-reachable** listener on
-`0.0.0.0:<lan_inference_port>` (default `11436`, kept distinct from the
-inference server's own `11434` and bashy's own `11435` Ollama engine) that reverse-proxies the OpenAI `/v1/*`
-and Ollama `/api/*` surface to the local inference server at
-`127.0.0.1:11434` (Ollama, or — when a shard is active — the shard
-leader's llama-server, which also serves the OpenAI `/v1` API on 11434).
+The `outpost.lan-inference` unit binds a **LAN-reachable** listener on
+`0.0.0.0:<declared port>` (default `11436`, kept distinct from the
+inference server's own `11434`, bashy's own `11435` Ollama engine and the
+`24556` llm door) that reverse-proxies the OpenAI `/v1/*` and Ollama
+`/api/*` surface to the local inference server at `127.0.0.1:11434`
+(Ollama, or — when a shard is active — the shard leader's llama-server,
+which also serves the OpenAI `/v1` API on 11434). `settings.target`
+overrides the upstream.
+
 A caller on the same LAN can then reach this host's LLM **directly**,
-bypassing the cloudbox relay for lower latency. When on (and paired),
-the outpost also advertises the endpoint to cloudbox in the LLM-pool
-registry push as `lan_endpoint`
-(`http://<primary-private-LAN-IPv4>:<lan_inference_port>/v1`), so
-cloudbox can hand it to callers it detects on the same LAN.
+bypassing the cloudbox relay for lower latency. The LLM-pool unit
+advertises the endpoint to cloudbox in its registry push as `lan_endpoint`
+(`http://<primary-private-LAN-IPv4>:<port>/v1`) — read from the listener's
+**bound** port, so a unit that is not serving advertises nothing and
+cloudbox never hands out a dead URL.
+
+The port lives in the declaration (`ports: [{port: 11436, bind: lan}]`),
+which is the material gain over the retired `lan_inference_port` key:
+fleet checks it against every other enabled unit's listeners and refuses
+an enable that would collide, naming the holder.
 
 **This is a LAN-TRUST endpoint. It is NOT authenticated per-request.**
-Enabling it means the operator acknowledges their LAN is trusted —
+Enabling the unit means the operator acknowledges their LAN is trusted —
 anyone who can reach the port can use the local inference server.
-Untrusted or shared/org networks should leave `lan_inference_enabled`
-**off** and use the Bearer-authed cloudbox `/v1` gateway instead (which
-authenticates every request). The toggle requires the local Ollama proxy
-on and pairing (cloudbox is what advertises the LAN endpoint to same-LAN
-callers). A bind failure is non-fatal — it logs and degrades without
-taking the daemon down.
+Untrusted or shared/org networks leave the unit **disabled** and use the
+Bearer-authed cloudbox `/v1` gateway instead (which authenticates every
+request). A bind failure is an activation **refusal** with the address in
+it: the unit reports `failed` rather than the daemon logging once and
+carrying on.
 
 ### Warm serving (adaptive, considerate, always-on)
 
-`warm_serving_enabled` (default **ON** for a paired Ollama node) runs the
+The `outpost.warm` unit runs the
 considerate warm-serving plane: the outpost keeps a small, conservative
 set of LLM models **warm** (resident, zero cold-start) but **yields** the
 machine to the user's own work the moment they get busy — unloading warm
@@ -427,10 +497,18 @@ Two moving parts:
   host must be quiet ~5 min to leave it — so a brief spike never yanks
   warm models.
 - The **warm budget** is the conservative memory the host will dedicate
-  to warm preload: `warm_budget_frac` × usable memory (default **0.33**,
-  leaving ~2/3 for the OS and the user's apps — e.g. ~10 GB on a 32 GB
-  host). It drops to **0 whenever the host is busy**, so the host fully
-  yields. `warm_budget_frac` is clamped to `(0, 1]`.
+  to warm preload: `settings.budget_frac` × usable memory (default
+  **0.33**, leaving ~2/3 for the OS and the user's apps — e.g. ~10 GB on a
+  32 GB host). It drops to **0 whenever the host is busy**, so the host
+  fully yields. A value outside `(0, 1]` is an activation **refusal**
+  naming the setting, not a silent fallback. The fraction is applied to the
+  running profiler, so changing it does not cycle the sampler and lose its
+  learned baseline.
+
+  The profiler itself is a **sensor, not a service**: cluster placement for
+  virtual runtimes needs the same samples, so exactly one runs per daemon,
+  started by whichever consumer asks first. Two would mean two writers of
+  one state file.
 
 The **desired warm set** (`warm_desired`) is the list of models cloudbox
 last asked this host to keep warm. A supervisor loop unloads that set
@@ -468,14 +546,20 @@ host is busy) is skipped, not forced. Reply:
 where `status` is one of `loaded` / `already_resident` / `shard_started`
 / `already_active` / `unloaded` / `skipped_busy` / `over_budget`.
 
+The route is always mounted and resolves the executor **per request**, so
+enabling or disabling the warm unit takes effect without a restart. A
+request that arrives while the unit is not active gets `503` with the
+reason; it used to get `404`, indistinguishable from an outpost too old to
+warm anything.
+
 ### Container sandbox provider
 
-`sandbox_enabled` exposes a **filtered** container endpoint at
+The `outpost.sandbox` unit exposes a **filtered** container endpoint at
 `/app/sandbox/`, distinct from the raw `/app/podman/` passthrough. It
 shares the same podman socket `DetectPodman()` finds, but every
 `containers/create` and exec-create request is vetted: privileged
 containers, host network / PID / IPC / UTS / user / cgroup namespaces,
-host bind mounts (outside `sandbox_scratch_dir`), added capabilities,
+host bind mounts (outside `settings.scratch_dir`), added capabilities,
 device passthrough, and confinement-disabling `security-opt` /
 `selinux_opt` are all rejected with a `403 {"message":"sandbox: …"}`.
 This is the mount a thin client or an untrusted tenant talks to;
@@ -484,40 +568,52 @@ This is the mount a thin client or an untrusted tenant talks to;
 The optional resource policy (all default 0 = "no explicit limit", the
 filter then leaves the caller's value untouched):
 
-| Setting | File key | Meaning |
+| Setting | Declaration key | Meaning |
 |---|---|---|
-| Sandbox memory cap (MiB) | `sandbox_max_memory_mb` | per-container memory ceiling; clamps a larger request down |
-| Sandbox CPU cap (cores) | `sandbox_cpus` | per-container CPU cap (docker NanoCpus) |
-| Sandbox PIDs cap | `sandbox_pids_limit` | per-container process cap (fork-bomb defense) |
-| Sandbox max containers | `sandbox_max_containers` | advertised concurrency ceiling (capacity report) |
-| Sandbox image allowlist | `sandbox_allowed_images` | exact refs or `repo/*` wildcards; empty = any image |
-| Sandbox scratch dir | `sandbox_scratch_dir` | sole host path prefix under which bind mounts are allowed; empty = forbid host binds (named volumes/tmpfs always ok) |
-| Sandbox prewarm images | `sandbox_prewarm_images` | images the prewarmer keeps pulled so a remote create+start skips the pull cost; empty falls back to the concrete (non-wildcard) `sandbox_allowed_images` entries |
+| Sandbox memory cap (MiB) | `settings.max_memory_mb` | per-container memory ceiling; clamps a larger request down |
+| Sandbox CPU cap (cores) | `settings.cpus` | per-container CPU cap (docker NanoCpus) |
+| Sandbox PIDs cap | `settings.pids_limit` | per-container process cap (fork-bomb defense) |
+| Sandbox max containers | `settings.max_containers` | advertised concurrency ceiling (capacity report) |
+| Sandbox image allowlist | `settings.allowed_images` | exact refs or `repo/*` wildcards; empty = any image |
+| Sandbox scratch dir | `settings.scratch_dir` | sole host path prefix under which bind mounts are allowed; empty = forbid host binds (named volumes/tmpfs always ok) |
+| Sandbox prewarm images | `settings.prewarm_images` | images the prewarmer keeps pulled so a remote create+start skips the pull cost; empty falls back to the concrete (non-wildcard) `settings.allowed_images` entries |
 
-These policy fields are edited in `agent.json` directly (or via
-`outpost_set_builtins` / the SPA); only the `sandbox_enabled` toggle has
-a dedicated CLI flag. Like the other daemon proxies, flipping
-`sandbox_enabled` triggers a restart because it (un)registers an app at
-boot. Cloudbox discovers sandbox-bearing hosts via the `/apps`
-capability advertisement (`{type:"sandbox"}`) and can probe
-`/app/sandbox/_pool/capacity` for load-aware routing.
+```bash
+outpost builtins set --service sandbox=on \
+  --service-set sandbox.settings.max_memory_mb=2048 \
+  --service-set sandbox.settings.allowed_images=alpine:3,ghcr.io/acme/*
+```
 
-The **File Browser** builtin (`files_enabled`, default **on**) embeds a
-File Browser SPA in-process — the GUI sibling of `/shell` and `/ssh` for
-browsing and downloading files — registered as the `files` app so it
-rides the same per-app gate (`require_login` + cloudbox elevation). It is
-**read-only + download-only by default**: `files_allow_write` flips every
-write op (upload/edit/rename/delete) together. The embed is **single-user
-and stateless** — no database. Scope and write mode come from config; every
-write to the in-process user no-ops, so a cloud-vouched user can never turn
-a read-only browser into a writable one (write-enable is a config/LAN
-decision, not an in-app one). `files_scope` confines the browser to a
-directory (empty = the OS user's home). Per-user UI preferences (view mode,
-hide-dotfiles, language, …) are kept **in the browser's localStorage**, so
-they are per-device and never shared between users of a shared instance.
-`files_signing_key` is the only persisted File Browser state (see the
-daemon-internal secrets table). All flip a restart (the handler mounts at
-boot).
+The **escape knobs are not declarable at all**: no setting re-enables
+privileged mode, host namespaces, host binds outside the scratch prefix,
+added capabilities or device passthrough. The mount always strips them, so
+an operator cannot widen the sandbox by editing a declaration.
+
+A policy change applies **live** — the filter reads it per request, so the
+next `containers/create` sees the new cap without a restart. Cloudbox
+discovers sandbox-bearing hosts via the `/apps` capability advertisement
+(`{type:"sandbox"}`) and can probe `/app/sandbox/_pool/capacity` for
+load-aware routing.
+
+### File Browser
+
+The `outpost.files` unit embeds a File Browser SPA in-process — the GUI
+sibling of `/shell` and `/ssh` for browsing and downloading files —
+registered as the `files` app so it rides the same per-app gate
+(`require_login` + cloudbox elevation). It is **read-only + download-only
+by default**: `settings.allow_write` flips every write op
+(upload/edit/rename/delete) together. The embed is **single-user and
+stateless** — no database. Scope and write mode come from the declaration;
+every write to the in-process user no-ops, so a cloud-vouched user can
+never turn a read-only browser into a writable one (write-enable is a
+host-plane decision, not an in-app one). `settings.scope` confines the
+browser to a directory (empty = the OS user's home). Per-user UI
+preferences (view mode, hide-dotfiles, language, …) are kept **in the
+browser's localStorage**, so they are per-device and never shared between
+users of a shared instance. `files_signing_key` is the only File Browser
+state still in `agent.json` (see the daemon-internal secrets table): it is
+outpost's own secret, persisted so sessions survive a restart, and a
+unit's `secrets` are vault *references* that cannot hold it.
 
 `update_mode` is the only built-in setting with **Live** effect — the
 upgrade worker re-reads the FileConfig on each `POST /admin/upgrade`,

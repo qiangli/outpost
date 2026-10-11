@@ -108,7 +108,8 @@ type Config struct {
 	// LANEndpoint is the direct same-LAN inference URL to advertise in each
 	// push (RegistryPushPayload.LANEndpoint), e.g.
 	// "http://192.0.2.10:11436/v1". Empty (the common case) omits the field
-	// from the wire — set by main.go only when fc.LANInferenceOn().
+	// from the wire — set from the LAN inference unit's bound port, so it
+	// is advertised only while that unit is actually serving.
 	LANEndpoint string
 
 	// WarmStatus, when set, supplies the host's warm-serving signal folded
