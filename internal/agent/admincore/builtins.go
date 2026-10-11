@@ -298,7 +298,20 @@ func (s *Server) SetBuiltins(p BuiltinsParams) (BuiltinsResult, error) {
 		}, p.Meet, p.MeetPort)
 	}
 	if p.BashyServices != nil {
-		fc.BashyServices = normalizeBashyServices(p.BashyServices)
+		// Reads hand out redacted rows, so an empty sso_secret means "keep the
+		// stored key", never "clear it": a blank would make boot mint a new key
+		// the cooperating upstream does not have.
+		stored := map[string]string{}
+		for _, b := range fc.BashyServices {
+			stored[b.Name] = b.SSOSecret
+		}
+		svcs := normalizeBashyServices(p.BashyServices)
+		for i := range svcs {
+			if svcs[i].SSOSecret == "" {
+				svcs[i].SSOSecret = stored[svcs[i].Name]
+			}
+		}
+		fc.BashyServices = svcs
 	}
 	if p.BashyApps != nil {
 		fc.BashyAppsEnabled = p.BashyApps

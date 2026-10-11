@@ -191,3 +191,33 @@ func TestSetBuiltinsHeadlampParity(t *testing.T) {
 		t.Fatalf("SafeView.HeadlampEnabled = true after disable")
 	}
 }
+
+// A client that writes back the redacted bashy_services it read must not
+// wipe the stored SSO keys.
+func TestSetBuiltinsKeepsRedactedServiceSSOSecret(t *testing.T) {
+	core, cfgPath := newTestCore(t)
+	const secret = "synthetic-service-sso-secret-dddddddddddddd"
+	svc := conf.BashyService{Name: "loom", Enabled: true, AppName: "loom", TrustCloudIdentity: true, SSOSecret: secret}
+	if _, err := core.SetBuiltins(BuiltinsParams{BashyServices: []conf.BashyService{svc}}); err != nil {
+		t.Fatal(err)
+	}
+	view, err := core.SafeView()
+	if err != nil {
+		t.Fatal(err)
+	}
+	red := view.Redacted().BashyServices
+	if len(red) != 1 || red[0].SSOSecret != "" {
+		t.Fatalf("redacted read carried the secret: %+v", red)
+	}
+	red[0].AppPort = 31881
+	if _, err := core.SetBuiltins(BuiltinsParams{BashyServices: red}); err != nil {
+		t.Fatal(err)
+	}
+	fc, err := conf.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fc.BashyServices) != 1 || fc.BashyServices[0].SSOSecret != secret || fc.BashyServices[0].AppPort != 31881 {
+		t.Fatalf("round trip lost the stored key or the edit: %+v", fc.BashyServices)
+	}
+}
