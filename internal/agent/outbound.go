@@ -131,7 +131,8 @@ func cookieCachePath(path string) (string, error) {
 // a crash mid-write doesn't leave a torn file the next AutoReconnect
 // would refuse. Mode 0600: the cookie is bearer-equivalent for the
 // (host, app|builtin) scope; readable by anyone with the same uid is
-// the right trust boundary.
+// the right trust boundary. On Windows the equivalent — a protected
+// owner-only DACL — is applied before the cookie is written.
 func writeCookieFile(path, cookie string) error {
 	full, err := cookieCachePath(path)
 	if err != nil {
@@ -141,6 +142,13 @@ func writeCookieFile(path, cookie string) error {
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
+	}
+	// Lock the owner-only ACL down before the cookie is written; the
+	// security descriptor travels with the rename.
+	if err := restrictSecretFile(tmp); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("restrict cookie file permissions: %w", err)
 	}
 	if _, err := f.WriteString(cookie); err != nil {
 		_ = f.Close()

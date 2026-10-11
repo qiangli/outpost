@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
@@ -24,14 +23,10 @@ func TestLoadOrCreateHostKeyPersists(t *testing.T) {
 		t.Fatal("first call returned nil signer")
 	}
 
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat key file: %v", err)
-	}
-	// Windows has no POSIX permission bits; Stat reports 0666 there.
-	if mode := info.Mode().Perm(); runtime.GOOS != "windows" && mode != 0o600 {
-		t.Errorf("host key file mode = %#o, want 0600", mode)
-	}
+	// Confidentiality contract: POSIX 0600; on Windows the native
+	// equivalent — a protected, user-only DACL — is asserted by
+	// assertSecretPerm.
+	assertSecretPerm(t, path)
 
 	second, err := loadOrCreateHostKeyAt(path)
 	if err != nil {

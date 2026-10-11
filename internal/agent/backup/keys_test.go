@@ -3,7 +3,6 @@ package backup
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -18,14 +17,9 @@ func TestLoadOrCreateIdentity_FirstRunGenerates(t *testing.T) {
 	if id == nil || rec == nil {
 		t.Fatal("identity + recipient should be non-nil")
 	}
-	// Identity file written, mode 0600.
-	st, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 { // no POSIX mode bits on Windows
-		t.Errorf("identity file mode %o, want 0600", st.Mode().Perm())
-	}
+	// Identity file written, owner-only (POSIX 0600; Windows: a
+	// protected, user-only DACL via assertSecretPerm).
+	assertSecretPerm(t, path)
 	// Sibling recipient file written.
 	pub, err := os.ReadFile(strings.TrimSuffix(path, ".key") + ".pub")
 	if err != nil {
