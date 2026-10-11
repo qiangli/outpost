@@ -21,7 +21,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/pkg/sftp v1.13.10
-	github.com/qiangli/yoke v0.0.0-20261010231603-5272b6b937e1
+	github.com/qiangli/yoke v0.0.0-20261011020932-a12f3f6ba74d
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.53.0
 	github.com/spf13/cobra v1.10.2
@@ -301,6 +301,6 @@ replace github.com/filebrowser/filebrowser/v2 => github.com/qiangli/filebrowser/
 // coreutils' own replace does not reach this module. Same pin bashy carries.
 replace github.com/benhoyt/goawk => github.com/qiangli/coreutils/third_party/goawk v0.0.0-20261009201221-a50cc1f27e6f
 
-replace github.com/odvcencio/gotreesitter => github.com/qiangli/gotreesitter v0.0.0-20261006115113-c8a5d22bb3f0
+replace github.com/odvcencio/gotreesitter => github.com/qiangli/gotreesitter v0.0.0-20261011020812-226bfcd2c541
 
 replace github.com/ergochat/readline => github.com/qiangli/readline v0.1.4-0.20260919214158-38ad08e83676

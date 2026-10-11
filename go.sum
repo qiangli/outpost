@@ -615,6 +615,8 @@ github.com/qiangli/yoke v0.0.0-20261010222016-1ea229078706 h1:vOhZ3SVEmo5xjyZtDi
 github.com/qiangli/yoke v0.0.0-20261010222016-1ea229078706/go.mod h1:Vpw+JcY6aXtCFdjyokP3zkFiGOyzK6sXHaCQRki6v6E=
 github.com/qiangli/yoke v0.0.0-20261010231603-5272b6b937e1 h1:L9JN62T2EyzQjFvdf1JDOuJlbNQjbGhKI6Xg9diLql0=
 github.com/qiangli/yoke v0.0.0-20261010231603-5272b6b937e1/go.mod h1:Vpw+JcY6aXtCFdjyokP3zkFiGOyzK6sXHaCQRki6v6E=
+github.com/qiangli/yoke v0.0.0-20261011020932-a12f3f6ba74d h1:D9weXJy+pJWjEzAusdqEB21Oa4UmEsu80FcZLes1U0A=
+github.com/qiangli/yoke v0.0.0-20261011020932-a12f3f6ba74d/go.mod h1:KoWzVMOMKCjUhOmX/slknhdYhJgpH/r/v+/j7OO5Yto=
 github.com/quic-go/qpack v0.6.0 h1:g7W+BMYynC1LbYLSqRt8PBg5Tgwxn214ZZR34VIOjz8=
 github.com/quic-go/qpack v0.6.0/go.mod h1:lUpLKChi8njB4ty2bFLX2x4gzDqXwUpaO1DP9qMDZII=
 github.com/quic-go/quic-go v0.59.1 h1:0Gmua0HW1Tv7ANR7hUYwRyD0MG5OJfgvYSZasGZzBic=
