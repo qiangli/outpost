@@ -22,12 +22,12 @@ import (
 // detached self-re-exec.
 const envSupervised = "OUTPOST_SUPERVISED"
 
-// supervisordCmd is the always-up component of the two-part binary: a tiny
-// parent that keeps the outpost daemon (`<self> start`) alive — start it,
-// restart it on exit, stop it on shutdown. The OS service (`outpost service
-// install`) registers THIS command, so the supervisor — and through it the
-// daemon — survive a reboot. This pass supervises only the daemon; a later
-// pass adds managed routed apps via the same supervisor.Manager.
+// supervisordCmd is the init half of the outpost binary: a tiny parent that
+// keeps exactly the outpost daemon (`<self> start`) and `bashy supervisord`
+// alive. The OS service (`outpost service install`) registers THIS command,
+// so both control-plane processes survive a reboot. Per-unit processes belong
+// exclusively to bashy supervisord; outpost must never grow a second service
+// monitor.
 //
 // The daemon is launched with OUTPOST_SUPERVISED=1 in its env, which flips
 // its restart sites from self-re-exec (execSelfStart) to exit-and-let-the-
@@ -50,41 +50,6 @@ entry created by 'outpost service install' keeps it up.`,
 	return cmd
 }
 
-// supervisedFromConfig reads the "supervised" entries out of agent.json and
-// maps them onto supervisor.Programs. Every failure path here is non-fatal
-// and logged — a bad helper entry must not stop the daemon from starting.
-func supervisedFromConfig() []*supervisor.Program {
-	cfgPath, err := conf.DefaultConfigPath()
-	if err != nil || cfgPath == "" {
-		return nil
-	}
-	fc, err := conf.LoadFile(cfgPath)
-	if err != nil || fc == nil {
-		return nil
-	}
-	entries, skipped := fc.SupervisedPrograms()
-	for _, reason := range skipped {
-		slog.Warn("supervisord: skipping supervised entry", "reason", reason)
-	}
-	programs := make([]*supervisor.Program, 0, len(entries))
-	for _, sp := range entries {
-		env := os.Environ()
-		if len(sp.Env) > 0 {
-			env = append(env, sp.Env...)
-		}
-		programs = append(programs, &supervisor.Program{
-			Name:    sp.Name,
-			Path:    sp.Path,
-			Args:    sp.Args,
-			Dir:     sp.Dir,
-			Env:     env,
-			LogPath: sp.LogPath,
-		})
-		slog.Info("supervisord: supervising", "name", sp.Name, "path", sp.Path, "dir", sp.Dir)
-	}
-	return programs
-}
-
 func runSupervisord(ctx context.Context) error {
 	if err := claimSupervisordPidFile(); err != nil {
 		return err
@@ -103,18 +68,24 @@ func runSupervisord(ctx context.Context) error {
 		logPath = filepath.Join(dir, "daemon.log")
 	}
 
-	daemon := &supervisor.Program{
-		Name:    "outpost",
-		Path:    self,
-		Args:    []string{"start"},
-		Env:     append(os.Environ(), envSupervised+"=1"),
-		LogPath: logPath,
+	// bashy supervisord is the sole monitor for every declared service unit.
+	// Resolve it once before entering Manager.Run: it is a required peer of the
+	// daemon, so silently omitting it would make this init look healthy while
+	// every enabled unit was abandoned.
+	bashy, err := bashyResolver.Path(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve bashy supervisord: %w", err)
 	}
+	bashyLogPath := ""
+	if dir, derr := conf.DefaultCacheDir(); derr == nil {
+		bashyLogPath = filepath.Join(dir, "bashy-supervisord.log")
+	}
+	programs := supervisordPrograms(self, bashy, logPath, bashyLogPath)
 	// Auto-rollback watchdog: before each (re)launch, revert a just-upgraded
 	// binary that failed to confirm healthy. No-op without a pending upgrade;
 	// the destructive revert is gated by auto_rollback_enabled (default off).
 	if dir, derr := conf.DefaultCacheDir(); derr == nil {
-		daemon.PreStart = watchdogPreStart(dir)
+		programs[0].PreStart = watchdogPreStart(dir)
 	}
 
 	// Translate SIGINT/SIGTERM into a context cancel so the supervisor
@@ -122,23 +93,34 @@ func runSupervisord(ctx context.Context) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Operator-declared extra programs (agent.json "supervised"). They get
-	// the same restart-on-exit + backoff as the daemon, and — because the
-	// OS service starts supervisord at boot — the same reboot durability,
-	// on every platform. A misconfigured entry is skipped with a warning
-	// rather than failing startup: a helper job must never keep the daemon
-	// itself from coming up.
-	programs := []*supervisor.Program{daemon}
-	for _, sp := range supervisedFromConfig() {
-		programs = append(programs, sp)
-	}
-
 	slog.Info("supervisord: starting", "binary", self, "daemon_log", logPath,
-		"supervised", len(programs)-1)
+		"bashy_supervisord_log", bashyLogPath)
 	mgr := supervisor.New(programs...)
 	err = mgr.Run(ctx)
 	slog.Info("supervisord: stopped")
 	return err
+}
+
+// supervisordPrograms is deliberately closed over two processes. The helper
+// makes that invariant inexpensive to test and prevents future callers from
+// slipping individual service units back under outpost's init.
+func supervisordPrograms(self, bashy, daemonLogPath, bashyLogPath string) []*supervisor.Program {
+	return []*supervisor.Program{
+		{
+			Name:    "outpost",
+			Path:    self,
+			Args:    []string{"start"},
+			Env:     append(os.Environ(), envSupervised+"=1"),
+			LogPath: daemonLogPath,
+		},
+		{
+			Name:    "bashy-supervisord",
+			Path:    bashy,
+			Args:    []string{"supervisord"},
+			Env:     os.Environ(),
+			LogPath: bashyLogPath,
+		},
+	}
 }
 
 // supervisordStatusCmd reports whether a supervisor is running (via its
