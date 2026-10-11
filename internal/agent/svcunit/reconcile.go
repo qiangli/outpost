@@ -38,6 +38,14 @@ type Deps struct {
 	Mesh     MeshExposer
 	Secrets  Secrets
 	Internal *service.Internal
+	// Owner is the link to the service monitor's owner control socket
+	// (service.Client implements it). When set and the monitor answers, the
+	// monitor decides which of this process's internal units are wanted now
+	// (`desired`) and is told what the capabilities actually did (`report`).
+	// When it is nil or the monitor is unreachable, the local declaration's
+	// enabled bit decides, exactly as before: a host without a monitor must
+	// not lose its in-process features.
+	Owner OwnerLink
 	// Runtime is handed to the internal provider on Activate/Configure. Emit
 	// is filled in by the reconciler so a capability's own failure shows up
 	// as a state change and withdraws its exposure.
@@ -45,6 +53,13 @@ type Deps struct {
 	// Interval is the status poll period. Zero uses DefaultInterval.
 	Interval time.Duration
 	Log      *slog.Logger
+}
+
+// OwnerLink is the owner half of the monitor's control protocol, as the
+// reconciler uses it. service.Client is the production implementation.
+type OwnerLink interface {
+	Desired(owner string) ([]service.Status, error)
+	Report(st service.Status) error
 }
 
 // DefaultInterval is how often the monitor's structured status is re-read.
@@ -81,6 +96,12 @@ type Reconciler struct {
 	// activateErrs is the last activation failure reported per unit, so an
 	// unchanged refusal is logged once instead of on every pass.
 	activateErrs map[string]string
+	// linkNote is the last monitor-link failure logged, so an unchanged
+	// condition (no monitor running) is said once.
+	linkNote string
+	// reported tracks which internal units this process has told the
+	// monitor about, so shutdown can report them inactive.
+	reported map[string]bool
 }
 
 // noteActivateFailure records an activation outcome and reports whether it
@@ -114,6 +135,7 @@ func New(deps Deps) *Reconciler {
 		states:       map[string]service.Status{},
 		applied:      map[string]string{},
 		activateErrs: map[string]string{},
+		reported:     map[string]bool{},
 	}
 }
 
@@ -152,6 +174,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
 	defer r.withdrawAll()
+	defer r.shutdownInternal()
 	for {
 		select {
 		case <-ctx.Done():
@@ -208,9 +231,11 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 
 	states, stale := r.readStates(ctx, units)
 
+	desired, monitorUp := r.readDesired(units)
+
 	var errs []error
 	for _, u := range units {
-		if st, ok := r.applyInternal(ctx, u); ok {
+		if st, ok := r.applyInternal(ctx, u, desired, monitorUp); ok {
 			states[u.Name] = st
 		}
 	}
@@ -307,7 +332,7 @@ func (r *Reconciler) effectiveState(u fleet.Service, st service.Status, stale bo
 //
 // Configure runs only when the declaration actually changed, so a 5 s
 // reconcile pass does not re-push identical settings into a live capability.
-func (r *Reconciler) applyInternal(ctx context.Context, u fleet.Service) (service.Status, bool) {
+func (r *Reconciler) applyInternal(ctx context.Context, u fleet.Service, desired map[string]bool, monitorUp bool) (service.Status, bool) {
 	prov := r.deps.Internal
 	if prov == nil || u.ProviderName() != fleet.ServiceProviderInternal {
 		return service.Status{}, false
@@ -318,8 +343,17 @@ func (r *Reconciler) applyInternal(ctx context.Context, u fleet.Service) (servic
 	rt := r.deps.Runtime
 	rt.Emit = r.emit
 	cur := prov.Status(u.Name)
+	// wanted is whether the unit should be running now. The monitor decides
+	// when it answers and lists the unit (it owns policy: start limits,
+	// dependencies); the local declaration can only turn a unit OFF early,
+	// so a disable applies before the monitor has re-read it.
+	wanted := u.Enabled
+	if monitorUp {
+		wanted = u.Enabled && desired[u.Name]
+	}
+	var applyErr error
 	switch {
-	case !u.Enabled:
+	case !wanted:
 		if cur.State != service.Inactive {
 			if err := prov.Deactivate(ctx, u.Name); err != nil {
 				r.log.Warn("internal service: deactivate failed", "unit", u.Name, "err", err)
@@ -327,6 +361,7 @@ func (r *Reconciler) applyInternal(ctx context.Context, u fleet.Service) (servic
 		}
 	case cur.State != service.Active:
 		if err := prov.Activate(ctx, u, rt); err != nil {
+			applyErr = err
 			// Once per distinct reason, not once per 5 s pass: an enabled
 			// unit whose capability refuses (a CI runner with no
 			// registration token, say) is re-activated on every tick, and a
@@ -349,6 +384,7 @@ func (r *Reconciler) applyInternal(ctx context.Context, u fleet.Service) (servic
 			err = prov.Activate(ctx, u, rt)
 		}
 		if err != nil {
+			applyErr = err
 			r.log.Warn("internal service: configure failed", "unit", u.Name, "err", err)
 		}
 		r.rememberApplied(u)
@@ -367,6 +403,7 @@ func (r *Reconciler) applyInternal(ctx context.Context, u fleet.Service) (servic
 				r.log.Warn("internal service: cycle deactivate failed", "unit", u.Name, "err", derr)
 			}
 			if aerr := prov.Activate(ctx, u, rt); aerr != nil {
+				applyErr = aerr
 				r.log.Warn("internal service: cycle activate failed", "unit", u.Name, "err", aerr)
 			}
 			r.rememberApplied(u)
@@ -374,7 +411,117 @@ func (r *Reconciler) applyInternal(ctx context.Context, u fleet.Service) (servic
 	}
 	st := prov.Status(u.Name)
 	st.Unit, st.Provider, st.Enabled = u.Name, fleet.ServiceProviderInternal, u.Enabled
+	// A capability that refused (or is not registered here at all) never
+	// reached the provider's own bookkeeping; say why instead of reporting a
+	// bare inactive.
+	if applyErr != nil && st.State != service.Active {
+		st.State, st.Reason = service.Failed, applyErr.Error()
+	}
+	if st.State == service.Active {
+		st.Health = "ok"
+	}
+	if monitorUp {
+		rep := st
+		rep.Enabled = wanted
+		r.report(rep)
+	}
 	return st, true
+}
+
+// readDesired asks the monitor which of this process's internal units are
+// wanted now. The second result is whether the monitor answered; a nil map
+// with false means the local declaration decides (see Deps.Owner).
+func (r *Reconciler) readDesired(units []fleet.Service) (map[string]bool, bool) {
+	if r.deps.Owner == nil || r.deps.Internal == nil {
+		return nil, false
+	}
+	hosted := false
+	for _, u := range units {
+		if u.ProviderName() == fleet.ServiceProviderInternal && u.Owner == fleet.ServiceOwnerOutpost {
+			hosted = true
+			break
+		}
+	}
+	if !hosted {
+		return nil, false
+	}
+	rows, err := r.deps.Owner.Desired(fleet.ServiceOwnerOutpost)
+	if err != nil {
+		r.noteLink(err)
+		return nil, false
+	}
+	r.noteLink(nil)
+	out := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		out[row.Unit] = row.Enabled
+	}
+	return out, true
+}
+
+// report tells the monitor what this process observes for one internal unit.
+// It runs on every pass, not only on change: a monitor that restarted has
+// lost every report, and the next pass is what re-adopts the units.
+func (r *Reconciler) report(st service.Status) {
+	if err := r.deps.Owner.Report(st); err != nil {
+		r.noteLink(err)
+		return
+	}
+	r.mu.Lock()
+	r.reported[st.Unit] = true
+	r.mu.Unlock()
+}
+
+// noteLink logs a change in the monitor link, once. A missing monitor is
+// normal (older bashy, or the host runs without one) and not a warning.
+func (r *Reconciler) noteLink(err error) {
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	r.mu.Lock()
+	changed := r.linkNote != msg
+	r.linkNote = msg
+	r.mu.Unlock()
+	if !changed {
+		return
+	}
+	switch {
+	case err == nil:
+		r.log.Info("service monitor link up: internal units follow the monitor's desired state")
+	case errors.Is(err, service.ErrNoMonitor):
+		r.log.Info("service monitor not running: internal units follow their local declaration", "err", err)
+	default:
+		r.log.Warn("service monitor link failed", "err", err)
+	}
+}
+
+// shutdownInternal deactivates the internal units this process applied and
+// tells the monitor, which reads the owner going away as the units going
+// inactive. Without the report a restarting daemon would leave the monitor
+// believing its capabilities are still active.
+func (r *Reconciler) shutdownInternal() {
+	prov := r.deps.Internal
+	if prov == nil {
+		return
+	}
+	r.mu.Lock()
+	names := make([]string, 0, len(r.reported))
+	for n := range r.reported {
+		names = append(names, n)
+	}
+	r.reported = map[string]bool{}
+	r.mu.Unlock()
+	sort.Strings(names)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, n := range names {
+		if err := prov.Deactivate(ctx, n); err != nil {
+			r.log.Warn("internal service: deactivate on shutdown failed", "unit", n, "err", err)
+		}
+		if r.deps.Owner != nil {
+			_ = r.deps.Owner.Report(prov.Status(n))
+		}
+	}
 }
 
 // declarationChanged reports whether a unit's configurable surface differs

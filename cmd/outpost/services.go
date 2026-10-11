@@ -202,6 +202,9 @@ func startServiceReconciler(g *errgroup.Group, ctx context.Context, store *svcun
 		Source:   store,
 		Secrets:  serviceSecrets{path: cfgPath, fc: fc},
 		Internal: internal,
+		// The monitor's owner socket: it decides which of this daemon's
+		// internal units run, and is told what they actually did.
+		Owner: service.Client{},
 	}
 	if apps != nil {
 		rdeps.Apps = appExposer{reg: apps}
