@@ -1,6 +1,7 @@
 package adminui
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -56,8 +57,11 @@ func TestBearerAdmitsLoopbackAsOSUser(t *testing.T) {
 		t.Fatalf("valid bearer on loopback = %d, want 200: %s", w.Code, w.Body.String())
 	}
 	cur, _ := hostauth.CurrentUser()
-	if !strings.Contains(w.Body.String(), cur) {
-		t.Errorf("identity is not the OS user: %s", w.Body.String())
+	var st struct {
+		CurrentOSUser string `json:"current_os_user"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil || st.CurrentOSUser != cur {
+		t.Errorf("identity is not the OS user %q: %s", cur, w.Body.String())
 	}
 	if w = bearerReq(s, http.MethodGet, "/api/status", "[::1]:5000", "Bearer "+testMCPToken); w.Code != http.StatusOK {
 		t.Errorf("valid bearer on ::1 = %d, want 200", w.Code)

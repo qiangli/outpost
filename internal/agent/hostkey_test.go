@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -27,7 +28,8 @@ func TestLoadOrCreateHostKeyPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat key file: %v", err)
 	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
+	// Windows has no POSIX permission bits; Stat reports 0666 there.
+	if mode := info.Mode().Perm(); runtime.GOOS != "windows" && mode != 0o600 {
 		t.Errorf("host key file mode = %#o, want 0600", mode)
 	}
 

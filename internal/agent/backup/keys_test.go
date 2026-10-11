@@ -3,6 +3,7 @@ package backup
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -22,7 +23,7 @@ func TestLoadOrCreateIdentity_FirstRunGenerates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if st.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 { // no POSIX mode bits on Windows
 		t.Errorf("identity file mode %o, want 0600", st.Mode().Perm())
 	}
 	// Sibling recipient file written.

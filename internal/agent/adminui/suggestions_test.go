@@ -37,6 +37,7 @@ func suggestionsTestSetup(t *testing.T, manifest map[string]any, existingApps []
 		}
 	}
 	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome) // os.UserHomeDir on Windows
 
 	cfgPath := filepath.Join(t.TempDir(), "agent.json")
 	if err := conf.SaveFile(cfgPath, &conf.FileConfig{

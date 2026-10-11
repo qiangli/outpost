@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -673,7 +674,7 @@ func TestOutbound_CookiePersistRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("stat: %v", err)
 			}
-			if st.Mode().Perm() != 0o600 {
+			if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 { // no POSIX mode bits on Windows
 				t.Errorf("mode=%o, want 0600", st.Mode().Perm())
 			}
 			if err := removeCookieFile(path); err != nil {

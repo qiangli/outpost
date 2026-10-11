@@ -18,6 +18,7 @@ func withHomeOverride(t *testing.T) (homeDir string, teardown func()) {
 	dir := t.TempDir()
 	prevHome := os.Getenv("HOME")
 	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir) // os.UserHomeDir on Windows
 	return dir, func() {
 		if prevHome != "" {
 			t.Setenv("HOME", prevHome)

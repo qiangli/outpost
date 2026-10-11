@@ -178,8 +178,8 @@ func TestDefaultConfigDir_XDG(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "/tmp/xdg-x/matrix" {
-		t.Errorf("got %q, want /tmp/xdg-x/matrix", got)
+	if want := filepath.Join("/tmp/xdg-x", "matrix"); got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
@@ -191,8 +191,8 @@ func TestDefaultCacheDir_XDG(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "/tmp/xdg-cache/outpost" {
-		t.Errorf("got %q, want /tmp/xdg-cache/outpost", got)
+	if want := filepath.Join("/tmp/xdg-cache", "outpost"); got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 

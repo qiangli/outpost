@@ -11,7 +11,8 @@ import (
 func TestSSHTargetCRUD(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
-	t.Setenv("HOME", tmp) // for darwin's UserConfigDir fallback
+	t.Setenv("HOME", tmp)    // for darwin's UserConfigDir fallback
+	t.Setenv("AppData", tmp) // windows UserConfigDir ignores XDG/HOME
 
 	dir, err := SSHTargetsDir()
 	if err != nil {
