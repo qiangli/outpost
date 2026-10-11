@@ -304,3 +304,11 @@ replace github.com/benhoyt/goawk => github.com/qiangli/coreutils/third_party/goa
 replace github.com/odvcencio/gotreesitter => github.com/qiangli/gotreesitter v0.0.0-20261011020812-226bfcd2c541
 
 replace github.com/ergochat/readline => github.com/qiangli/readline v0.1.4-0.20260919214158-38ad08e83676
+
+replace github.com/ollama/ollama => github.com/qiangli/ollama v0.0.0-20261010173850-e788634a5b71
+
+replace go.podman.io/podman/v6 => github.com/qiangli/podman/v6 v6.0.0-20261009064533-4a9784029284
+
+replace github.com/qiangli/yoke/pkg/llmgw => github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261011020932-a12f3f6ba74d
+
+replace github.com/qiangli/yoke/pkg/oci => github.com/qiangli/yoke/pkg/oci v0.0.0-20261011020932-a12f3f6ba74d
