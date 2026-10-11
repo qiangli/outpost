@@ -67,10 +67,6 @@ func builtinsShowCmd() *cobra.Command {
 			fmt.Printf("  %-22s  %.2f\n", "warm_budget_frac", view.WarmBudgetFrac)
 			row("lan_inference", view.LANInferenceEnabled)
 			row("mesh", view.MeshEnabled)
-			row("zot", view.ZotEnabled)
-			row("seaweedfs", view.SeaweedfsEnabled)
-			row("kopia", view.KopiaEnabled)
-			row("actrunner", view.ActrunnerEnabled)
 			row("otel", view.OtelEnabled)
 			row("otel_pool", view.OtelPoolEnabled)
 			row("ycode_share", view.YcodeShareEnabled)
@@ -120,23 +116,8 @@ func builtinsSetCmd() *cobra.Command {
 		services                                                                                                                                                                       []string
 		serviceSets                                                                                                                                                                    []string
 		bashyVersion                                                                                                                                                                   string
-		zot                                                                                                                                                                            string
-		zotPort                                                                                                                                                                        int
-		seaweedfs                                                                                                                                                                      string
-		seaweedfsPort                                                                                                                                                                  int
-		kopia                                                                                                                                                                          string
-		kopiaPort                                                                                                                                                                      int
-		actrunner                                                                                                                                                                      string
-		actrunnerInstance                                                                                                                                                              string
-		actrunnerToken                                                                                                                                                                 string
 		cloudDO                                                                                                                                                                        string
 		cloudDOToken                                                                                                                                                                   string
-		actrunnerLabels                                                                                                                                                                string
-		actrunnerSandbox                                                                                                                                                               string
-		actrunnerSandboxImage                                                                                                                                                          string
-		actrunnerDockerHost                                                                                                                                                            string
-		headlamp                                                                                                                                                                       string
-		headlampPort                                                                                                                                                                   int
 		sshForwardSockets                                                                                                                                                              []string
 		clearSSHForwardSockets                                                                                                                                                         bool
 		ycodeShareSurfaces                                                                                                                                                             map[string]string
@@ -304,56 +285,11 @@ func builtinsSetCmd() *cobra.Command {
 			if cmd.Flags().Changed("bashy-version") {
 				params.BashyVersion = &bashyVersion
 			}
-			if params.Zot, err = parseToggle("zot", zot); err != nil {
-				return err
-			}
-			if cmd.Flags().Changed("zot-port") {
-				params.ZotPort = &zotPort
-			}
-			if params.Seaweedfs, err = parseToggle("seaweedfs", seaweedfs); err != nil {
-				return err
-			}
-			if cmd.Flags().Changed("seaweedfs-port") {
-				params.SeaweedfsPort = &seaweedfsPort
-			}
-			if params.Kopia, err = parseToggle("kopia", kopia); err != nil {
-				return err
-			}
-			if cmd.Flags().Changed("kopia-port") {
-				params.KopiaPort = &kopiaPort
-			}
-			if params.Actrunner, err = parseToggle("actrunner", actrunner); err != nil {
-				return err
-			}
-			if cmd.Flags().Changed("actrunner-instance") {
-				params.ActrunnerInstance = &actrunnerInstance
-			}
-			if cmd.Flags().Changed("actrunner-token") {
-				params.ActrunnerToken = &actrunnerToken
-			}
 			if params.CloudDOEnabled, err = parseToggle("cloud-do", cloudDO); err != nil {
 				return err
 			}
 			if cmd.Flags().Changed("cloud-do-token") {
 				params.CloudDOToken = &cloudDOToken
-			}
-			if cmd.Flags().Changed("actrunner-labels") {
-				params.ActrunnerLabels = &actrunnerLabels
-			}
-			if params.ActrunnerSandbox, err = parseToggle("actrunner-sandbox", actrunnerSandbox); err != nil {
-				return err
-			}
-			if cmd.Flags().Changed("actrunner-sandbox-image") {
-				params.ActrunnerSandboxImage = &actrunnerSandboxImage
-			}
-			if cmd.Flags().Changed("actrunner-docker-host") {
-				params.ActrunnerDockerHost = &actrunnerDockerHost
-			}
-			if params.Headlamp, err = parseToggle("headlamp", headlamp); err != nil {
-				return err
-			}
-			if cmd.Flags().Changed("headlamp-port") {
-				params.HeadlampPort = &headlampPort
 			}
 			if clearSSHForwardSockets {
 				params.SSHForwardSockets = []string{}
@@ -413,23 +349,8 @@ func builtinsSetCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&services, "service", nil, "NAME=on|off — desired state of a service unit (repeatable). The same write `bashy service enable|disable` performs; applies live, no outpost restart. `bashy service list` names the units.")
 	cmd.Flags().StringSliceVar(&serviceSets, "service-set", nil, "NAME.PATH=VALUE — override a field of a unit's declaration (repeatable), e.g. loom.ports.0.port=31900. The `bashy service set` write.")
 	cmd.Flags().StringVar(&bashyVersion, "bashy-version", "", "pin the bashy release the daemon auto-installs when bashy is missing (empty/'latest' = newest; e.g. v0.3.0). Pin in production.")
-	cmd.Flags().StringVar(&zot, "zot", "", "on|off - run the Zot OCI registry (managed external binary) on loopback, auto-exposed over the mesh as 'registry'")
-	cmd.Flags().IntVar(&zotPort, "zot-port", 0, "zot's loopback HTTP port (0 = default 5000)")
-	cmd.Flags().StringVar(&seaweedfs, "seaweedfs", "", "on|off - run SeaweedFS (object/blob store, S3 gateway; managed external binary) on loopback, auto-exposed over the mesh as 's3'")
-	cmd.Flags().IntVar(&seaweedfsPort, "seaweedfs-port", 0, "SeaweedFS's loopback S3-gateway port (0 = default 8333)")
-	cmd.Flags().StringVar(&kopia, "kopia", "", "on|off - run the Kopia snapshot-backup repo server (managed external binary) on loopback, auto-exposed over the mesh as 'backup'")
-	cmd.Flags().IntVar(&kopiaPort, "kopia-port", 0, "Kopia's loopback server port (0 = default 51515)")
-	cmd.Flags().StringVar(&headlamp, "headlamp", "", "on|off - deploy Headlamp (the operating UI) on the peer DKS plane (default OFF; requires cluster.control_plane)")
-	cmd.Flags().IntVar(&headlampPort, "headlamp-port", 0, "headlamp's supervised loopback forward port (0 = default 18466; loopback only)")
-	cmd.Flags().StringVar(&actrunner, "actrunner", "", "on|off - run Gitea act_runner (CI executor, managed external binary); registers against a Gitea instance and dials out")
-	cmd.Flags().StringVar(&actrunnerInstance, "actrunner-instance", "", "Gitea base URL the runner registers against (empty = local loom forge)")
-	cmd.Flags().StringVar(&actrunnerToken, "actrunner-token", "", "act_runner registration token (minted in Gitea)")
 	cmd.Flags().StringVar(&cloudDO, "cloud-do", "", "on|off - Digital Ocean provider support (exports the token as DIGITALOCEAN_ACCESS_TOKEN for bashy doctl)")
 	cmd.Flags().StringVar(&cloudDOToken, "cloud-do-token", "", "Digital Ocean API token (exported as DIGITALOCEAN_ACCESS_TOKEN)")
-	cmd.Flags().StringVar(&actrunnerLabels, "actrunner-labels", "", "executor labels (default 'host:host')")
-	cmd.Flags().StringVar(&actrunnerSandbox, "actrunner-sandbox", "", "on|off - also offer the tier-3 sandbox (container) executor: runs-on:sandbox → OCI container via bashy podman (additive to the host lane)")
-	cmd.Flags().StringVar(&actrunnerSandboxImage, "actrunner-sandbox-image", "", "OCI image for the sandbox executor (empty = a node image with git+node+bash)")
-	cmd.Flags().StringVar(&actrunnerDockerHost, "actrunner-docker-host", "", "DOCKER_HOST for the sandbox executor (empty = auto-resolve bashy podman's socket)")
 	return cmd
 }
 

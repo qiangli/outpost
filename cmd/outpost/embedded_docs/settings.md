@@ -123,8 +123,6 @@ tool, or wipe `agent.json` by hand.
 | Digital Ocean API token | `cloud_do_token` | `builtins set --cloud-do-token` | Inbound > Cloud | `outpost_set_builtins` | Restart |
 | Cloudbox-pushed self-upgrade | `update_mode` | `builtins set --update=auto\|manual\|never` | Inbound > Built-ins | `outpost_set_builtins` | Live |
 | Auto-rollback watchdog (destructive revert) | `auto_rollback_enabled` | `builtins set --auto-rollback=on\|off` | Inbound > Built-ins | `outpost_set_builtins` | Live |
-| Headlamp operating UI (peer DKS plane) | `headlamp_enabled` | `builtins set --headlamp` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
-| Headlamp loopback forward port | `headlamp_port` | `builtins set --headlamp-port` | Inbound > Built-ins | `outpost_set_builtins` | Restart |
 
 All built-in toggles default to ON when the JSON key is absent (old
 configs) so an upgrade doesn't silently disable features. That now
@@ -268,26 +266,119 @@ enabled: true
 runs it; `outpost supervisord` keeps that monitor running, so it survives a
 reboot on every platform.
 
+#### Wrapped external tools
+
+The tools outpost used to launch itself — the Zot OCI registry, the
+SeaweedFS S3 gateway, the Kopia backup repo server, the Gitea `act_runner`
+CI executor — are units now. There is no `zot_enabled`, `seaweedfs_enabled`,
+`kopia_enabled` or `actrunner_*` key in `agent.json` any more, no
+`builtins set --zot`, no `outpost_set_builtins` arg: the unit's `enabled`
+bit is the only switch, and the mesh name comes from its `expose.mesh`
+rather than from a line of Go per tool.
+
+| Tool | Unit | Provider | Published as |
+|---|---|---|---|
+| Zot (OCI registry: images + Ollama models) | `zot` | process (`bashy zot serve`) | mesh `registry` |
+| SeaweedFS (object/blob store, S3 gateway) | `seaweedfs` | process (`bashy seaweedfs serve`) | mesh `s3` |
+| Kopia (snapshot-backup repo server) | `kopia` | process (`bashy kopia serve`) | mesh `backup` |
+| Headlamp loopback forward | `headlamp` | process (`kubectl port-forward`) | mesh `headlamp` |
+| Gitea act_runner (CI executor) | `actrunner` | **internal** (`outpost.actrunner`) | nothing — it dials OUT |
+
+Three things improved by the move, and they are the reason it is not just
+tidying:
+
+- **A failed tool stops being advertised.** The old boot code exposed a mesh
+  name once and never withdrew it; a unit's exposure follows its state.
+- **A failed fetch is retried.** `zot.Start` returning an error used to log
+  a warning and give up until the next daemon restart. A unit has
+  `restart.policy`, bounded backoff and a start limit.
+- **A port override moves one value.** The port lives in the declaration,
+  which is also what outpost proxies to, so there is no second copy in
+  `agent.json` to drift.
+
+Version pins and binary provisioning did not move: they are the wrapped
+tool's own (`binmgr` resolves and sha256-verifies the release named by
+`yoke/external/<tool>`), reachable either through the `bashy <tool>` front
+door a process unit execs or through a unit's own `download:` pin.
+
+#### The one in-process capability — `outpost.actrunner`
+
+act_runner is the exception, because three of its inputs are not declarable:
+
+- `act_runner register` is a **provisioning handshake** (instance + token +
+  labels) that must succeed, and be retried, before the daemon can run at
+  all. A unit declaration has no pre-start hook to put it in — see the
+  contract note below.
+- The forge URL defaults to the **loom unit's own declared listener**, and
+  the sandbox executor's `DOCKER_HOST` is resolved from `bashy podman
+  machine inspect`. Both are facts about this host, not about the unit.
+- Its job environment carries the operator's **vault** secrets, so a CI
+  deploy step inherits `GITHUB_TOKEN` without a per-repo secret.
+
+So it is a `provider: internal` unit owned by `outpost`, and everything
+decidable stays in the declaration:
+
+| Declaration | Meaning | Default |
+|---|---|---|
+| `settings.instance` | forge base URL the runner registers against | the `loom` unit's loopback listener, while that unit is enabled |
+| `settings.forge_unit` | which unit supplies that default | `loom` |
+| `secrets[].env = ACTRUNNER_TOKEN` | registration token, from the vault | — (required on first run) |
+| `settings.token` | the same token inline — plaintext in the registry, so prefer the vault reference | — |
+| `settings.labels` | executor labels | `host:host` (the host build lane) |
+| `settings.sandbox` | also offer the tier-3 `sandbox` container executor | off |
+| `settings.sandbox_image` | OCI image for that executor | a node image with git+node+bash |
+| `settings.docker_host` | `DOCKER_HOST` for that executor | auto-resolved from `bashy podman` |
+| `settings.data_dir` | runner state (`.runner`, config) | `<cache>/act_runner` — the path the pre-unit code used, so an existing runner keeps its identity |
+| `settings.version` | act_runner release | the pinned default in `yoke/external/actrunner` |
+| `settings.name` | runner name | the hostname |
+
+An enabled unit that can resolve neither an instance nor a token is
+**refused** with the reason, and the unit reports `failed`. The retired boot
+block logged "skipping" and returned, which left an enabled service looking
+fine while nothing ran.
+
+#### Contract notes for the unit seeds
+
+The declarations themselves live in fleet's embedded seeds (yoke), not here —
+outpost ships no unit YAML. Two things in that contract are outpost's half:
+
+1. **Capability ids.** The daemon registers `outpost.actrunner`, and the
+   alias `outpost.ci` for the same capability, so a seed written against
+   either spelling binds instead of failing with "capability is not
+   registered in outpost". `outpost services` lists what is registered.
+2. **A provisioning (pre-start) hook is missing from the schema.** A unit
+   can declare `exec`, `download`, `health` and `restart`, but not "run
+   this once, successfully, before the service may start". That gap is the
+   whole reason act_runner is an in-process capability rather than
+   `exec: [bashy, act-runner, daemon, …]`. If fleet grows a pre-start verb,
+   act_runner becomes a process unit and this capability goes away.
+
 ### Headlamp operating UI (peer DKS plane)
 
-`headlamp_enabled` (default **OFF**) deploys [Headlamp](https://headlamp.dev)
-(the Kubernetes cluster operating UI) into a peer-hosted DKS control plane.
-When on and `cluster.control_plane` is enabled, outpost runs
-`headlamp.Deploy` against the plane, supervises the loopback port-forward on
-`headlamp_port` (default `18466`), and exposes it over the mesh as the
-`headlamp` service. Headlamp runs in token-login mode: the pod's
-ServiceAccount holds zero RBAC grants; every apiserver request is
-authenticated with the token the operator pastes into the UI.
+Headlamp (the Kubernetes cluster operating UI) is **not** an outpost toggle.
+It is installed into a peer-hosted DKS control plane by the appstore
+built-in (`outpost bundle install headlamp`), and the loopback
+port-forward that makes it reachable is a **service unit** — a command, a
+port and a mesh name, which is exactly what `provider: process` expresses:
 
-Four surfaces: `headlamp_enabled` / `headlamp_port` file keys, `builtins set
---headlamp=on --headlamp-port N` CLI, the Built-ins > Headlamp UI toggle,
-and the `headlamp` / `headlamp_port` args on the `outpost_set_builtins` MCP
-tool. A headlamp change triggers a **restart** (the deployment + forward are
-wired at boot). The forward binds loopback only — `headlamp.ValidateListenAddr`
-rejects non-loopback binds per the standing rule.
+```yaml
+name: headlamp
+kind: service
+exec: [kubectl, --kubeconfig, "{settings.kubeconfig}", port-forward,
+       --address, 127.0.0.1, -n, headlamp, svc/headlamp, "{port}:80"]
+ports: [{name: http, port: 18466}]
+health: {tcp: true}
+expose: {mesh: [{name: headlamp}]}
+enabled: false
+```
 
-See `docs/peer-dks-headlamp.md` for the complete security model, auth
-boundary, and verification procedure.
+`internal/agent/headlamp` remains the source of truth for the manifest, its
+security posture and the forward's argv (`ForwardArgs`, which pins the
+forward to loopback — `ValidateListenAddr` rejects anything else). The
+retired `headlamp_enabled` / `headlamp_port` keys only ever persisted a
+preference: no daemon code read them, so nothing deployed or forwarded
+anything. See `docs/peer-dks-headlamp.md` for the complete security model,
+auth boundary and verification procedure.
 
 ### Same-LAN direct inference (LAN-trust)
 

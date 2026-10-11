@@ -78,6 +78,26 @@ type Reconciler struct {
 	// applied fingerprints the declaration last pushed into each internal
 	// capability, so Configure runs on a change and not on every pass.
 	applied map[string]string
+	// activateErrs is the last activation failure reported per unit, so an
+	// unchanged refusal is logged once instead of on every pass.
+	activateErrs map[string]string
+}
+
+// noteActivateFailure records an activation outcome and reports whether it
+// is worth logging. A nil error clears the unit's remembered reason.
+func (r *Reconciler) noteActivateFailure(unit string, err error) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err == nil {
+		delete(r.activateErrs, unit)
+		return false
+	}
+	reason := err.Error()
+	if r.activateErrs[unit] == reason {
+		return false
+	}
+	r.activateErrs[unit] = reason
+	return true
 }
 
 // New returns a reconciler. It publishes nothing until Reconcile or Run runs.
@@ -87,12 +107,13 @@ func New(deps Deps) *Reconciler {
 		log = slog.Default()
 	}
 	return &Reconciler{
-		deps:    deps,
-		log:     log,
-		kick:    make(chan struct{}, 1),
-		live:    map[string]Exposure{},
-		states:  map[string]service.Status{},
-		applied: map[string]string{},
+		deps:         deps,
+		log:          log,
+		kick:         make(chan struct{}, 1),
+		live:         map[string]Exposure{},
+		states:       map[string]service.Status{},
+		applied:      map[string]string{},
+		activateErrs: map[string]string{},
 	}
 }
 
@@ -306,7 +327,17 @@ func (r *Reconciler) applyInternal(ctx context.Context, u fleet.Service) (servic
 		}
 	case cur.State != service.Active:
 		if err := prov.Activate(ctx, u, rt); err != nil {
-			r.log.Warn("internal service: activate failed", "unit", u.Name, "capability", u.Capability, "err", err)
+			// Once per distinct reason, not once per 5 s pass: an enabled
+			// unit whose capability refuses (a CI runner with no
+			// registration token, say) is re-activated on every tick, and a
+			// repeating identical warning would bury the state it is
+			// reporting. A changed reason, or a recovery followed by a new
+			// failure, is logged again.
+			if r.noteActivateFailure(u.Name, err) {
+				r.log.Warn("internal service: activate failed", "unit", u.Name, "capability", u.Capability, "err", err)
+			}
+		} else {
+			r.noteActivateFailure(u.Name, nil)
 		}
 		r.rememberApplied(u)
 	case r.declarationChanged(u):
@@ -321,6 +352,25 @@ func (r *Reconciler) applyInternal(ctx context.Context, u fleet.Service) (servic
 			r.log.Warn("internal service: configure failed", "unit", u.Name, "err", err)
 		}
 		r.rememberApplied(u)
+	default:
+		// Active and unchanged — but nobody else is watching. A process
+		// unit's liveness is the monitor's business; an in-process
+		// capability has no child for the monitor to see, so if its own
+		// Health says it stopped serving, this pass is the only thing that
+		// can notice. Cycle it: Activate either brings it back or refuses
+		// with a reason, and the unit stops reporting active either way.
+		if err := prov.Health(ctx, u.Name); err != nil {
+			if r.noteActivateFailure(u.Name, err) {
+				r.log.Warn("internal service: unhealthy; cycling", "unit", u.Name, "capability", u.Capability, "err", err)
+			}
+			if derr := prov.Deactivate(ctx, u.Name); derr != nil {
+				r.log.Warn("internal service: cycle deactivate failed", "unit", u.Name, "err", derr)
+			}
+			if aerr := prov.Activate(ctx, u, rt); aerr != nil {
+				r.log.Warn("internal service: cycle activate failed", "unit", u.Name, "err", aerr)
+			}
+			r.rememberApplied(u)
+		}
 	}
 	st := prov.Status(u.Name)
 	st.Unit, st.Provider, st.Enabled = u.Name, fleet.ServiceProviderInternal, u.Enabled

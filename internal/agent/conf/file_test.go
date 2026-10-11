@@ -538,25 +538,59 @@ func TestEnsureServiceSSOSecret(t *testing.T) {
 	}
 }
 
-// act_runner's instance default is now supplied by the caller from the loom
-// unit's declaration; an explicit setting still wins and an absent forge
-// leaves it empty so the caller can say why it skipped.
-func TestActrunnerInstanceResolved(t *testing.T) {
-	cases := []struct {
-		name  string
-		fc    *FileConfig
-		forge string
-		want  string
-	}{
-		{"nil config", nil, "http://127.0.0.1:31880", ""},
-		{"no forge, no setting", &FileConfig{}, "", ""},
-		{"local forge", &FileConfig{}, "http://127.0.0.1:31880", "http://127.0.0.1:31880"},
-		{"explicit wins", &FileConfig{ActrunnerInstance: "https://forge.example.com"},
-			"http://127.0.0.1:31880", "https://forge.example.com"},
+// Every long-lived external service — the Zot registry, the SeaweedFS S3
+// gateway, the Kopia backup repo, the Gitea CI runner, the Headlamp forward —
+// is a service UNIT now, declared in fleet's registry rings and controlled by
+// its `enabled` bit. The agent.json keys that used to start them are retired
+// outright, with no compatibility reader (operator clarification 2026-10-10):
+// a stale config carrying them must parse cleanly and forget them, so an
+// upgraded host cannot keep a second, invisible copy of a port or a token
+// that nothing honours.
+func TestRetiredExternalServiceKeysAreNotRead(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "agent.json")
+	stale := []byte(`{
+	  "agent_name": "host-1",
+	  "zot_enabled": true, "zot_port": 5000,
+	  "seaweedfs_enabled": true, "seaweedfs_port": 8333,
+	  "kopia_enabled": true, "kopia_port": 51515,
+	  "actrunner_enabled": true, "actrunner_instance": "https://forge.example.com",
+	  "actrunner_token": "tok", "actrunner_labels": "host:host",
+	  "actrunner_sandbox": true, "actrunner_sandbox_image": "img",
+	  "actrunner_docker_host": "unix:///x.sock",
+	  "headlamp_enabled": true, "headlamp_port": 18466
+	}`)
+	if err := os.WriteFile(tmp, stale, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range cases {
-		if got := tc.fc.ActrunnerInstanceResolved(tc.forge); got != tc.want {
-			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+	fc, err := LoadFile(tmp)
+	if err != nil {
+		t.Fatalf("a config with retired keys must still parse: %v", err)
+	}
+	if fc.AgentName != "host-1" {
+		t.Fatalf("the surviving keys were not read: %+v", fc)
+	}
+	// Re-saving drops them: nothing in the struct can hold them, so the
+	// written file is the new shape.
+	if err := SaveFile(tmp, fc); err != nil {
+		t.Fatalf("SaveFile: %v", err)
+	}
+	saved, err := os.ReadFile(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(saved, &raw); err != nil {
+		t.Fatalf("parse saved config: %v", err)
+	}
+	for _, key := range []string{
+		"zot_enabled", "zot_port", "seaweedfs_enabled", "seaweedfs_port",
+		"kopia_enabled", "kopia_port", "actrunner_enabled", "actrunner_instance",
+		"actrunner_token", "actrunner_labels", "actrunner_sandbox",
+		"actrunner_sandbox_image", "actrunner_docker_host",
+		"headlamp_enabled", "headlamp_port",
+	} {
+		if _, ok := raw[key]; ok {
+			t.Errorf("retired key %q survived a load/save round trip", key)
 		}
 	}
 }

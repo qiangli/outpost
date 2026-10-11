@@ -47,23 +47,8 @@ type builtinsIn struct {
 	Services               map[string]bool              `json:"services,omitempty" jsonschema:"Desired state of service units, by unit name: {\"meet\":true,\"loom\":false}. This is the one way to turn a service on or off — the same write 'bashy service enable|disable' performs — and it applies LIVE: the monitor reconciles the process and outpost republishes the unit's declared app/mesh exposure without an outpost restart. Units are declared YAML (list them with 'bashy service list'), so a third-party daemon is toggled here with no outpost change."`
 	ServiceSettings        map[string]map[string]string `json:"service_settings,omitempty" jsonschema:"Declaration overrides per unit: {\"loom\":{\"ports.0.port\":\"31900\"}}. Dotted paths into the unit record, the 'bashy service set NAME --set k=v' shape. Overriding a seeded built-in writes a sparse local overlay; 'bashy service rm' restores the seed."`
 	BashyVersion           *string                      `json:"bashy_version,omitempty" jsonschema:"Pin the bashy release the daemon auto-installs when bashy is missing (empty/'latest' = newest; e.g. v0.3.0). Pin in production so a restart can't silently pull a new bashy."`
-	Zot                    *bool                        `json:"zot,omitempty" jsonschema:"Toggle running the Zot OCI registry as a managed external binary on a loopback port, auto-exposed over the mesh as the 'registry' service (serves container images + Ollama models). Downloaded/verified/cached by binmgr — not compiled in."`
-	ZotPort                *int                         `json:"zot_port,omitempty" jsonschema:"zot's loopback HTTP port (0 = default 5000)"`
-	Seaweedfs              *bool                        `json:"seaweedfs,omitempty" jsonschema:"Toggle running SeaweedFS (object/blob store, S3 gateway) as a managed external binary on a loopback port, auto-exposed over the mesh as the 's3' service. Can also back zot's blob store. Downloaded/verified/cached by binmgr — not compiled in."`
-	SeaweedfsPort          *int                         `json:"seaweedfs_port,omitempty" jsonschema:"SeaweedFS's loopback S3-gateway port (0 = default 8333)"`
-	Kopia                  *bool                        `json:"kopia,omitempty" jsonschema:"Toggle running the Kopia snapshot-backup repository server as a managed external binary on a loopback port, auto-exposed over the mesh as the 'backup' service (many nodes back up into one repo). Downloaded/verified/cached by binmgr — not compiled in."`
-	KopiaPort              *int                         `json:"kopia_port,omitempty" jsonschema:"Kopia's loopback server port (0 = default 51515)"`
-	Actrunner              *bool                        `json:"actrunner,omitempty" jsonschema:"Toggle running Gitea act_runner (the CI executor) as a managed external binary. A CONSUMER (registers against a Gitea instance and dials out), not a mesh service. Downloaded/verified/cached by binmgr — not compiled in."`
-	ActrunnerInstance      *string                      `json:"actrunner_instance,omitempty" jsonschema:"Gitea base URL the runner registers against (empty = local loom forge)"`
-	ActrunnerToken         *string                      `json:"actrunner_token,omitempty" jsonschema:"act_runner registration token (minted in Gitea)"`
-	ActrunnerLabels        *string                      `json:"actrunner_labels,omitempty" jsonschema:"executor labels (default 'host:host')"`
 	CloudDOEnabled         *bool                        `json:"cloud_do_enabled,omitempty" jsonschema:"Toggle Digital Ocean provider support (the cloud venue): advertises DO capability and exports the token as DIGITALOCEAN_ACCESS_TOKEN for bashy doctl / DO provisioning. Off by default."`
 	CloudDOToken           *string                      `json:"cloud_do_token,omitempty" jsonschema:"Digital Ocean API token (exported as DIGITALOCEAN_ACCESS_TOKEN; redacted from status reads)"`
-	ActrunnerSandbox       *bool                        `json:"actrunner_sandbox,omitempty" jsonschema:"Opt the runner into the tier-3 sandbox (container) executor: adds a 'sandbox' docker-executor label so runs-on:sandbox jobs run in an OCI container via bashy podman. Additive to the host build lane."`
-	ActrunnerSandboxImage  *string                      `json:"actrunner_sandbox_image,omitempty" jsonschema:"OCI image the sandbox executor runs jobs in (empty = a node image with git+node+bash)"`
-	ActrunnerDockerHost    *string                      `json:"actrunner_docker_host,omitempty" jsonschema:"DOCKER_HOST the sandbox executor dials (empty = auto-resolve bashy podman's socket)"`
-	Headlamp               *bool                        `json:"headlamp,omitempty" jsonschema:"Toggle deploying Headlamp (the operating UI) on the peer DKS plane. Deploys into the cluster, supervises the loopback port-forward, and exposes it over the mesh as 'headlamp'. Requires cluster.control_plane to be enabled. Default OFF."`
-	HeadlampPort           *int                         `json:"headlamp_port,omitempty" jsonschema:"headlamp's supervised loopback forward port (0 = default 18466; loopback only — non-loopback binds are rejected per the standing rule)"`
 	Shard                  *bool                        `json:"shard,omitempty" jsonschema:"Toggle Ollama sharding — serve a model bigger than one node by splitting it across same-LAN mesh peers. Default ON for a paired Ollama node; set false to opt out."`
 	ShardPeers             []string                     `json:"shard_peers,omitempty" jsonschema:"Worker hostnames for the shard ring (empty or ['auto'] = every reachable same-LAN peer)"`
 	ShardRole              *string                      `json:"shard_role,omitempty" jsonschema:"Shard role: 'auto' (most-VRAM host leads), 'leader', or 'worker'"`
@@ -115,23 +100,8 @@ func (s *Server) registerBuiltinsTools() {
 			Services:               in.Services,
 			ServiceSettings:        in.ServiceSettings,
 			BashyVersion:           in.BashyVersion,
-			Zot:                    in.Zot,
-			ZotPort:                in.ZotPort,
-			Seaweedfs:              in.Seaweedfs,
-			SeaweedfsPort:          in.SeaweedfsPort,
-			Kopia:                  in.Kopia,
-			KopiaPort:              in.KopiaPort,
-			Actrunner:              in.Actrunner,
-			ActrunnerInstance:      in.ActrunnerInstance,
-			ActrunnerToken:         in.ActrunnerToken,
-			ActrunnerLabels:        in.ActrunnerLabels,
 			CloudDOEnabled:         in.CloudDOEnabled,
 			CloudDOToken:           in.CloudDOToken,
-			ActrunnerSandbox:       in.ActrunnerSandbox,
-			ActrunnerSandboxImage:  in.ActrunnerSandboxImage,
-			ActrunnerDockerHost:    in.ActrunnerDockerHost,
-			Headlamp:               in.Headlamp,
-			HeadlampPort:           in.HeadlampPort,
 			Shard:                  in.Shard,
 			ShardPeers:             in.ShardPeers,
 			ShardRole:              in.ShardRole,

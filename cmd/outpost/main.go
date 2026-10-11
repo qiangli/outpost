@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"maps"
 	"net"
@@ -29,11 +28,6 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sync/errgroup"
-
-	actrunner "github.com/qiangli/yoke/external/actrunner"
-	kopia "github.com/qiangli/yoke/external/kopia"
-	seaweedfs "github.com/qiangli/yoke/external/seaweedfs"
-	zot "github.com/qiangli/yoke/external/zot"
 
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/admincore"
@@ -751,7 +745,7 @@ func startCmd() *cobra.Command {
 				// Symmetric consume side: re-establish the persistent mesh
 				// forwards (dial by peer id, no cloudbox resolve) so a cross-host
 				// dependency — e.g. this node's act_runner reaching a loom forge on
-				// another host — is up at boot, BEFORE the actrunner block below.
+				// another host — is up at boot, before the CI runner unit needs it.
 				// The listener binds immediately; the per-connection stream to the
 				// peer connects lazily once the mesh links up (act_runner retries).
 				for _, c := range fc.MeshConsumes {
@@ -1203,176 +1197,8 @@ func startCmd() *cobra.Command {
 			// does own is publication (the unit's declared app route and
 			// mesh names, withdrawn when the unit stops being active) and
 			// the capabilities whose implementation is inside this process.
-			svcControl := startServiceReconciler(g, gctx, cfgPath, fc, apps, meshHost, outpostCapabilities())
+			svcControl := startServiceReconciler(g, gctx, cfgPath, fc, apps, meshHost)
 			core.SetServices(svcControl)
-
-			// Zot OCI registry (wrap-harness tool lifecycle): run Zot as a
-			// managed external binary on a loopback port + auto-expose it over the
-			// mesh as "registry" (serves container images + Ollama models). Zot is
-			// NOT compiled into outpost. Non-fatal: a fetch/launch failure logs.
-			if fc.ZotOn() {
-				zotPort := fc.ZotPortOrDefault()
-				zotData := "zot"
-				if cd, _ := conf.ResolveCacheDir(); cd != "" {
-					zotData = filepath.Join(cd, "zot")
-				}
-				g.Go(func() error {
-					inst, zerr := zot.Start(gctx, zot.Options{
-						Addr: "127.0.0.1", Port: zotPort, DataDir: zotData,
-						Stdout: io.Discard, Stderr: io.Discard,
-					})
-					if zerr != nil {
-						slog.Warn("zot registry: not started", "err", zerr)
-						return nil
-					}
-					slog.Info("zot registry serving", "url", inst.URL, "zot", inst.Version)
-					if meshHost != nil {
-						meshHost.Forwarder().Expose("registry", inst.Addr)
-						slog.Info("zot: exposed over the mesh as 'registry'", "addr", inst.Addr)
-					}
-					<-gctx.Done()
-					return inst.Stop()
-				})
-			}
-
-			// SeaweedFS object/blob store (wrap-harness tool lifecycle): run its
-			// S3 gateway on a loopback port + auto-expose over the mesh as "s3".
-			// SeaweedFS is NOT compiled into outpost. Non-fatal on fetch/launch.
-			if fc.SeaweedfsOn() {
-				swPort := fc.SeaweedfsPortOrDefault()
-				swData := "seaweedfs"
-				if cd, _ := conf.ResolveCacheDir(); cd != "" {
-					swData = filepath.Join(cd, "seaweedfs")
-				}
-				g.Go(func() error {
-					inst, serr := seaweedfs.Start(gctx, seaweedfs.Options{
-						Addr: "127.0.0.1", Port: swPort, DataDir: swData,
-						Stdout: io.Discard, Stderr: io.Discard,
-					})
-					if serr != nil {
-						slog.Warn("seaweedfs: not started", "err", serr)
-						return nil
-					}
-					slog.Info("seaweedfs S3 gateway serving", "url", inst.URL, "seaweedfs", inst.Version)
-					if meshHost != nil {
-						meshHost.Forwarder().Expose("s3", inst.Addr)
-						slog.Info("seaweedfs: exposed over the mesh as 's3'", "addr", inst.Addr)
-					}
-					<-gctx.Done()
-					return inst.Stop()
-				})
-			}
-
-			// Kopia snapshot-backup repository server (wrap-harness tool
-			// lifecycle): run it on a loopback port + auto-expose over the mesh as
-			// "backup" (many nodes back up into one repo). Kopia is NOT compiled
-			// into outpost. Non-fatal on fetch/launch error.
-			if fc.KopiaOn() {
-				kPort := fc.KopiaPortOrDefault()
-				kData := "kopia"
-				if cd, _ := conf.ResolveCacheDir(); cd != "" {
-					kData = filepath.Join(cd, "kopia")
-				}
-				g.Go(func() error {
-					inst, kerr := kopia.Start(gctx, kopia.Options{
-						Addr: "127.0.0.1", Port: kPort, DataDir: kData,
-						Stdout: io.Discard, Stderr: io.Discard,
-					})
-					if kerr != nil {
-						slog.Warn("kopia backup: not started", "err", kerr)
-						return nil
-					}
-					slog.Info("kopia backup server serving", "url", inst.URL, "kopia", inst.Version)
-					if meshHost != nil {
-						meshHost.Forwarder().Expose("backup", inst.Addr)
-						slog.Info("kopia: exposed over the mesh as 'backup'", "addr", inst.Addr)
-					}
-					<-gctx.Done()
-					return inst.Stop()
-				})
-			}
-
-			// Gitea act_runner (CI executor — wrap-harness tool lifecycle, but a
-			// CONSUMER not a mesh service): registers against a Gitea instance and
-			// dials OUT to run .gitea/workflows/*.yml, so it's NAT/mesh-friendly.
-			// act_runner is NOT compiled into outpost (binmgr-managed external).
-			// Non-fatal on error. See docs/local-p2p-cicd.md.
-			if fc.ActrunnerOn() {
-				arData := "act_runner"
-				if cd, _ := conf.ResolveCacheDir(); cd != "" {
-					arData = filepath.Join(cd, "act_runner")
-				}
-				instance := fc.ActrunnerInstanceResolved(localForgeURL(svcControl.Store, "loom"))
-				labels := fc.ActrunnerLabelsOrDefault()
-				token := fc.ActrunnerToken
-				g.Go(func() error {
-					if instance == "" {
-						slog.Warn("act_runner: no instance — set actrunner_instance or `bashy service enable loom`; skipping")
-						return nil
-					}
-					// Supervise register + daemon with backoff. A build-only node
-					// reaches loom over a mesh forward that may not be up at boot
-					// (see mesh_consumes), so the first register/poll can fail —
-					// retry instead of giving up forever (the pre-fix behavior
-					// stranded the runner until the next daemon restart).
-					backoff := 5 * time.Second
-					const maxBackoff = 2 * time.Minute
-					for gctx.Err() == nil {
-						if !actrunner.Registered(arData) {
-							if token == "" {
-								slog.Warn("act_runner: not registered and no actrunner_token set; skipping")
-								return nil
-							}
-							if rerr := actrunner.Register(gctx, actrunner.RegisterOptions{
-								DataDir: arData, Instance: instance, Token: token, Labels: labels,
-								Sandbox: fc.ActrunnerSandboxOn(), SandboxImage: fc.ActrunnerSandboxImage,
-							}); rerr != nil {
-								slog.Warn("act_runner: registration failed; retrying", "err", rerr, "backoff", backoff)
-								if !sleepCtx(gctx, backoff) {
-									return nil
-								}
-								backoff = minDur(backoff*2, maxBackoff)
-								continue
-							}
-							slog.Info("act_runner: registered", "instance", instance, "labels", labels)
-							backoff = 5 * time.Second
-						}
-						daemonEnv := telemetry.ChildEnv("act_runner")
-						if fc.ActrunnerSandboxOn() {
-							// Ensure the sandbox config exists even if the runner was
-							// registered before sandbox mode was enabled (Register
-							// writes it, but that path is skipped once .runner exists).
-							if cerr := actrunner.EnsureSandboxConfig(arData); cerr != nil {
-								slog.Warn("act_runner sandbox: writing config failed", "err", cerr)
-							}
-							if dh := resolveActrunnerDockerHost(gctx, fc); dh != "" {
-								daemonEnv = append(daemonEnv, "DOCKER_HOST="+dh)
-								slog.Info("act_runner sandbox: DOCKER_HOST resolved", "docker_host", dh)
-							} else {
-								slog.Warn("act_runner sandbox: no DOCKER_HOST — runs-on:sandbox jobs will fail (set actrunner_docker_host or start bashy podman); host-lane jobs still run")
-							}
-						}
-						// Load the operator's vault secrets so CI jobs inherit
-						// GITHUB_TOKEN etc. (deploy steps push to GitHub without a
-						// per-repo secret — the token stays in the cloudbox vault).
-						if vaultEnv := loadVaultSecretsEnv(gctx); len(vaultEnv) > 0 {
-							daemonEnv = append(daemonEnv, vaultEnv...)
-							slog.Info("act_runner: loaded vault secrets into job env", "count", len(vaultEnv))
-						}
-						slog.Info("act_runner: starting CI daemon", "instance", instance)
-						derr := actrunner.Daemon(gctx, "", arData, daemonEnv...)
-						if gctx.Err() != nil {
-							return nil
-						}
-						slog.Warn("act_runner: daemon exited; restarting", "err", derr, "backoff", backoff)
-						if !sleepCtx(gctx, backoff) {
-							return nil
-						}
-						backoff = minDur(backoff*2, maxBackoff)
-					}
-					return nil
-				})
-			}
 
 			// Mobility-aware continuous directory mirror: each job mirrors a local
 			// dir to a peer's mesh service, but ONLY while the pair is reachable
@@ -4364,95 +4190,6 @@ func (a clusterSourceAdapter) ClusterModels() []ollama.ModelInfo {
 		})
 	}
 	return models
-}
-
-// sleepCtx sleeps for d or until ctx is cancelled. Returns false if ctx was
-// cancelled (so callers can exit their retry loop), true if the full duration
-// elapsed.
-func sleepCtx(ctx context.Context, d time.Duration) bool {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
-	}
-}
-
-// minDur returns the smaller of two durations.
-func minDur(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// loadVaultSecretsEnv resolves the operator's cloudbox-vault secrets into
-// KEY=VALUE env entries by running `bashy secrets env` (which reads the vault via
-// the file-based secrets token, so it works from the daemon). These are injected
-// into the act_runner daemon env so CI jobs (e.g. a deploy step pushing to
-// GitHub) inherit GITHUB_TOKEN and friends WITHOUT a per-repo secret — the token
-// stays in the vault. Best-effort: any error yields no entries. `bashy secrets
-// env` emits shell `export KEY='value'` lines (single-quoted); we unquote them.
-func loadVaultSecretsEnv(ctx context.Context) []string {
-	bin, err := bashyResolver.Path(ctx)
-	if err != nil {
-		return nil
-	}
-	out, err := exec.CommandContext(ctx, bin, "secrets", "env").Output()
-	if err != nil {
-		slog.Warn("act_runner: could not load vault secrets (bashy secrets env) — CI deploy steps needing GITHUB_TOKEN may fail", "err", err)
-		return nil
-	}
-	var env []string
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		eq := strings.IndexByte(line, '=')
-		if eq <= 0 {
-			continue
-		}
-		key, val := line[:eq], line[eq+1:]
-		if len(val) >= 2 && val[0] == '\'' && val[len(val)-1] == '\'' {
-			val = strings.ReplaceAll(val[1:len(val)-1], `'\''`, `'`) // shell single-quote unescape
-		}
-		env = append(env, key+"="+val)
-	}
-	return env
-}
-
-// resolveActrunnerDockerHost returns the DOCKER_HOST the tier-3 sandbox executor
-// dials to reach the container runtime. An explicit actrunner_docker_host wins;
-// otherwise it asks bashy podman for its host-side machine socket. Returns ""
-// when it can't resolve — host-lane (runs-on: host) jobs still run; only
-// runs-on: sandbox needs a container runtime.
-func resolveActrunnerDockerHost(ctx context.Context, fc *conf.FileConfig) string {
-	if fc.ActrunnerDockerHost != "" {
-		return fc.ActrunnerDockerHost
-	}
-	bin, err := bashyResolver.Path(ctx)
-	if err != nil {
-		slog.Warn("act_runner sandbox: cannot resolve bashy to find the podman socket; set actrunner_docker_host", "err", err)
-		return ""
-	}
-	out, err := exec.CommandContext(ctx, bin, "podman", "machine", "inspect",
-		"--format", "{{.ConnectionInfo.PodmanSocket.Path}}").Output()
-	if err != nil {
-		slog.Warn("act_runner sandbox: `bashy podman machine inspect` failed; set actrunner_docker_host or start the podman machine", "err", err)
-		return ""
-	}
-	p := strings.TrimSpace(string(out))
-	if p == "" {
-		return ""
-	}
-	if strings.Contains(p, "://") {
-		return p
-	}
-	return "unix://" + p
 }
 
 // clusterAPIPort is the loopback port the STCP visitor binds for the

@@ -226,15 +226,6 @@ func TestLocalForgeURLFollowsTheUnitDeclaration(t *testing.T) {
 		t.Fatalf("an undeclared unit resolved to %q", got)
 	}
 
-	// And the act_runner default follows it, while an explicit instance wins.
-	fc := &conf.FileConfig{}
-	if got := fc.ActrunnerInstanceResolved(localForgeURL(st, "loom")); got != "http://127.0.0.1:31900" {
-		t.Fatalf("act_runner instance = %q, want the loom unit's forge", got)
-	}
-	fc.ActrunnerInstance = "https://forge.example.com"
-	if got := fc.ActrunnerInstanceResolved(localForgeURL(st, "loom")); got != "https://forge.example.com" {
-		t.Fatalf("an explicit actrunner_instance was overridden: %q", got)
-	}
 }
 
 // Declaration overrides go through `bashy service set` because fleet's
@@ -308,7 +299,7 @@ func TestParseServiceSets(t *testing.T) {
 // The init boundary: outpost's own capability registry must never claim a
 // capability twice, and the wiring must survive being empty.
 func TestOutpostCapabilitiesRegisterCleanly(t *testing.T) {
-	caps := outpostCapabilities()
+	caps := outpostCapabilities(capabilityDeps{})
 	prov, err := svcunit.Hosted(caps)
 	if err != nil {
 		t.Fatalf("outpost's capability wiring is rejected by the registry: %v", err)
@@ -362,5 +353,65 @@ func TestBuildAppRegistryRejectsTrustedIdentityWithoutSecret(t *testing.T) {
 		t.Fatal("trusted app without sso_secret was silently registered")
 	} else if !strings.Contains(err.Error(), "requires a non-empty sso_secret") {
 		t.Fatalf("registration failure was not actionable: %v", err)
+	}
+}
+
+// The CI runner capability reads its forge from the loom unit when the
+// declaration names none, and refuses to activate when neither is available
+// — the old boot block logged "skipping" and returned, which left an
+// enabled unit looking fine while nothing ran.
+func TestActrunnerCapabilityResolvesInstanceFromTheForgeUnit(t *testing.T) {
+	st := testUnitStore(t, nil, fleet.Service{
+		Name: "loom", Kind: fleet.KindService,
+		Exec:    []string{"bashy", "loom", "serve"},
+		Ports:   []fleet.ServicePort{{Name: "http", Port: 31880}},
+		Enabled: true,
+	})
+	cap := &actrunnerCapability{Forge: func(unit string) string { return localForgeURL(st, unit) }}
+
+	// No instance declared: the enabled loom unit supplies it. Registration
+	// is not attempted (no token, no .runner), so activation is refused with
+	// the actionable reason rather than silently doing nothing.
+	cfg := service.Config{Unit: "ci", Settings: map[string]string{"data_dir": t.TempDir()}}
+	err := cap.Activate(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "registration token") {
+		t.Fatalf("activate without a token = %v; want a refusal naming the token", err)
+	}
+
+	// A declaration that names neither an instance nor a reachable forge
+	// unit is refused for THAT reason, so an operator can tell the two apart.
+	cap.Forge = func(string) string { return "" }
+	err = cap.Activate(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "no forge instance") {
+		t.Fatalf("activate without a forge = %v; want a refusal naming the forge", err)
+	}
+
+	// Settings are the declaration's half of the contract.
+	got := readActrunnerSettings(service.Config{
+		Unit: "ci",
+		Settings: map[string]string{
+			"instance": "https://forge.example.com", "labels": "host:host,gpu:gpu",
+			"sandbox": "on", "sandbox_image": "img", "version": "0.2.13",
+		},
+		Env: map[string]string{"ACTRUNNER_TOKEN": "vault-token"},
+	})
+	if got.instance != "https://forge.example.com" || got.labels != "host:host,gpu:gpu" ||
+		!got.sandbox || got.sandboxImage != "img" || got.version != "0.2.13" {
+		t.Fatalf("settings = %+v", got)
+	}
+	// The token comes from the vault-resolved env, never from plaintext YAML
+	// when both are present.
+	if got.token != "vault-token" {
+		t.Fatalf("token = %q, want the env (vault) value", got.token)
+	}
+	if plain := readActrunnerSettings(service.Config{
+		Unit: "ci", Settings: map[string]string{"token": "yaml-token"},
+	}); plain.token != "yaml-token" {
+		t.Fatalf("settings.token = %q, want the declared fallback", plain.token)
+	}
+	// Unset labels fall back to the host lane, as the retired
+	// actrunner_labels default did.
+	if bare := readActrunnerSettings(service.Config{Unit: "ci"}); bare.labels != "host:host" {
+		t.Fatalf("default labels = %q, want host:host", bare.labels)
 	}
 }

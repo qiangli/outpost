@@ -158,13 +158,12 @@ func (s serviceSecrets) SSOSecret(app string) (string, error) {
 
 // startServiceReconciler wires the exposure reconciler into the daemon's
 // errgroup and returns the control surface admincore hands to the SPA, MCP
-// and CLI. caps are the in-process capabilities this daemon hosts, keyed by
-// the id a unit's `capability:` field names.
+// and CLI.
 //
 // apps may be nil (nothing to publish to) and meshHost may be nil (mesh off);
 // the reconciler simply has one fewer surface to reconcile.
 func startServiceReconciler(g *errgroup.Group, ctx context.Context, cfgPath string, fc *conf.FileConfig,
-	apps *agent.AppRegistry, meshHost *mesh.Host, caps map[string]service.Capability) *serviceControl {
+	apps *agent.AppRegistry, meshHost *mesh.Host) *serviceControl {
 
 	// Pin (or leave at latest) the bashy release the self-heal auto-install
 	// fetches. Read once at boot; changing it schedules a restart, which
@@ -180,6 +179,14 @@ func startServiceReconciler(g *errgroup.Group, ctx context.Context, cfgPath stri
 		return nil
 	})
 
+	store := serviceStore()
+	// The in-process capabilities this daemon hosts. They are built here
+	// because what they need from the host — the forge a CI runner defaults
+	// to — is read from the unit store, which is the same store the
+	// reconciler reads declarations from.
+	caps := outpostCapabilities(capabilityDeps{
+		Forge: func(unit string) string { return localForgeURL(store, unit) },
+	})
 	internal, err := svcunit.Hosted(caps)
 	if err != nil {
 		// A duplicate capability id is a programming error in the wiring
@@ -189,7 +196,6 @@ func startServiceReconciler(g *errgroup.Group, ctx context.Context, cfgPath stri
 		internal = nil
 	}
 
-	store := serviceStore()
 	deps := svcunit.Deps{
 		Source:   store,
 		Secrets:  serviceSecrets{path: cfgPath, fc: fc},

@@ -325,50 +325,6 @@ type FileConfig struct {
 	// bashy; an already-installed bashy on PATH is used as-is.
 	BashyVersion string `json:"bashy_version,omitempty"`
 
-	// ZotEnabled opts this outpost into running the Zot OCI registry as a managed
-	// external binary (coreutils/external/zot via pkg/binmgr — not compiled in)
-	// on a loopback port, auto-exposed over the mesh as the `registry` service.
-	// Serves container images + Ollama models (OCI). Default OFF.
-	ZotEnabled *bool `json:"zot_enabled,omitempty"`
-
-	// ZotPort is zot's loopback HTTP port (default 5000).
-	ZotPort int `json:"zot_port,omitempty"`
-
-	// SeaweedfsEnabled opts this outpost into running SeaweedFS (object/blob
-	// store, S3 gateway) as a managed external binary (coreutils/external/
-	// seaweedfs via pkg/binmgr — not compiled in) on a loopback port, auto-exposed
-	// over the mesh as the `s3` service. Can also back zot's blob store. Default OFF.
-	SeaweedfsEnabled *bool `json:"seaweedfs_enabled,omitempty"`
-
-	// SeaweedfsPort is SeaweedFS's loopback S3-gateway port (default 8333).
-	SeaweedfsPort int `json:"seaweedfs_port,omitempty"`
-
-	// KopiaEnabled opts this outpost into running the Kopia snapshot-backup
-	// repository server as a managed external binary (coreutils/external/kopia via
-	// pkg/binmgr — not compiled in) on a loopback port, auto-exposed over the mesh
-	// as the `backup` service (many nodes back up into one repo). Default OFF.
-	KopiaEnabled *bool `json:"kopia_enabled,omitempty"`
-
-	// KopiaPort is Kopia's loopback server port (default 51515).
-	KopiaPort int `json:"kopia_port,omitempty"`
-
-	// ActrunnerEnabled opts this outpost into running Gitea act_runner (the CI
-	// executor) as a managed external binary (coreutils/external/actrunner via
-	// pkg/binmgr — not compiled in). Unlike loom/zot it's a CONSUMER, not a mesh
-	// service: it registers against a Gitea instance and dials OUT to execute
-	// .gitea/workflows/*.yml. Default OFF. See docs/local-p2p-cicd.md.
-	ActrunnerEnabled *bool `json:"actrunner_enabled,omitempty"`
-
-	// ActrunnerInstance is the Gitea base URL the runner registers against. Empty
-	// uses the local loom forge (http://127.0.0.1:<loom_port>) when loom is on —
-	// the hub-node case. For a build-only node, set this to a mesh-reachable git
-	// addr (e.g. from `outpost mesh dial git`).
-	ActrunnerInstance string `json:"actrunner_instance,omitempty"`
-
-	// ActrunnerToken is the runner registration token (minted in Gitea). Required
-	// to register on first boot; ignored once the runner's .runner file exists.
-	ActrunnerToken string `json:"actrunner_token,omitempty"`
-
 	// CloudDOEnabled opts this host into Digital Ocean provider support (the
 	// cloud venue): it advertises DO capability and exports the token below as
 	// DIGITALOCEAN_ACCESS_TOKEN so `bashy doctl` / DO provisioning works. Off by
@@ -380,28 +336,6 @@ type FileConfig struct {
 	// DIGITALOCEAN_ACCESS_TOKEN to doctl-invoking tools. Redacted from SafeView
 	// like other secrets (presence reported as has_cloud_do_token).
 	CloudDOToken string `json:"cloud_do_token,omitempty"`
-
-	// ActrunnerLabels are the executor labels (default "host:host" — jobs run on
-	// the host shell, no container runtime needed for the runner itself).
-	ActrunnerLabels string `json:"actrunner_labels,omitempty"`
-
-	// ActrunnerSandbox opts the runner into the tier-3 SANDBOX executor: it
-	// additionally advertises a "sandbox" docker-executor label, so a
-	// `runs-on: sandbox` job runs inside an OCI container (via bashy podman)
-	// instead of on the host shell. Additive — the runner still offers the
-	// host build lane (`runs-on: host`, e.g. Go-toolchain outpost/bashy builds).
-	// Needs a reachable container runtime (ActrunnerDockerHost / bashy podman).
-	ActrunnerSandbox *bool `json:"actrunner_sandbox,omitempty"`
-
-	// ActrunnerSandboxImage overrides the OCI image the sandbox executor runs
-	// jobs in (default: actrunner.DefaultSandboxImage — a node image carrying
-	// git+node+bash). Only meaningful when ActrunnerSandbox is on.
-	ActrunnerSandboxImage string `json:"actrunner_sandbox_image,omitempty"`
-
-	// ActrunnerDockerHost is the DOCKER_HOST the sandbox executor dials to reach
-	// the container runtime. Empty → the daemon auto-resolves bashy podman's
-	// host-side socket. Only meaningful when ActrunnerSandbox is on.
-	ActrunnerDockerHost string `json:"actrunner_docker_host,omitempty"`
 
 	// Shard configures the Ollama sharding sub-feature: serve a model bigger
 	// than any single node by splitting it across mesh peers via llama.cpp
@@ -648,18 +582,6 @@ type FileConfig struct {
 	// coreutils/pkg/mirror (recursive watch + rclone sync), for availability /
 	// failover. See docs/external-binary-builtins.md.
 	Mirror *MirrorConfig `json:"mirror,omitempty"`
-
-	// headlamp enables the Headlamp operating UI on a peer-hosted DKS control
-	// plane. When on and cluster.control_plane is enabled, outpost deploys
-	// Headlamp into the plane, supervises the loopback port-forward, and exposes
-	// it over the mesh as the `headlamp` service. Default OFF (explicit opt-in).
-	// See docs/peer-dks-headlamp.md.
-	HeadlampEnabled *bool `json:"headlamp_enabled,omitempty"`
-
-	// headlamp_port is the loopback port the supervised port-forward binds on.
-	// Default headlamp.DefaultLocalPort (18466); validated through
-	// headlamp.ValidateListenAddr so non-loopback binds are rejected.
-	HeadlampPort int `json:"headlamp_port,omitempty"`
 
 	// peerimage: peer image distribution for DKS — "recipes, not blobs"
 	// (docs/peer-dks-image-distribution.md). When enabled, this node keeps a
@@ -1890,95 +1812,6 @@ func (fc *FileConfig) PeerPlaneOn() bool {
 // CloudDOOn reports whether Digital Ocean provider support is enabled.
 func (fc *FileConfig) CloudDOOn() bool {
 	return fc != nil && fc.CloudDOEnabled != nil && *fc.CloudDOEnabled
-}
-
-func (fc *FileConfig) ZotOn() bool {
-	return fc != nil && fc.ZotEnabled != nil && *fc.ZotEnabled
-}
-
-// ZotPortOrDefault returns the configured zot port, or 5000.
-func (fc *FileConfig) ZotPortOrDefault() int {
-	if fc != nil && fc.ZotPort > 0 {
-		return fc.ZotPort
-	}
-	return 5000
-}
-
-// HeadlampOn reports whether this outpost should deploy and supervise
-// Headlamp on its peer-hosted DKS plane (default OFF).
-func (fc *FileConfig) HeadlampOn() bool {
-	return fc != nil && fc.HeadlampEnabled != nil && *fc.HeadlampEnabled
-}
-
-// HeadlampPortOrDefault returns the configured headlamp loopback port,
-// or 18466 (headlamp.DefaultLocalPort).
-func (fc *FileConfig) HeadlampPortOrDefault() int {
-	if fc != nil && fc.HeadlampPort > 0 {
-		return fc.HeadlampPort
-	}
-	return 18466
-}
-
-func (fc *FileConfig) SeaweedfsOn() bool {
-	return fc != nil && fc.SeaweedfsEnabled != nil && *fc.SeaweedfsEnabled
-}
-
-// SeaweedfsPortOrDefault returns the configured SeaweedFS S3 port, or 8333.
-func (fc *FileConfig) SeaweedfsPortOrDefault() int {
-	if fc != nil && fc.SeaweedfsPort > 0 {
-		return fc.SeaweedfsPort
-	}
-	return 8333
-}
-
-func (fc *FileConfig) KopiaOn() bool {
-	return fc != nil && fc.KopiaEnabled != nil && *fc.KopiaEnabled
-}
-
-// KopiaPortOrDefault returns the configured Kopia server port, or 51515.
-func (fc *FileConfig) KopiaPortOrDefault() int {
-	if fc != nil && fc.KopiaPort > 0 {
-		return fc.KopiaPort
-	}
-	return 51515
-}
-
-// ActrunnerOn reports whether the act_runner CI-executor builtin is enabled.
-func (fc *FileConfig) ActrunnerOn() bool {
-	return fc != nil && fc.ActrunnerEnabled != nil && *fc.ActrunnerEnabled
-}
-
-// ActrunnerSandboxOn reports whether the tier-3 sandbox (container) executor is
-// enabled on the act_runner builtin.
-func (fc *FileConfig) ActrunnerSandboxOn() bool {
-	return fc != nil && fc.ActrunnerSandbox != nil && *fc.ActrunnerSandbox
-}
-
-// ActrunnerLabelsOrDefault returns the configured runner labels, or "host:host".
-func (fc *FileConfig) ActrunnerLabelsOrDefault() string {
-	if fc != nil && fc.ActrunnerLabels != "" {
-		return fc.ActrunnerLabels
-	}
-	return "host:host"
-}
-
-// ActrunnerInstanceResolved returns the Gitea base URL the runner registers
-// against: an explicit actrunner_instance wins; otherwise localForge, which
-// the caller resolves from the loom unit's declaration when that unit is
-// enabled; else "" (caller must skip / surface a clear error — a build-only
-// node needs an explicit instance).
-//
-// The forge URL arrives as an argument because loom's port lives in its unit
-// declaration now, and fleet's registry sits ABOVE this package: conf holds
-// outpost's own settings, not the host's service units.
-func (fc *FileConfig) ActrunnerInstanceResolved(localForge string) string {
-	if fc == nil {
-		return ""
-	}
-	if fc.ActrunnerInstance != "" {
-		return fc.ActrunnerInstance
-	}
-	return localForge
 }
 
 // MeshOn reports whether this outpost runs the libp2p mesh data plane (the peer
