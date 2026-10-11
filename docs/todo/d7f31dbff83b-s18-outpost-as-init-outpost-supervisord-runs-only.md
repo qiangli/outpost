@@ -3,18 +3,15 @@ id: d7f31dbff83b
 kind: feature
 title: 'S18 outpost as init: outpost supervisord runs only the daemon and bashy supervisord; exposure follows unit state; toggles call bashy service; old agent.json service config removed'
 seq: 1887
-status: blocked
+status: todo
 priority: p1
 labels:
     - outpost
     - bashy
 created: 2026-10-11T05:07:50.314316Z
-weave: 3
 sprint: 418
 sprint_id: 9891800f-8da5-5338-92bc-1d75755ca548
 sprint_title: 'Agent ecosystem synergy: agentic tools compose like a|b|c through bashy extension points'
-resolution: fixed
-closed_by: claude-opus5-c
 ---
 
 Design docs/bashy-service-design.md: inetd/systemd split - bashy service owns unit definitions and per-unit verbs; bashy supervisord (a bashy command, like inetd) is the service monitor; outpost supervisord (init, like systemd) starts and watches only the outpost daemon and bashy supervisord. Cross-repo (outpost + bashy + yoke). outpost supervisord (OS service via outpost service install) starts and watches exactly the outpost daemon and bashy supervisord, restarting either with backoff; it never watches individual services. Remove the 30s bashy_services poller (superviseBashyService, startBashyService, bashyServiceRunning in cmd/outpost/main.go) and the supervised programs list. Remove agent.json bashy_services, supervised, meet_enabled, loom_enabled and bashy_apps_enabled plus their readers and old lifecycle paths. Define all currently supported services directly as unit YAML; no generic migration, config conversion or old-key compatibility period (operator clarification 2026-10-10 PDT). The daemon registers matrix-tunnel apps (AppRegistry.RegisterWithMeta) and mesh exposures (Forwarder.Expose) from bashy service list --json and the monitor state events: failed or disabled units are withdrawn from tunnel and mesh (today a dead service stays exposed). outpost builtins set, MCP outpost_set_builtins and the admin UI call bashy service enable|disable|set and apply live (today SetBuiltins only returns RestartPending while the CLI claims a restart). Admin UI and MCP show bashy service status --json; unwired internal/agent/apphealth is retired or folded in. Help text distinguishes outpost supervisord (init) from bashy supervisord (service monitor). Acceptance: on a paired host, enabling meet via outpost builtins set exposes /matrix/h/HOST/app/meet/ without an outpost restart; killing bashy supervisord makes outpost restart it and units are re-adopted; a crash-looping unit ends failed and is withdrawn from tunnel and mesh; old agent.json service keys/readers are removed and all currently supported services work from new-format unit definitions; outpost go test -short green.
@@ -130,3 +127,4 @@ of `bashy supervisord` (S16/S19 in flight). So:
 of outpost's `agent.json` for its trusted-header check. That key is gone;
 it must read `service_sso[<app route>]` instead. Until it does, a bashy
 webconsole unit published with `trust_cloud_identity` will not find its key.
+Manager continuation 2026-10-11 11:27 UTC: The pushed candidate `2120229` pins Yoke `f132e07`, which now supplies a generic `service.Owner` client for Bashy's `desired`/`report` control socket. The paired DO proved real OpenClaw route publication and withdrawal; restoration and complete inventory are still open. The next bounded Outpost source slice must connect its registered in-process capabilities to this monitor owner protocol, so enabling/disabling an internal unit through the same declaration reports actual state to Bashy and follows desired state without a second config flag or service-name switch. Reuse `outpostCapabilities()`/the existing `svcunit` registry; avoid competing activation loops or dropping any retained surface. Own Outpost `cmd/outpost` and `internal/agent/svcunit` only. Add a fake-socket test for enable/disable/report/re-adoption and run `GOWORK=off go test -short -tags fb_archives ./internal/agent/svcunit ./cmd/outpost`. The manager owns exact candidate paired/live and broad/native gates. This is work on original S18, not a new feature story; leave it open until paired service and full inventory gates pass.
