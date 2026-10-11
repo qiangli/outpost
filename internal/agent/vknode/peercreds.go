@@ -154,8 +154,8 @@ func DefaultPeerCredentialDir() (string, error) {
 // writeFileAtomic writes data to path (mode 0600) via a tmp file + rename, so a
 // reader never sees a partial write.
 func writeFileAtomic(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	tmp, err := writePrivateTemp(path, data)
+	if err != nil {
 		return fmt.Errorf("vknode: write %s: %w", filepath.Base(path), err)
 	}
 	if err := os.Rename(tmp, path); err != nil {

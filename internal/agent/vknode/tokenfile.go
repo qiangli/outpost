@@ -24,8 +24,8 @@ func WriteTokenFile(path, token string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("vknode: mkdir token-file dir: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(token), 0o600); err != nil {
+	tmp, err := writePrivateTemp(path, []byte(token))
+	if err != nil {
 		return fmt.Errorf("vknode: write token-file tmp: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {

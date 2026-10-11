@@ -62,10 +62,7 @@ func TestPeerCredential_Materialize_TokenAndRestConfig(t *testing.T) {
 	if string(got) != "tok-v1" {
 		t.Fatalf("token file = %q, want tok-v1", got)
 	}
-	// 0600 (credential secrecy).
-	if fi, _ := os.Stat(files.TokenFile); fi != nil && fi.Mode().Perm() != 0o600 {
-		t.Fatalf("token file mode = %v, want 0600", fi.Mode().Perm())
-	}
+	assertPrivateFile(t, files.TokenFile)
 
 	cfg, err := cred.RestConfig(files)
 	if err != nil {

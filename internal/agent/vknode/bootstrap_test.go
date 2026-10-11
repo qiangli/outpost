@@ -170,13 +170,7 @@ func TestWriteTokenFile_AtomicAndMode(t *testing.T) {
 	if err := WriteTokenFile(path, "hello"); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("mode: got %o want 0600", info.Mode().Perm())
-	}
+	assertPrivateFile(t, path)
 	got, _ := os.ReadFile(path)
 	if string(got) != "hello" {
 		t.Errorf("contents: %q", got)
