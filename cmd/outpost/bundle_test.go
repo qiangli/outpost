@@ -189,6 +189,7 @@ func newBundleCLICore(t *testing.T) (*admincore.Server, string, string) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp) // os.UserHomeDir uses this on Windows.
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 	t.Setenv("XDG_CACHE_HOME", tmp)
 

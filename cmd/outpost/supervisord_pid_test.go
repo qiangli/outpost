@@ -43,7 +43,18 @@ func TestSameExecutableName(t *testing.T) {
 // A stale pidfile naming a live process that is not outpost (pid reuse after
 // a reboot) must not block the supervisor; our own pid must.
 func TestPidIsOutpostRejectsForeignLivePid(t *testing.T) {
-	if pidIsOutpost(1) {
-		t.Errorf("pid 1 (init/launchd) treated as a running outpost supervisor")
+	pid := os.Getppid()
+	if !processAlive(pid) {
+		t.Skipf("parent pid %d is no longer live", pid)
+	}
+	name, err := processName(pid)
+	if err != nil || name == "" {
+		t.Skipf("cannot identify parent pid %d: %v", pid, err)
+	}
+	if sameExecutableName(name) {
+		t.Skipf("parent pid %d is an outpost process", pid)
+	}
+	if pidIsOutpost(pid) {
+		t.Errorf("foreign parent pid %d (%s) treated as a running outpost supervisor", pid, name)
 	}
 }

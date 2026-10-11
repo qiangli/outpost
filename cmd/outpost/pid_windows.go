@@ -3,8 +3,6 @@
 package main
 
 import (
-	"errors"
-
 	"golang.org/x/sys/windows"
 )
 
@@ -44,8 +42,18 @@ func processAlive(pid int) bool {
 	return code == stillActive
 }
 
-// processName is not implemented on Windows; callers keep their
-// conservative answer.
-func processName(int) (string, error) { return "", errProcessNameUnsupported }
-
-var errProcessNameUnsupported = errors.New("process name lookup unsupported on windows")
+// processName identifies a live process before trusting a stale supervisor
+// pidfile. A recycled PID must not keep the real supervisor from starting.
+func processName(pid int) (string, error) {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return "", err
+	}
+	defer windows.CloseHandle(h)
+	name := make([]uint16, 32768)
+	size := uint32(len(name))
+	if err := windows.QueryFullProcessImageName(h, 0, &name[0], &size); err != nil {
+		return "", err
+	}
+	return windows.UTF16ToString(name[:size]), nil
+}

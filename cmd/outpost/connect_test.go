@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -180,7 +181,7 @@ func TestCookieOnlyKeepAlive_NoCookieErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default config path: %v", err)
 	}
-	if err := os.MkdirAll(strings.TrimSuffix(cfgPath, "/agent.json"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
 		t.Fatalf("mkdir cfg: %v", err)
 	}
 	if err := os.WriteFile(cfgPath,
