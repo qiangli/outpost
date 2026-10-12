@@ -48,6 +48,7 @@ var reservedNames = map[string]struct{}{
 	"embed.js":    {},
 	"favicon.ico": {},
 	".well-known": {},
+	"u":           {}, // public post viewer namespace (/u/<uid>/<path>)
 }
 
 func isReserved(name string) bool {
