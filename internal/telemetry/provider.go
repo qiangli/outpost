@@ -49,21 +49,28 @@ import (
 // is unset.
 const DefaultServiceName = "outpost"
 
-// ChildEnv returns the OTEL environment additions to hand a supervised child
-// process (loom, act_runner, …) so it self-exports into the SAME telemetry
-// plane as this outpost — under its OWN service.name, not "outpost". The child
-// already inherits os.Environ() (which carries OTEL_EXPORTER_OTLP_ENDPOINT +
-// OTEL_RESOURCE_ATTRIBUTES when configured on the host); this only OVERRIDES
-// service.name so the deploy path (loom Actions, the act_runner job) shows up as
-// a distinct service an agent can filter on when supervising a deployment via
-// the existing observability backend (query_traces / query_logs / search_logs).
-// Returns nil when no OTLP endpoint is configured, keeping the no-op posture.
-// Appended AFTER os.Environ() so it wins (exec takes the last value of a dup key).
+// LocalCollectorEndpoint is bashy's stable OTLP/HTTP proxy. Managed services
+// must never inherit an operator shell's arbitrary/vendor OTLP destination.
+const LocalCollectorEndpoint = "http://127.0.0.1:31415"
+
+// ChildEnv returns explicit OTLP overrides for a supervised child (loom,
+// act_runner, …). General and signal-specific endpoints are all set because a
+// signal-specific inherited value takes precedence over the general endpoint.
 func ChildEnv(serviceName string) []string {
-	if serviceName == "" || os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" {
+	if serviceName == "" {
 		return nil
 	}
-	return []string{"OTEL_SERVICE_NAME=" + serviceName}
+	return []string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT=" + LocalCollectorEndpoint,
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=" + LocalCollectorEndpoint + "/v1/traces",
+		"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=" + LocalCollectorEndpoint + "/v1/metrics",
+		"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=" + LocalCollectorEndpoint + "/v1/logs",
+		"OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
+		"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf",
+		"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL=http/protobuf",
+		"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL=http/protobuf",
+		"OTEL_SERVICE_NAME=" + serviceName,
+	}
 }
 
 // Provider holds the OTEL SDK lifetime for this process.
