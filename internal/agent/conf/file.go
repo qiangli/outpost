@@ -1562,6 +1562,28 @@ func SaveFile(path string, fc *FileConfig) error {
 	return os.Rename(tmp, path)
 }
 
+// SaveRawFile atomically writes an already encoded agent.json while keeping
+// the same recovery journal as SaveFile. Compatibility migrations use this to
+// preserve fields unknown to the current FileConfig type.
+func SaveRawFile(path string, data []byte) error {
+	if !json.Valid(data) {
+		return fmt.Errorf("invalid agent.json")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	_ = rotateJournal(path)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
 // journalRingSize is how many prior agent.json snapshots we keep.
 // 3 is enough to ride out a corrupted-save bug followed by an
 // (also-corrupted) attempted manual recovery before the operator

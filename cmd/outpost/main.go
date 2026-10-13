@@ -409,6 +409,9 @@ func startCmd() *cobra.Command {
 			// `fc.ShardOn()` cascade read a config key that no longer
 			// exists.
 			svcStore := serviceStore()
+			if _, err := migrateLegacyServices(cfgPath, fc, svcStore); err != nil {
+				slog.Warn("legacy service migration", "err", err)
+			}
 			shardWanted := capabilityEnabled(svcStore, capShard)
 
 			// Peer-plane locality service (opt-in, OFF by default). Created
