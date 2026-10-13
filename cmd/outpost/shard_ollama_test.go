@@ -6,12 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/qiangli/outpost/internal/agent/shard"
 )
 
 // The shard plane must never pin the loopback Ollama default: on a host
@@ -112,9 +108,8 @@ func TestReadShardSettingsOllamaURL(t *testing.T) {
 	}
 }
 
-// Provisioning pulls through the resolved daemon URL, not the loopback
-// default: point it at a stub registry and assert the pull lands there.
-func TestProvisionShardPullsThroughResolvedURL(t *testing.T) {
+// Model acquisition pulls through the resolved daemon URL, not loopback.
+func TestEnsureModelPullsThroughResolvedURL(t *testing.T) {
 	var pulled bool
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/pull" {
@@ -123,21 +118,11 @@ func TestProvisionShardPullsThroughResolvedURL(t *testing.T) {
 	}))
 	defer stub.Close()
 
-	dir := t.TempDir()
-	for _, name := range []string{"llama-server", "llama-cli"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(dir, "VERSION"), []byte(expectedPrimaVersion+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	t.Setenv("OLLAMA_MODELS", t.TempDir()) // no manifests: tier (c) pull runs
 
-	bins := shard.ServeBins{ServerBin: filepath.Join(dir, "llama-server"), WorkerBin: filepath.Join(dir, "llama-cli")}
-	_, err := provisionShard(context.Background(), bins, stub.URL, "regression-test-model", nil, nil)
+	_, err := ensureModel(context.Background(), stub.URL, "regression-test-model", nil, nil)
 	if err == nil {
-		t.Fatal("provisionShard with an empty model store must fail at manifest resolution")
+		t.Fatal("ensureModel with an empty model store must fail at manifest resolution")
 	}
 	if !pulled {
 		t.Errorf("no POST /api/pull reached the resolved daemon at %s (want the pull, not a hardcoded loopback)", stub.URL)

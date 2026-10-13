@@ -1,8 +1,6 @@
 package main
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,20 +16,8 @@ import (
 	"github.com/qiangli/outpost/internal/agent/shard"
 )
 
-// primaReleaseBase is where the daemon fetches the prima engine binaries from —
-// the fork's release, per-platform tarballs (prima-<goos>-<goarch>.tar.gz).
-const primaReleaseBase = "https://github.com/qiangli/prima.cpp/releases/download/shard-binaries"
-
-// expectedPrimaVersion is the VERSION marker shipped inside the release tarball.
-// When a node's on-disk marker differs (or is absent), ensureBinaries re-fetches —
-// this is what rolls a binary change (e.g. the ZMQ→nng MPL-free rebuild) out to
-// nodes that already hold an older build instead of keeping the stale one.
-const expectedPrimaVersion = "nng-3"
-
-// provisionShard is the daemon's self-provisioner: it fetches the prima binaries
-// and the model with NO human staging (over the daemon's own credentials), and
-// returns the GGUF path prima loads. Idempotent — already-present binaries +
-// models are reused. This is what dissolves the "needs ssh to stage" boundary.
+// provisionShard checks the signed prima engine gate before touching a local
+// process or pulling a model. A legacy on-disk binary cannot bypass that gate.
 func provisionShard(ctx context.Context, bins shard.ServeBins, ollamaURL, modelName string, fwd shard.Forwarder, peers shard.PeerDiscoverer) (string, error) {
 	// Kill any orphaned prima from a previous form before re-provisioning. The
 	// async launch detaches prima from the daemon ctx, so a torn-down or
@@ -39,11 +25,11 @@ func provisionShard(ctx context.Context, bins shard.ServeBins, ollamaURL, modelN
 	// AND the binary inode, which blocks both the re-fetch's overwrite and a
 	// fresh bind ("Address in use"). Targeted: only this shard's own prima
 	// binaries by exact path, never the daemon, never a loose pattern.
-	killStalePrima(bins.ServerBin)
-	killStalePrima(bins.WorkerBin)
 	if err := ensureBinaries(ctx, bins); err != nil {
 		return "", fmt.Errorf("binaries: %w", err)
 	}
+	killStalePrima(bins.ServerBin)
+	killStalePrima(bins.WorkerBin)
 	return ensureModel(ctx, ollamaURL, modelName, fwd, peers)
 }
 
@@ -71,98 +57,11 @@ func killStalePrima(binPath string) {
 	}
 }
 
-// ensureBinaries downloads + extracts the prima release for this platform into
-// the bins dir when the binaries are missing.
-func ensureBinaries(ctx context.Context, bins shard.ServeBins) error {
-	dir := filepath.Dir(bins.ServerBin)
-	have := false
-	if _, e1 := os.Stat(bins.ServerBin); e1 == nil {
-		if _, e2 := os.Stat(bins.WorkerBin); e2 == nil {
-			// Present — but re-fetch when the on-disk VERSION marker doesn't match,
-			// so a binary change (e.g. the MPL-free nng rebuild) reaches nodes
-			// holding an older build instead of keeping the stale one.
-			v, _ := os.ReadFile(filepath.Join(dir, "VERSION"))
-			have = strings.TrimSpace(string(v)) == expectedPrimaVersion
-		}
-	}
-	if !have {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
-		}
-		asset := fmt.Sprintf("prima-%s-%s.tar.gz", runtime.GOOS, runtime.GOARCH)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, primaReleaseBase+"/"+asset, nil)
-		if err != nil {
-			return err
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("fetch %s: %s", asset, resp.Status)
-		}
-		if err := extractPrima(resp.Body, dir); err != nil {
-			return err
-		}
-	}
-	// Ad-hoc sign on macOS — an unsigned arm64 Mach-O is SIGKILLed at exec by the
-	// kernel, and a downloaded release artifact carries no signature valid for THIS
-	// host. Applies whether freshly fetched or already on disk (a prior unsigned
-	// fetch), so a worker self-provisioned before this fix gets repaired too.
-	adhocSignDarwin(bins.ServerBin, bins.WorkerBin)
-	return nil
-}
-
-// adhocSignDarwin ad-hoc code-signs the given binaries on macOS (no-op elsewhere)
-// so a freshly-downloaded, unsigned prima binary can exec on Apple Silicon.
-func adhocSignDarwin(paths ...string) {
-	if runtime.GOOS != "darwin" {
-		return
-	}
-	for _, p := range paths {
-		if p == "" {
-			continue
-		}
-		_ = exec.Command("codesign", "--force", "--sign", "-", p).Run()
-	}
-}
-
-// extractPrima unpacks the llama-server + llama-cli executables from a tar.gz
-// into dir (chmod 0755).
-func extractPrima(r io.Reader, dir string) error {
-	gz, err := gzip.NewReader(r)
-	if err != nil {
-		return err
-	}
-	defer gz.Close()
-	tr := tar.NewReader(gz)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		base := filepath.Base(hdr.Name)
-		switch base {
-		case "llama-server", "llama-cli", "llama-server.exe", "llama-cli.exe", "VERSION":
-		default:
-			continue
-		}
-		out := filepath.Join(dir, base)
-		f, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
-		if err != nil {
-			return err
-		}
-		if _, err := io.Copy(f, tr); err != nil {
-			f.Close()
-			return err
-		}
-		f.Close()
-	}
-	return nil
+// ensureBinaries refuses legacy prima executables, including a matching VERSION
+// marker. The shard engine remains unavailable until a pinned bashy CI release
+// and its Sigstore identity are admitted through binmgr.
+func ensureBinaries(_ context.Context, _ shard.ServeBins) error {
+	return fmt.Errorf("prima engine unavailable: no admitted bashy-built, signed release for %s/%s", runtime.GOOS, runtime.GOARCH)
 }
 
 // ensureModel returns the GGUF blob path prima loads, fetching the model first
