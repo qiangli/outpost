@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -296,6 +298,33 @@ func resolveShardOllamaURL(explicit string, ollamaTarget func() string) string {
 	return ""
 }
 
+// resolveShardAPIPort is the OpenAI port the leader-served shard binds: the
+// port of the daemon resolveShardOllamaURL picks — the live ollama unit's
+// target first (which itself honors that unit's settings.url / $OLLAMA_HOST),
+// else the answering host daemon or bashy's own engine. The shard serves the
+// Ollama-compatible endpoint, so it follows the configured daemon instead of
+// assuming the old loopback default. Fail-closed like provisioning: an empty
+// or portless endpoint is an error, never a silent guess.
+func resolveShardAPIPort(ollamaTarget func() string) (int, error) {
+	endpoint := resolveShardOllamaURL("", ollamaTarget)
+	if strings.TrimSpace(endpoint) == "" {
+		return 0, fmt.Errorf("shard: no Ollama endpoint configured — start the Ollama daemon or enable its service unit")
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return 0, fmt.Errorf("shard: bad Ollama endpoint %q: %w", endpoint, err)
+	}
+	portStr := u.Port()
+	if portStr == "" {
+		return 0, fmt.Errorf("shard: Ollama endpoint %q carries no port — set an explicit host:port", endpoint)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 {
+		return 0, fmt.Errorf("shard: Ollama endpoint %q carries no usable port", endpoint)
+	}
+	return port, nil
+}
+
 func newShardManager(fc *conf.FileConfig, ss shardSettings, meshHost *mesh.Host, peerSvc *peerplane.Service, rdv *mesh.Rendezvous, ollamaTarget func() string) (*shard.Manager, error) {
 	if meshHost == nil {
 		return nil, fmt.Errorf("shard: the libp2p mesh data plane is not up — sharding carries its RPC over it (`outpost builtins set --mesh=on`)")
@@ -324,7 +353,15 @@ func newShardManager(fc *conf.FileConfig, ss shardSettings, meshHost *mesh.Host,
 	if bins.ServerBin == "" {
 		bins = defaultPrimaBins() // zero-config: the node finds its own prima binaries
 	}
+	// The auto-trigger serves through m.apiPort: follow the configured
+	// daemon best-effort (0 keeps the manager's Ollama-compatible default
+	// for a host with no endpoint configured yet).
+	apiPort := 0
+	if port, err := resolveShardAPIPort(ollamaTarget); err == nil {
+		apiPort = port
+	}
 	return shard.NewManager(shard.ManagerConfig{
+		APIPort:   apiPort,
 		Self:      shard.ShardPeer{Host: fc.AgentName, PeerID: meshHost.PeerID()},
 		Forwarder: meshHost.Forwarder(),
 		Peers:     disc,
@@ -343,6 +380,44 @@ func newShardManager(fc *conf.FileConfig, ss shardSettings, meshHost *mesh.Host,
 			return ollamaLocalModels(ctx, resolveShardOllamaURL(ss.OllamaURL, ollamaTarget)), nodeBytes
 		},
 	}), nil
+}
+
+// shardLeadManager is the Orchestrate/TellLead surface the shard trigger
+// needs. *shard.Manager satisfies it; tests inject a recording fake.
+type shardLeadManager interface {
+	Orchestrate(ctx context.Context, model string, apiPort int, extra []string) error
+	TellLead(ctx context.Context, peer shard.ShardPeer, model string, apiPort int) error
+}
+
+// runShardTrigger tells <host> to LEAD a shard for <model>: a local host
+// leads from this node (backgrounded self-provision), any other host is told
+// over the mesh. The served port is resolved lazily through resolvePort —
+// the configured daemon's port, never a pinned literal — so an ollama-unit
+// retarget reaches the next trigger, not just the activation-time daemon.
+func runShardTrigger(ctx context.Context, host, model string, mgr shardLeadManager, resolvePeer func(context.Context, string) (shard.ShardPeer, error), resolvePort func() (int, error)) error {
+	if mgr == nil {
+		return errShardUnitInactive
+	}
+	port, err := resolvePort()
+	if err != nil {
+		return err
+	}
+	if host == "" || host == "self" || host == "local" {
+		// Lead the shard from THIS node, using its own ring — no mesh
+		// self-dial. Long-running (self-provision pulls the model), so
+		// background it on a detached context and return immediately.
+		go func() {
+			if err := mgr.Orchestrate(context.Background(), model, port, nil); err != nil {
+				slog.Warn("shard: local lead failed", "model", model, "err", err)
+			}
+		}()
+		return nil
+	}
+	peer, err := resolvePeer(ctx, host)
+	if err != nil {
+		return err
+	}
+	return mgr.TellLead(ctx, peer, model, port)
 }
 
 // ollamaLocalModels queries the local ollama /api/tags for this node's models +

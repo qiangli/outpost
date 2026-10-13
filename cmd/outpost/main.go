@@ -666,22 +666,12 @@ func startCmd() *cobra.Command {
 				if mgr == nil {
 					return errShardUnitInactive
 				}
-				if host == "" || host == "self" || host == "local" {
-					// Lead the shard from THIS node, using its own ring — no mesh
-					// self-dial. Long-running (self-provision pulls the model), so
-					// background it on a detached context and return immediately.
-					go func() {
-						if err := mgr.Orchestrate(context.Background(), model, 11434, nil); err != nil {
-							slog.Warn("shard: local lead failed", "model", model, "err", err)
-						}
-					}()
-					return nil
-				}
-				peer, err := resolveShardPeer(ctx, host)
-				if err != nil {
-					return err
-				}
-				return mgr.TellLead(ctx, peer, model, 11434)
+				// The served port follows the configured ollama unit (else
+				// bashy's engine, like the pool watcher), resolved lazily per
+				// trigger — never a pinned literal.
+				return runShardTrigger(ctx, host, model, mgr, resolveShardPeer, func() (int, error) {
+					return resolveShardAPIPort(caps.Ollama.Target)
+				})
 			}
 			// shardStatus returns the local node's (host=="") or a peer's readiness.
 			shardStatus := func(ctx context.Context, host string) (any, error) {
