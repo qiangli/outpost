@@ -11,7 +11,7 @@ func TestNormalizeDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("zero-value Options must normalize: %v", err)
 	}
-	if o.Namespace != DefaultNamespace || o.Name != DefaultName || o.Image != DefaultImage || o.LocalPort != DefaultLocalPort {
+	if o.Namespace != DefaultNamespace || o.Name != DefaultName || o.Image != "" || o.LocalPort != DefaultLocalPort {
 		t.Fatalf("defaults not applied: %+v", o)
 	}
 	if o.DisableViewerRBAC {

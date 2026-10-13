@@ -56,10 +56,14 @@
 package headlamp
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"regexp"
 )
+
+// ErrDisabled is returned by Deploy because headlamp has no verified signed build yet.
+var ErrDisabled = errors.New("headlamp is disabled by the service supply-chain policy (no bashy-signed build yet; blocked on upstream fixes for GO-2026-5064/5338/5622/5932)")
 
 const (
 	// DefaultNamespace is the dedicated namespace everything lives in.
@@ -71,11 +75,6 @@ const (
 	// acceptance harness (script/dks-peer-acceptance.sh check 9)
 	// already selects on.
 	DefaultName = "headlamp"
-
-	// DefaultImage pins the upstream Headlamp release this package was
-	// written against. Override via Options.Image; the pin has NOT been
-	// validated against a live peer plane (hardware-unproven).
-	DefaultImage = "ghcr.io/headlamp-k8s/headlamp:v0.27.0"
 
 	// DefaultLocalPort is the loopback port ForwardArgs publishes on.
 	// script/dks-headlamp-verify.sh probes the same default.
@@ -119,7 +118,7 @@ const (
 type Options struct {
 	Namespace string // "" => DefaultNamespace
 	Name      string // "" => DefaultName
-	Image     string // "" => DefaultImage
+	Image     string // image override (no default; headlamp deploy is disabled by supply-chain policy)
 	LocalPort int    // 0 => DefaultLocalPort (loopback forward port)
 
 	// DisableViewerRBAC skips (and on Deploy, removes) the read-only
@@ -158,9 +157,6 @@ func (o Options) withDefaults() Options {
 	if o.Name == "" {
 		o.Name = DefaultName
 	}
-	if o.Image == "" {
-		o.Image = DefaultImage
-	}
 	if o.LocalPort == 0 {
 		o.LocalPort = DefaultLocalPort
 	}
@@ -176,9 +172,6 @@ func (o Options) Normalize() (Options, error) {
 	}
 	if !dns1123Label.MatchString(o.Name) || len(o.Name) > 63 {
 		return o, fmt.Errorf("headlamp: invalid name %q (want DNS-1123 label)", o.Name)
-	}
-	if o.Image == "" {
-		return o, fmt.Errorf("headlamp: image must not be empty")
 	}
 	if o.LocalPort < 1024 || o.LocalPort > 65535 {
 		return o, fmt.Errorf("headlamp: local port %d out of range [1024,65535]", o.LocalPort)

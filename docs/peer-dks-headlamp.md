@@ -134,9 +134,9 @@ headlamp.Options{})` from Go, or render and apply:
 kubectl --kubeconfig ~/.kube/outpost-control-plane/k3s.yaml apply -f headlamp.json
 ```
 
-Defaults: namespace `headlamp`, image `ghcr.io/headlamp-k8s/headlamp:v0.27.0`
-(a pin, not a floating tag), Service port 80 → container 4466, loopback
-forward port 18466. The pod runs non-root, no privilege escalation, all
+Defaults: namespace `headlamp`, Service port 80 → container 4466, loopback
+forward port 18466 (note: `Deploy` is disabled by the service supply-chain policy).
+The pod runs non-root, no privilege escalation, all
 capabilities dropped, RuntimeDefault seccomp, with resource requests/limits.
 `Remove` deletes everything, but only deletes the namespace when it carries
 the `app.kubernetes.io/managed-by=outpost` label — a namespace this package

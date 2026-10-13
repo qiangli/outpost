@@ -14,19 +14,12 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
-// deployed returns a clientset holding a freshly Deployed headlamp with
+// deployed returns a clientset holding a seeded headlamp deployment with
 // one ready replica reported.
 func deployed(t *testing.T) *fake.Clientset {
 	t.Helper()
 	cs := fake.NewClientset()
-	if err := Deploy(context.Background(), cs, Options{}); err != nil {
-		t.Fatal(err)
-	}
-	dep, _ := cs.AppsV1().Deployments("headlamp").Get(context.Background(), "headlamp", metav1.GetOptions{})
-	dep.Status.ReadyReplicas = 1
-	if _, err := cs.AppsV1().Deployments("headlamp").UpdateStatus(context.Background(), dep, metav1.UpdateOptions{}); err != nil {
-		t.Fatal(err)
-	}
+	seedTestCluster(t, cs, Options{})
 	return cs
 }
 

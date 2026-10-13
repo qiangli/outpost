@@ -9,195 +9,132 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
-	k8stesting "k8s.io/client-go/testing"
 )
 
-func TestDeployCreatesEverything(t *testing.T) {
-	cs := fake.NewClientset()
-	if err := Deploy(context.Background(), cs, Options{}); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := cs.CoreV1().Namespaces().Get(context.Background(), "headlamp", metav1.GetOptions{}); err != nil {
-		t.Fatalf("namespace: %v", err)
-	}
-	if _, err := cs.CoreV1().ServiceAccounts("headlamp").Get(context.Background(), "headlamp", metav1.GetOptions{}); err != nil {
-		t.Fatalf("pod SA: %v", err)
-	}
-	if _, err := cs.CoreV1().ServiceAccounts("headlamp").Get(context.Background(), ViewerServiceAccount, metav1.GetOptions{}); err != nil {
-		t.Fatalf("viewer SA: %v", err)
-	}
-	dep, err := cs.AppsV1().Deployments("headlamp").Get(context.Background(), "headlamp", metav1.GetOptions{})
+func seedTestCluster(t *testing.T, cs *fake.Clientset, o Options) {
+	t.Helper()
+	o, err := o.Normalize()
 	if err != nil {
-		t.Fatalf("deployment: %v", err)
+		t.Fatal(err)
 	}
-	if dep.Spec.Template.Spec.ServiceAccountName != "headlamp" {
-		t.Fatalf("pod runs as %q, want the zero-grant SA", dep.Spec.Template.Spec.ServiceAccountName)
+	if _, err := cs.CoreV1().Namespaces().Create(context.Background(), o.namespaceObject(), metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
 	}
-	svc, err := cs.CoreV1().Services("headlamp").Get(context.Background(), "headlamp", metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("service: %v", err)
+	if _, err := cs.CoreV1().ServiceAccounts(o.Namespace).Create(context.Background(), o.podServiceAccount(), metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
 	}
-	if svc.Spec.Type != corev1.ServiceTypeClusterIP {
-		t.Fatalf("service type %s, want ClusterIP", svc.Spec.Type)
+	if _, err := cs.CoreV1().ServiceAccounts(o.Namespace).Create(context.Background(), o.viewerServiceAccount(), metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
 	}
-
-	// The pod SA must have zero grants: the only bindings created are
-	// the two viewer ones.
-	crbs, _ := cs.RbacV1().ClusterRoleBindings().List(context.Background(), metav1.ListOptions{})
-	if len(crbs.Items) != 2 {
-		t.Fatalf("want exactly the 2 viewer bindings, got %d", len(crbs.Items))
+	if _, err := cs.RbacV1().ClusterRoles().Create(context.Background(), o.nodeViewClusterRole(), metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
 	}
-	for _, b := range crbs.Items {
-		if subjectsInclude(b.Subjects, "headlamp", "headlamp") {
-			t.Fatalf("binding %s references the pod SA — it must have zero grants", b.Name)
-		}
+	if _, err := cs.RbacV1().ClusterRoleBindings().Create(context.Background(), o.viewerBinding(viewerBindingView, "view"), metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.RbacV1().ClusterRoleBindings().Create(context.Background(), o.viewerBinding(viewerBindingNodes, NodeViewClusterRole), metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	dep := o.deployment()
+	dep.Status.ReadyReplicas = 1
+	if _, err := cs.AppsV1().Deployments(o.Namespace).Create(context.Background(), dep, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.CoreV1().Services(o.Namespace).Create(context.Background(), o.service(), metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestDeployIsIdempotent(t *testing.T) {
+func TestDeployRefusesDisabled_CreatesNoObjects(t *testing.T) {
 	cs := fake.NewClientset()
-	for i := range 2 {
-		if err := Deploy(context.Background(), cs, Options{}); err != nil {
-			t.Fatalf("pass %d: %v", i+1, err)
-		}
-	}
-}
-
-func TestDeployConvergesDriftedService(t *testing.T) {
-	cs := fake.NewClientset()
-	if err := Deploy(context.Background(), cs, Options{}); err != nil {
-		t.Fatal(err)
-	}
-	// Drift: somebody flips the service to NodePort.
-	svc, _ := cs.CoreV1().Services("headlamp").Get(context.Background(), "headlamp", metav1.GetOptions{})
-	svc.Spec.Type = corev1.ServiceTypeNodePort
-	svc.Spec.Ports[0].NodePort = 30080
-	svc.Spec.ClusterIP = "10.43.0.99"
-	if _, err := cs.CoreV1().Services("headlamp").Update(context.Background(), svc, metav1.UpdateOptions{}); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := Deploy(context.Background(), cs, Options{}); err != nil {
-		t.Fatal(err)
-	}
-	svc, _ = cs.CoreV1().Services("headlamp").Get(context.Background(), "headlamp", metav1.GetOptions{})
-	if svc.Spec.Type != corev1.ServiceTypeClusterIP {
-		t.Fatalf("drifted service not converged: type %s", svc.Spec.Type)
-	}
-	if svc.Spec.Ports[0].NodePort != 0 {
-		t.Fatalf("drifted nodePort survived: %d", svc.Spec.Ports[0].NodePort)
-	}
-	if svc.Spec.ClusterIP != "10.43.0.99" {
-		t.Fatalf("allocated ClusterIP must be preserved, got %q", svc.Spec.ClusterIP)
-	}
-}
-
-// TestDeployConvergesDriftedServicePreservesImmutableFields proves that
-// a drifted-service convergence carries every immutable / server-defaulted
-// field over from the existing object. The fake clientset does not reject
-// an update that strips them (a real apiserver does), but this test
-// asserts the code shape: the preserved fields are set before the Update
-// call, which is the best deterministic gate short of envtest.
-func TestDeployConvergesDriftedServicePreservesImmutableFields(t *testing.T) {
-	cs := fake.NewClientset()
-	if err := Deploy(context.Background(), cs, Options{}); err != nil {
-		t.Fatal(err)
-	}
-	svc, _ := cs.CoreV1().Services("headlamp").Get(context.Background(), "headlamp", metav1.GetOptions{})
-	svc.Spec.Type = corev1.ServiceTypeNodePort
-	svc.Spec.Ports[0].NodePort = 30080
-	svc.Spec.ClusterIP = "10.43.0.99"
-	svc.Spec.ClusterIPs = []string{"10.43.0.99", "fd00::99"}
-	svc.Spec.IPFamilies = []corev1.IPFamily{corev1.IPv4Protocol, corev1.IPv6Protocol}
-	dualStack := corev1.IPFamilyPolicyRequireDualStack
-	svc.Spec.IPFamilyPolicy = &dualStack
-	if _, err := cs.CoreV1().Services("headlamp").Update(context.Background(), svc, metav1.UpdateOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := Deploy(context.Background(), cs, Options{}); err != nil {
-		t.Fatal(err)
-	}
-	svc, _ = cs.CoreV1().Services("headlamp").Get(context.Background(), "headlamp", metav1.GetOptions{})
-	if svc.Spec.Type != corev1.ServiceTypeClusterIP {
-		t.Fatalf("drifted type not converged: %s", svc.Spec.Type)
-	}
-	if len(svc.Spec.ClusterIPs) != 2 || svc.Spec.ClusterIPs[0] != "10.43.0.99" || svc.Spec.ClusterIPs[1] != "fd00::99" {
-		t.Fatalf("ClusterIPs must be preserved, got %v", svc.Spec.ClusterIPs)
-	}
-	if len(svc.Spec.IPFamilies) != 2 || svc.Spec.IPFamilies[0] != corev1.IPv4Protocol || svc.Spec.IPFamilies[1] != corev1.IPv6Protocol {
-		t.Fatalf("IPFamilies must be preserved, got %v", svc.Spec.IPFamilies)
-	}
-	if svc.Spec.IPFamilyPolicy == nil || *svc.Spec.IPFamilyPolicy != corev1.IPFamilyPolicyRequireDualStack {
-		t.Fatalf("IPFamilyPolicy must be preserved, got %v", svc.Spec.IPFamilyPolicy)
-	}
-}
-
-func TestDeployRefusesForeignNamespace(t *testing.T) {
-	cs := fake.NewClientset(&corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: "headlamp"}, // no managed-by label
-	})
 	err := Deploy(context.Background(), cs, Options{})
-	if err == nil || !strings.Contains(err.Error(), "not managed by outpost") {
-		t.Fatalf("must refuse to adopt a foreign namespace, got %v", err)
+	if err == nil {
+		t.Fatal("Deploy must fail closed")
+	}
+	if !errors.Is(err, ErrDisabled) {
+		t.Fatalf("want ErrDisabled, got %v", err)
+	}
+	wantMsg := "headlamp is disabled by the service supply-chain policy (no bashy-signed build yet; blocked on upstream fixes for GO-2026-5064/5338/5622/5932)"
+	if err.Error() != wantMsg {
+		t.Fatalf("err.Error() = %q, want %q", err.Error(), wantMsg)
+	}
+
+	// Deploy must touch nothing on the cluster before refusing.
+	nsList, err := cs.CoreV1().Namespaces().List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(nsList.Items) != 0 {
+		t.Fatalf("expected 0 namespaces, got %d", len(nsList.Items))
+	}
+	depList, err := cs.AppsV1().Deployments("").List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(depList.Items) != 0 {
+		t.Fatalf("expected 0 deployments, got %d", len(depList.Items))
+	}
+	svcList, err := cs.CoreV1().Services("").List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(svcList.Items) != 0 {
+		t.Fatalf("expected 0 services, got %d", len(svcList.Items))
+	}
+	saList, err := cs.CoreV1().ServiceAccounts("").List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(saList.Items) != 0 {
+		t.Fatalf("expected 0 serviceaccounts, got %d", len(saList.Items))
+	}
+	crbList, err := cs.RbacV1().ClusterRoleBindings().List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(crbList.Items) != 0 {
+		t.Fatalf("expected 0 clusterrolebindings, got %d", len(crbList.Items))
+	}
+	crList, err := cs.RbacV1().ClusterRoles().List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(crList.Items) != 0 {
+		t.Fatalf("expected 0 clusterroles, got %d", len(crList.Items))
 	}
 }
 
-func TestDeployDisableViewerRBACRemovesViewerArtifacts(t *testing.T) {
+func TestDeployRefusesDisabled_ImageOverrideDoesNotBypass(t *testing.T) {
 	cs := fake.NewClientset()
-	if err := Deploy(context.Background(), cs, Options{}); err != nil {
-		t.Fatal(err)
+	err := Deploy(context.Background(), cs, Options{Image: "example.org/custom/headlamp:latest"})
+	if !errors.Is(err, ErrDisabled) {
+		t.Fatalf("Options.Image override must NOT bypass refusal, got %v", err)
 	}
-	if err := Deploy(context.Background(), cs, Options{DisableViewerRBAC: true}); err != nil {
-		t.Fatal(err)
-	}
-	crbs, _ := cs.RbacV1().ClusterRoleBindings().List(context.Background(), metav1.ListOptions{})
-	if len(crbs.Items) != 0 {
-		t.Fatalf("viewer bindings must be removed, %d remain", len(crbs.Items))
-	}
-	if _, err := cs.RbacV1().ClusterRoles().Get(context.Background(), NodeViewClusterRole, metav1.GetOptions{}); err == nil {
-		t.Fatal("nodeview clusterrole must be removed")
-	}
-	if _, err := cs.CoreV1().ServiceAccounts("headlamp").Get(context.Background(), ViewerServiceAccount, metav1.GetOptions{}); err == nil {
-		t.Fatal("viewer SA must be removed")
+	depList, err := cs.AppsV1().Deployments("").List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(depList.Items) != 0 {
+		t.Fatalf("expected 0 deployments, got %d", len(depList.Items))
 	}
 }
 
-func TestDeployReplacesDriftedBindingRoleRef(t *testing.T) {
-	cs := fake.NewClientset()
-	if err := Deploy(context.Background(), cs, Options{}); err != nil {
-		t.Fatal(err)
-	}
-	// Drift: the view binding is re-pointed at cluster-admin. roleRef
-	// is immutable server-side, so convergence must delete + recreate.
-	crb, _ := cs.RbacV1().ClusterRoleBindings().Get(context.Background(), "outpost-headlamp-viewer-view", metav1.GetOptions{})
-	crb.RoleRef.Name = "cluster-admin"
-	if _, err := cs.RbacV1().ClusterRoleBindings().Update(context.Background(), crb, metav1.UpdateOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := Deploy(context.Background(), cs, Options{}); err != nil {
-		t.Fatal(err)
-	}
-	crb, _ = cs.RbacV1().ClusterRoleBindings().Get(context.Background(), "outpost-headlamp-viewer-view", metav1.GetOptions{})
-	if crb.RoleRef.Name != "view" {
-		t.Fatalf("drifted roleRef survived: %s", crb.RoleRef.Name)
+func TestDeployRefusesDisabled_NilClientset(t *testing.T) {
+	err := Deploy(context.Background(), nil, Options{})
+	if !errors.Is(err, ErrDisabled) {
+		t.Fatalf("want ErrDisabled even with nil clientset, got %v", err)
 	}
 }
 
 func TestRemoveIsIdempotentAndScoped(t *testing.T) {
 	cs := fake.NewClientset()
-	if err := Deploy(context.Background(), cs, Options{}); err != nil {
-		t.Fatal(err)
-	}
+	seedTestCluster(t, cs, Options{})
 	if err := Remove(context.Background(), cs, Options{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := cs.CoreV1().Namespaces().Get(context.Background(), "headlamp", metav1.GetOptions{}); err == nil {
 		t.Fatal("managed namespace must be deleted")
 	}
-	// Second Remove on empty state: fine.
+	if _, err := cs.AppsV1().Deployments("headlamp").Get(context.Background(), "headlamp", metav1.GetOptions{}); err == nil {
+		t.Fatal("deployment must be deleted")
+	}
+	if _, err := cs.CoreV1().Services("headlamp").Get(context.Background(), "headlamp", metav1.GetOptions{}); err == nil {
+		t.Fatal("service must be deleted")
+	}
+	if _, err := cs.CoreV1().ServiceAccounts("headlamp").Get(context.Background(), "headlamp", metav1.GetOptions{}); err == nil {
+		t.Fatal("pod SA must be deleted")
+	}
+	if _, err := cs.CoreV1().ServiceAccounts("headlamp").Get(context.Background(), ViewerServiceAccount, metav1.GetOptions{}); err == nil {
+		t.Fatal("viewer SA must be deleted")
+	}
+	crbs, _ := cs.RbacV1().ClusterRoleBindings().List(context.Background(), metav1.ListOptions{})
+	if len(crbs.Items) != 0 {
+		t.Fatalf("viewer bindings must be deleted, %d remain", len(crbs.Items))
+	}
+	if _, err := cs.RbacV1().ClusterRoles().Get(context.Background(), NodeViewClusterRole, metav1.GetOptions{}); err == nil {
+		t.Fatal("nodeview clusterrole must be deleted")
+	}
+	// Second Remove on empty state: fine (idempotent).
 	if err := Remove(context.Background(), cs, Options{}); err != nil {
 		t.Fatal(err)
 	}
@@ -215,20 +152,6 @@ func TestRemoveLeavesForeignNamespace(t *testing.T) {
 	}
 }
 
-func TestDeployFailsClosedOnAPIError(t *testing.T) {
-	cs := fake.NewClientset()
-	boom := errors.New("apiserver flake")
-	cs.PrependReactor("create", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
-		return true, nil, boom
-	})
-	err := Deploy(context.Background(), cs, Options{})
-	if err == nil || !errors.Is(err, boom) {
-		t.Fatalf("API error must surface, got %v", err)
-	}
-}
-
-// Guard: a binding that exists but references neither SA is left alone
-// by the RBAC inspection helpers used across deploy/posture.
 func TestSubjectsIncludeExactMatchOnly(t *testing.T) {
 	subs := []rbacv1.Subject{
 		{Kind: rbacv1.ServiceAccountKind, Namespace: "other", Name: "headlamp"},
@@ -236,5 +159,22 @@ func TestSubjectsIncludeExactMatchOnly(t *testing.T) {
 	}
 	if subjectsInclude(subs, "headlamp", "headlamp") {
 		t.Fatal("wrong-namespace or wrong-kind subjects must not match")
+	}
+}
+
+func TestNoCodePathReferencesThirdPartyHeadlampImage(t *testing.T) {
+	o, err := Options{}.Normalize()
+	if err != nil {
+		t.Fatalf("zero-value Options must normalize: %v", err)
+	}
+	if o.Image != "" {
+		t.Fatalf("expected empty Image default, got %q", o.Image)
+	}
+	raw, err := RenderJSON(Options{})
+	if err != nil {
+		t.Fatalf("RenderJSON: %v", err)
+	}
+	if strings.Contains(string(raw), "ghcr.io/headlamp-k8s") {
+		t.Fatal("RenderJSON output must not reference ghcr.io/headlamp-k8s")
 	}
 }
