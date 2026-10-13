@@ -67,6 +67,10 @@ type shardSettings struct {
 	// node find its own.
 	ServerBin string
 	WorkerBin string
+	// OllamaURL overrides the Ollama daemon the shard plane pulls models
+	// through and inventories. Empty resolves through the live ollama
+	// unit's target, else the host daemon or bashy's own engine.
+	OllamaURL string
 }
 
 func readShardSettings(cfg service.Config) shardSettings {
@@ -76,6 +80,7 @@ func readShardSettings(cfg service.Config) shardSettings {
 		NodeBytes: settingUint(cfg, "node_bytes", 0),
 		ServerBin: setting(cfg, "server_bin"),
 		WorkerBin: setting(cfg, "worker_bin"),
+		OllamaURL: setting(cfg, "ollama_url"),
 	}
 }
 

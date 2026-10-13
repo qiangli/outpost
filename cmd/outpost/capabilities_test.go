@@ -565,7 +565,7 @@ func TestShardCapabilityRefusalNamesTheMissingDependency(t *testing.T) {
 	// No mesh on this host: newShardManager's own refusal reaches the unit.
 	nomesh := &shardCapability{
 		Build: func(shardSettings) (*shard.Manager, error) {
-			return newShardManager(&conf.FileConfig{AgentName: "h", AccessToken: "t"}, shardSettings{}, nil, nil, nil)
+			return newShardManager(&conf.FileConfig{AgentName: "h", AccessToken: "t"}, shardSettings{}, nil, nil, nil, nil)
 		},
 	}
 	err := nomesh.Activate(context.Background(), cfgOf("shard", nil))

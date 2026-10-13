@@ -623,7 +623,7 @@ func startCmd() *cobra.Command {
 			// answering "not enabled" without a reason.
 			caps.Shard = &shardCapability{
 				Build: func(ss shardSettings) (*shard.Manager, error) {
-					return newShardManager(fc, ss, meshHost, peerPlaneSvc, meshRdv)
+					return newShardManager(fc, ss, meshHost, peerPlaneSvc, meshRdv, caps.Ollama.Target)
 				},
 				// LAN peer-to-peer model transfer: serve THIS node's on-disk
 				// model store (manifests + blobs) read-only over the mesh, so

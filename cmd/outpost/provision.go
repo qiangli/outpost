@@ -32,7 +32,7 @@ const expectedPrimaVersion = "nng-3"
 // and the model with NO human staging (over the daemon's own credentials), and
 // returns the GGUF path prima loads. Idempotent — already-present binaries +
 // models are reused. This is what dissolves the "needs ssh to stage" boundary.
-func provisionShard(ctx context.Context, bins shard.ServeBins, modelName string, fwd shard.Forwarder, peers shard.PeerDiscoverer) (string, error) {
+func provisionShard(ctx context.Context, bins shard.ServeBins, ollamaURL, modelName string, fwd shard.Forwarder, peers shard.PeerDiscoverer) (string, error) {
 	// Kill any orphaned prima from a previous form before re-provisioning. The
 	// async launch detaches prima from the daemon ctx, so a torn-down or
 	// restarted form can leave a worker/leader running — it holds the data ports
@@ -44,7 +44,7 @@ func provisionShard(ctx context.Context, bins shard.ServeBins, modelName string,
 	if err := ensureBinaries(ctx, bins); err != nil {
 		return "", fmt.Errorf("binaries: %w", err)
 	}
-	return ensureModel(ctx, "http://127.0.0.1:11434", modelName, fwd, peers)
+	return ensureModel(ctx, ollamaURL, modelName, fwd, peers)
 }
 
 // killStalePrima SIGKILLs any process whose command line contains exactly this

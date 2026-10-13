@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/mesh"
 	"github.com/qiangli/outpost/internal/agent/ollama"
@@ -263,7 +265,38 @@ func (d *peerPlaneDiscoverer) peerPlatforms(ctx context.Context) map[string]stri
 // silent nil: an enabled `outpost.shard` unit on a host with no mesh, no peer
 // plane or no pairing is an operator-visible misconfiguration, and the old
 // `ShardOn()` gate hid it behind "sharding not enabled on this host".
-func newShardManager(fc *conf.FileConfig, ss shardSettings, meshHost *mesh.Host, peerSvc *peerplane.Service, rdv *mesh.Rendezvous) (*shard.Manager, error) {
+// resolveShardOllamaURL picks the Ollama daemon the shard plane pulls models
+// through and inventories for its auto-trigger. Precedence: the shard
+// unit's explicit settings.ollama_url, the live ollama unit's target
+// (which itself honors that unit's settings.url / $OLLAMA_HOST), the host
+// daemon when it answers ($OLLAMA_HOST-aware), bashy's own engine, and
+// finally the host daemon URL regardless — so a pull attempt still targets
+// the operator's daemon when nothing answers. Never a hardcoded loopback:
+// on a host whose daemon lives elsewhere the old literal pulled (and
+// inventoried) the wrong daemon or failed outright.
+func resolveShardOllamaURL(explicit string, ollamaTarget func() string) string {
+	if s := strings.TrimSpace(explicit); s != "" {
+		return s
+	}
+	if ollamaTarget != nil {
+		if t := strings.TrimSpace(ollamaTarget()); t != "" {
+			return t
+		}
+	}
+	detected := agent.DetectOllama()
+	if detected.Available && detected.URL != "" {
+		return detected.URL
+	}
+	if bu := ollama.BashyOllamaURL(); bu != "" {
+		return bu
+	}
+	if detected.URL != "" {
+		return detected.URL
+	}
+	return defaultOllamaURL
+}
+
+func newShardManager(fc *conf.FileConfig, ss shardSettings, meshHost *mesh.Host, peerSvc *peerplane.Service, rdv *mesh.Rendezvous, ollamaTarget func() string) (*shard.Manager, error) {
 	if meshHost == nil {
 		return nil, fmt.Errorf("shard: the libp2p mesh data plane is not up — sharding carries its RPC over it (`outpost builtins set --mesh=on`)")
 	}
@@ -300,12 +333,14 @@ func newShardManager(fc *conf.FileConfig, ss shardSettings, meshHost *mesh.Host,
 		Provision: func(ctx context.Context, name string) (string, error) {
 			// Tier-(b) of ensureModel: fetch a missing model's GGUF from a same-LAN
 			// mesh peer over the forwarder before falling back to an ollama pull.
-			return provisionShard(ctx, bins, name, meshHost.Forwarder(), disc)
+			// Resolved lazily so a later ollama-unit retarget reaches the
+			// next provisioning, not just the activation-time daemon.
+			return provisionShard(ctx, bins, resolveShardOllamaURL(ss.OllamaURL, ollamaTarget), name, meshHost.Forwarder(), disc)
 		},
 		LocalLoad: func() ([]shard.LocalModel, uint64) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			return ollamaLocalModels(ctx, defaultOllamaURL), nodeBytes
+			return ollamaLocalModels(ctx, resolveShardOllamaURL(ss.OllamaURL, ollamaTarget)), nodeBytes
 		},
 	}), nil
 }
