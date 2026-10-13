@@ -2,43 +2,54 @@ package main
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/qiangli/outpost/internal/agent/shard"
+	"github.com/qiangli/yoke/pkg/binmgr"
 )
 
-// The story contract (Sprint 436, story 625828548647): first-party source
-// tag, generated release, and per-platform raw-executable asset names. These
-// constants must track the admitted release, not drift from it.
-func TestPrimaContractConstants(t *testing.T) {
-	if primaSourceTag != "bashy-prima-0.1.0" {
-		t.Fatalf("primaSourceTag = %q, want bashy-prima-0.1.0", primaSourceTag)
-	}
-	if !strings.HasPrefix(primaSourceCommit, "f4ea9845") || len(primaSourceCommit) != 40 {
-		t.Fatalf("primaSourceCommit = %q, want the full f4ea9845 peel", primaSourceCommit)
-	}
-	if primaReleaseTag != "bashy-bashy-prima-0.1.0-1" {
-		t.Fatalf("primaReleaseTag = %q, want bashy-bashy-prima-0.1.0-1", primaReleaseTag)
-	}
-	for _, plat := range []struct{ goos, goarch string }{
-		{"linux", "amd64"}, {"linux", "arm64"},
-		{"darwin", "amd64"}, {"darwin", "arm64"},
-	} {
-		want := "prima-" + plat.goos + "-" + plat.goarch
-		if got := primaAssetName(plat.goos, plat.goarch); got != want {
-			t.Fatalf("primaAssetName(%q, %q) = %q, want %q", plat.goos, plat.goarch, got, want)
-		}
-	}
+type primaRejectTransport struct{ calls int }
+
+func (r *primaRejectTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	r.calls++
+	return nil, errors.New("unexpected network access")
 }
 
-// Until the signed tool declaration exists (workflow identity, release repo,
-// all four reviewed SHA pins, real bundles), the declaration itself refuses.
-func TestPrimaSignedToolRefusesUntilAdmitted(t *testing.T) {
-	if _, err := primaSignedTool(); err == nil || !strings.Contains(err.Error(), "bashy-built, signed") {
-		t.Fatalf("unadmitted tool declaration must refuse, got %v", err)
+// Exercise the real shared verifier: its refusal must survive the Outpost
+// wrapper and happen before network, cache creation, or role installation.
+func TestEnsureBinariesUsesPrimaVerifier(t *testing.T) {
+	cache := filepath.Join(t.TempDir(), "cache")
+	t.Setenv("BASHY_BIN_CACHE", cache)
+	transport := &primaRejectTransport{}
+	old := http.DefaultTransport
+	http.DefaultTransport = transport
+	t.Cleanup(func() { http.DefaultTransport = old })
+	ctx := context.Background()
+	verified, want := binmgr.EnsurePrima(ctx)
+	if want == nil || verified != "" {
+		t.Fatalf("unadmitted Prima must refuse: path=%q err=%v", verified, want)
+	}
+	if !strings.Contains(want.Error(), "no committed sha256") && !strings.Contains(want.Error(), "no asset for") {
+		t.Fatalf("expected admission refusal, got %v", want)
+	}
+	dir := t.TempDir()
+	bins := shard.ServeBins{ServerBin: filepath.Join(dir, "server"), WorkerBin: filepath.Join(dir, "worker")}
+	got := ensureBinaries(ctx, bins)
+	if got == nil || errors.Unwrap(got) == nil || errors.Unwrap(got).Error() != want.Error() {
+		t.Fatalf("expected wrapped EnsurePrima error %v, got %v", want, got)
+	}
+	if transport.calls != 0 {
+		t.Fatalf("made %d network requests before admission", transport.calls)
+	}
+	for _, path := range []string{cache, bins.ServerBin, bins.WorkerBin} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("refusal touched %s: %v", path, err)
+		}
 	}
 }
 
@@ -57,11 +68,14 @@ func TestEnsureBinariesRefusesLegacyCacheAndPATH(t *testing.T) {
 	}
 	// A decoy on PATH that a fallback would happily execute.
 	binDir := t.TempDir()
-	for _, name := range []string{"prima", "llama-server", "llama-cli"} {
-		if err := os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\necho decoy\n"), 0o755); err != nil {
+	for _, name := range []string{"prima", "llama-server", "llama-cli", "codesign", "curl"} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\necho invoked > \"$PRIMA_DECOY_MARKER\"\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
+	marker := filepath.Join(t.TempDir(), "invoked")
+	t.Setenv("PRIMA_DECOY_MARKER", marker)
+	t.Setenv("BASHY_BIN_CACHE", t.TempDir())
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	before, err := os.ReadDir(dir)
@@ -71,6 +85,15 @@ func TestEnsureBinariesRefusesLegacyCacheAndPATH(t *testing.T) {
 	bins := shard.ServeBins{ServerBin: filepath.Join(dir, "llama-server"), WorkerBin: filepath.Join(dir, "llama-cli")}
 	if err := ensureBinaries(context.Background(), bins); err == nil || !strings.Contains(err.Error(), "bashy-built, signed") {
 		t.Fatalf("legacy cache and PATH must be refused until a signed release is admitted, got %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("fallback executable invoked: %v", err)
+	}
+	for _, name := range []string{"llama-server", "llama-cli"} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || string(data) != "old upstream binary" {
+			t.Fatalf("refusal changed %s: %q, %v", name, data, err)
+		}
 	}
 	after, err := os.ReadDir(dir)
 	if err != nil {
