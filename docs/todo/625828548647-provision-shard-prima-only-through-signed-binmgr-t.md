@@ -3,7 +3,7 @@ id: "625828548647"
 kind: task
 title: Provision shard prima only through signed binmgr tool
 seq: 1894
-status: blocked
+status: done
 priority: p2
 created: 2026-10-13T14:30:00Z
 weave: 20
@@ -11,8 +11,9 @@ assignee: muse-conductor
 sprint: 436
 sprint_id: 20ad6f7b-d3d3-5ebf-973c-0bbb999db96f
 sprint_title: 'Sphere regression recovery: p2p sharding + local inference back on, bashy-built engines'
+closed: 2026-10-13T16:36:53.032661Z
 resolution: fixed
-closed_by: muse-conductor-t
+closed_by: s436-codex-manager
 ---
 
 Substory of Sprint 436 17ba375e and prerequisite for 8998b0dc live proof.

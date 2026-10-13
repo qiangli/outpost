@@ -3,7 +3,7 @@ id: 45e5c45732e2
 kind: bug
 title: Use Yoke EnsurePrima as Outpost shard verifier
 seq: 1895
-status: assigned
+status: done
 priority: p1
 created: 2026-10-13T14:14:42.399423Z
 weave: 21
@@ -11,6 +11,9 @@ assignee: codex-gpt6-astra
 sprint: 436
 sprint_id: 20ad6f7b-d3d3-5ebf-973c-0bbb999db96f
 sprint_title: 'Sphere regression recovery: p2p sharding + local inference back on, bashy-built engines'
+closed: 2026-10-13T14:20:44.910549Z
+resolution: fixed
+closed_by: codex-gpt6-astra-u
 ---
 
 Correction to Outpost interim a713c58c / Story 625828548647. yoke/pkg/binmgr/prima.go now provides PrimaTool and EnsurePrima with immutable repo, release tag, exact identity/issuer and committed-pin fail closed. Remove duplicate Outpost primaReleaseRepo, primaWorkflowIdentity, primaSHA256Pins and primaSignedTool; ensureBinaries must call binmgr.EnsurePrima(ctx) and install only verified path for leader/worker roles. Keep fail closed until signed assets and pins land. Reconcile duplicate docs/todo/625828548647 story files: worker-created tracked s436-... and generated untracked original; retain one canonical file in worker commit. Add focused tests proving call path and no fallback. Worker alone commits with trailers and story files, no push or Dragon native build/container.

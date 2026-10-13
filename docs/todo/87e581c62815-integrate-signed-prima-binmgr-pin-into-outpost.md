@@ -3,7 +3,7 @@ id: 87e581c62815
 kind: chore
 title: Integrate signed Prima binmgr pin into Outpost
 seq: 1896
-status: assigned
+status: done
 priority: p1
 created: 2026-10-13T15:21:59.008887Z
 weave: 22
@@ -11,6 +11,8 @@ assignee: codex-gpt6-astra
 sprint: 436
 sprint_id: 20ad6f7b-d3d3-5ebf-973c-0bbb999db96f
 sprint_title: 'Sphere regression recovery: p2p sharding + local inference back on, bashy-built engines'
+closed: 2026-10-13T16:28:24.49566Z
+closed_by: s436-codex-manager
 ---
 
 After Yoke commits real four-platform SHA pins and the final signed Prima 0.1.1 release version with independent Sigstore verification, bump Outpost Yoke module to the pushed commit and verify provision.go direct binmgr.EnsurePrima path remains fail-closed. Focused Go test/vet, no Dragon heavy build/container. Commit worker story file and code with trailers; no push. Manager integrates/pushes and bumps umbrella pin.
