@@ -2,7 +2,7 @@ module github.com/qiangli/outpost
 
 go 1.27
 
-toolchain go1.27.1
+toolchain go1.27.2
 
 require (
 	filippo.io/age v1.3.1
