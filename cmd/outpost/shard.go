@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -270,8 +271,7 @@ func (d *peerPlaneDiscoverer) peerPlatforms(ctx context.Context) map[string]stri
 // unit's explicit settings.ollama_url, the live ollama unit's target
 // (which itself honors that unit's settings.url / $OLLAMA_HOST), the host
 // daemon when it answers ($OLLAMA_HOST-aware), bashy's own engine, and
-// finally the host daemon URL regardless — so a pull attempt still targets
-// the operator's daemon when nothing answers. Never a hardcoded loopback:
+// finally an explicit $OLLAMA_HOST even when offline. No implicit 11434:
 // on a host whose daemon lives elsewhere the old literal pulled (and
 // inventoried) the wrong daemon or failed outright.
 func resolveShardOllamaURL(explicit string, ollamaTarget func() string) string {
@@ -290,10 +290,10 @@ func resolveShardOllamaURL(explicit string, ollamaTarget func() string) string {
 	if bu := ollama.BashyOllamaURL(); bu != "" {
 		return bu
 	}
-	if detected.URL != "" {
+	if strings.TrimSpace(os.Getenv("OLLAMA_HOST")) != "" && detected.URL != "" {
 		return detected.URL
 	}
-	return defaultOllamaURL
+	return ""
 }
 
 func newShardManager(fc *conf.FileConfig, ss shardSettings, meshHost *mesh.Host, peerSvc *peerplane.Service, rdv *mesh.Rendezvous, ollamaTarget func() string) (*shard.Manager, error) {

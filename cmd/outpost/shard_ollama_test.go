@@ -82,13 +82,21 @@ func TestResolveShardOllamaURLPreservesHostOverrideWhenNothingAnswers(t *testing
 	}
 }
 
-// With no override, no unit and no engines, the Ollama default remains —
-// the last resort, not the first.
-func TestResolveShardOllamaURLDefaultsToLoopback(t *testing.T) {
+// With no override, unit or stable engine, an implicit 11434 would silently
+// route to the wrong daemon. Provisioning must report the missing endpoint.
+func TestResolveShardOllamaURLWithoutEndpoint(t *testing.T) {
 	t.Setenv("OLLAMA_HOST", "")
 	t.Setenv("BASHY_OLLAMA_PORT", "0")
-	if got := resolveShardOllamaURL("", nil); got != defaultOllamaURL {
-		t.Errorf("got %q, want the default %q", got, defaultOllamaURL)
+	if got := resolveShardOllamaURL("", nil); got != "" {
+		t.Errorf("got %q, want no endpoint rather than an implicit 11434", got)
+	}
+}
+
+func TestEnsureModelWithoutEndpointReportsConfiguration(t *testing.T) {
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
+	_, err := ensureModel(context.Background(), "", "missing-model", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "no Ollama endpoint configured") {
+		t.Fatalf("ensureModel error = %v, want missing endpoint diagnostic", err)
 	}
 }
 

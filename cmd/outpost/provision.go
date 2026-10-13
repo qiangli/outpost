@@ -210,6 +210,9 @@ func ensureModel(ctx context.Context, ollamaURL, modelName string, fwd shard.For
 		}
 	}
 	// (c) pull from the ollama registry (the unchanged fallback).
+	if strings.TrimSpace(ollamaURL) == "" {
+		return "", fmt.Errorf("pull %q: no Ollama endpoint configured; enable or configure the ollama unit", modelName)
+	}
 	if err := ollamaPull(ctx, ollamaURL, modelName); err != nil {
 		return "", fmt.Errorf("pull %q: %w", modelName, err)
 	}
