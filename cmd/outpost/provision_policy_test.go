@@ -11,6 +11,7 @@ import (
 )
 
 func TestLegacyPrimaCacheCannotBypassSignedBuildGate(t *testing.T) {
+	isolatePrimaVerifier(t)
 	dir := t.TempDir()
 	for _, name := range []string{"llama-server", "llama-cli"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("old upstream binary"), 0o755); err != nil {
@@ -22,6 +23,6 @@ func TestLegacyPrimaCacheCannotBypassSignedBuildGate(t *testing.T) {
 	}
 	bins := shard.ServeBins{ServerBin: filepath.Join(dir, "llama-server"), WorkerBin: filepath.Join(dir, "llama-cli")}
 	if err := ensureBinaries(context.Background(), bins); err == nil || !strings.Contains(err.Error(), "bashy-built, signed") {
-		t.Fatalf("legacy cache must be refused until a signed release is admitted, got %v", err)
+		t.Fatalf("legacy cache must not bypass signature refusal, got %v", err)
 	}
 }

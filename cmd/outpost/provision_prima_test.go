@@ -20,22 +20,47 @@ func (r *primaRejectTransport) RoundTrip(*http.Request) (*http.Response, error) 
 	return nil, errors.New("unexpected network access")
 }
 
-// Exercise the real shared verifier: its refusal must survive the Outpost
-// wrapper and happen before network, cache creation, or role installation.
-func TestEnsureBinariesUsesPrimaVerifier(t *testing.T) {
-	cache := filepath.Join(t.TempDir(), "cache")
-	t.Setenv("BASHY_BIN_CACHE", cache)
+// isolatePrimaVerifier prevents these tests from consulting the host's cache or
+// downloading a real release. A supported platform has real pins, but this
+// unsigned cache entry must still be rejected by the production verifier.
+func isolatePrimaVerifier(t *testing.T) *primaRejectTransport {
+	t.Helper()
+	t.Setenv("BASHY_BIN_CACHE", t.TempDir())
+	t.Setenv("BASHY_OFFLINE", "0")
 	transport := &primaRejectTransport{}
-	old := http.DefaultTransport
-	http.DefaultTransport = transport
-	t.Cleanup(func() { http.DefaultTransport = old })
+	old := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: transport}
+	t.Cleanup(func() { http.DefaultClient = old })
+	if _, supported := binmgr.PrimaTool().Assets[binmgr.Platform()]; supported {
+		path, err := binmgr.InstallPath(binmgr.PrimaTool())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("unsigned cached prima"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return transport
+}
+
+// Exercise the real shared verifier: its refusal must survive the Outpost
+// wrapper and happen before network or role installation, even with real pins.
+func TestEnsureBinariesUsesPrimaVerifier(t *testing.T) {
+	transport := isolatePrimaVerifier(t)
 	ctx := context.Background()
 	verified, want := binmgr.EnsurePrima(ctx)
 	if want == nil || verified != "" {
-		t.Fatalf("unadmitted Prima must refuse: path=%q err=%v", verified, want)
+		t.Fatalf("unsigned Prima must refuse: path=%q err=%v", verified, want)
 	}
-	if !strings.Contains(want.Error(), "no committed sha256") && !strings.Contains(want.Error(), "no asset for") {
-		t.Fatalf("expected admission refusal, got %v", want)
+	if _, supported := binmgr.PrimaTool().Assets[binmgr.Platform()]; supported {
+		if !errors.Is(want, binmgr.ErrSigstore) {
+			t.Fatalf("expected signature refusal, got %v", want)
+		}
+	} else if !strings.Contains(want.Error(), "no asset for") {
+		t.Fatalf("expected unsupported platform refusal, got %v", want)
 	}
 	dir := t.TempDir()
 	bins := shard.ServeBins{ServerBin: filepath.Join(dir, "server"), WorkerBin: filepath.Join(dir, "worker")}
@@ -44,11 +69,38 @@ func TestEnsureBinariesUsesPrimaVerifier(t *testing.T) {
 		t.Fatalf("expected wrapped EnsurePrima error %v, got %v", want, got)
 	}
 	if transport.calls != 0 {
-		t.Fatalf("made %d network requests before admission", transport.calls)
+		t.Fatalf("made %d network requests for an unsigned cache entry", transport.calls)
 	}
-	for _, path := range []string{cache, bins.ServerBin, bins.WorkerBin} {
+	for _, path := range []string{bins.ServerBin, bins.WorkerBin} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("refusal touched %s: %v", path, err)
+		}
+	}
+}
+
+func TestEnsureBinariesDownloadFailureDoesNotInstall(t *testing.T) {
+	transport := isolatePrimaVerifier(t)
+	if _, supported := binmgr.PrimaTool().Assets[binmgr.Platform()]; !supported {
+		t.Skip("Prima has no release for this platform")
+	}
+	cached, err := binmgr.InstallPath(binmgr.PrimaTool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(cached); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	bins := shard.ServeBins{ServerBin: filepath.Join(dir, "server"), WorkerBin: filepath.Join(dir, "worker")}
+	if err := ensureBinaries(context.Background(), bins); err == nil || !strings.Contains(err.Error(), "unexpected network access") {
+		t.Fatalf("expected download refusal, got %v", err)
+	}
+	if transport.calls != 1 {
+		t.Fatalf("expected one intercepted download, got %d", transport.calls)
+	}
+	for _, path := range []string{cached, bins.ServerBin, bins.WorkerBin} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("failed download installed %s: %v", path, err)
 		}
 	}
 }
@@ -57,6 +109,7 @@ func TestEnsureBinariesUsesPrimaVerifier(t *testing.T) {
 // VERSION marker) and must never fall back to a $PATH executable: no legacy
 // cache, PATH, upstream release, or ad-hoc codesign consults the gate.
 func TestEnsureBinariesRefusesLegacyCacheAndPATH(t *testing.T) {
+	isolatePrimaVerifier(t)
 	dir := t.TempDir()
 	for _, name := range []string{"llama-server", "llama-cli"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("old upstream binary"), 0o755); err != nil {
@@ -75,7 +128,6 @@ func TestEnsureBinariesRefusesLegacyCacheAndPATH(t *testing.T) {
 	}
 	marker := filepath.Join(t.TempDir(), "invoked")
 	t.Setenv("PRIMA_DECOY_MARKER", marker)
-	t.Setenv("BASHY_BIN_CACHE", t.TempDir())
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	before, err := os.ReadDir(dir)
@@ -84,7 +136,7 @@ func TestEnsureBinariesRefusesLegacyCacheAndPATH(t *testing.T) {
 	}
 	bins := shard.ServeBins{ServerBin: filepath.Join(dir, "llama-server"), WorkerBin: filepath.Join(dir, "llama-cli")}
 	if err := ensureBinaries(context.Background(), bins); err == nil || !strings.Contains(err.Error(), "bashy-built, signed") {
-		t.Fatalf("legacy cache and PATH must be refused until a signed release is admitted, got %v", err)
+		t.Fatalf("legacy cache and PATH must not bypass signature refusal, got %v", err)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("fallback executable invoked: %v", err)
@@ -162,13 +214,17 @@ func TestInstallVerifiedPrimaRequiresBothRoles(t *testing.T) {
 // The shard gate runs before any model work: provisioning fails closed on the
 // binaries with no Ollama endpoint and no model available.
 func TestProvisionShardGatePrecedesModel(t *testing.T) {
+	transport := isolatePrimaVerifier(t)
 	dir := t.TempDir()
 	bins := shard.ServeBins{
 		ServerBin: filepath.Join(dir, "llama-server"),
 		WorkerBin: filepath.Join(dir, "llama-cli"),
 	}
 	_, err := provisionShard(context.Background(), bins, "", "llama3.3:70b", nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "binaries:") {
+	if err == nil || !strings.Contains(err.Error(), "binaries:") || !strings.Contains(err.Error(), "prima engine unavailable") {
 		t.Fatalf("provisioning must fail at the binaries gate, got %v", err)
+	}
+	if transport.calls != 0 {
+		t.Fatalf("provisioning made %d network requests after cache refusal", transport.calls)
 	}
 }
