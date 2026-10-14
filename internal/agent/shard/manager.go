@@ -16,10 +16,29 @@ import (
 	"github.com/qiangli/outpost/internal/agent/brain"
 )
 
-// readinessDeadline bounds how long a leader waits for its ring to become
-// serveable before tearing the stuck shard down — freeing the serving port a
-// never-joining worker would otherwise zombie at "503 Loading model".
+// readinessDeadline is the default base of the leader's readiness wait: how
+// long it waits for its ring to become serveable before tearing the stuck
+// shard down — freeing the serving port a never-joining worker would
+// otherwise zombie at "503 Loading model". A cold worker still pulling +
+// loading the model gets longer (see readinessTimeoutFor), and observed
+// pull/load progress extends the wait instead of timing out silently.
 const readinessDeadline = 3 * time.Minute
+
+const (
+	// readinessMaxDefault caps the total readiness wait including every
+	// progress-based extension. A cold pull + load of a tens-of-GB model
+	// on a slow link can legitimately take many minutes; the cap keeps a
+	// truly wedged ring from waiting forever.
+	readinessMaxDefault = 30 * time.Minute
+	// minPullLoadBytesPerSec is the conservative pull+load rate the
+	// size-derived bound assumes: a model of B bytes earns an extra
+	// B/minPullLoadBytesPerSec atop the base wait. Slower than any healthy
+	// link, so a cold worker finishes inside the bound instead of racing it.
+	minPullLoadBytesPerSec = 5 << 20 // 5 MiB/s
+	// readinessProgressCap bounds how much of the observed progress text a
+	// readiness log line carries.
+	readinessProgressCap = 500
+)
 
 // ShardPeer identifies a shard-ring participant on the mesh: a hostname label
 // plus its libp2p peer id (what the forwarder dials).
@@ -66,6 +85,19 @@ type ManagerConfig struct {
 	// LogDir, when set, is where each rank's prima stdout+stderr is captured
 	// (<LogDir>/prima-rank<N>.log) — the exit reason when a shard process dies.
 	LogDir string
+	// ReadinessBase is the base readiness wait before size-derived extra and
+	// progress extensions (0 → readinessDeadline, 3 minutes).
+	ReadinessBase time.Duration
+	// ReadinessMax caps the TOTAL readiness wait including every
+	// progress-based extension (0 → 30 minutes). It always covers at least
+	// the size-derived bound, so a huge model is not capped below its pull.
+	ReadinessMax time.Duration
+	// ReadinessPoll is the readiness probe cadence (0 → 5 seconds).
+	ReadinessPoll time.Duration
+	// ModelBytes reports the on-disk (or registry) byte size of a model for
+	// the size-derived pull+load bound. nil → the base wait only. The daemon
+	// wires this to the local GGUF size; unknown models get no extra.
+	ModelBytes func(model string) (uint64, bool)
 }
 
 // Manager keeps a current candidate shard Ring up to date: it periodically
@@ -110,6 +142,17 @@ type Manager struct {
 	refiner brain.Refiner
 	// logDir is where each rank's prima output is captured (empty → discarded).
 	logDir string
+	// readinessBase/Max/Poll bound the leader's readiness wait (see
+	// ManagerConfig); modelBytes sizes the pull+load extra.
+	readinessBase time.Duration
+	readinessMax  time.Duration
+	readinessPoll time.Duration
+	modelBytes    func(model string) (uint64, bool)
+	// healthy probes the served endpoint (default primaHealthy); progress
+	// reports observed pull/load progress (default: this node's prima log
+	// tail). Injectable so the watchdog is unit-testable without a live ring.
+	healthy  func(url string) bool
+	progress func() string
 
 	mu          sync.Mutex
 	ring        *Ring
@@ -160,7 +203,49 @@ func NewManager(cfg ManagerConfig) *Manager {
 	m.provisionPoll = 2 * time.Second
 	m.refiner = cfg.Refiner
 	m.logDir = cfg.LogDir
+	m.readinessBase = cfg.ReadinessBase
+	if m.readinessBase <= 0 {
+		m.readinessBase = readinessDeadline
+	}
+	m.readinessMax = cfg.ReadinessMax
+	if m.readinessMax <= 0 {
+		m.readinessMax = readinessMaxDefault
+	}
+	m.readinessPoll = cfg.ReadinessPoll
+	if m.readinessPoll <= 0 {
+		m.readinessPoll = 5 * time.Second
+	}
+	m.modelBytes = cfg.ModelBytes
+	m.healthy = primaHealthy
+	m.progress = func() string { return m.RecentPrimaLogs(1) }
 	return m
+}
+
+// readinessTimeoutFor sizes the leader's readiness wait so it COVERS a cold
+// worker's pull+load instead of racing it: the configured base plus one
+// second per minPullLoadBytesPerSec of the model's byte size (unknown size →
+// base only), capped at the configured max — and the max itself never drops
+// below the size-derived bound.
+func (m *Manager) readinessTimeoutFor(model string) time.Duration {
+	bound := m.readinessBase
+	if m.modelBytes != nil {
+		if n, ok := m.modelBytes(model); ok {
+			bound += time.Duration(n/minPullLoadBytesPerSec) * time.Second
+		}
+	}
+	if max := m.readinessMax; bound > max && max > m.readinessBase {
+		bound = max
+	}
+	return bound
+}
+
+// truncateProgress keeps a readiness log line to the informative tail.
+func truncateProgress(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) > readinessProgressCap {
+		s = "…" + s[len(s)-readinessProgressCap:]
+	}
+	return s
 }
 
 // Run refreshes the candidate ring immediately, then on every interval, until
@@ -261,6 +346,16 @@ func (m *Manager) Ring() *Ring {
 // served model lets the pool advertise it (ActiveModel). Forming again replaces
 // the previous shard.
 func (m *Manager) Form(ctx context.Context, ring *Ring, myRank int, sc ServeConfig) error {
+	// Reap this outpost's own orphaned prima first (tracked PIDs only): a
+	// stuck rank from a previous form holds the data ports AND — on Windows —
+	// a lock on the binary, which would wedge both the re-fetch's replace
+	// and the fresh bind. Killing before provisioning releases both.
+	if killed := KillTrackedPrima(sc.ServerBin); len(killed) > 0 {
+		m.log.Info("shard: reaped orphaned prima before re-provision", "bin", sc.ServerBin, "pids", killed)
+	}
+	if killed := KillTrackedPrima(sc.WorkerBin); len(killed) > 0 {
+		m.log.Info("shard: reaped orphaned prima before re-provision", "bin", sc.WorkerBin, "pids", killed)
+	}
 	gguf, err := m.provision(ctx, sc.Model)
 	if err != nil {
 		return fmt.Errorf("shard: provision %q: %w", sc.Model, err)
@@ -322,6 +417,10 @@ func (m *Manager) primaLog(rank int) io.WriteCloser {
 // shard that left activeModel set is what made a re-trigger a no-op.
 func (m *Manager) watchSession(sess *Session, model string, logw io.Closer) {
 	err := sess.Wait()
+	// The process exited on its own: forget its PID so a later teardown can
+	// never signal the recycled number (Session.Stop does the same after a
+	// kill; this covers the exit-without-Stop path).
+	UntrackPrimaProc(sess.Pid())
 	if logw != nil {
 		logw.Close()
 	}
@@ -388,27 +487,55 @@ func (m *Manager) RecentPrimaLogs(maxLines int) string {
 }
 
 // monitorRing is the leader's readiness watchdog (spawned by Orchestrate after
-// rank 0 forms). It polls the served OpenAI /health every 5s until it returns
-// 200 (ring ready → serving) or readinessDeadline passes. On timeout it pulls
-// each worker's prima log over the mesh — so the worker's error lands in THIS
-// (leader) node's log — and tears the stuck shard down (Stop frees the ports +
-// clears state), instead of zombie-ing the serving port forever.
+// rank 0 forms). It polls the served OpenAI /health until it returns 200
+// (ring ready → serving) or the wait expires. The wait COVERS a cold worker's
+// pull+load: it starts at the size-derived bound (base + model bytes at a
+// conservative rate), and every poll that observes NEW progress re-grants the
+// bound from now (up to the hard cap) and logs what moved — so a slow pull
+// reports progress instead of timing out silently, while a truly wedged ring
+// (no progress anywhere) still tears down. On timeout it pulls each worker's
+// prima log over the mesh — so the worker's error lands in THIS (leader)
+// node's log — and tears the stuck shard down (Stop frees the ports + clears
+// state), instead of zombie-ing the serving port forever.
 func (m *Manager) monitorRing(ring *Ring, model string, apiPort int) {
 	healthURL := fmt.Sprintf("http://%s:%d/health", loopback, apiPort)
-	deadline := time.Now().Add(readinessDeadline)
-	t := time.NewTicker(5 * time.Second)
+	window := m.readinessTimeoutFor(model)
+	hardCap := window
+	if m.readinessMax > hardCap {
+		hardCap = m.readinessMax
+	}
+	start := time.Now()
+	deadline := start.Add(window)
+	cap := start.Add(hardCap)
+	m.log.Info("shard: waiting for ring readiness", "model", model, "members", len(ring.Members), "wait", window.Round(time.Second))
+	t := time.NewTicker(m.readinessPoll)
 	defer t.Stop()
+	lastProgress := ""
 	for {
 		<-t.C
-		if primaHealthy(healthURL) {
-			m.log.Info("shard: ring ready — serving", "model", model, "members", len(ring.Members))
+		if m.healthy(healthURL) {
+			m.log.Info("shard: ring ready — serving", "model", model, "members", len(ring.Members), "after", time.Since(start).Round(time.Second))
 			return
+		}
+		if prog := truncateProgress(m.progress()); prog != "" && prog != lastProgress {
+			lastProgress = prog
+			// Progress observed (pull advancing, loader logging): the ring
+			// is working, not wedged — re-grant the window from now.
+			if ext := time.Now().Add(window); ext.After(deadline) {
+				deadline = ext
+				if deadline.After(cap) {
+					deadline = cap
+				}
+			}
+			m.log.Info("shard: ring still loading — progress observed, wait extended",
+				"model", model, "progress", prog, "deadline_in", time.Until(deadline).Round(time.Second))
 		}
 		if time.Now().After(deadline) {
 			break
 		}
 	}
-	m.log.Warn("shard: ring not ready, tearing down stuck shard", "model", model, "after", readinessDeadline)
+	m.log.Warn("shard: ring not ready, tearing down stuck shard",
+		"model", model, "waited", time.Since(start).Round(time.Second), "last_progress", truncateProgress(lastProgress))
 	for _, member := range ring.Members {
 		if member.Rank == 0 {
 			continue // the leader itself
@@ -450,7 +577,10 @@ func (m *Manager) noteExit(model, detail string) {
 	m.mu.Unlock()
 }
 
-// Stop tears down the active shard on this node (if any).
+// Stop tears down the active shard on this node (if any) — and reaps any of
+// this outpost's prima processes that outlived their session (tracked PIDs
+// only), so a stuck Windows rank that wedged provisioning cannot survive
+// teardown holding the binary lock. Never a pattern scan.
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	sess := m.active
@@ -460,6 +590,8 @@ func (m *Manager) Stop() {
 	if sess != nil {
 		sess.Stop()
 	}
+	KillTrackedPrima(m.bins.ServerBin)
+	KillTrackedPrima(m.bins.WorkerBin)
 }
 
 // ActiveModel returns the model this node is currently serving via a shard, or

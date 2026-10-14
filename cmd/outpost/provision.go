@@ -7,10 +7,8 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -22,36 +20,18 @@ import (
 // provisionShard checks the signed prima engine gate before touching a local
 // process or pulling a model. A legacy on-disk binary cannot bypass that gate.
 func provisionShard(ctx context.Context, bins shard.ServeBins, ollamaURL, modelName string, fwd shard.Forwarder, peers shard.PeerDiscoverer) (string, error) {
+	// Reap this outpost's own orphaned prima BEFORE the re-fetch. The async
+	// launch detaches prima from the daemon ctx, so a torn-down or restarted
+	// form can leave a worker/leader running — it holds the data ports AND,
+	// on Windows, a lock on the binary, which wedges both the re-fetch's
+	// replace and a fresh bind ("Address in use" / last_exit file lock).
+	// Tracked PIDs only — never a pattern scan — on every platform.
+	shard.KillTrackedPrima(bins.ServerBin)
+	shard.KillTrackedPrima(bins.WorkerBin)
 	if err := ensureBinaries(ctx, bins); err != nil {
 		return "", fmt.Errorf("binaries: %w", err)
 	}
-	killStalePrima(bins.ServerBin)
-	killStalePrima(bins.WorkerBin)
 	return ensureModel(ctx, ollamaURL, modelName, fwd, peers)
-}
-
-// killStalePrima SIGKILLs any process whose command line contains exactly this
-// prima binary path — an orphan from a prior form. Unix-only (pgrep); a no-op on
-// Windows and when nothing matches. It only ever targets the shard's own compute
-// children (the prima binary by exact path), never the outpost daemon.
-func killStalePrima(binPath string) {
-	if binPath == "" || runtime.GOOS == "windows" {
-		return
-	}
-	out, err := exec.Command("pgrep", "-f", binPath).Output()
-	if err != nil {
-		return // pgrep exits non-zero when nothing matches
-	}
-	self := os.Getpid()
-	for _, f := range strings.Fields(string(out)) {
-		pid, err := strconv.Atoi(f)
-		if err != nil || pid == self {
-			continue
-		}
-		if p, e := os.FindProcess(pid); e == nil {
-			_ = p.Kill()
-		}
-	}
 }
 
 // Activation, peer provisioning and a local form can arrive together. Keep
@@ -100,6 +80,16 @@ func installVerifiedPrima(server, worker string, bins shard.ServeBins) error {
 	return installVerifiedPrimaWithCleanup(server, worker, bins, stopStalePrimaForInstall)
 }
 
+// stopStalePrimaForInstall reaps the exact orphaned prima processes this
+// outpost started from binPath (tracked PIDs only — never a pattern scan).
+// It runs before either role destination is touched, so a stuck rank holding
+// the binary lock cannot wedge the install. Always succeeds: entries are
+// forgotten even when the PID is already gone.
+func stopStalePrimaForInstall(binPath string) error {
+	shard.KillTrackedPrima(binPath)
+	return nil
+}
+
 func installVerifiedPrimaWithCleanup(server, worker string, bins shard.ServeBins, stop func(string) error) error {
 	if strings.TrimSpace(server) == "" || strings.TrimSpace(worker) == "" {
 		return fmt.Errorf("prima engine unavailable: no admitted bashy-built, signed release (empty verified path)")
@@ -121,22 +111,73 @@ func installVerifiedPrimaWithCleanup(server, worker string, bins shard.ServeBins
 		}
 		roles[i].data = data
 	}
-	// On Windows a running executable cannot be opened for overwrite. A prior
-	// daemon may have left a rank alive, so stop only processes whose image is
-	// exactly one of these role paths before touching either destination. A
-	// failed identity check or termination refuses the whole installation.
+	// A running executable cannot be opened for overwrite on Windows, and a
+	// prior daemon may have left a rank alive holding the lock. Reap this
+	// outpost's own orphaned prima (tracked PIDs only — never a pattern
+	// scan) before touching either destination. A refused cleanup leaves
+	// both old role files intact.
 	for _, role := range roles {
 		if err := stop(role.dst); err != nil {
 			return fmt.Errorf("prima install %s: stale process cleanup: %w", role.dst, err)
 		}
 	}
+	// Rename-then-replace, never write-through: the install never writes
+	// through a live file lock, on any platform.
 	for _, role := range roles {
-		if err := os.MkdirAll(filepath.Dir(role.dst), 0o755); err != nil {
-			return fmt.Errorf("prima install %s: %w", role.dst, err)
+		if err := installFile(role.dst, role.data, 0o755); err != nil {
+			return err
 		}
-		if err := os.WriteFile(role.dst, role.data, 0o755); err != nil {
-			return fmt.Errorf("prima install %s: %w", role.dst, err)
+	}
+	return nil
+}
+
+// installFile places data at dst without ever writing through a live file
+// lock: bytes go to a temp file in the same directory, any live dst is
+// renamed aside (a running image CAN be renamed — the loader opens it
+// share-delete — even where it cannot be overwritten, which is exactly the
+// stuck-Windows-prima wedge), the temp is renamed onto dst, and the aside
+// backup is removed best-effort. A failed final rename rolls the old binary
+// back. Uniform on every platform, so the Windows path is the tested path.
+func installFile(dst string, data []byte, perm os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("prima install %s: %w", dst, err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".prima-install-*")
+	if err != nil {
+		return fmt.Errorf("prima install %s: %w", dst, err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("prima install %s: %w", dst, err)
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("prima install %s: %w", dst, err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("prima install %s: %w", dst, err)
+	}
+	backup := ""
+	if _, err := os.Stat(dst); err == nil {
+		backup = dst + ".stale"
+		_ = os.Remove(backup) // best-effort clear of a previous backup
+		if err := os.Rename(dst, backup); err != nil {
+			_ = os.Remove(tmpName)
+			return fmt.Errorf("prima install %s: %w", dst, err)
 		}
+	}
+	if err := os.Rename(tmpName, dst); err != nil {
+		if backup != "" {
+			_ = os.Rename(backup, dst) // roll the old binary back
+		}
+		return fmt.Errorf("prima install %s: %w", dst, err)
+	}
+	if backup != "" {
+		_ = os.Remove(backup) // best-effort; a stale aside is harmless
 	}
 	return nil
 }
@@ -161,11 +202,10 @@ func installVerifiedLibOMP(dll string, bins shard.ServeBins) error {
 		}
 		seen[dir] = true
 		dst := filepath.Join(dir, binmgr.PrimaLibOMPFile)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("prima install %s: %w", dst, err)
-		}
-		if err := os.WriteFile(dst, data, 0o644); err != nil {
-			return fmt.Errorf("prima install %s: %w", dst, err)
+		// Same rename-then-replace as the executables: a loaded DLL is
+		// locked against overwrite on Windows too.
+		if err := installFile(dst, data, 0o644); err != nil {
+			return err
 		}
 	}
 	return nil

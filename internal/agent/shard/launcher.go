@@ -52,12 +52,17 @@ func (p *HostPlan) LaunchConfigFor(sc ServeConfig) LaunchConfig {
 // the mesh wiring it rides, torn down together by Stop.
 type Session struct {
 	cmd         *exec.Cmd
+	pid         int    // prima PID at launch (0 when unknown) — the tracked identity
+	binPath     string // prima binary path it was launched from
 	cleanup     func()
 	done        chan struct{}
 	waitErr     error
 	stopOnce    sync.Once
 	cleanupOnce sync.Once
 }
+
+// Pid returns the prima process ID captured at launch (0 when unknown).
+func (s *Session) Pid() int { return s.pid }
 
 // Start wires this host's plan into the mesh forwarder, then launches prima
 // against the local loopback ports that wiring owns (prima's --master/--next are
@@ -89,6 +94,14 @@ func Start(ctx context.Context, f Forwarder, plan *HostPlan, cfg LaunchConfig) (
 	}
 
 	s := &Session{cmd: cmd, cleanup: cleanup, done: make(chan struct{})}
+	if cmd.Process != nil {
+		// Track the exact PID this outpost started: a stuck rank that
+		// outlives its session (or the manager) is reaped by PID from this
+		// registry on re-provision and teardown — never by pattern.
+		s.pid = cmd.Process.Pid
+		s.binPath = cfg.BinaryPath
+		TrackPrimaProc(s.pid, s.binPath)
+	}
 	go func() {
 		s.waitErr = cmd.Wait()
 		close(s.done)
@@ -123,5 +136,8 @@ func (s *Session) Stop() {
 		}
 	})
 	<-s.done
+	// The process is reaped: forget its PID so a later teardown can never
+	// signal the recycled number.
+	UntrackPrimaProc(s.pid)
 	s.cleanupOnce.Do(s.cleanup)
 }

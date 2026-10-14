@@ -391,7 +391,21 @@ func newShardManager(fc *conf.FileConfig, ss shardSettings, meshHost *mesh.Host,
 		Forwarder: meshHost.Forwarder(),
 		Peers:     disc,
 		Bins:      bins,
-		LogDir:    filepath.Dir(bins.ServerBin), // prima stdout+stderr → <prima dir>/prima-rank<N>.log
+		ModelBytes: func(model string) (uint64, bool) {
+			// Size the readiness pull+load bound from the model's GGUF:
+			// present on disk → its bytes; absent → the pull will fetch it,
+			// and the registry size is unknown, so no extra (base only).
+			path, err := resolveGGUF(model)
+			if err != nil {
+				return 0, false
+			}
+			fi, err := os.Stat(path)
+			if err != nil {
+				return 0, false
+			}
+			return uint64(fi.Size()), true
+		},
+		LogDir: filepath.Dir(bins.ServerBin), // prima stdout+stderr → <prima dir>/prima-rank<N>.log
 		Provision: func(ctx context.Context, name string) (string, error) {
 			// Tier-(b) of ensureModel: fetch a missing model's GGUF from a same-LAN
 			// mesh peer over the forwarder before falling back to an ollama pull.

@@ -185,7 +185,8 @@ func (m *Manager) Orchestrate(ctx context.Context, model string, apiPort int, ex
 	})
 	if err == nil {
 		// Leader formed: watch the ring become serveable, and if no worker joins
-		// before readinessDeadline, capture each worker's prima log here and tear
+		// before the readiness wait expires (size-derived pull+load bound plus
+		// progress extensions), capture each worker's prima log here and tear
 		// the stuck shard down — so a never-joining worker can't zombie the port.
 		go m.monitorRing(ring, model, apiPort)
 	}
