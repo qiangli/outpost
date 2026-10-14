@@ -201,6 +201,65 @@ func TestInstallVerifiedPrimaWiresBothRoles(t *testing.T) {
 	}
 }
 
+// Simulate Windows' sharing violation: the old role file remains locked until
+// cleanup runs. A refused cleanup must leave both old role files intact.
+func TestInstallVerifiedPrimaClearsStaleLockBeforeWriting(t *testing.T) {
+	dir := t.TempDir()
+	server := filepath.Join(dir, "verified-server")
+	worker := filepath.Join(dir, "verified-worker")
+	bins := shard.ServeBins{
+		ServerBin: filepath.Join(dir, "roles", "server.exe"),
+		WorkerBin: filepath.Join(dir, "roles", "worker.exe"),
+	}
+	if err := os.MkdirAll(filepath.Dir(bins.ServerBin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{server, worker} {
+		if err := os.WriteFile(path, []byte("verified"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, path := range []string{bins.ServerBin, bins.WorkerBin} {
+		if err := os.WriteFile(path, []byte("old"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	locked := map[string]bool{bins.ServerBin: true, bins.WorkerBin: true}
+	cleanup := func(path string) error {
+		if _, ok := locked[path]; !ok {
+			t.Fatalf("unexpected cleanup path %s", path)
+		}
+		locked[path] = false
+		return nil
+	}
+	if err := installVerifiedPrimaWithCleanup(server, worker, bins, func(path string) error {
+		if path == bins.WorkerBin {
+			return errors.New("sharing violation")
+		}
+		return cleanup(path)
+	}); err == nil || !strings.Contains(err.Error(), "sharing violation") {
+		t.Fatalf("expected stale lock refusal, got %v", err)
+	}
+	for _, path := range []string{bins.ServerBin, bins.WorkerBin} {
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != "old" {
+			t.Fatalf("failed cleanup changed %s: %q, %v", path, got, err)
+		}
+	}
+	if err := installVerifiedPrimaWithCleanup(server, worker, bins, cleanup); err != nil {
+		t.Fatalf("install after stale rank cleanup: %v", err)
+	}
+	for _, path := range []string{bins.ServerBin, bins.WorkerBin} {
+		if locked[path] {
+			t.Fatalf("%s was not unlocked", path)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != "verified" {
+			t.Fatalf("installed %s: %q, %v", path, got, err)
+		}
+	}
+}
+
 func TestInstallVerifiedPrimaRequiresBothRoles(t *testing.T) {
 	dir := t.TempDir()
 	server := filepath.Join(dir, "verified-prima-server")
