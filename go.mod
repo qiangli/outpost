@@ -21,7 +21,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/pkg/sftp v1.13.10
-	github.com/qiangli/yoke v0.0.0-20261014085036-9d08a1bef6be
+	github.com/qiangli/yoke v0.0.0-20261014151034-4094fdf0ff26
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.53.0
 	github.com/spf13/cobra v1.10.2
@@ -212,7 +212,7 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
-	github.com/qiangli/coreutils v0.0.0-20261013004930-226a73d9a214 // indirect
+	github.com/qiangli/coreutils v0.0.0-20261013041512-6c4cf31f268c // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.1 // indirect
 	github.com/quic-go/webtransport-go v0.10.0 // indirect
@@ -292,7 +292,7 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 v3.0.0-20261013004909-8f2dec0915fb
+replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 v3.0.0-20261014083225-477b218e535d
 
 replace github.com/filebrowser/filebrowser/v2 => github.com/qiangli/filebrowser/v2 v2.0.0-20261013004903-9c7b5c8e3d09
 
