@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/qiangli/yoke/pkg/binmgr"
 
@@ -21,12 +22,6 @@ import (
 // provisionShard checks the signed prima engine gate before touching a local
 // process or pulling a model. A legacy on-disk binary cannot bypass that gate.
 func provisionShard(ctx context.Context, bins shard.ServeBins, ollamaURL, modelName string, fwd shard.Forwarder, peers shard.PeerDiscoverer) (string, error) {
-	// Kill any orphaned prima from a previous form before re-provisioning. The
-	// async launch detaches prima from the daemon ctx, so a torn-down or
-	// restarted form can leave a worker/leader running — it holds the data ports
-	// AND the binary inode, which blocks both the re-fetch's overwrite and a
-	// fresh bind ("Address in use"). Targeted: only this shard's own prima
-	// binaries by exact path, never the daemon, never a loose pattern.
 	if err := ensureBinaries(ctx, bins); err != nil {
 		return "", fmt.Errorf("binaries: %w", err)
 	}
@@ -59,6 +54,11 @@ func killStalePrima(binPath string) {
 	}
 }
 
+// Activation, peer provisioning and a local form can arrive together. Keep
+// their cleanup and installation in one critical section so two provisioning
+// calls cannot race while replacing the same role paths.
+var primaInstallMu sync.Mutex
+
 // ensureBinaries delegates release policy and verification to Yoke. Missing
 // committed pins or invalid signatures fail closed, including on cache hits.
 // Only verified paths may supply the leader and worker executables: the
@@ -66,6 +66,8 @@ func killStalePrima(binPath string) {
 // EnsurePrimaServer — no download, no ad-hoc signing, no fallback. Windows
 // additionally provisions the signed OpenMP runtime beside the executables.
 func ensureBinaries(ctx context.Context, bins shard.ServeBins) error {
+	primaInstallMu.Lock()
+	defer primaInstallMu.Unlock()
 	platform := runtime.GOOS + "/" + runtime.GOARCH
 	worker, err := binmgr.EnsurePrima(ctx)
 	if err != nil {
@@ -95,24 +97,44 @@ func ensureBinaries(ctx context.Context, bins shard.ServeBins) error {
 // ships a distinct CLI and server per platform, so each role runs its own
 // verified bytes; each role path is still required and written explicitly.
 func installVerifiedPrima(server, worker string, bins shard.ServeBins) error {
+	return installVerifiedPrimaWithCleanup(server, worker, bins, stopStalePrimaForInstall)
+}
+
+func installVerifiedPrimaWithCleanup(server, worker string, bins shard.ServeBins, stop func(string) error) error {
 	if strings.TrimSpace(server) == "" || strings.TrimSpace(worker) == "" {
 		return fmt.Errorf("prima engine unavailable: no admitted bashy-built, signed release (empty verified path)")
 	}
 	if strings.TrimSpace(bins.ServerBin) == "" || strings.TrimSpace(bins.WorkerBin) == "" {
 		return fmt.Errorf("prima engine unavailable: no admitted bashy-built, signed release (shard server/worker role paths are required)")
 	}
-	for _, role := range []struct{ verified, dst string }{
-		{server, bins.ServerBin},
-		{worker, bins.WorkerBin},
-	} {
-		data, err := os.ReadFile(role.verified)
+	roles := []struct {
+		verified, dst string
+		data          []byte
+	}{
+		{verified: server, dst: bins.ServerBin},
+		{verified: worker, dst: bins.WorkerBin},
+	}
+	for i := range roles {
+		data, err := os.ReadFile(roles[i].verified)
 		if err != nil {
 			return fmt.Errorf("prima engine unavailable: no admitted bashy-built, signed release: %w", err)
 		}
+		roles[i].data = data
+	}
+	// On Windows a running executable cannot be opened for overwrite. A prior
+	// daemon may have left a rank alive, so stop only processes whose image is
+	// exactly one of these role paths before touching either destination. A
+	// failed identity check or termination refuses the whole installation.
+	for _, role := range roles {
+		if err := stop(role.dst); err != nil {
+			return fmt.Errorf("prima install %s: stale process cleanup: %w", role.dst, err)
+		}
+	}
+	for _, role := range roles {
 		if err := os.MkdirAll(filepath.Dir(role.dst), 0o755); err != nil {
 			return fmt.Errorf("prima install %s: %w", role.dst, err)
 		}
-		if err := os.WriteFile(role.dst, data, 0o755); err != nil {
+		if err := os.WriteFile(role.dst, role.data, 0o755); err != nil {
 			return fmt.Errorf("prima install %s: %w", role.dst, err)
 		}
 	}
