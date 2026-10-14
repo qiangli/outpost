@@ -52,6 +52,14 @@ type ManagerConfig struct {
 	// fetching them with no human staging, and returns the GGUF path prima loads.
 	// nil → identity (model name used as-is; for tests + already-staged hosts).
 	Provision func(ctx context.Context, modelName string) (string, error)
+	// EnsureBins lands this node's signed prima engine binaries at the role
+	// paths (Bins) — the daemon wires this to the binmgr-verified fetch, which
+	// fails closed on a bad signature. nil → no-op (tests + already-staged
+	// hosts). Run backgrounds it at activation and the leader drives it over
+	// the mesh (/provision) before the readiness filter, so a fresh host can
+	// form on first trigger instead of being gated forever on binaries that
+	// only a form would have provisioned.
+	EnsureBins func(ctx context.Context) error
 	// Refiner, when set, lets the pooled LLM (the brain) refine the leader
 	// election. nil → the deterministic bootstrap (most-VRAM) stands.
 	Refiner brain.Refiner
@@ -91,6 +99,13 @@ type Manager struct {
 	// provision fetches the model (+ binaries) and returns the GGUF path (default
 	// identity); self-provisioning is what removes human staging.
 	provision func(ctx context.Context, modelName string) (string, error)
+	// ensureBins lands the signed engine binaries at the role paths (default
+	// no-op); activation + the pre-filter peer round drive it.
+	ensureBins func(ctx context.Context) error
+	// provisionWait bounds the leader's wait for peers' binaries to land after
+	// the /provision ask; provisionPoll is the readiness re-check cadence.
+	provisionWait time.Duration
+	provisionPoll time.Duration
 	// refiner is the pooled-LLM hook for the brain (nil → bootstrap stands).
 	refiner brain.Refiner
 	// logDir is where each rank's prima output is captured (empty → discarded).
@@ -137,6 +152,12 @@ func NewManager(cfg ManagerConfig) *Manager {
 	if m.provision == nil {
 		m.provision = func(_ context.Context, name string) (string, error) { return name, nil }
 	}
+	m.ensureBins = cfg.EnsureBins
+	if m.ensureBins == nil {
+		m.ensureBins = func(context.Context) error { return nil }
+	}
+	m.provisionWait = 5 * time.Minute
+	m.provisionPoll = 2 * time.Second
 	m.refiner = cfg.Refiner
 	m.logDir = cfg.LogDir
 	return m
@@ -154,6 +175,15 @@ func (m *Manager) Run(ctx context.Context) error {
 			defer cleanup()
 		}
 	}
+	// Activation-time provisioning: land the signed engine in the background
+	// so a fresh host is shard-ready by first trigger. Fail-closed — a bad
+	// signature errors here and the binaries stay absent, so the readiness
+	// gate keeps dropping this node instead of running unverified bytes.
+	go func() {
+		if err := m.ensureBins(ctx); err != nil {
+			m.log.Warn("shard: activation-time prima provisioning failed", "err", err)
+		}
+	}()
 	m.refresh(ctx)
 	t := time.NewTicker(m.interval)
 	defer t.Stop()

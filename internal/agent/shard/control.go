@@ -80,6 +80,20 @@ func (m *Manager) ServeControl() (func(), error) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, m.RecentPrimaLogs(200))
 	})
+	// Provision asks this node to (idempotently) land its signed prima engine
+	// binaries. Long-running (a first-time fetch) → backgrounded on a detached
+	// context with an immediate 202, like /form: the leader's bounded poll of
+	// /status observes the binaries landing instead of holding this
+	// mesh-forwarded POST open. A signature failure errors in the background
+	// and the binaries stay absent — the readiness gate stays closed.
+	mux.HandleFunc("/provision", func(w http.ResponseWriter, _ *http.Request) {
+		go func() {
+			if err := m.ensureBins(context.Background()); err != nil {
+				m.log.Warn("shard: peer-asked prima provisioning failed", "err", err)
+			}
+		}()
+		w.WriteHeader(http.StatusAccepted)
+	})
 	mux.HandleFunc("/lead", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Model   string `json:"model"`
@@ -131,6 +145,12 @@ func (m *Manager) Orchestrate(ctx context.Context, model string, apiPort int, ex
 	if ring == nil {
 		return fmt.Errorf("shard: no candidate ring (no same-LAN peers)")
 	}
+	// Fresh-host round: ask every candidate peer to land its signed prima
+	// engine, then wait boundedly for the binaries to appear — otherwise the
+	// readiness gate below drops every fresh peer (nothing provisions the
+	// bins outside a form) and the first form can never pass. Best-effort:
+	// the gate still drops whoever stays unready.
+	m.provisionPeers(ctx, ring)
 	// Readiness-gate the ring: a same-LAN peer that can't answer the shard
 	// readiness ping (sharding off, no worker binary, wrong platform) drops out
 	// and the ranks re-number, instead of aborting the form or hanging the prima
@@ -205,6 +225,106 @@ func (m *Manager) readyRing(ctx context.Context, base *Ring) *Ring {
 	return &Ring{Members: members}
 }
 
+// provisionPeers asks every candidate peer to land its signed prima engine
+// (/provision, best-effort per peer), then polls readiness until every peer
+// reports its worker binary or the bounded wait elapses. Peers that stay
+// unready — unreachable, or a signature failure that kept the gate closed —
+// are left for readyRing to drop. A peer without the endpoint (older build)
+// just fails the ask and is polled like the rest.
+func (m *Manager) provisionPeers(ctx context.Context, base *Ring) {
+	if base == nil {
+		return
+	}
+	var peers []ShardPeer
+	for _, member := range base.Members {
+		if member.Host == m.self.Host {
+			continue
+		}
+		p := ShardPeer{Host: member.Host, PeerID: member.PeerID}
+		peers = append(peers, p)
+		askCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if err := m.askProvision(askCtx, p); err != nil {
+			m.log.Info("shard: peer provision ask failed, polling anyway", "host", p.Host, "err", err)
+		}
+		cancel()
+	}
+	if len(peers) == 0 {
+		return
+	}
+	wait, poll := m.provisionWait, m.provisionPoll
+	if wait <= 0 {
+		wait = 5 * time.Minute
+	}
+	if poll <= 0 {
+		poll = 2 * time.Second
+	}
+	deadline := time.Now().Add(wait)
+	pending := append([]ShardPeer{}, peers...)
+	for len(pending) > 0 {
+		var still []ShardPeer
+		for _, p := range pending {
+			rep, err := m.ping(ctx, p)
+			if err == nil && rep != nil && rep.WorkerBin {
+				continue // provisioned since the ask
+			}
+			still = append(still, p)
+		}
+		pending = still
+		if len(pending) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			m.log.Warn("shard: peers still unprovisioned after bounded wait, gating them out", "hosts", hostsOf(pending))
+			return
+		}
+		if !sleepCtx(ctx, poll) {
+			return
+		}
+	}
+}
+
+// isSelfPeer reports whether peer addresses this node itself — by mesh peer
+// id, or by host label. Either match short-circuits to the local handler, so
+// a trigger naming our own host never mesh-dials ourselves (EOF).
+func isSelfPeer(self, peer ShardPeer) bool {
+	if peer.PeerID != "" && self.PeerID != "" && peer.PeerID == self.PeerID {
+		return true
+	}
+	return peer.Host != "" && peer.Host == self.Host
+}
+
+func hostsOf(peers []ShardPeer) []string {
+	hosts := make([]string, 0, len(peers))
+	for _, p := range peers {
+		hosts = append(hosts, p.Host)
+	}
+	return hosts
+}
+
+// askProvision POSTs to a peer's shard-control /provision over the mesh: land
+// your signed prima engine (backgrounded there, 202 here).
+func (m *Manager) askProvision(ctx context.Context, peer ShardPeer) error {
+	ln, err := m.fwd.Listen(loopback+":0", peer.PeerID, ControlService)
+	if err != nil {
+		return err
+	}
+	defer ln.Close()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+ln.Addr().String()+"/provision", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		return fmt.Errorf("peer %s: provision %s", peer.Host, resp.Status)
+	}
+	return nil
+}
+
 // sleepCtx sleeps for d or until ctx is cancelled; returns false if cancelled.
 func sleepCtx(ctx context.Context, d time.Duration) bool {
 	select {
@@ -250,6 +370,18 @@ func (m *Manager) tellWorker(ctx context.Context, member Member, req FormRequest
 // fleet trigger — an agent (or, later, cloudbox on a pool request) starts a shard
 // on any node with no ssh, and the system self-drives from there.
 func (m *Manager) TellLead(ctx context.Context, peer ShardPeer, model string, apiPort int) error {
+	if isSelfPeer(m.self, peer) {
+		// Self-trigger: never mesh-dial ourselves — the forwarder can't carry
+		// a loopback to our own control endpoint (EOF). Lead from here on a
+		// detached context, like the /lead handler does.
+		m.log.Info("shard: self-trigger, leading locally", "model", model)
+		go func() {
+			if err := m.orchestrate(context.Background(), model, apiPort, nil); err != nil {
+				m.log.Warn("shard: self-lead orchestrate failed", "model", model, "err", err)
+			}
+		}()
+		return nil
+	}
 	ln, err := m.fwd.Listen(loopback+":0", peer.PeerID, ControlService)
 	if err != nil {
 		return err

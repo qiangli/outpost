@@ -399,6 +399,14 @@ func newShardManager(fc *conf.FileConfig, ss shardSettings, meshHost *mesh.Host,
 			// next provisioning, not just the activation-time daemon.
 			return provisionShard(ctx, bins, resolveShardOllamaURL(ss.OllamaURL, ollamaTarget), name, meshHost.Forwarder(), disc)
 		},
+		EnsureBins: func(ctx context.Context) error {
+			// The signed prima engine for this node's own role paths, via
+			// binmgr — idempotent, fail-closed on a bad signature. Driven at
+			// shard-unit activation (background) and by a leader's
+			// pre-filter /provision ask, so fresh hosts form on first
+			// trigger instead of gating forever on absent binaries.
+			return ensureBinaries(ctx, bins)
+		},
 		LocalLoad: func() ([]shard.LocalModel, uint64) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
