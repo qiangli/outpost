@@ -174,9 +174,10 @@ func (m *Manager) Orchestrate(ctx context.Context, model string, apiPort int, ex
 
 // readyRing rebuilds base to include only peers that are actually shard-ready:
 // they answer the readiness ping AND report a worker binary on disk. A same-LAN
-// peer that's reachable but can't run a rank — no prima worker binary (e.g. a
-// Windows box), sharding effectively inert — is dropped rather than aborting the
-// form or hanging the prima ring on a rank that never comes up. Ranks are
+// peer that's reachable but can't run a rank — no provisioned prima worker
+// binary on disk — is dropped rather than aborting the form or hanging the
+// prima ring on a rank that never comes up. Every platform with a signed
+// engine provisions that binary through binmgr, Windows included. Ranks are
 // re-assigned contiguously (self = rank 0) so PlanFor's layer split matches the
 // peers that actually join.
 func (m *Manager) readyRing(ctx context.Context, base *Ring) *Ring {

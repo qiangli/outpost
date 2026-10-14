@@ -17,6 +17,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/qiangli/yoke/pkg/binmgr"
+
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/mesh"
@@ -159,21 +161,44 @@ type peerPlaneDiscoverer struct {
 	idCache map[string]string // host → libp2p peer id, last-good (survives rendezvous blips)
 }
 
+// primaEnginePlatforms reports the platforms the signed prima release
+// ships an engine for: every platform Yoke's pinned Prima declaration
+// covers, Windows included. A peer on any of these provisions the same
+// signed release through binmgr and can take a shard rank.
+func primaEnginePlatforms() map[string]bool {
+	platforms := make(map[string]bool, len(binmgr.PrimaTool().Assets))
+	for p := range binmgr.PrimaTool().Assets {
+		platforms[p] = true
+	}
+	return platforms
+}
+
+// keepEnginePeer reports whether a peer's reported platform can run a shard
+// rank: its platform must ship a signed prima engine. An unknown platform
+// fails open so discovery still works when the status board is stale.
+func keepEnginePeer(peerPlat string, released map[string]bool) bool {
+	if peerPlat == "" {
+		return true
+	}
+	return released[peerPlat]
+}
+
 func (d *peerPlaneDiscoverer) SameLANPeers(ctx context.Context) ([]shard.ShardPeer, error) {
-	// Engine-compatibility gate: a worker runs a prima engine built for its own
-	// platform, and today the gpt-oss engine ships only for the leader's platform
-	// — so a same-LAN box on a different OS/arch (e.g. a Windows peer that shares
-	// this host's IPv6 /64) can't run a rank and would only poison the form. Drop
-	// it here, before it ever enters the candidate ring. (When per-platform engines
-	// ship, this should gate on a reported engine version instead of the leader's
-	// platform.) Fail-open when the platform is unknown so discovery still works.
+	// Engine-compatibility gate: a worker runs a prima engine built for its
+	// own platform, provisioned from the same signed release through Yoke
+	// binmgr — so a same-LAN box whose OS/arch ships no signed engine can't
+	// run a rank and would only poison the form. Drop it here, before it
+	// ever enters the candidate ring. Every released platform takes a rank,
+	// Windows included; the gate follows the pin, not the leader's own
+	// platform. Fail-open when the platform is unknown so discovery still
+	// works.
 	plat := d.peerPlatforms(ctx)
-	selfPlat := runtime.GOOS + "/" + runtime.GOARCH
+	released := primaEnginePlatforms()
 	var peers []shard.ShardPeer
 	for _, t := range d.svc.Snapshot() {
-		if p, ok := plat[t.Host]; ok && p != selfPlat {
-			slog.Debug("shard discover: drop incompatible platform", "host", t.Host, "plat", p, "self", selfPlat)
-			continue // incompatible platform — can't run the engine
+		if p, ok := plat[t.Host]; ok && !keepEnginePeer(p, released) {
+			slog.Debug("shard discover: drop platform without a signed engine", "host", t.Host, "plat", p)
+			continue // no signed engine for this platform — can't run a rank
 		}
 		// Resolve the host's libp2p peer id. Prefer the rendezvous's own
 		// host→peer-id map — the id the mesh actually connected with — because the
