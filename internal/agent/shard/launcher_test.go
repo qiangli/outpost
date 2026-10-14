@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -44,23 +45,47 @@ func waitFor(t *testing.T, d time.Duration, cond func() bool) {
 	t.Fatalf("condition not met within %s", d)
 }
 
-// writeStub writes a unix shell stand-in for the prima binary: it echoes its
-// argv (so the test can assert the wiring produced the right flags) then blocks
-// until killed.
+// writeStub writes a stand-in for the prima binary: it echoes its argv (so
+// the test can assert the wiring produced the right flags) then blocks until
+// killed. Unix uses a shell script; Windows compiles a tiny Go helper with
+// the toolchain that built the test — a batch file cannot be exec'd
+// directly — so the launch tests run on every platform.
 func writeStub(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "prima-stub.sh")
-	script := "#!/bin/sh\necho \"PRIMA-ARGS: $*\"\nwhile true; do sleep 1; done\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if runtime.GOOS != "windows" {
+		path := filepath.Join(t.TempDir(), "prima-stub.sh")
+		script := "#!/bin/sh\necho \"PRIMA-ARGS: $*\"\nwhile true; do sleep 1; done\n"
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	return writeWindowsStub(t)
+}
+
+// writeWindowsStub builds a stub .exe that echoes its argv then blocks until
+// killed, mirroring the unix shell stub. The go tool comes from the test
+// binary's own GOROOT, so no PATH lookup is involved.
+func writeWindowsStub(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	src := "package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"strings\"\n\t\"time\"\n)\n\nfunc main() {\n\tfmt.Printf(\"PRIMA-ARGS: %s\\n\", strings.Join(os.Args[1:], \" \"))\n\tfor {\n\t\ttime.Sleep(time.Second)\n\t}\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "stub.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return path
+	exe := filepath.Join(dir, "prima-stub.exe")
+	cmd := exec.Command(
+		filepath.Join(runtime.GOROOT(), "bin", "go.exe"),
+		"build", "-o", exe, "stub.go",
+	)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build windows stub: %v: %s", err, out)
+	}
+	return exe
 }
 
 func TestStart_WiresLaunchesAndStops(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell stub is unix-only")
-	}
 	f := newFake()
 	plan, _ := ring2().PlanFor(0) // leader: 2 exposes, 2 forwards
 	var buf syncBuf

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -156,28 +157,39 @@ func TestEnsureBinariesRefusesLegacyCacheAndPATH(t *testing.T) {
 	}
 }
 
-// The verified binary wires both required shard roles: server (leader rank 0)
-// and worker. Each role path is required and receives the verified bytes.
+// Each verified executable wires its own shard role: the server (leader rank
+// 0) and the worker run distinct verified bytes from the signed release.
+// Each role path is required and receives its own bytes.
 func TestInstallVerifiedPrimaWiresBothRoles(t *testing.T) {
 	dir := t.TempDir()
-	verified := filepath.Join(dir, "verified-prima")
-	if err := os.WriteFile(verified, []byte("verified bytes"), 0o755); err != nil {
+	server := filepath.Join(dir, "verified-prima-server")
+	worker := filepath.Join(dir, "verified-prima")
+	if err := os.WriteFile(server, []byte("verified server bytes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(worker, []byte("verified worker bytes"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	bins := shard.ServeBins{
 		ServerBin: filepath.Join(dir, "roles", "llama-server"),
 		WorkerBin: filepath.Join(dir, "roles", "llama-cli"),
 	}
-	if err := installVerifiedPrima(verified, bins); err != nil {
-		t.Fatalf("install of verified binary: %v", err)
+	if err := installVerifiedPrima(server, worker, bins); err != nil {
+		t.Fatalf("install of verified binaries: %v", err)
 	}
-	for _, dst := range []string{bins.ServerBin, bins.WorkerBin} {
+	for dst, want := range map[string]string{
+		bins.ServerBin: "verified server bytes",
+		bins.WorkerBin: "verified worker bytes",
+	} {
 		data, err := os.ReadFile(dst)
 		if err != nil {
 			t.Fatalf("read %s: %v", dst, err)
 		}
-		if string(data) != "verified bytes" {
-			t.Fatalf("%s holds %q, want the verified bytes", dst, data)
+		if string(data) != want {
+			t.Fatalf("%s holds %q, want %q", dst, data, want)
+		}
+		if runtime.GOOS == "windows" {
+			continue // Windows has no Unix execute bit; any file runs
 		}
 		fi, err := os.Stat(dst)
 		if err != nil {
@@ -191,23 +203,75 @@ func TestInstallVerifiedPrimaWiresBothRoles(t *testing.T) {
 
 func TestInstallVerifiedPrimaRequiresBothRoles(t *testing.T) {
 	dir := t.TempDir()
-	verified := filepath.Join(dir, "verified-prima")
-	if err := os.WriteFile(verified, []byte("verified bytes"), 0o755); err != nil {
+	server := filepath.Join(dir, "verified-prima-server")
+	worker := filepath.Join(dir, "verified-prima")
+	if err := os.WriteFile(server, []byte("verified server bytes"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, bins := range []shard.ServeBins{
-		{WorkerBin: filepath.Join(dir, "w")},
-		{ServerBin: filepath.Join(dir, "s")},
-		{},
+	if err := os.WriteFile(worker, []byte("verified worker bytes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		server string
+		worker string
+		bins   shard.ServeBins
+	}{
+		{"no server binary", "", worker, shard.ServeBins{ServerBin: filepath.Join(dir, "s"), WorkerBin: filepath.Join(dir, "w")}},
+		{"no worker binary", server, "", shard.ServeBins{ServerBin: filepath.Join(dir, "s"), WorkerBin: filepath.Join(dir, "w")}},
+		{"no server role", server, worker, shard.ServeBins{WorkerBin: filepath.Join(dir, "w")}},
+		{"no worker role", server, worker, shard.ServeBins{ServerBin: filepath.Join(dir, "s")}},
+		{"no roles", server, worker, shard.ServeBins{}},
+		{"missing server binary", filepath.Join(dir, "missing"), worker, shard.ServeBins{ServerBin: filepath.Join(dir, "s"), WorkerBin: filepath.Join(dir, "w")}},
+		{"missing worker binary", server, filepath.Join(dir, "missing"), shard.ServeBins{ServerBin: filepath.Join(dir, "s"), WorkerBin: filepath.Join(dir, "w")}},
 	} {
-		if err := installVerifiedPrima(verified, bins); err == nil {
-			t.Fatalf("install with bins %+v must refuse", bins)
+		if err := installVerifiedPrima(tc.server, tc.worker, tc.bins); err == nil {
+			t.Fatalf("install %s must refuse", tc.name)
 		}
 	}
-	if err := installVerifiedPrima(filepath.Join(dir, "missing"), shard.ServeBins{
-		ServerBin: filepath.Join(dir, "s"), WorkerBin: filepath.Join(dir, "w"),
-	}); err == nil {
-		t.Fatal("install of a missing verified binary must refuse")
+}
+
+// The Windows OpenMP runtime lands beside the executables: the .exe files
+// load it from their own directory, so each role directory gets a copy (one
+// copy when both roles share a directory).
+func TestInstallVerifiedLibOMPSitsNextToExe(t *testing.T) {
+	dir := t.TempDir()
+	dll := filepath.Join(dir, "verified-"+binmgr.PrimaLibOMPFile)
+	if err := os.WriteFile(dll, []byte("verified dll bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	split := shard.ServeBins{
+		ServerBin: filepath.Join(dir, "leader", "prima-server-windows-amd64.exe"),
+		WorkerBin: filepath.Join(dir, "worker", "prima-windows-amd64.exe"),
+	}
+	if err := installVerifiedLibOMP(dll, split); err != nil {
+		t.Fatalf("install of verified dll: %v", err)
+	}
+	for _, exe := range []string{split.ServerBin, split.WorkerBin} {
+		got, err := os.ReadFile(filepath.Join(filepath.Dir(exe), binmgr.PrimaLibOMPFile))
+		if err != nil || string(got) != "verified dll bytes" {
+			t.Fatalf("dll beside %s holds %q, %v", exe, got, err)
+		}
+	}
+	shared := shard.ServeBins{
+		ServerBin: filepath.Join(dir, "shared", "prima-server-windows-amd64.exe"),
+		WorkerBin: filepath.Join(dir, "shared", "prima-windows-amd64.exe"),
+	}
+	if err := installVerifiedLibOMP(dll, shared); err != nil {
+		t.Fatalf("install of verified dll into a shared dir: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "shared"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != binmgr.PrimaLibOMPFile {
+		t.Fatalf("shared dir holds %v, want one %s", entries, binmgr.PrimaLibOMPFile)
+	}
+	if err := installVerifiedLibOMP("", shared); err == nil {
+		t.Fatal("install of an empty dll path must refuse")
+	}
+	if err := installVerifiedLibOMP(filepath.Join(dir, "missing.dll"), shared); err == nil {
+		t.Fatal("install of a missing dll must refuse")
 	}
 }
 

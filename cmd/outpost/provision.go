@@ -61,35 +61,88 @@ func killStalePrima(binPath string) {
 
 // ensureBinaries delegates release policy and verification to Yoke. Missing
 // committed pins or invalid signatures fail closed, including on cache hits.
-// Only the verified path may supply the leader and worker executables.
+// Only verified paths may supply the leader and worker executables: the
+// worker CLI through EnsurePrima, the leader server through
+// EnsurePrimaServer — no download, no ad-hoc signing, no fallback. Windows
+// additionally provisions the signed OpenMP runtime beside the executables.
 func ensureBinaries(ctx context.Context, bins shard.ServeBins) error {
-	verified, err := binmgr.EnsurePrima(ctx)
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+	worker, err := binmgr.EnsurePrima(ctx)
 	if err != nil {
-		return fmt.Errorf("prima engine unavailable: no admitted bashy-built, signed release for %s/%s: %w", runtime.GOOS, runtime.GOARCH, err)
+		return fmt.Errorf("prima engine unavailable: no admitted bashy-built, signed release for %s: %w", platform, err)
 	}
-	return installVerifiedPrima(verified, bins)
+	server, err := binmgr.EnsurePrimaServer(ctx)
+	if err != nil {
+		return fmt.Errorf("prima engine unavailable: no admitted bashy-built, signed release for %s: %w", platform, err)
+	}
+	if err := installVerifiedPrima(server, worker, bins); err != nil {
+		return err
+	}
+	if runtime.GOOS == "windows" {
+		dll, err := binmgr.EnsurePrimaLibOMP(ctx)
+		if err != nil {
+			return fmt.Errorf("prima engine unavailable: no admitted bashy-built, signed release for %s: %w", platform, err)
+		}
+		if err := installVerifiedLibOMP(dll, bins); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// installVerifiedPrima copies the binmgr-verified prima binary onto both
-// required shard role paths (server = leader rank 0, worker = other ranks).
-// The release ships one executable per platform, so both roles run the same
+// installVerifiedPrima copies each binmgr-verified prima executable onto its
+// shard role path (server = leader rank 0, worker = other ranks). The release
+// ships a distinct CLI and server per platform, so each role runs its own
 // verified bytes; each role path is still required and written explicitly.
-func installVerifiedPrima(verified string, bins shard.ServeBins) error {
-	if strings.TrimSpace(verified) == "" {
+func installVerifiedPrima(server, worker string, bins shard.ServeBins) error {
+	if strings.TrimSpace(server) == "" || strings.TrimSpace(worker) == "" {
 		return fmt.Errorf("prima engine unavailable: no admitted bashy-built, signed release (empty verified path)")
 	}
 	if strings.TrimSpace(bins.ServerBin) == "" || strings.TrimSpace(bins.WorkerBin) == "" {
 		return fmt.Errorf("prima engine unavailable: no admitted bashy-built, signed release (shard server/worker role paths are required)")
 	}
-	data, err := os.ReadFile(verified)
+	for _, role := range []struct{ verified, dst string }{
+		{server, bins.ServerBin},
+		{worker, bins.WorkerBin},
+	} {
+		data, err := os.ReadFile(role.verified)
+		if err != nil {
+			return fmt.Errorf("prima engine unavailable: no admitted bashy-built, signed release: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(role.dst), 0o755); err != nil {
+			return fmt.Errorf("prima install %s: %w", role.dst, err)
+		}
+		if err := os.WriteFile(role.dst, data, 0o755); err != nil {
+			return fmt.Errorf("prima install %s: %w", role.dst, err)
+		}
+	}
+	return nil
+}
+
+// installVerifiedLibOMP places the binmgr-verified Windows OpenMP runtime
+// beside the shard executables — the .exe files load it from their own
+// directory, so it sits next to each role path (deduped when both roles
+// share a directory). Windows only; other platforms never call this.
+func installVerifiedLibOMP(dll string, bins shard.ServeBins) error {
+	if strings.TrimSpace(dll) == "" {
+		return fmt.Errorf("prima engine unavailable: no admitted bashy-built, signed release (empty verified path)")
+	}
+	data, err := os.ReadFile(dll)
 	if err != nil {
 		return fmt.Errorf("prima engine unavailable: no admitted bashy-built, signed release: %w", err)
 	}
-	for _, dst := range []string{bins.ServerBin, bins.WorkerBin} {
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+	seen := map[string]bool{}
+	for _, exe := range []string{bins.ServerBin, bins.WorkerBin} {
+		dir := filepath.Dir(exe)
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		dst := filepath.Join(dir, binmgr.PrimaLibOMPFile)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("prima install %s: %w", dst, err)
 		}
-		if err := os.WriteFile(dst, data, 0o755); err != nil {
+		if err := os.WriteFile(dst, data, 0o644); err != nil {
 			return fmt.Errorf("prima install %s: %w", dst, err)
 		}
 	}

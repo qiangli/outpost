@@ -2,7 +2,7 @@ package shard
 
 import (
 	"context"
-	"runtime"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -43,9 +43,6 @@ func TestLaunchConfigFor_LeaderAndWorker(t *testing.T) {
 }
 
 func TestManager_FormAndAdvertise(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell stub is unix-only")
-	}
 	f := newFake()
 	m := NewManager(ManagerConfig{
 		Self:      ShardPeer{Host: "leader", PeerID: "self"},
@@ -57,7 +54,9 @@ func TestManager_FormAndAdvertise(t *testing.T) {
 	}
 
 	ring := ring2()
-	sc := ServeConfig{Model: "qwen-72b", ServerBin: writeStub(t), WorkerBin: "/bin/true", APIPort: 9999}
+	// Rank 0 launches the server stub only; the worker path is never executed
+	// here but must still be a well-formed path on every platform.
+	sc := ServeConfig{Model: "qwen-72b", ServerBin: writeStub(t), WorkerBin: filepath.Join(t.TempDir(), "prima-worker"), APIPort: 9999}
 	if err := m.Form(context.Background(), &ring, 0, sc); err != nil {
 		t.Fatalf("Form: %v", err)
 	}
