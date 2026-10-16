@@ -614,6 +614,9 @@ func pickPodmanBin(override string) (string, error) {
 	// which we do not manage).
 	for _, c := range []string{"podman", "docker"} {
 		if p := binmgr.CachedBinary(c); p != "" {
+			if c == "podman" {
+				ensureBundledPodmanConf(p)
+			}
 			return p, nil
 		}
 	}
