@@ -229,8 +229,27 @@ func TestSeededBuiltinInternalAndCustomShareOneMachinery(t *testing.T) {
 	if seeded.Ring.String() != "embedded" {
 		t.Fatalf("meet came from ring %q, want the compiled-in seed", seeded.Ring)
 	}
-	if seeded.Enabled {
-		t.Fatal("a seeded unit must default to disabled")
+	defaultOn := map[string]bool{
+		"ollama": true, "ollama-pool": true, "shard": true, "apps": true,
+		"meet": true, "otel": true, "warm": true, "files": true, "podman": true,
+	}
+	seededAll, err := st.Units(context.Background())
+	if err != nil {
+		t.Fatalf("units: %v", err)
+	}
+	if len(seededAll) == 0 {
+		t.Fatal("no seeded units")
+	}
+	for _, u := range seededAll {
+		if u.Enabled != defaultOn[u.Name] {
+			t.Errorf("seeded unit %q default Enabled=%v, want %v (golden: default-on %v; all others opt-in)",
+				u.Name, u.Enabled, defaultOn[u.Name], defaultOn)
+		}
+	}
+	for name := range defaultOn {
+		if _, ok := st.Unit(name); !ok {
+			t.Errorf("golden default-on unit %q is not seeded", name)
+		}
 	}
 
 	internal := fleet.Service{
