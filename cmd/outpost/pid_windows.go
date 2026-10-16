@@ -3,6 +3,8 @@
 package main
 
 import (
+	"errors"
+
 	"golang.org/x/sys/windows"
 )
 
@@ -56,4 +58,15 @@ func processName(pid int) (string, error) {
 		return "", err
 	}
 	return windows.UTF16ToString(name[:size]), nil
+}
+
+// processArgs is not available on Windows; the init handoff there is
+// warn-only and never signals, so it needs no command line.
+func processArgs(int) (string, error) {
+	return "", errors.New("process command line not available on windows")
+}
+
+// listProcesses is not available on Windows; discovery there is pidfile-only.
+func listProcesses() ([]procEntry, error) {
+	return nil, errors.New("process table scan not available on windows")
 }

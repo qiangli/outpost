@@ -172,7 +172,8 @@ func supervisordPrograms(self, bashy, daemonLogPath, bashyLogPath string) []*sup
 	}
 }
 
-// supervisordStatusCmd reports whether INIT is running (via its pidfile).
+// supervisordStatusCmd reports whether INIT is running (via discoverInit —
+// the same discovery the upgrade handoff uses).
 // Per-SERVICE state is not here and should not be: ask the monitor, through
 // `outpost services` or `bashy service status`.
 func supervisordStatusCmd() *cobra.Command {
@@ -180,19 +181,15 @@ func supervisordStatusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Report whether outpost init is running (for per-service state use `outpost services`)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			pid, reexecs, err := readSupervisordPidFile()
-			if err != nil {
-				fmt.Println("supervisord: not running (no pidfile)")
+			probe, found, reason := discoverInit()
+			if !found {
+				fmt.Printf("supervisord: not running (%s)\n", reason)
 				return nil
 			}
-			if pid <= 0 || !processAlive(pid) {
-				fmt.Printf("supervisord: not running (stale pidfile, last pid %d)\n", pid)
-				return nil
-			}
-			fmt.Printf("supervisord: running (pid %d)\n", pid)
+			fmt.Printf("supervisord: running (pid %d, from %s)\n", probe.pid, probe.source)
 			mon := &svcunit.Monitor{Run: svcunit.ExecRunner(bashyResolver.Path)}
 			_, merr := mon.Statuses(cmd.Context())
-			for _, w := range initStatusWarnings(reexecs, merr) {
+			for _, w := range initStatusWarnings(probe.reexecs, merr) {
 				fmt.Println(w)
 			}
 			return nil

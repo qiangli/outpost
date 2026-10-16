@@ -36,3 +36,33 @@ func processName(pid int) (string, error) {
 	}
 	return strings.TrimSpace(string(out)), nil
 }
+
+// processArgs returns pid's full command line as ps reports it.
+func processArgs(pid int) (string, error) {
+	out, err := exec.Command("ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// listProcesses returns every process's pid and command line.
+func listProcesses() ([]procEntry, error) {
+	out, err := exec.Command("ps", "-A", "-o", "pid=,args=").Output()
+	if err != nil {
+		return nil, err
+	}
+	var procs []procEntry
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		pid, err := strconv.Atoi(f[0])
+		if err != nil {
+			continue
+		}
+		procs = append(procs, procEntry{pid: pid, args: strings.Join(f[1:], " ")})
+	}
+	return procs, nil
+}

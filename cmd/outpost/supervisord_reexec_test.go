@@ -110,26 +110,33 @@ func TestRunInitLoopReexecsOnSwap(t *testing.T) {
 }
 
 type fakeInit struct {
-	pid      int
-	reexecs  bool
-	alive    map[int]bool
-	outpost  bool
-	stopped  []int
-	spawned  int
-	reclaim  int // pid a service manager writes after the old init exits
-	exitOnTm bool
+	pid       int
+	reexecs   bool
+	alive     map[int]bool
+	outpost   bool
+	notSupd   bool
+	stopped   []int
+	spawned   int
+	reclaim   int // pid a service manager writes after the old init exits
+	exitOnTm  bool
+	discovery func() (initProbe, bool, string)
 }
 
 func (f *fakeInit) handoff(goos string) initHandoff {
-	return initHandoff{
-		readPid: func() (int, bool, error) {
-			if f.pid == 0 {
-				return 0, false, os.ErrNotExist
+	discover := f.discovery
+	if discover == nil {
+		discover = func() (initProbe, bool, string) {
+			if f.pid == 0 || !f.alive[f.pid] {
+				return initProbe{}, false, "no pidfile"
 			}
-			return f.pid, f.reexecs, nil
-		},
-		alive:     func(pid int) bool { return f.alive[pid] },
-		isOutpost: func(int) bool { return f.outpost },
+			return initProbe{pid: f.pid, reexecs: f.reexecs, source: "pidfile test"}, true, ""
+		}
+	}
+	return initHandoff{
+		discover:      discover,
+		alive:         func(pid int) bool { return f.alive[pid] },
+		isOutpost:     func(int) bool { return f.outpost },
+		isSupervisord: func(int) bool { return !f.notSupd },
 		stop: func(pid int) error {
 			f.stopped = append(f.stopped, pid)
 			if f.exitOnTm {
@@ -155,7 +162,7 @@ func TestInitHandoffRestartsLegacyInit(t *testing.T) {
 	if len(f.stopped) != 1 || f.stopped[0] != 4242 || f.spawned != 1 {
 		t.Fatalf("stopped=%v spawned=%d, want [4242],1; out=%v", f.stopped, f.spawned, out)
 	}
-	if !strings.Contains(strings.Join(out, "\n"), "started a new outpost supervisord") {
+	if !strings.Contains(strings.Join(out, "\n"), "handed off pid 4242; started a new outpost supervisord") {
 		t.Fatalf("report = %v", out)
 	}
 }
@@ -169,20 +176,27 @@ func TestInitHandoffDefersToServiceManager(t *testing.T) {
 }
 
 func TestInitHandoffLeavesOthersAlone(t *testing.T) {
-	for name, f := range map[string]*fakeInit{
-		"reexec-capable": {pid: 4242, reexecs: true, alive: map[int]bool{4242: true}, outpost: true},
-		"foreign pid":    {pid: 4242, alive: map[int]bool{4242: true}, outpost: false},
-		"not running":    {pid: 4242, alive: map[int]bool{}, outpost: true},
-		"no pidfile":     {alive: map[int]bool{}},
-		"windows":        {pid: 4242, alive: map[int]bool{4242: true}, outpost: true},
+	for name, tc := range map[string]struct {
+		f    *fakeInit
+		want string
+	}{
+		"reexec-capable":  {&fakeInit{pid: 4242, reexecs: true, alive: map[int]bool{4242: true}, outpost: true}, "skipped: pid 4242"},
+		"foreign pid":     {&fakeInit{pid: 4242, alive: map[int]bool{4242: true}, outpost: false}, "skipped: pid 4242"},
+		"not supervisord": {&fakeInit{pid: 4242, alive: map[int]bool{4242: true}, outpost: true, notSupd: true}, "not an outpost supervisord invocation"},
+		"not running":     {&fakeInit{pid: 4242, alive: map[int]bool{}, outpost: true}, "no running init"},
+		"no pidfile":      {&fakeInit{alive: map[int]bool{}}, "no running init"},
+		"windows":         {&fakeInit{pid: 4242, alive: map[int]bool{4242: true}, outpost: true}, "skipped: pid 4242"},
 	} {
 		goos := "darwin"
 		if name == "windows" {
 			goos = "windows"
 		}
-		f.handoff(goos).run()
-		if len(f.stopped) != 0 || f.spawned != 0 {
-			t.Errorf("%s: stopped=%v spawned=%d, want no action", name, f.stopped, f.spawned)
+		out := tc.f.handoff(goos).run()
+		if len(tc.f.stopped) != 0 || tc.f.spawned != 0 {
+			t.Errorf("%s: stopped=%v spawned=%d, want no action", name, tc.f.stopped, tc.f.spawned)
+		}
+		if len(out) != 1 || !strings.Contains(out[0], tc.want) {
+			t.Errorf("%s: report = %v, want one line containing %q", name, out, tc.want)
 		}
 	}
 }
@@ -192,6 +206,80 @@ func TestInitHandoffDoesNotSpawnWhenOldInitSurvives(t *testing.T) {
 	out := f.handoff("darwin").run()
 	if f.spawned != 0 || !strings.Contains(strings.Join(out, "\n"), "did not exit") {
 		t.Fatalf("spawned=%d out=%v, want no second init beside a live one", f.spawned, out)
+	}
+}
+
+// The live failure: a pre-split init with NO pidfile anywhere. Status found
+// it; the handoff must find it the same way and hand it off.
+func TestInitHandoffNoPidfileStatusDiscovered(t *testing.T) {
+	alive := map[int]bool{26580: true, 900: true, 901: true}
+	d := initDiscovery{
+		pidFiles: func() []string { return []string{"/nope/supervisord.pid", "/legacy/supervisord.pid"} },
+		readFile: func(string) ([]byte, error) { return nil, os.ErrNotExist },
+		alive:    func(pid int) bool { return alive[pid] },
+		scan: func() ([]procEntry, error) {
+			return []procEntry{
+				{pid: 900, args: "/Users/u/bin/outpost supervisord status"},
+				{pid: 901, args: "/usr/bin/vim supervisord"},
+				{pid: 26580, args: "/Users/u/bin/outpost supervisord"},
+			}, nil
+		},
+		self: 1,
+	}
+	probe, found, _ := d.find()
+	if !found || probe.pid != 26580 || probe.reexecs || probe.source != "process table" {
+		t.Fatalf("discovery = %+v found=%v, want pid 26580 from the process table, no reexec marker", probe, found)
+	}
+	f := &fakeInit{pid: 26580, alive: alive, outpost: true, exitOnTm: true, discovery: d.find}
+	out := f.handoff("darwin").run()
+	if len(f.stopped) != 1 || f.stopped[0] != 26580 || f.spawned != 1 {
+		t.Fatalf("stopped=%v spawned=%d, want [26580],1; out=%v", f.stopped, f.spawned, out)
+	}
+	if !strings.Contains(strings.Join(out, "\n"), "handed off pid 26580") {
+		t.Fatalf("report = %v", out)
+	}
+	// Windows: found the same way, still only warned.
+	alive[26580] = true
+	w := &fakeInit{pid: 26580, alive: alive, outpost: true, discovery: d.find}
+	if out := w.handoff("windows").run(); len(w.stopped) != 0 || len(out) != 1 || !strings.Contains(out[0], "skipped: pid 26580") {
+		t.Fatalf("windows: stopped=%v out=%v, want warn-only", w.stopped, out)
+	}
+}
+
+func TestInitDiscoveryPrefersPidfile(t *testing.T) {
+	d := initDiscovery{
+		pidFiles: func() []string { return []string{"/a", "/b"} },
+		readFile: func(p string) ([]byte, error) {
+			if p == "/a" {
+				return []byte("77\n"), nil // stale
+			}
+			return []byte("88\n" + initReexecMarker + "\n"), nil
+		},
+		alive: func(pid int) bool { return pid == 88 },
+		scan:  func() ([]procEntry, error) { t.Fatal("scanned despite a live pidfile"); return nil, nil },
+	}
+	if p, ok, _ := d.find(); !ok || p.pid != 88 || !p.reexecs || p.source != "pidfile /b" {
+		t.Fatalf("got %+v ok=%v", p, ok)
+	}
+	d.alive = func(int) bool { return false }
+	d.scan = func() ([]procEntry, error) { return nil, nil }
+	if _, ok, reason := d.find(); ok || !strings.Contains(reason, "stale pidfile") {
+		t.Fatalf("ok=%v reason=%q, want stale", ok, reason)
+	}
+}
+
+func TestIsSupervisordInvocation(t *testing.T) {
+	for args, want := range map[string]bool{
+		"/x/outpost supervisord":           true,
+		"outpost supervisord --foo":        true,
+		"/x/outpost supervisord status":    false,
+		"/x/outpost start":                 false,
+		"/usr/local/bin/bashy supervisord": false,
+		"outpost":                          false,
+	} {
+		if got := isSupervisordInvocation(args); got != want {
+			t.Errorf("%q = %v, want %v", args, got, want)
+		}
 	}
 }
 

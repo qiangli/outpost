@@ -145,62 +145,171 @@ func runInitLoop(ctx context.Context, cycle func(context.Context) (bool, error),
 	}
 }
 
+// procEntry is one row of the process table: pid and full command line.
+type procEntry struct {
+	pid  int
+	args string
+}
+
+// initProbe is what discovery found about the running init. source says
+// where the pid came from, for the operator.
+type initProbe struct {
+	pid     int
+	reexecs bool
+	source  string
+}
+
+// initDiscovery locates the running outpost init. It is THE discovery path:
+// `outpost supervisord status` and the upgrade handoff both go through it, so
+// the two can never disagree about whether an init is running. Every effect
+// is a field so tests drive it without real processes.
+type initDiscovery struct {
+	pidFiles func() []string
+	readFile func(string) ([]byte, error)
+	alive    func(int) bool
+	scan     func() ([]procEntry, error)
+	self     int
+}
+
+// find returns the running init, or found=false with a one-phrase reason.
+// Order: the init pidfile (current, then the pre-XDG legacy cache dir), then
+// the process table — an init from before the pidfile moved, or whose
+// pidfile was lost, is still running and still needs handing off. A pidfile
+// found that way carries no re-exec marker, and neither does a bare process:
+// every init that re-execs on a swap writes the marker into its pidfile.
+func (d initDiscovery) find() (p initProbe, found bool, reason string) {
+	reason = "no pidfile"
+	for _, path := range d.pidFiles() {
+		data, err := d.readFile(path)
+		if err != nil {
+			continue
+		}
+		pid, reexecs := parseSupervisordPid(string(data))
+		if pid > 0 && pid != d.self && d.alive(pid) {
+			return initProbe{pid: pid, reexecs: reexecs, source: "pidfile " + path}, true, ""
+		}
+		reason = fmt.Sprintf("stale pidfile, last pid %d", pid)
+	}
+	procs, err := d.scan()
+	if err != nil {
+		return initProbe{}, false, reason
+	}
+	for _, pr := range procs {
+		if pr.pid > 0 && pr.pid != d.self && isSupervisordInvocation(pr.args) && d.alive(pr.pid) {
+			return initProbe{pid: pr.pid, source: "process table"}, true, ""
+		}
+	}
+	return initProbe{}, false, reason
+}
+
+// isSupervisordInvocation reports whether a command line runs an outpost
+// binary as `supervisord` itself — not one of its subcommands such as
+// `supervisord status`, which is a short-lived client.
+func isSupervisordInvocation(args string) bool {
+	f := strings.Fields(args)
+	if len(f) < 2 || !sameExecutableName(f[0]) {
+		return false
+	}
+	for i, a := range f[1:] {
+		if a != "supervisord" {
+			continue
+		}
+		rest := f[i+2:]
+		return len(rest) == 0 || strings.HasPrefix(rest[0], "-")
+	}
+	return false
+}
+
+// discoverInit is the production initDiscovery.
+func discoverInit() (initProbe, bool, string) {
+	return initDiscovery{
+		pidFiles: supervisordPidFileCandidates,
+		readFile: os.ReadFile,
+		alive:    processAlive,
+		scan:     listProcesses,
+		self:     os.Getpid(),
+	}.find()
+}
+
+// supervisordPidFileCandidates lists where an init may have written its
+// pidfile: the current cache dir, then the pre-XDG one.
+func supervisordPidFileCandidates() []string {
+	var out []string
+	if p, err := supervisordPidFilePath(); err == nil {
+		out = append(out, p)
+	}
+	if dir, err := conf.LegacyCacheDir(); err == nil {
+		if p := filepath.Join(dir, "supervisord.pid"); len(out) == 0 || p != out[0] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // initHandoff restarts an init that cannot follow a binary swap itself. Every
 // effect is a field so tests drive it without real processes.
 type initHandoff struct {
-	readPid   func() (pid int, reexecs bool, err error)
-	alive     func(pid int) bool
-	isOutpost func(pid int) bool
-	stop      func(pid int) error
-	spawn     func() error
-	goos      string
+	discover      func() (initProbe, bool, string)
+	alive         func(pid int) bool
+	isOutpost     func(pid int) bool
+	isSupervisord func(pid int) bool
+	stop          func(pid int) error
+	spawn         func() error
+	goos          string
 	// exitWait bounds how long the old init gets to stop its children and
 	// exit; reclaimWait is how long a service manager (launchd KeepAlive,
 	// systemd Restart=) gets to bring up a replacement before we spawn one.
 	exitWait, reclaimWait, poll time.Duration
 }
 
-// run returns one line per action for the operator. It only ever signals the
-// pid named by init's own pidfile, and only when that pid is verifiably an
-// outpost process — never a pattern match.
+// run returns the operator report — always at least one line saying what it
+// found and what it did. It only signals a pid that discovery found AND that
+// is positively identified as an outpost process running `supervisord`.
 func (h initHandoff) run() []string {
-	pid, reexecs, err := h.readPid()
-	if err != nil || pid <= 0 || !h.alive(pid) {
-		return nil // no init running: nothing predates the swap
+	probe, found, reason := h.discover()
+	if !found {
+		return []string{fmt.Sprintf("init:     no running init (%s)", reason)}
 	}
-	if reexecs {
-		return []string{fmt.Sprintf("init:     pid %d re-execs itself onto the new binary", pid)}
+	pid := probe.pid
+	skip := func(why string) []string {
+		return []string{fmt.Sprintf("init:     skipped: pid %d (%s) %s", pid, probe.source, why)}
+	}
+	if probe.reexecs {
+		return skip("re-execs itself onto the new binary")
 	}
 	if pid == os.Getpid() || !h.isOutpost(pid) {
-		return []string{fmt.Sprintf("init:     WARN pidfile names pid %d, which is not an outpost process; left alone", pid)}
+		return skip("is not an outpost process; left alone")
+	}
+	if !h.isSupervisord(pid) {
+		return skip("is not an outpost supervisord invocation; left alone")
 	}
 	if h.goos == "windows" {
 		// Windows can only hard-kill init, which would orphan its children
 		// rather than stop them; leave the restart to the operator.
-		return []string{fmt.Sprintf("init:     WARN pid %d predates the swap and cannot start bashy supervisord; restart it (outpost service restart, or stop it and run outpost supervisord)", pid)}
+		return skip("predates the swap and cannot start bashy supervisord; WARN restart it (outpost service restart, or stop it and run outpost supervisord)")
 	}
-	out := []string{fmt.Sprintf("init:     pid %d predates the swap; restarting it so bashy supervisord runs", pid)}
+	out := []string{fmt.Sprintf("init:     pid %d (%s) predates the swap; restarting it so bashy supervisord runs", pid, probe.source)}
 	if err := h.stop(pid); err != nil {
-		return append(out, fmt.Sprintf("init:     WARN stop pid %d: %v", pid, err))
+		return append(out, fmt.Sprintf("init:     skipped: WARN stop pid %d: %v", pid, err))
 	}
 	if !h.waitFor(h.exitWait, func() bool { return !h.alive(pid) }) {
-		return append(out, fmt.Sprintf("init:     WARN pid %d did not exit within %s; restart it by hand", pid, h.exitWait))
+		return append(out, fmt.Sprintf("init:     skipped: WARN pid %d did not exit within %s; restart it by hand", pid, h.exitWait))
 	}
 	var next int
 	if h.waitFor(h.reclaimWait, func() bool {
-		np, _, err := h.readPid()
-		if err == nil && np > 0 && np != pid && h.alive(np) {
-			next = np
+		np, ok, _ := h.discover()
+		if ok && np.pid != pid {
+			next = np.pid
 			return true
 		}
 		return false
 	}) {
-		return append(out, fmt.Sprintf("init:     restarted by the service manager (pid %d)", next))
+		return append(out, fmt.Sprintf("init:     handed off pid %d; restarted by the service manager (pid %d)", pid, next))
 	}
 	if err := h.spawn(); err != nil {
-		return append(out, fmt.Sprintf("init:     WARN start new init: %v — run outpost supervisord", err))
+		return append(out, fmt.Sprintf("init:     WARN pid %d stopped but starting a new init failed: %v — run outpost supervisord", pid, err))
 	}
-	return append(out, "init:     started a new outpost supervisord")
+	return append(out, fmt.Sprintf("init:     handed off pid %d; started a new outpost supervisord", pid))
 }
 
 func (h initHandoff) waitFor(d time.Duration, ok func() bool) bool {
@@ -220,9 +329,13 @@ func (h initHandoff) waitFor(d time.Duration, ok func() bool) bool {
 // `outpost upgrade` just swapped in.
 func handOffLegacyInit(binary string) []string {
 	return initHandoff{
-		readPid:   readSupervisordPidFile,
+		discover:  discoverInit,
 		alive:     processAlive,
 		isOutpost: pidIsOutpostStrict,
+		isSupervisord: func(pid int) bool {
+			args, err := processArgs(pid)
+			return err == nil && isSupervisordInvocation(args)
+		},
 		stop: func(pid int) error {
 			p, err := os.FindProcess(pid)
 			if err != nil {
