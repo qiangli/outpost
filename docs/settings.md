@@ -982,6 +982,18 @@ Five behaviours worth knowing:
   describe the peer's cluster. It leaves cluster mode ON; use
   `outpost cluster leave` to stop being a node at all.
 
+`outpost cluster build-runtime` resolves the signed DKS releases through yoke
+`binmgr.EnsureFor` for the image's Linux architecture, with isolated foreign
+caches. It checks ELF architecture and static linkage without executing target
+binaries on the host. Outpost and its CNI plugin are cross-built from the
+selected source checkout with cached dependencies.
+
+Runtime shell resolution currently fails closed: the reviewed bashy source
+`7252aa862303` built with `CGO_ENABLED=0 -tags=bashy_dks_runtime` still has a
+dynamic ELF interpreter on both Linux architectures, and that source has no
+implementation guarded by `bashy_dks_runtime`. A verified static shell with
+those applets is required before image assembly can complete.
+
 The scratch runtime image uses nftables and has no iptables or modprobe.
 `hostPort` pods are unsupported: CNI portmap v1.5.1 requires iptables and is
 omitted. Its bashy binary must be built with `-tags=bashy_dks_runtime`, providing

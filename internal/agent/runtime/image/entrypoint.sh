@@ -583,7 +583,7 @@ log "exec k3s agent --server=https://127.0.0.1:${OUTPOST_API_PORT} --node-name=$
 # vendored k3s patch that isn't actually present in the build — so
 # we close the gap on the agent side instead.
 exec /usr/local/bin/k3s agent \
-    --pause-image=localhost/bashy/pause:bashy-v1.37.1-1 \
+    --pause-image=localhost/bashy/pause:bashy-v1.37.1-2 \
     --kube-proxy-arg=proxy-mode=nftables \
     --kubelet-arg=make-iptables-util-chains=false \
     --server="https://127.0.0.1:${OUTPOST_API_PORT}" \

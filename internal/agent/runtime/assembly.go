@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"debug/buildinfo"
 	"debug/elf"
 	"encoding/json"
 	"fmt"
@@ -22,7 +21,7 @@ import (
 // runtimeBashyTags enables the nft, mount and umount argv0 applets.
 const runtimeBashyTags = "bashy_dks_runtime"
 
-const pauseImage = "localhost/bashy/pause:bashy-v1.37.1-1"
+const pauseImage = "localhost/bashy/pause:" + binmgr.PauseVersion
 const coreDNSImage = "localhost/bashy/coredns:bashy-v1.14.7-1"
 
 // BinaryResolver returns a static Linux executable for the requested target.
@@ -32,70 +31,43 @@ type BinaryResolver interface {
 	Resolve(context.Context, string, string) (string, error)
 }
 
-type releaseBinary struct{ repo, version, asset string }
-
-var runtimeReleases = map[string]releaseBinary{
-	"k3s":                     {"k3s", "bashy-v1.37.1+k3s1-1", "k3s"},
-	"containerd-shim-runc-v2": {"k3s", "bashy-v1.37.1+k3s1-1", "containerd-shim-runc-v2"},
-	"runc":                    {"runc", "bashy-v1.5.2-1", "runc"},
-	"metrics-server":          {"metrics-server", "bashy-v0.9.0-1", "metrics-server"},
-	"tailscale":               {"tailscale", "bashy-v1.104.1-1", "tailscale"},
-	"tailscaled":              {"tailscale", "bashy-v1.104.1-1", "tailscaled"},
-	"pause":                   {"pause", "bashy-v1.37.1-1", "pause"},
-	"coredns":                 {"coredns", "bashy-v1.14.7-1", "coredns"},
-	// The static scratch-shell release has not been published/pinned yet.
-	// Keep this empty rather than guessing a tag or using a host PATH binary.
-	"bashy": {"bashy", "", "bashy"},
-}
-
-// binmgrResolver adapts binmgr's host-platform API to explicit Linux assets.
-// The committed pin is looked up for linux/arch BEFORE creating a Tool. The
-// distinct cache name prevents a cross-build from replacing a host executable.
+// binmgr owns signed release verification and isolates foreign target caches.
 type binmgrResolver struct{ sourceDir, workDir string }
 
 func (r binmgrResolver) Resolve(ctx context.Context, name, arch string) (string, error) {
+	if arch != "amd64" && arch != "arm64" {
+		return "", fmt.Errorf("unsupported runtime architecture %q", arch)
+	}
+	if name == "bashy" {
+		return "", fmt.Errorf("runtime bashy unavailable: need a static Linux build with implemented -tags=%s applets; reviewed source 7252aa862303 fails the ELF static-link gate", runtimeBashyTags)
+	}
 	if name == "outpost" || name == "outpost-cni" {
 		pkg := "./cmd/outpost"
 		if name == "outpost-cni" {
 			pkg = "./internal/agent/runtime/image/cni"
 		}
-		dest := filepath.Join(r.workDir, name)
+		dest := filepath.Join(r.workDir, name+"-"+arch)
 		cmd := exec.CommandContext(ctx, "go", "build", "-mod=readonly", "-tags=fb_archives", "-trimpath", "-o", dest, pkg)
 		cmd.Dir = r.sourceDir
-		cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0", "GOPROXY=off", "GOSUMDB=off", "GOWORK=off", "GOTOOLCHAIN=local")
+		cmd.Env = runtimeBuildEnv(arch)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("cross-build %s from an outpost checkout with cached dependencies: %w: %s", name, err, out)
+			return "", fmt.Errorf("cross-build %s from pinned source with cached dependencies: %w: %s", name, err, out)
 		}
 		return dest, validateStaticLinux(dest, arch)
 	}
-	spec, ok := runtimeReleases[name]
-	if strings.HasPrefix(name, "cni-") {
-		spec, ok = releaseBinary{"cni-plugins", "bashy-v1.5.1-1", name}, true
-	}
-	pin, pinned := binmgr.PinnedSHA256(name, spec.version, "linux/"+arch)
-	if !ok || spec.version == "" || !pinned {
-		return "", fmt.Errorf("%s linux/%s: not yet published / not pinned in yoke binmgr", name, arch)
-	}
-	url := "https://github.com/qiangli/" + spec.repo
-	tool := binmgr.Tool{
-		Name: "outpost-runtime-" + name + "-linux-" + arch, Version: spec.version,
-		Assets:   map[string]binmgr.Asset{binmgr.Platform(): {URL: url + "/releases/download/" + spec.version + "/" + spec.asset + "-linux-" + arch, SHA256: pin}},
-		Sigstore: &binmgr.Sigstore{Identity: url + "/.github/workflows/bashy-build.yml@refs/tags/" + spec.version, Issuer: binmgr.GitHubActionsIssuer},
-	}
-	path, err := binmgr.Ensure(ctx, tool)
+	tool, err := binmgr.DKSTool(name)
 	if err != nil {
-		return "", fmt.Errorf("%s: signed pinned binary unavailable (not yet published / not pinned): %w", name, err)
+		return "", fmt.Errorf("%s: not yet published / not pinned: %w", name, err)
 	}
-	if name == "bashy" {
-		info, err := buildinfo.ReadFile(path)
-		if err != nil {
-			return "", fmt.Errorf("runtime bashy build metadata: %w", err)
-		}
-		if err := validateRuntimeBashyTags(info); err != nil {
-			return "", err
-		}
+	path, err := binmgr.EnsureFor(ctx, tool, "linux", arch)
+	if err != nil {
+		return "", fmt.Errorf("%s: signed pinned binary unavailable: %w", name, err)
 	}
 	return path, validateStaticLinux(path, arch)
+}
+
+func runtimeBuildEnv(arch string) []string {
+	return append(os.Environ(), "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0", "GOPROXY=off", "GOSUMDB=off", "GOWORK=off", "GOTOOLCHAIN=local")
 }
 
 func validateRuntimeBashyTags(info *debug.BuildInfo) error {

@@ -160,7 +160,7 @@ func TestScratchMissingBinaryFailsBeforeEngine(t *testing.T) {
 }
 func TestUnpublishedBinmgrFailsClosed(t *testing.T) {
 	r := binmgrResolver{}
-	for _, name := range []string{"bashy", "no-such-runtime-binary"} {
+	for _, name := range []string{"no-such-runtime-binary"} {
 		_, err := r.Resolve(context.Background(), name, "arm64")
 		if err == nil || !strings.Contains(err.Error(), "not yet published / not pinned") {
 			t.Fatalf("%s: %v", name, err)
@@ -317,5 +317,39 @@ func TestRuntimeModuleWarning(t *testing.T) {
 		} else if !strings.Contains(string(out), "WARNING: host kernel modules missing from /sys/module: "+missing+";") {
 			t.Fatalf("missing modules %q: %s", missing, out)
 		}
+	}
+}
+
+// This gate downloads all 28 signed DKS pins into a disposable cache and
+// never runs a Linux executable.
+func TestDKSResolve(t *testing.T) {
+	if os.Getenv("OUTPOST_DKS_RESOLVE") != "1" {
+		t.Skip("set OUTPOST_DKS_RESOLVE=1 for signed release resolution")
+	}
+	t.Setenv("BASHY_BIN_CACHE", t.TempDir())
+	r := binmgrResolver{workDir: t.TempDir()}
+	names := []string{"k3s", "containerd-shim-runc-v2", "runc", "metrics-server", "tailscale", "tailscaled", "pause", "coredns", "cni-bridge", "cni-host-local", "cni-loopback", "cni-bandwidth", "cni-firewall", "cni-portmap"}
+	for _, arch := range []string{"amd64", "arm64"} {
+		for _, name := range names {
+			t.Run(name+"/"+arch, func(t *testing.T) {
+				path, err := r.Resolve(context.Background(), name, arch)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+					t.Fatalf("missing binary %s: %v", path, err)
+				}
+				if err := validateStaticLinux(path, arch); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+}
+
+func TestRuntimeBashyUnavailable(t *testing.T) {
+	_, err := (binmgrResolver{}).Resolve(context.Background(), "bashy", "amd64")
+	if err == nil || !strings.Contains(err.Error(), "runtime bashy unavailable") {
+		t.Fatalf("got %v", err)
 	}
 }
