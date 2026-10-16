@@ -611,6 +611,8 @@ github.com/qiangli/sh/v3 v3.0.0-20261014083225-477b218e535d h1:WeYsXOry8H3Bhhz0F
 github.com/qiangli/sh/v3 v3.0.0-20261014083225-477b218e535d/go.mod h1:tyFtJgC2PikzHoF5joV+bRq5JdGSisHLNPZNsh9nxgI=
 github.com/qiangli/yoke v0.0.0-20261016155232-a75c26929836 h1:/0+KKGjarxVkxFgwnetrmlgLS8AbRlZd+u3KxiyJBT8=
 github.com/qiangli/yoke v0.0.0-20261016155232-a75c26929836/go.mod h1:UVkWUE/pNAMC/XxaKnyZyHqkOUK8DvCYJKDwkJToQss=
+github.com/qiangli/yoke v0.0.0-20261016223738-595ca14988bd h1:ZuxTu2hgUhqlbXe0BwtdWFFm24u8sNJXCOH4wT4nB1o=
+github.com/qiangli/yoke v0.0.0-20261016223738-595ca14988bd/go.mod h1:UXMS8zD5VJwYM9nCm9tb+ZvfFEH0x7xus1UT0OEANbk=
 github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261014085036-9d08a1bef6be h1:aDgeAgPkUDOxrLYVtKQikZNnr8SsGdzvazd/f9eWnOg=
 github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261014085036-9d08a1bef6be/go.mod h1:UnJ5Aw/zCOdFgHdziuLv9sU0t/KT8dcOrGfmwcm6X4E=
 github.com/quic-go/qpack v0.6.0 h1:g7W+BMYynC1LbYLSqRt8PBg5Tgwxn214ZZR34VIOjz8=
