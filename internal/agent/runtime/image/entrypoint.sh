@@ -57,6 +57,17 @@ set -eu
 
 log() { printf '[runtime] %s\n' "$*" >&2; }
 
+# This image cannot modprobe; the Linux host (or VM) must preload modules.
+MISSING_MODULES=""
+for module in br_netfilter overlay nf_tables vxlan; do
+    if [ ! -d "/sys/module/${module}" ]; then
+        MISSING_MODULES="${MISSING_MODULES} ${module}"
+    fi
+done
+if [ -n "${MISSING_MODULES}" ]; then
+    log "WARNING: host kernel modules missing from /sys/module:${MISSING_MODULES}; preload them on the host; this image cannot modprobe (k3s only warns)."
+fi
+
 # The CNI ledger is persisted outside the runtime container, while inner
 # containerd/sandbox state is intentionally ephemeral. The outer supervisor
 # sets this marker only when it proved this container is newly replacing an
@@ -122,6 +133,7 @@ sysctl -w net.bridge.bridge-nf-call-ip6tables=1 2>/dev/null || true
 # 10-outpost sort ahead of 10-flannel. A leftover file would win, flannel
 # would never be selected, and the node would come up Ready while pod
 # traffic silently went nowhere.
+# hostPort pods are unsupported: portmap v1.5.1 requires iptables, absent here.
 if [ "${OUTPOST_POD_NETWORK_MODE}" = "peer-flannel" ]; then
     log "peer-flannel: flannel owns CNI; removing any stale conflist and writing none"
     rm -f /etc/cni/net.d/10-outpost.conflist /etc/cni/net.d/10-bridge.conflist
@@ -157,10 +169,6 @@ else
         "type": "host-local",
         "ranges": [[{ "subnet": "${CNI_LOCAL_POD_CIDR}" }]]
       }
-    },
-    {
-      "type": "portmap",
-      "capabilities": { "portMappings": true }
     }
   ]
 }
@@ -577,6 +585,7 @@ log "exec k3s agent --server=https://127.0.0.1:${OUTPOST_API_PORT} --node-name=$
 exec /usr/local/bin/k3s agent \
     --pause-image=localhost/bashy/pause:bashy-v1.37.1-1 \
     --kube-proxy-arg=proxy-mode=nftables \
+    --kubelet-arg=make-iptables-util-chains=false \
     --server="https://127.0.0.1:${OUTPOST_API_PORT}" \
     --token="${OUTPOST_NODE_TOKEN}" \
     --node-name="${OUTPOST_AGENT_NAME}" \

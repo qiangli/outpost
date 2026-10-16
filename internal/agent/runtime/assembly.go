@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"debug/buildinfo"
 	"debug/elf"
 	"encoding/json"
 	"fmt"
@@ -12,10 +13,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 
 	"github.com/qiangli/yoke/pkg/binmgr"
 )
+
+// runtimeBashyTags enables the nft, mount and umount argv0 applets.
+const runtimeBashyTags = "bashy_dks_runtime"
 
 const pauseImage = "localhost/bashy/pause:bashy-v1.37.1-1"
 const coreDNSImage = "localhost/bashy/coredns:bashy-v1.14.7-1"
@@ -81,7 +86,29 @@ func (r binmgrResolver) Resolve(ctx context.Context, name, arch string) (string,
 	if err != nil {
 		return "", fmt.Errorf("%s: signed pinned binary unavailable (not yet published / not pinned): %w", name, err)
 	}
+	if name == "bashy" {
+		info, err := buildinfo.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("runtime bashy build metadata: %w", err)
+		}
+		if err := validateRuntimeBashyTags(info); err != nil {
+			return "", err
+		}
+	}
 	return path, validateStaticLinux(path, arch)
+}
+
+func validateRuntimeBashyTags(info *debug.BuildInfo) error {
+	for _, setting := range info.Settings {
+		if setting.Key == "-tags" {
+			for _, tag := range strings.FieldsFunc(setting.Value, func(r rune) bool { return r == ',' || r == ' ' }) {
+				if tag == runtimeBashyTags {
+					return nil
+				}
+			}
+		}
+	}
+	return fmt.Errorf("runtime bashy must be built with -tags=%s", runtimeBashyTags)
 }
 
 func validateStaticLinux(path, arch string) error {
@@ -112,7 +139,7 @@ var runtimeBinaries = []struct{ name, dest string }{
 	{"runc", "usr/local/bin/runc"}, {"metrics-server", "usr/local/bin/metrics-server"},
 	{"tailscale", "usr/local/bin/tailscale"}, {"tailscaled", "usr/local/bin/tailscaled"},
 	{"cni-bridge", "opt/cni/bin/bridge"}, {"cni-host-local", "opt/cni/bin/host-local"},
-	{"cni-loopback", "opt/cni/bin/loopback"}, {"cni-portmap", "opt/cni/bin/portmap"},
+	{"cni-loopback", "opt/cni/bin/loopback"},
 	{"cni-bandwidth", "opt/cni/bin/bandwidth"}, {"cni-firewall", "opt/cni/bin/firewall"},
 }
 
@@ -194,7 +221,7 @@ func assembleImageContext(ctx context.Context, opts BuildOptions, arch string) (
 	if err = put("usr/local/share/outpost/coredns.yaml", data, 0644); err != nil {
 		return dir, err
 	}
-	for _, d := range []string{"tmp", "run", "etc/cni/net.d", "etc/rancher/k3s", "var/lib/rancher/k3s/server/manifests"} {
+	for _, d := range []string{"tmp", "run", "usr/sbin", "etc/cni/net.d", "etc/rancher/k3s", "var/lib/rancher/k3s/server/manifests"} {
 		if err = os.MkdirAll(filepath.Join(root, d), 0755); err != nil {
 			return dir, err
 		}
@@ -203,18 +230,21 @@ func assembleImageContext(ctx context.Context, opts BuildOptions, arch string) (
 		return dir, err
 	}
 	// External Go programs exec these applets by name; shell builtins alone are
-	// insufficient. nft is supplied by bashy's parallel yoke implementation.
-	for _, name := range strings.Fields("bash sh cat mkdir rm mv cp chmod chown sleep head tr sed awk hostname base64 grep tail timeout setpriv mount umount modprobe sysctl nft ip ipset conntrack ethtool nsenter mountpoint uname ln readlink stat iptables ip6tables iptables-save iptables-restore ip6tables-save ip6tables-restore") {
-		if err = os.Symlink("bashy", filepath.Join(root, "bin", name)); err != nil {
+	// insufficient. Runtime-only applets require runtimeBashyTags above.
+	for _, name := range strings.Fields("bash sh cat mkdir rm mv cp chmod chown sleep head tr sed awk hostname base64 grep tail timeout setpriv mount umount sysctl ip ipset conntrack ethtool nsenter mountpoint uname ln readlink stat") {
+		if err = os.Symlink("/bin/bashy", filepath.Join(root, "bin", name)); err != nil {
 			return dir, err
 		}
+	}
+	if err = os.Symlink("/bin/bashy", filepath.Join(root, "usr/sbin/nft")); err != nil {
+		return dir, err
 	}
 	for _, name := range []string{"containerd", "kubectl", "crictl", "ctr"} {
 		if err = os.Symlink("k3s", filepath.Join(root, "usr/local/bin", name)); err != nil {
 			return dir, err
 		}
 	}
-	recipe := "FROM --platform=linux/" + arch + " scratch\nCOPY rootfs/ /\nENV PATH=/usr/local/bin:/bin:/opt/cni/bin\nENTRYPOINT [\"/entrypoint.sh\"]\n"
+	recipe := "FROM --platform=linux/" + arch + " scratch\nCOPY rootfs/ /\nENV PATH=/usr/local/bin:/usr/sbin:/bin:/opt/cni/bin\nENTRYPOINT [\"/entrypoint.sh\"]\n"
 	err = os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(recipe), 0644)
 	return dir, err
 }

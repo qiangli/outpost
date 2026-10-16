@@ -399,6 +399,11 @@ Run from an outpost checkout with Go and its dependencies already cached to
 cross-build outpost and outpost-cni. The selected architecture applies to all
 binaries and the image. Pause and CoreDNS ship as local image archives.
 
+The runtime bashy must include its runtime-only applets. This image has no
+iptables or modprobe; hostPort pods are unsupported. The Linux host (or VM)
+must have br_netfilter, overlay, nf_tables and vxlan available before startup.
+The entrypoint warns about modules absent from /sys/module; k3s only warns.
+
 Examples:
   outpost cluster build-runtime
   outpost cluster build-runtime --tag outpost-runtime:next

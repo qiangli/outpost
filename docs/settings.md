@@ -982,6 +982,15 @@ Five behaviours worth knowing:
   describe the peer's cluster. It leaves cluster mode ON; use
   `outpost cluster leave` to stop being a node at all.
 
+The scratch runtime image uses nftables and has no iptables or modprobe.
+`hostPort` pods are unsupported: CNI portmap v1.5.1 requires iptables and is
+omitted. Its bashy binary must be built with `-tags=bashy_dks_runtime`, providing
+`/usr/sbin/nft`, `/bin/mount` and `/bin/umount` applets. Before starting the
+runtime, the Linux host (or container VM) must have `br_netfilter`, `overlay`,
+`nf_tables` and `vxlan` available. Preload these on the host; the entrypoint
+warns with the names absent from `/sys/module`, and k3s only warns rather than
+loading them successfully in this image.
+
 To keep secrets out of argv and shell history, every credential has an
 environment fallback and the join token can be read from stdin:
 

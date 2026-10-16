@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"testing"
@@ -62,10 +63,10 @@ func TestScratchContext(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := []string{"Dockerfile"}
-			for _, p := range strings.Fields(`bin/bashy bin/bash bin/sh bin/cat bin/mkdir bin/rm bin/mv bin/cp bin/chmod bin/chown bin/sleep bin/head bin/tr bin/sed bin/awk bin/hostname bin/base64 bin/grep bin/tail bin/timeout bin/setpriv bin/mount bin/umount bin/modprobe bin/sysctl bin/nft bin/ip bin/ipset bin/conntrack bin/ethtool bin/nsenter bin/mountpoint bin/uname bin/ln bin/readlink bin/stat bin/iptables bin/ip6tables bin/iptables-save bin/iptables-restore bin/ip6tables-save bin/ip6tables-restore
+			for _, p := range strings.Fields(`bin/bashy bin/bash bin/sh bin/cat bin/mkdir bin/rm bin/mv bin/cp bin/chmod bin/chown bin/sleep bin/head bin/tr bin/sed bin/awk bin/hostname bin/base64 bin/grep bin/tail bin/timeout bin/setpriv bin/mount bin/umount bin/sysctl usr/sbin/nft bin/ip bin/ipset bin/conntrack bin/ethtool bin/nsenter bin/mountpoint bin/uname bin/ln bin/readlink bin/stat
  entrypoint.sh server-entrypoint.sh
  usr/local/bin/outpost usr/local/bin/k3s usr/local/bin/containerd usr/local/bin/kubectl usr/local/bin/crictl usr/local/bin/ctr usr/local/bin/containerd-shim-runc-v2 usr/local/bin/runc usr/local/bin/tailscale usr/local/bin/tailscaled usr/local/bin/metrics-server usr/local/bin/frpc-supervisor.sh usr/local/bin/metrics-server-supervisor.sh usr/local/bin/snapshotter.sh
- opt/cni/bin/outpost-cni opt/cni/bin/bridge opt/cni/bin/host-local opt/cni/bin/loopback opt/cni/bin/portmap opt/cni/bin/bandwidth opt/cni/bin/firewall
+ opt/cni/bin/outpost-cni opt/cni/bin/bridge opt/cni/bin/host-local opt/cni/bin/loopback opt/cni/bin/bandwidth opt/cni/bin/firewall
  usr/local/share/outpost/coredns.yaml var/lib/rancher/k3s/agent/images/pause.tar var/lib/rancher/k3s/agent/images/coredns.tar`) {
 				want = append(want, "rootfs/"+p)
 			}
@@ -75,12 +76,12 @@ func TestScratchContext(t *testing.T) {
 				t.Fatalf("context files:\ngot %v\nwant %v", got, want)
 			}
 			recipe, _ := os.ReadFile(filepath.Join(dir, "Dockerfile"))
-			if string(recipe) != "FROM --platform=linux/"+arch+" scratch\nCOPY rootfs/ /\nENV PATH=/usr/local/bin:/bin:/opt/cni/bin\nENTRYPOINT [\"/entrypoint.sh\"]\n" {
+			if string(recipe) != "FROM --platform=linux/"+arch+" scratch\nCOPY rootfs/ /\nENV PATH=/usr/local/bin:/usr/sbin:/bin:/opt/cni/bin\nENTRYPOINT [\"/entrypoint.sh\"]\n" {
 				t.Fatalf("unexpected build instructions: %s", recipe)
 			}
-			for _, p := range []string{"bin/bash", "bin/sh"} {
+			for _, p := range []string{"bin/bash", "bin/sh", "usr/sbin/nft", "bin/mount", "bin/umount"} {
 				target, err := os.Readlink(filepath.Join(dir, "rootfs", p))
-				if err != nil || target != "bashy" {
+				if err != nil || target != "/bin/bashy" {
 					t.Fatalf("%s -> %s: %v", p, target, err)
 				}
 			}
@@ -231,7 +232,7 @@ func TestRuntimeK3sArgv(t *testing.T) {
 		t.Fatalf("%v: %s", err, out)
 	}
 	assertLocalImageReferences(t, "agent argv", string(out))
-	for _, arg := range []string{"agent", "--pause-image=" + pauseImage, "--kube-proxy-arg=proxy-mode=nftables", "--snapshotter=overlayfs"} {
+	for _, arg := range []string{"agent", "--pause-image=" + pauseImage, "--kube-proxy-arg=proxy-mode=nftables", "--kubelet-arg=make-iptables-util-chains=false", "--snapshotter=overlayfs"} {
 		if !strings.Contains("\n"+string(out), "\n"+arg+"\n") {
 			t.Errorf("agent missing %s: %s", arg, out)
 		}
@@ -248,6 +249,73 @@ func TestSnapshotterFallback(t *testing.T) {
 		out, err := exec.Command("bash", "-eu", "-c", s).CombinedOutput()
 		if err != nil || string(out) != tc.want {
 			t.Fatalf("mount=%s: %s, %v", tc.mount, out, err)
+		}
+	}
+}
+
+func TestRuntimeBashyTags(t *testing.T) {
+	for _, tc := range []struct {
+		tags  string
+		valid bool
+	}{
+		{"", false}, {"fb_archives", false}, {"not_bashy_dks_runtime", false},
+		{"bashy_dks_runtime", true}, {"fb_archives,bashy_dks_runtime", true},
+	} {
+		info := &debug.BuildInfo{Settings: []debug.BuildSetting{{Key: "-tags", Value: tc.tags}}}
+		if err := validateRuntimeBashyTags(info); (err == nil) != tc.valid {
+			t.Errorf("tags %q: %v", tc.tags, err)
+		}
+	}
+}
+
+func TestRuntimeConflists(t *testing.T) {
+	script, err := imageFS.ReadFile("image/entrypoint.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := regexp.MustCompile(`(?s)cat > /etc/cni/net.d/[^ ]+ <<EOF\n(.*?)\nEOF`)
+	matches := re.FindAllStringSubmatch(string(script), -1)
+	if len(matches) != 2 {
+		t.Fatalf("expected two conflists, got %d", len(matches))
+	}
+	for _, match := range matches {
+		var conf struct{ Plugins []struct{ Type string } }
+		if err := json.Unmarshal([]byte(match[1]), &conf); err != nil {
+			t.Fatal(err)
+		}
+		if len(conf.Plugins) != 1 || (conf.Plugins[0].Type != "bridge" && conf.Plugins[0].Type != "outpost-cni") {
+			t.Fatalf("unexpected CNI chain: %s", match[1])
+		}
+		if strings.Contains(match[1], "portmap") {
+			t.Fatalf("iptables-only portmap: %s", match[1])
+		}
+	}
+}
+
+func TestRuntimeModuleWarning(t *testing.T) {
+	script, _ := imageFS.ReadFile("image/entrypoint.sh")
+	s := string(script)
+	s = s[strings.Index(s, `MISSING_MODULES=""`):strings.Index(s, "# The CNI ledger")]
+	for _, missing := range []string{"", "overlay", "br_netfilter overlay nf_tables vxlan"} {
+		root := t.TempDir()
+		for _, module := range strings.Fields("br_netfilter overlay nf_tables vxlan") {
+			if !strings.Contains(missing, module) {
+				if err := os.Mkdir(filepath.Join(root, module), 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		body := strings.ReplaceAll(s, "/sys/module/", root+"/")
+		out, err := exec.Command("bash", "-eu", "-c", `log(){ printf '%s\n' "$*"; }; `+body).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		if missing == "" {
+			if len(out) != 0 {
+				t.Fatalf("unexpected warning: %s", out)
+			}
+		} else if !strings.Contains(string(out), "WARNING: host kernel modules missing from /sys/module: "+missing+";") {
+			t.Fatalf("missing modules %q: %s", missing, out)
 		}
 	}
 }
