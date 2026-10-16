@@ -197,7 +197,7 @@ func TestEntrypointRouteLocalnetBridgeIsModeAware(t *testing.T) {
 	if !strings.Contains(script, `for iface in lo eth0 default "${POD_BRIDGE}"; do`) {
 		t.Error("the route_localnet loop does not arm ${POD_BRIDGE}")
 	}
-	if !strings.Contains(script, `while ! ip link show "${POD_BRIDGE}" >/dev/null 2>&1; do sleep 2; done`) {
+	if !strings.Contains(script, `while ! outpost netaddr exists "${POD_BRIDGE}" >/dev/null 2>&1; do sleep 2; done`) {
 		t.Error("the bridge-appearance watchdog does not wait on ${POD_BRIDGE}")
 	}
 	if !strings.Contains(script, `sysctl -w net.ipv4.conf.${POD_BRIDGE}.route_localnet=1 >/dev/null 2>&1`) {

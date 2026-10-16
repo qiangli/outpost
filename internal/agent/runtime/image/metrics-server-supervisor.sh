@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Run metrics-server inside the peer control-plane container's network
 # namespace. frps publishes every authenticated worker kubelet on this
 # namespace's 127/8, so colocating the scraper preserves tunnel isolation:
@@ -175,21 +175,9 @@ done
 # reads and delegated auth checks; the process never receives system:admin.
 # The supervisor rotates this 48-hour certificate every 24 hours.
 mint_credentials() {
-    rm -f "$work/client.key" "$work/client.csr" "$work/client.crt" "$work/client.ext" "$work/kubeconfig"
-    openssl req -new -newkey rsa:2048 -nodes \
-        -keyout "$work/client.key" -out "$work/client.csr" \
-        -subj '/CN=system:serviceaccount:kube-system:metrics-server/O=system:serviceaccounts/O=system:serviceaccounts:kube-system/O=system:authenticated' \
-        >/dev/null 2>&1
-    cat > "$work/client.ext" <<'EOF'
-basicConstraints=CA:FALSE
-keyUsage=digitalSignature,keyEncipherment
-extendedKeyUsage=clientAuth
-EOF
-    serial="$(openssl rand -hex 16)"
-    openssl x509 -req -days 2 -sha256 \
-        -in "$work/client.csr" -CA "$client_ca" -CAkey "$client_key" \
-        -set_serial "0x$serial" -extfile "$work/client.ext" \
-        -out "$work/client.crt" >/dev/null 2>&1
+    rm -f "$work/client.key" "$work/client.crt" "$work/kubeconfig"
+    outpost certgen metrics --key "$work/client.key" --cert "$work/client.crt" \
+        --ca "$client_ca" --ca-key "$client_key"
 
     ca_data="$(base64 < "$server_ca" | tr -d '\n')"
     cert_data="$(base64 < "$work/client.crt" | tr -d '\n')"
@@ -252,10 +240,10 @@ service_ip="$(k3s kubectl --kubeconfig="$internal_kubeconfig" \
     log "FATAL: metrics Service has no ordinary ClusterIP"
     exit 1
 }
-ip address add "$service_ip/32" dev lo 2>/dev/null || true
+outpost netaddr add "$service_ip/32" dev lo
 log "bridging private Service ${service_ip}:443 to ${OUTPOST_METRICS_ADDRESS}:${OUTPOST_METRICS_PORT}"
-socat "TCP-LISTEN:443,bind=${service_ip},reuseaddr,fork" \
-    "TCP:${OUTPOST_METRICS_ADDRESS}:${OUTPOST_METRICS_PORT}" \
+outpost tlsproxy --listen "${service_ip}:443" \
+    --forward "${OUTPOST_METRICS_ADDRESS}:${OUTPOST_METRICS_PORT}" \
     >"$work/service-proxy.log" 2>&1 &
 service_proxy_pid=$!
 

@@ -6,7 +6,7 @@ set -u
 
 log() { printf '[runtime] %s\n' "$*" >&2; }
 
-FRPC_BIN="${FRPC_BIN:-frpc}"
+OUTPOST_BIN="${OUTPOST_BIN:-outpost}"
 FRPC_CONFIG="${FRPC_CONFIG:-/tmp/frpc.toml}"
 FRPC_LOG="${FRPC_LOG:-/tmp/frpc.log}"
 FRPC_REQUIRED_PORTS="${FRPC_REQUIRED_PORTS:-}"
@@ -30,7 +30,7 @@ probe_port() {
         "${FRPC_PROBE_BIN}" "${port}"
         return $?
     fi
-    (echo >/dev/tcp/127.0.0.1/"${port}") 2>/dev/null
+    (: >/dev/tcp/127.0.0.1/"${port}") 2>/dev/null
 }
 
 all_required_ports_up() {
@@ -80,7 +80,7 @@ trap cleanup INT TERM EXIT
 
 start_frpc() {
     log "starting frpc (matrix tunnel + STCP visitors)"
-    "${FRPC_BIN}" -c "${FRPC_CONFIG}" >>"${FRPC_LOG}" 2>&1 &
+    "${OUTPOST_BIN}" frpc -c "${FRPC_CONFIG}" >>"${FRPC_LOG}" 2>&1 &
     FRPC_PID=$!
     ticks=0
     misses=0

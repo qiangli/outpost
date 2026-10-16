@@ -224,7 +224,7 @@ EOF
 # authkey was handed to us). Same STCP secret as the apiserver.
 # OVERLAY_CONTROL_PORT is the TLS endpoint tailscale connects to;
 # OVERLAY_CONTROL_BACKEND_PORT is where the frp visitor binds (plain HTTP
-# → cloudbox gin). socat bridges TLS(8091) → plain(8092). Two ports
+# → cloudbox gin). tlsproxy bridges TLS(8091) → plain(8092). Two ports
 # because tailscale's ts2021 requires TLS but the tunnelled endpoint is
 # plain HTTP.
 OVERLAY_CONTROL_PORT="${OVERLAY_CONTROL_PORT:-8091}"
@@ -350,7 +350,7 @@ fi
 # before the publisher accepts a stream, so a successful connect to
 # 127.0.0.1:6443 means the tunnel is at least architecturally in place.
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-    if (echo >/dev/tcp/127.0.0.1/${OUTPOST_API_PORT}) 2>/dev/null; then
+    if (: >/dev/tcp/127.0.0.1/${OUTPOST_API_PORT}) 2>/dev/null; then
         log "STCP visitor reachable on 127.0.0.1:${OUTPOST_API_PORT} (attempt $i)"
         break
     fi
@@ -369,27 +369,24 @@ if [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ]; then
     # visitor. This is the Cloudflare-free path (CF strips the ts2021 POST
     # Upgrade header on the direct HTTPS URL).
     #
-    # socat is started UNCONDITIONALLY (not gated on the visitor being up
-    # yet): OPENSSL-LISTEN binds :8091 immediately and only dials :8092 when
+    # tlsproxy is started UNCONDITIONALLY (not gated on the visitor being up
+    # yet): tlsproxy binds :8091 immediately and only dials :8092 when
     # a connection arrives, so it tolerates the frp visitor binding late
     # (e.g. frpc still reconnecting after a cloudbox deploy). This is what
     # lets the daemon-side refresher self-heal a boot that raced the deploy
-    # — without a running socat, Heal() would have nothing to dial.
+    # — without a running tlsproxy, Heal() would have nothing to dial.
     CERT=/tmp/overlay-control.crt
     KEY=/tmp/overlay-control.key
     if [ ! -f "${CERT}" ]; then
         log "generating loopback TLS cert for overlay control"
-        openssl req -x509 -newkey rsa:2048 -nodes -keyout "${KEY}" -out "${CERT}" \
-            -days 3650 -subj "/CN=overlay-control.local" \
-            -addext "subjectAltName=IP:127.0.0.1,DNS:localhost" >/dev/null 2>&1
-        cp "${CERT}" /usr/local/share/ca-certificates/overlay-control.crt 2>/dev/null || true
-        # tailscaled reads the CA pool at startup, so trust the cert BEFORE
-        # it launches below.
-        update-ca-certificates >/dev/null 2>&1 || true
+        outpost certgen loopback --key "${KEY}" --cert "${CERT}"
+        # Go's system pool reads this bundle at startup, including in scratch.
+        mkdir -p /etc/ssl/certs
+        cat "${CERT}" >> /etc/ssl/certs/ca-certificates.crt
     fi
-    log "starting socat TLS terminator :${OVERLAY_CONTROL_PORT} -> :${OVERLAY_CONTROL_BACKEND_PORT}"
-    socat "OPENSSL-LISTEN:${OVERLAY_CONTROL_PORT},bind=127.0.0.1,cert=${CERT},key=${KEY},reuseaddr,fork,verify=0" \
-        "TCP:127.0.0.1:${OVERLAY_CONTROL_BACKEND_PORT}" >/tmp/socat.log 2>&1 &
+    log "starting tlsproxy TLS terminator :${OVERLAY_CONTROL_PORT} -> :${OVERLAY_CONTROL_BACKEND_PORT}"
+    outpost tlsproxy --listen "127.0.0.1:${OVERLAY_CONTROL_PORT}" --cert "${CERT}" --key "${KEY}" \
+        --forward "127.0.0.1:${OVERLAY_CONTROL_BACKEND_PORT}" >/tmp/tlsproxy.log 2>&1 &
 
     # Best-effort wait for the visitor so the boot-time join succeeds when the
     # tunnel is already healthy; if it never binds in-window, proceed anyway —
@@ -397,7 +394,7 @@ if [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ]; then
     # public URL: it is fronted by Cloudflare and structurally cannot carry
     # ts2021, so an attempt there only wastes a registration.
     for i in $(seq 1 20); do
-        if (echo >/dev/tcp/127.0.0.1/${OVERLAY_CONTROL_BACKEND_PORT}) 2>/dev/null; then
+        if (: >/dev/tcp/127.0.0.1/${OVERLAY_CONTROL_BACKEND_PORT}) 2>/dev/null; then
             log "overlay-control visitor reachable on 127.0.0.1:${OVERLAY_CONTROL_BACKEND_PORT} (attempt $i)"
             break
         fi
@@ -475,7 +472,7 @@ iptables -t nat -I OUTPUT 1 -d "${APISERVER_SVC_IP}/32" -p tcp --dport "${APISER
 # Arm ${POD_BRIDGE}.route_localnet=1 once the CNI bridge appears (kubelet
 # creates it lazily on first pod).
 (
-    while ! ip link show "${POD_BRIDGE}" >/dev/null 2>&1; do sleep 2; done
+    while ! outpost netaddr exists "${POD_BRIDGE}" >/dev/null 2>&1; do sleep 2; done
     sysctl -w net.ipv4.conf.${POD_BRIDGE}.route_localnet=1 >/dev/null 2>&1
     log "armed ${POD_BRIDGE}.route_localnet=1 after bridge creation"
 ) &
@@ -561,7 +558,7 @@ if [ "${OUTPOST_POD_NETWORK_MODE}" = "peer-flannel" ]; then
         # still counts.
         TS_IP="$(tailscale --socket=/var/run/tailscale/tailscaled.sock ip -4 2>/dev/null | head -1)" || TS_IP=""
         if [ -z "${TS_IP}" ]; then
-            TS_IP="$(ip -4 -o addr show dev tailscale0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)" || TS_IP=""
+            TS_IP="$(outpost netaddr ipv4 tailscale0 2>/dev/null)" || TS_IP=""
         fi
         [ -n "${TS_IP}" ] && break
         i=$((i + 1))

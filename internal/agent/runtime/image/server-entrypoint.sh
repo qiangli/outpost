@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # server-entrypoint.sh — run a SELF-HOSTED DKS control plane.
 #
 # The counterpart of entrypoint.sh (which runs `k3s agent`). This one runs
@@ -34,9 +34,8 @@ set -eu
 
 log() { echo "[control-plane] $*" >&2; }
 
-# listening probes via socat — netcat is not in this image, socat is (it is
-# already used by the agent entrypoint's TLS shim).
-listening() { socat -u /dev/null "TCP:127.0.0.1:$1,connect-timeout=1" 2>/dev/null; }
+# Bash's TCP redirection probes the local listener without external tools.
+listening() { (: >"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 
 : "${OUTPOST_TUNNEL_TOKEN:?required: shared secret gating frpc logins}"
 : "${OUTPOST_STCP_SECRET:?required: secret for the k3s-apiserver STCP proxy}"
@@ -69,7 +68,7 @@ token = "${OUTPOST_TUNNEL_TOKEN}"
 EOF
 
 log "starting frps on 0.0.0.0:${OUTPOST_TUNNEL_PORT}"
-frps -c /tmp/frps.toml &
+outpost frps -c /tmp/frps.toml &
 FRPS_PID=$!
 
 # Give frps its listener before the publisher below dials it. A short bounded
@@ -211,7 +210,7 @@ if listening "${OUTPOST_API_PORT}" && [ -s /etc/rancher/k3s/k3s-internal.yaml ];
     METRICS_PID=$!
 
     log "publishing apiserver 127.0.0.1:${OUTPOST_API_PORT} as stcp k3s-apiserver"
-    frpc -c /tmp/frpc-publish.toml &
+    outpost frpc -c /tmp/frpc-publish.toml &
 else
     log "WARNING: apiserver never listened on ${OUTPOST_API_PORT} or never wrote its kubeconfig; not published"
 fi

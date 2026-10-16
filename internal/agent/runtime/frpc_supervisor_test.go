@@ -42,7 +42,8 @@ func TestFRPCSupervisorRestartsAliveProcessWhenVisitorDisappears(t *testing.T) {
 	if err := os.Mkdir(fakes, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeExecutable(t, filepath.Join(fakes, "frpc"), `#!/bin/sh
+	writeExecutable(t, filepath.Join(fakes, "outpost"), `#!/bin/sh
+[ "$1" = frpc ] && [ "$2" = -c ] || exit 2
 echo start "$$" >> "$FRPC_TEST_STARTS"
 trap 'echo term "$$" >> "$FRPC_TEST_TERMS"; exit 0' TERM INT
 while true; do sleep 1; done
@@ -65,7 +66,7 @@ line=$(sed -n "${count}p" "$FRPC_TEST_STATE")
 	cmd := exec.CommandContext(ctx, bashBin, embeddedImagePath(t, "frpc-supervisor.sh"))
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakes+":"+os.Getenv("PATH"),
-		"FRPC_BIN=frpc",
+		"OUTPOST_BIN=outpost",
 		"FRPC_CONFIG=/tmp/frpc.toml",
 		"FRPC_LOG="+filepath.Join(tmp, "frpc.log"),
 		"FRPC_REQUIRED_PORTS=6443,8092",
@@ -112,7 +113,7 @@ func TestFRPCSupervisorCleansChildOnCancellation(t *testing.T) {
 	if err := os.Mkdir(fakes, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeExecutable(t, filepath.Join(fakes, "frpc"), `#!/bin/sh
+	writeExecutable(t, filepath.Join(fakes, "outpost"), `#!/bin/sh
 echo "$$" > "$FRPC_TEST_CHILD_PID"
 trap '' TERM INT
 while true; do sleep 1; done
@@ -130,7 +131,7 @@ exit 0
 	cmd := exec.CommandContext(ctx, bashBin, embeddedImagePath(t, "frpc-supervisor.sh"))
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakes+":"+os.Getenv("PATH"),
-		"FRPC_BIN=frpc",
+		"OUTPOST_BIN=outpost",
 		"FRPC_CONFIG=/tmp/frpc.toml",
 		"FRPC_LOG="+filepath.Join(tmp, "frpc.log"),
 		"FRPC_REQUIRED_PORTS=6443",
@@ -175,7 +176,8 @@ func TestFRPCSupervisorRestartsOnProcessExit(t *testing.T) {
 	if err := os.Mkdir(fakes, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeExecutable(t, filepath.Join(fakes, "frpc"), `#!/bin/sh
+	writeExecutable(t, filepath.Join(fakes, "outpost"), `#!/bin/sh
+[ "$1" = frpc ] && [ "$2" = -c ] || exit 2
 echo start "$$" >> "$FRPC_TEST_STARTS"
 count=0
 [ -f "$FRPC_TEST_RUN_COUNT" ] && count=$(cat "$FRPC_TEST_RUN_COUNT")
@@ -201,7 +203,7 @@ exit 0
 	cmd := exec.CommandContext(ctx, bashBin, embeddedImagePath(t, "frpc-supervisor.sh"))
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakes+":"+os.Getenv("PATH"),
-		"FRPC_BIN=frpc",
+		"OUTPOST_BIN=outpost",
 		"FRPC_CONFIG=/tmp/frpc.toml",
 		"FRPC_LOG="+filepath.Join(tmp, "frpc.log"),
 		"FRPC_REQUIRED_PORTS=6443",
@@ -248,7 +250,8 @@ func TestFRPCSupervisorProbesRealListenerViaDevTCP(t *testing.T) {
 	if err := os.Mkdir(fakes, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeExecutable(t, filepath.Join(fakes, "frpc"), `#!/bin/sh
+	writeExecutable(t, filepath.Join(fakes, "outpost"), `#!/bin/sh
+[ "$1" = frpc ] && [ "$2" = -c ] || exit 2
 echo start "$$" >> "$FRPC_TEST_STARTS"
 trap 'echo term "$$" >> "$FRPC_TEST_TERMS"; exit 0' TERM INT
 while true; do sleep 1; done
@@ -284,7 +287,7 @@ exit 0
 	cmd := exec.CommandContext(ctx, bashBin, embeddedImagePath(t, "frpc-supervisor.sh"))
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakes+":"+os.Getenv("PATH"),
-		"FRPC_BIN=frpc",
+		"OUTPOST_BIN=outpost",
 		"FRPC_CONFIG=/tmp/frpc.toml",
 		"FRPC_LOG="+filepath.Join(tmp, "frpc.log"),
 		"FRPC_REQUIRED_PORTS="+strconv.Itoa(port),

@@ -56,6 +56,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/userkube"
 	"github.com/qiangli/outpost/internal/agent/vknode"
 	"github.com/qiangli/outpost/internal/agent/warm"
+	"github.com/qiangli/outpost/internal/runtimecmd"
 	"github.com/qiangli/outpost/internal/scheduler"
 	"github.com/qiangli/outpost/internal/telemetry"
 	"k8s.io/client-go/rest"
@@ -118,6 +119,7 @@ func main() {
 	// Wave 3A: LAN peer discovery + peer-assisted repair. Registered
 	// via a helper so main.go's root AddCommand block stays compact.
 	registerDiscoveryCommands(root)
+	runtimecmd.Register(root)
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}

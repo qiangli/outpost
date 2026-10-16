@@ -219,11 +219,11 @@ func TestPeerMetricsResourcesPreserveTunnelBoundary(t *testing.T) {
 		"--node-selector='outpost.dhnt.io/runtime!=virtual'",
 		"--kubelet-preferred-address-types=ExternalIP",
 		"--kubelet-use-node-status-port", "--kubelet-insecure-tls",
-		"CN=system:serviceaccount:kube-system:metrics-server",
-		"openssl x509 -req -days 2",
+		`outpost certgen metrics --key "$work/client.key" --cert "$work/client.crt"`,
+		`--ca "$client_ca" --ca-key "$client_key"`,
 		`-lt 8640`,
-		`ip address add "$service_ip/32" dev lo`,
-		`TCP-LISTEN:443,bind=${service_ip}`,
+		`outpost netaddr add "$service_ip/32" dev lo`,
+		`outpost tlsproxy --listen "${service_ip}:443"`,
 		`migrating headless metrics Service`,
 	} {
 		if !strings.Contains(s, required) {
