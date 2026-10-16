@@ -198,7 +198,7 @@ func TestPeerMetricsResourcesPreserveTunnelBoundary(t *testing.T) {
 	}
 	s := string(helperBody)
 	for _, required := range []string{
-		"--reuid=65532", "--clear-groups",
+		"outpost metrics-exec",
 		`--kubeconfig="$internal_kubeconfig"`,
 		"--node-selector='outpost.dhnt.io/runtime!=virtual'",
 		"--kubelet-preferred-address-types=ExternalIP",
@@ -224,5 +224,40 @@ func TestPeerMetricsResourcesPreserveTunnelBoundary(t *testing.T) {
 	}
 	if strings.Contains(s, "--node-selector='outpost.dhnt.io/runtime=agent'") {
 		t.Error("metrics-server selector must retain unlabeled legacy real agents; use runtime!=virtual")
+	}
+}
+
+func TestControlPlaneReportsFailedChild(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("image", "server-entrypoint.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, supervisor, ok := strings.Cut(string(b), "# Exit if EITHER half dies.")
+	if !ok {
+		t.Fatal("missing supervisor")
+	}
+	// Exercise real child exit statuses, including an unexpected clean exit.
+	for _, code := range []string{"0", "7"} {
+		t.Run(code, func(t *testing.T) {
+			script := `set -eu
+log() { echo "$*"; }
+sleep 30 &
+FRPS_PID=$!
+sleep 30 &
+K3S_PID=$!
+(exit ` + code + `) &
+METRICS_PID=$!
+# Let the short-lived child exit before entering the supervisor.
+sleep 0.1
+` + "# Exit if EITHER half dies." + supervisor
+			out, err := exec.Command("bash", "-c", script).CombinedOutput()
+			if err == nil {
+				t.Fatal("supervisor survived a failed child")
+			}
+			if !strings.Contains(string(out), "metrics-supervisor (pid ") ||
+				!strings.Contains(string(out), "exited with code "+code) {
+				t.Fatalf("missing child diagnostic: %s", out)
+			}
+		})
 	}
 }

@@ -250,7 +250,7 @@ func assembleImageContext(ctx context.Context, opts BuildOptions, arch string) (
 	}
 	// External Go programs exec these applets by name; shell builtins alone are
 	// insufficient. Runtime-only applets require runtimeBashyTags above.
-	for _, name := range strings.Fields("bash sh cat mkdir rm mv cp chmod chown sleep head tr sed awk hostname base64 grep tail timeout setpriv mount umount sysctl ip ipset conntrack ethtool nsenter mountpoint uname ln readlink stat") {
+	for _, name := range strings.Fields("bash sh cat mkdir rm mv cp chmod chown sleep head tr sed awk hostname base64 grep tail timeout mount umount sysctl ip ipset conntrack ethtool nsenter mountpoint uname ln readlink stat") {
 		if err = os.Symlink("/bin/bashy", filepath.Join(root, "bin", name)); err != nil {
 			return dir, err
 		}
