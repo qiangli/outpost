@@ -177,15 +177,10 @@ func (c *ollamaCapability) resolve(cfg service.Config) (string, error) {
 	}
 	bt := detect()
 	if !bt.Available || bt.URL == "" {
-		return "", fmt.Errorf("ollama: no Ollama daemon detected (tried %s) — start it, or set `settings.url`", firstNonEmpty(bt.URL, defaultOllamaURL))
+		return "", fmt.Errorf("ollama: no Ollama daemon detected (tried %s) — start it, or set `settings.url`", firstNonEmpty(bt.URL, ollama.DefaultURL))
 	}
 	return bt.URL, nil
 }
-
-// defaultOllamaURL is Ollama's own default endpoint — the target the warm
-// plane and the LAN inference proxy fall back to when the proxy unit is off
-// and nothing else named one.
-const defaultOllamaURL = "http://127.0.0.1:11434"
 
 // ollamaPoolCapability runs the registry-push watcher.
 type ollamaPoolCapability struct {

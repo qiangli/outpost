@@ -33,6 +33,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/qiangli/outpost/internal/agent/ollama"
 )
 
 // Warm request modes.
@@ -110,7 +112,10 @@ type Config struct {
 	Shard     ShardControl
 	Gauge     LoadGauge
 	UsableMem func() uint64
-	APIPort   int // shard API port (0 → 11434)
+	// APIPort is the shard API port. 0 falls back to the declared
+	// Ollama default (ollama.DefaultPort), never a second copy of the
+	// number.
+	APIPort int
 
 	// Desired seeds the persisted desired warm set (FileConfig.WarmDesired).
 	Desired []string
@@ -146,7 +151,7 @@ func New(cfg Config) *Executor {
 	}
 	apiPort := cfg.APIPort
 	if apiPort == 0 {
-		apiPort = 11434
+		apiPort = ollama.DefaultPort()
 	}
 	e := &Executor{cfg: cfg, log: log, apiPort: apiPort, desired: map[string]bool{}}
 	for _, m := range cfg.Desired {

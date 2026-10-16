@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/qiangli/outpost/internal/agent/brain"
+	"github.com/qiangli/outpost/internal/agent/ollama"
 )
 
 // readinessDeadline is the default base of the leader's readiness wait: how
@@ -66,7 +67,10 @@ type ManagerConfig struct {
 	// budget; when set, the discover loop auto-triggers a shard for a too-big
 	// model (MaybeShard). nil → no auto-trigger.
 	LocalLoad func() ([]LocalModel, uint64)
-	APIPort   int // OpenAI port for a leader-served shard (0 → 11434)
+	// APIPort is the OpenAI port a leader-served shard binds. 0 falls
+	// back to the declared Ollama default (ollama.DefaultPort) — the
+	// daemon-side port, never a second copy of the number.
+	APIPort int
 	// Provision ensures the model (+ engine binaries) are present locally,
 	// fetching them with no human staging, and returns the GGUF path prima loads.
 	// nil → identity (model name used as-is; for tests + already-staged hosts).
@@ -174,7 +178,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 	}
 	apiPort := cfg.APIPort
 	if apiPort == 0 {
-		apiPort = 11434
+		apiPort = ollama.DefaultPort()
 	}
 	m := &Manager{
 		self:      cfg.Self,

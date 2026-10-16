@@ -43,6 +43,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+
+	otelproxy "github.com/qiangli/outpost/internal/agent/otel"
 )
 
 // DefaultServiceName is the service.name used when OTEL_SERVICE_NAME
@@ -51,7 +53,9 @@ const DefaultServiceName = "outpost"
 
 // LocalCollectorEndpoint is bashy's stable OTLP/HTTP proxy. Managed services
 // must never inherit an operator shell's arbitrary/vendor OTLP destination.
-const LocalCollectorEndpoint = "http://127.0.0.1:31415"
+// Resolves through the one declared copy of the stack's default proxy URL
+// (otel.DefaultProxyURL) rather than a second literal.
+const LocalCollectorEndpoint = otelproxy.DefaultProxyURL
 
 // ChildEnv returns explicit OTLP overrides for a supervised child (loom,
 // act_runner, …). General and signal-specific endpoints are all set because a

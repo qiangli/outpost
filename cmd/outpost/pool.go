@@ -118,7 +118,7 @@ func poolReport(ctx context.Context, fc *conf.FileConfig) poolStatusReport {
 		PoolEnabled:    capabilityEnabled(store, capOllamaPool),
 		HasAccessToken: fc.AccessToken != "",
 		CloudboxURL:    cloudboxHTTPBase(fc),
-		OllamaURL:      "http://127.0.0.1:11434",
+		OllamaURL:      ollama.DefaultURL,
 		ProbedAt:       time.Now().UTC(),
 	}
 	bt := agent.DetectOllama()

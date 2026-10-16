@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/qiangli/outpost/internal/agent/ollama"
 )
 
 // Suggestion is one auto-detected local app the operator can register
@@ -178,13 +180,14 @@ func wellKnownPodmanCandidates() []Suggestion {
 
 // ycodeOllamaSuggestion returns the well-known local ollama HTTP
 // suggestion. We don't dial the port here (would tie request latency
-// to the daemon's responsiveness); we just list it as a candidate.
+// to the daemon's responsiveness); we just list it as a candidate. The
+// port comes from the one declared Ollama default, not a second copy.
 func ycodeOllamaSuggestion() *Suggestion {
 	return &Suggestion{
 		Name:   "ollama",
 		Scheme: "http",
 		Host:   "127.0.0.1",
-		Port:   11434,
+		Port:   ollama.DefaultPort(),
 		Role:   "user",
 		Source: "wellKnown",
 		Note:   "Ollama HTTP API (default port)",

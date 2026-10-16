@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
 // Self-hosted control plane: `k3s server` + `frps` in ONE container.
@@ -120,7 +122,7 @@ func (o *ServerOptions) applyDefaults() {
 		o.TunnelBindAddr = "127.0.0.1"
 	}
 	if o.TunnelBindPort == 0 {
-		o.TunnelBindPort = 7000
+		o.TunnelBindPort = conf.DefaultTunnelBindPort
 	}
 	if o.APIPort == 0 {
 		o.APIPort = DefaultControlPlaneAPIPort

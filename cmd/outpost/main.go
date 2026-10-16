@@ -1284,10 +1284,7 @@ func startCmd() *cobra.Command {
 			// / "k3s-apiserver" — fixed by cloudbox-side constants).
 			var visitors []agent.STCPVisitor
 			if fc.ClusterOn() && fc.Cluster.HasAgentRuntime() {
-				apiPort := fc.Cluster.K8sAPIPort
-				if apiPort == 0 {
-					apiPort = 6443
-				}
+				apiPort := fc.Cluster.K8sAPIPortOrDefault()
 				if fc.Cluster.STCPSecret == "" {
 					slog.Warn("cluster agent runtime: STCPSecret empty; visitor disabled (re-pair to fetch from cloudbox)")
 				} else {
@@ -1728,10 +1725,7 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 	if cc.STCPSecret == "" {
 		return errors.New("cluster agent runtime: STCPSecret empty (re-pair to refresh)")
 	}
-	apiPort := cc.K8sAPIPort
-	if apiPort == 0 {
-		apiPort = 6443
-	}
+	apiPort := cc.K8sAPIPortOrDefault()
 	nodeName := fc.ClusterNodeName()
 	if nodeName == "" {
 		return errors.New("cluster agent runtime: NodeName empty (agent_name unset?)")
@@ -3810,7 +3804,7 @@ func clusterAPIPort(cc *conf.ClusterConfig) int {
 	if cc != nil && cc.K8sAPIPort != 0 {
 		return cc.K8sAPIPort
 	}
-	return 6443
+	return conf.DefaultK8sAPIPort
 }
 
 // peerVirtualAPIURL is the host-side endpoint for a peer plane. When the

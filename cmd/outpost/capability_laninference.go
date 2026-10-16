@@ -62,7 +62,7 @@ func (c *lanInferenceCapability) Activate(ctx context.Context, cfg service.Confi
 		target = c.Ollama()
 	}
 	if target == "" {
-		target = defaultOllamaURL
+		target = ollama.DefaultURL
 	}
 	tu, err := url.Parse(target)
 	if err != nil {

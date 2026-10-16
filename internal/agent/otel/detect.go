@@ -105,7 +105,7 @@ func Detect() Target {
 func detectBashyStack(t Target) Target {
 	url := strings.TrimRight(strings.TrimSpace(os.Getenv("BASHY_OTEL_QUERY_URL")), "/")
 	if url == "" {
-		url = defaultBashyProxyURL
+		url = DefaultProxyURL
 	}
 	if !httpAlive(url) {
 		return t
@@ -116,10 +116,11 @@ func detectBashyStack(t Target) Target {
 	return t
 }
 
-// defaultBashyProxyURL is the stack's default proxy/UI port. It carries OTLP
-// ingest and the query surfaces on one port, which is why there is nothing to
-// discover beyond reaching it.
-const defaultBashyProxyURL = "http://127.0.0.1:31415"
+// DefaultProxyURL is the stack's default proxy/UI port. It carries OTLP
+// ingest and the query surfaces on one port, which is why there is nothing
+// to discover beyond reaching it. The single declared copy in outpost —
+// telemetry.LocalCollectorEndpoint resolves through here.
+const DefaultProxyURL = "http://127.0.0.1:31415"
 
 func defaultManifestPath() string {
 	home, err := os.UserHomeDir()

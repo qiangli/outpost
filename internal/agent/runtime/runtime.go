@@ -324,7 +324,7 @@ func Up(ctx context.Context, opts Options) error {
 	if opts.APIBridgeHostPort != 0 {
 		containerAPIPort := opts.APIPort
 		if containerAPIPort == 0 {
-			containerAPIPort = 6443
+			containerAPIPort = controlPlaneContainerAPIPort
 		}
 		args = append(args,
 			"-p", fmt.Sprintf("127.0.0.1:%d:%d", opts.APIBridgeHostPort, containerAPIPort),

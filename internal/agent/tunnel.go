@@ -13,6 +13,7 @@ import (
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/samber/lo"
 
+	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/jitter"
 )
 
@@ -156,7 +157,7 @@ func newTunnelService(tc TunnelConfig, proxies []TCPProxy, visitors []STCPVisito
 
 	common := &v1.ClientCommonConfig{
 		ServerAddr:    tc.ServerAddr,
-		ServerPort:    orDefaultInt(tc.ServerPort, 7000),
+		ServerPort:    orDefaultInt(tc.ServerPort, conf.DefaultServerPort),
 		User:          tc.User,
 		LoginFailExit: &loginFailExit,
 		Auth: v1.AuthClientConfig{

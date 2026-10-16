@@ -11,6 +11,7 @@ import (
 	"github.com/qiangli/yoke/pkg/service"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/agent/ollama"
 	"github.com/qiangli/outpost/internal/agent/sysinfo"
 	"github.com/qiangli/outpost/internal/agent/sysload"
 	"github.com/qiangli/outpost/internal/agent/warm"
@@ -105,7 +106,7 @@ func (c *warmCapability) Activate(ctx context.Context, cfg service.Config) error
 	}
 	prof.SetWarmBudgetFrac(frac)
 
-	target := defaultOllamaURL
+	target := ollama.DefaultURL
 	if c.Ollama != nil {
 		if t := c.Ollama(); t != "" {
 			target = t

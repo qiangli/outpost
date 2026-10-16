@@ -7,6 +7,8 @@ import (
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	tunnelserver "github.com/fatedier/frp/server"
+
+	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
 // TunnelServer runs the matrix-tunnel SERVER side (fatedier/frp's frps)
@@ -70,7 +72,7 @@ func NewTunnelServer(tc TunnelServerConfig, log *slog.Logger) (*TunnelServer, er
 
 	cfg := &v1.ServerConfig{
 		BindAddr: orDefault(tc.BindAddr, "127.0.0.1"),
-		BindPort: orDefaultInt(tc.BindPort, 7000),
+		BindPort: orDefaultInt(tc.BindPort, conf.DefaultTunnelBindPort),
 		Auth: v1.AuthServerConfig{
 			Method: v1.AuthMethodToken,
 			Token:  tc.Token,

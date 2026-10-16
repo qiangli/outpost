@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/qiangli/outpost/internal/agent/localsock"
+	"github.com/qiangli/outpost/internal/agent/ollama"
 )
 
 // BuiltinTarget describes one of the optional local-daemon proxies
@@ -262,11 +263,12 @@ func DetectOllama() BuiltinTarget {
 
 // ollamaBaseURL resolves the Ollama daemon's HTTP base URL from the
 // environment. Exported via DetectOllama; tests can poke $OLLAMA_HOST
-// directly. Defaults to http://127.0.0.1:11434 — Ollama's own default.
+// directly. Defaults to ollama.DefaultURL — Ollama's own default, the
+// single declared copy of that endpoint.
 func ollamaBaseURL() string {
 	h := strings.TrimSpace(os.Getenv("OLLAMA_HOST"))
 	if h == "" {
-		return "http://127.0.0.1:11434"
+		return ollama.DefaultURL
 	}
 	if strings.Contains(h, "://") {
 		return strings.TrimRight(h, "/")
