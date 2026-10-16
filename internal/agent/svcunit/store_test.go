@@ -231,7 +231,7 @@ func TestSeededBuiltinInternalAndCustomShareOneMachinery(t *testing.T) {
 	}
 	defaultOn := map[string]bool{
 		"ollama": true, "ollama-pool": true, "shard": true, "apps": true,
-		"meet": true, "otel": true, "warm": true, "files": true, "podman": true,
+		"meet": true, "otel": true, "otel-stack": true, "warm": true, "files": true, "podman": true,
 	}
 	seededAll, err := st.Units(context.Background())
 	if err != nil {
