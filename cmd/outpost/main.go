@@ -1180,6 +1180,11 @@ func startCmd() *cobra.Command {
 			// listening for spans on this hop). Idempotent via
 			// sync.Once so an in-process restart doesn't double-up.
 			otelProv, otelErr := telemetry.Init(gctx)
+			// No explicit collector: export to the local bashy otel stack
+			// when it answers (re-checked on the outpost.otel Health tick).
+			if telemetry.EnsureLocalCollector(gctx, telemetry.LocalCollectorEndpoint) {
+				slog.Info("outpost: exporting spans to local collector", "endpoint", telemetry.LocalCollectorEndpoint)
+			}
 			if otelErr != nil {
 				slog.Warn("outpost: telemetry init failed; continuing without OTEL", "error", otelErr)
 			}
@@ -2005,6 +2010,23 @@ func superviseAgentRuntime(ctx context.Context, rtOpts runtime.Options) {
 	// A rebuilt image already forced one recreate in startK3sAgentRunner;
 	// respawns must reuse, not recreate on every lap.
 	rtOpts.ForceRecreate = false
+	if rtOpts.APIBridgeHostPort != 0 {
+		// The apiserver visitor is published on host loopback: one readiness
+		// probe of it is the "can this worker reach its plane" answer.
+		go func() {
+			url := fmt.Sprintf("https://127.0.0.1:%d/readyz", rtOpts.APIBridgeHostPort)
+			t := time.NewTicker(30 * time.Second)
+			defer t.Stop()
+			for {
+				runtime.RecordPlaneProbe(runtime.ProbeAPIServer(ctx, url))
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+				}
+			}
+		}()
+	}
 	for {
 		_ = runtime.TailLogs(ctx, rtOpts)
 		if ctx.Err() != nil {

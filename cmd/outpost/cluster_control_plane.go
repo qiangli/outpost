@@ -310,6 +310,9 @@ type controlPlaneStatusResult struct {
 	NodeAddrLastError         string `json:"nodeaddr_last_error"`
 
 	CheckedAt int64 `json:"checked_at"`
+
+	State         string `json:"state"`
+	FailureReason string `json:"failure_reason"`
 }
 
 func printControlPlaneStatus(status controlPlaneStatusResult) {
@@ -318,6 +321,9 @@ func printControlPlaneStatus(status controlPlaneStatusResult) {
 		return
 	}
 	fmt.Println("hosted: yes")
+	if status.State == "failed" {
+		fmt.Printf("state:               FAILED — %s\n", status.FailureReason)
+	}
 	fmt.Printf("container exists:    %v\n", status.ContainerExists)
 	fmt.Printf("container running:   %v\n", status.ContainerRunning)
 	fmt.Printf("apiserver serving:   %v\n", status.APIServerServing)

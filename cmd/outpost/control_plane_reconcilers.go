@@ -41,6 +41,7 @@ package main
 
 import (
 	"context"
+	"github.com/qiangli/outpost/internal/agent/runtime"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -236,6 +237,12 @@ func runControlPlaneReconcilers(ctx context.Context, fc *conf.FileConfig, cs kub
 		Client:  cs,
 		PortFor: nodeaddr.DerivedKubeletPort,
 		Log:     log,
+		Gate: func() string {
+			if h, ok := runtime.LastServerHealth(); ok && !h.Serving {
+				return h.String()
+			}
+			return ""
+		},
 	}
 	run("apiserver-kubelet-addressing", addr.Run)
 

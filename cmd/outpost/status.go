@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -113,6 +115,7 @@ func statusCmd() *cobra.Command {
 			row("mesh", cfg.MeshEnabled)
 			row("cluster", cfg.Cluster.Enabled)
 			fmt.Printf("  %-22s  %s\n", "update_mode", cfg.UpdateMode)
+			printClusterStatus(os.Stdout, status)
 			// The podman proxy, the container sandbox, the Ollama proxy and
 			// its pool, the warm and shard planes, the LAN inference
 			// listener, the File Browser and the observability / ycode
@@ -156,4 +159,23 @@ func pairingState(name string) string {
 		return "dormant (unpaired)"
 	}
 	return fmt.Sprintf("active (paired as %s)", name)
+}
+
+// printClusterStatus renders the control-plane failure and the worker's view
+// of the plane it joined.
+func printClusterStatus(w io.Writer, status admincore.StatusView) {
+	if status.ControlPlaneState == "failed" {
+		fmt.Fprintf(w, "  %-22s  FAILED: %s\n", "control_plane", status.ControlPlaneFailure)
+	}
+	c := status.Cluster
+	if c == nil {
+		return
+	}
+	fmt.Fprintf(w, "  %-22s  joined endpoint=%s apiserver_reachable=%s\n", "cluster", c.Endpoint, c.APIReachable)
+	if !c.LastSuccess.IsZero() {
+		fmt.Fprintf(w, "  %-22s  %s\n", "cluster last_success", c.LastSuccess.Local().Format("2006-01-02 15:04:05"))
+	}
+	if c.LastError != "" {
+		fmt.Fprintf(w, "  %-22s  %s\n", "cluster last_error", c.LastError)
+	}
 }

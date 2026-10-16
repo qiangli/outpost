@@ -11,6 +11,7 @@ import (
 
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/otel"
+	"github.com/qiangli/outpost/internal/telemetry"
 )
 
 // The two ycode-proxy-backed surface families as in-process capabilities:
@@ -117,6 +118,9 @@ func (c *otelCapability) Deactivate(context.Context) error {
 // Health re-probes the ycode proxy. When the operator stops ycode the
 // surfaces are withdrawn rather than left as tiles that 502.
 func (c *otelCapability) Health(ctx context.Context) error {
+	if telemetry.EnsureLocalCollector(ctx, telemetry.LocalCollectorEndpoint) {
+		slog.Debug("otel: local collector answering; span export active")
+	}
 	if cfg, idle := c.pending(); idle {
 		return c.Activate(ctx, cfg)
 	}

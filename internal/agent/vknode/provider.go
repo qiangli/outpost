@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -36,6 +37,10 @@ type Provider struct {
 	// workloads directly on the host and must have explicit
 	// namespace grants.
 	requireExplicitAccess bool
+
+	nodeName string               // virtual node name, for span attributes
+	tp       trace.TracerProvider // nil = global provider
+	finished sync.Map             // pods whose finish span was emitted
 
 	mu   sync.RWMutex
 	pods map[string]*corev1.Pod // namespace/name → cached Pod
@@ -206,9 +211,12 @@ func (p *Provider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	}
 	// Realize the workload on the substrate (create+start or adopt).
 	// Ensure may mutate pod to hydrate resolved host ports.
+	ctx, endSpan := p.startPodSpan(ctx, "vknode.pod.start", pod)
 	if err := p.backend.Ensure(ctx, pod); err != nil {
+		endSpan(err)
 		return err
 	}
+	endSpan(nil)
 	p.cachePod(pod)
 	publishPod(p.apps, pod)
 	return nil
@@ -244,9 +252,12 @@ func (p *Provider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 // against the reconcile path: a missing container (already cleaned up
 // by a prior delete that crashed mid-flight) is not an error.
 func (p *Provider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
+	ctx, endSpan := p.startPodSpan(ctx, "vknode.pod.delete", pod)
 	if err := p.backend.Delete(ctx, pod); err != nil {
+		endSpan(err)
 		return err
 	}
+	endSpan(nil)
 	unpublishPod(p.apps, pod)
 	p.forgetPod(pod.Namespace, pod.Name)
 	return nil
@@ -288,6 +299,7 @@ func (p *Provider) GetPodStatus(ctx context.Context, namespace, name string) (*c
 			Reason: "ContainerMissing",
 		}, nil
 	}
+	p.recordPodFinish(ctx, pod, st)
 	return st, nil
 }
 

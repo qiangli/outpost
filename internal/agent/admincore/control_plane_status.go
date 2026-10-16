@@ -2,6 +2,7 @@ package admincore
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/qiangli/outpost/internal/agent/nodeaddr"
@@ -73,6 +74,11 @@ type ControlPlaneStatus struct {
 	// different fixes; this is what tells them apart.
 	NodeAddrLastError string `json:"nodeaddr_last_error,omitempty"`
 
+	// State is "failed" when the plane is hosted but cannot work, else "ok"
+	// (or empty when not hosted). FailureReason says why.
+	State         string `json:"state,omitempty"`
+	FailureReason string `json:"failure_reason,omitempty"`
+
 	// CheckedAt is when this status was last measured.
 	CheckedAt time.Time `json:"checked_at,omitzero"`
 }
@@ -120,6 +126,23 @@ type defaultControlPlaneStatusProber struct {
 	hasNodeToken func() bool
 	// hasSTCPSecret reports whether an STCP secret credential is persisted.
 	hasSTCPSecret func() bool
+	// health returns the cached apiserver/container health; nil means
+	// runtime.LastServerHealth. A seam so tests can fake the probe.
+	health func() (runtime.ServerHealth, bool)
+}
+
+// ClassifyControlPlane derives the failed state from a hosted plane's health.
+// A hosted flag with no container behind it is not "just not started": the
+// operator retires the flag, outpost only reports truthfully.
+func ClassifyControlPlane(agentName string, h runtime.ServerHealth) (state, reason string) {
+	if !h.ContainerExists {
+		detail := "container/podman probe found no such container"
+		if h.Err != "" {
+			detail += "; apiserver probe: " + h.Err
+		}
+		return "failed", fmt.Sprintf("hosted but runtime absent: %s (%s)", runtime.ServerContainerName(agentName), detail)
+	}
+	return "ok", ""
 }
 
 func (p *defaultControlPlaneStatusProber) ProbeControlPlaneStatus(ctx context.Context) (ControlPlaneStatus, error) {
@@ -135,8 +158,13 @@ func (p *defaultControlPlaneStatusProber) ProbeControlPlaneStatus(ctx context.Co
 
 	// Read cached health instead of probing. The supervisor maintains
 	// LastServerHealth; we reuse that answer without repeating the probe.
-	health, ok := runtime.LastServerHealth()
+	healthFn := p.health
+	if healthFn == nil {
+		healthFn = runtime.LastServerHealth
+	}
+	health, ok := healthFn()
 	if ok {
+		status.State, status.FailureReason = ClassifyControlPlane(p.agentName, health)
 		status.ContainerExists = health.ContainerExists
 		status.ContainerRunning = health.ContainerRunning
 		status.APIServerServing = health.Serving

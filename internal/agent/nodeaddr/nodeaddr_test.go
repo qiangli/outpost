@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -371,5 +372,26 @@ func TestReconciler_Diagnostics(t *testing.T) {
 	}
 	if diags[1].NodeName != "unpatched" || diags[1].Patched {
 		t.Errorf("expected unpatched to not be patched, got %+v", diags[1])
+	}
+}
+
+func TestRun_GateBacksOffWhileAPIServerAbsent(t *testing.T) {
+	ResetStatus()
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	var calls atomic.Int32
+	r := &Reconciler{
+		Client:   fake.NewSimpleClientset(),
+		PortFor:  DerivedKubeletPort,
+		Interval: 20 * time.Millisecond,
+		Gate:     func() string { calls.Add(1); return "apiserver down" },
+	}
+	r.Run(ctx)
+	if n := calls.Load(); n > 8 {
+		t.Fatalf("no backoff: %d gate checks in 400ms at 20ms base interval", n)
+	}
+	st, _ := LastStatus()
+	if st.LastError != "apiserver absent: apiserver down" {
+		t.Fatalf("LastError=%q", st.LastError)
 	}
 }

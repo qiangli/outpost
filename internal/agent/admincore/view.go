@@ -3,6 +3,7 @@ package admincore
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -489,6 +490,42 @@ type StatusView struct {
 	Build               agent.BuildInfo `json:"build"`
 	BinaryPath          string          `json:"binary_path,omitempty"`
 	ControlPlaneSummary string          `json:"control_plane_summary,omitempty"`
+	// ControlPlaneState is "failed" with ControlPlaneFailure when a hosted
+	// plane has no runtime behind it.
+	ControlPlaneState   string `json:"control_plane_state,omitempty"`
+	ControlPlaneFailure string `json:"control_plane_failure,omitempty"`
+	// Cluster is the worker-side plane row; nil when cluster is off.
+	Cluster *ClusterPlaneView `json:"cluster,omitempty"`
+}
+
+// ClusterPlaneView reports whether the plane this host joined is reachable.
+// Endpoint carries no credentials.
+type ClusterPlaneView struct {
+	Joined       bool      `json:"joined"`
+	Endpoint     string    `json:"endpoint,omitempty"`
+	APIReachable string    `json:"apiserver_reachable"` // yes | no | unknown
+	LastSuccess  time.Time `json:"last_success,omitzero"`
+	LastError    string    `json:"last_error,omitempty"`
+}
+
+// BuildClusterPlaneView joins config with the runtime's plane-health snapshot.
+func BuildClusterPlaneView(fc *conf.FileConfig, h runtime.PlaneHealth, now time.Time) *ClusterPlaneView {
+	if fc == nil || !fc.ClusterOn() || fc.Cluster == nil {
+		return nil
+	}
+	ep := fc.Cluster.JoinEndpoint
+	if ep == "" {
+		ep = fc.Cluster.APIURL
+	}
+	if u, err := url.Parse(ep); err == nil && u.Host != "" {
+		u.User, u.RawQuery, u.Fragment = nil, "", ""
+		ep = u.String()
+	}
+	v := &ClusterPlaneView{Joined: true, Endpoint: ep, APIReachable: h.Reachable(now), LastSuccess: h.LastSuccess}
+	if v.APIReachable != "yes" {
+		v.LastError = h.LastError
+	}
+	return v
 }
 
 // Status returns the lightweight paired-yet payload.
@@ -511,7 +548,11 @@ func (s *Server) Status() (StatusView, error) {
 	// Add control-plane status summary if available.
 	if cpStatus, err := s.ControlPlaneStatusView(context.Background()); err == nil && cpStatus.Hosted {
 		view.ControlPlaneSummary = cpStatusSummary(&cpStatus)
+		if cpStatus.State == "failed" {
+			view.ControlPlaneState, view.ControlPlaneFailure = cpStatus.State, cpStatus.FailureReason
+		}
 	}
+	view.Cluster = BuildClusterPlaneView(fc, runtime.LastPlaneHealth(), time.Now())
 	return view, nil
 }
 
@@ -521,6 +562,9 @@ func cpStatusSummary(status *ControlPlaneStatus) string {
 		return ""
 	}
 	parts := []string{}
+	if status.State == "failed" {
+		return "FAILED: " + status.FailureReason
+	}
 	if status.ContainerRunning {
 		parts = append(parts, "running")
 		if status.APIServerServing {

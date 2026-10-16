@@ -180,6 +180,8 @@ type controlPlaneStatusOut struct {
 	NodeAddrLastRunAt         int64  `json:"nodeaddr_last_run_at,omitzero"`
 	NodeAddrLastError         string `json:"nodeaddr_last_error,omitempty"`
 	CheckedAt                 int64  `json:"checked_at,omitzero"`
+	State                     string `json:"state,omitempty"`
+	FailureReason             string `json:"failure_reason,omitempty"`
 }
 
 type controlPlaneNode struct {
@@ -218,6 +220,9 @@ func toControlPlaneStatusOut(s admincore.ControlPlaneStatus) controlPlaneStatusO
 		NodeAddrLastError:         s.NodeAddrLastError,
 
 		CheckedAt: checkedAt,
+
+		State:         s.State,
+		FailureReason: s.FailureReason,
 	}
 }
 

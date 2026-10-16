@@ -653,6 +653,7 @@ func streamToSlog(r interface {
 					continue
 				}
 				slog.Info(source, "line", line)
+				RecordPlaneLogLine(line, time.Now())
 			}
 		}
 		if err != nil {

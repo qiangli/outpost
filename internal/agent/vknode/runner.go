@@ -153,6 +153,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if opts.AllowAnyNamespace {
 		prov.SetRequireExplicitAccess(false)
 	}
+	prov.SetNodeName(opts.NodeName)
 	prov.SetAccess(opts.Access)
 	prov.SetTransientApps(opts.TransientApps)
 	if err := prov.Reconcile(ctx); err != nil {

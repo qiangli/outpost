@@ -195,6 +195,14 @@ type Reconciler struct {
 	PortFor  KubeletPortFunc
 	Interval time.Duration
 	Log      *slog.Logger
+
+	// Gate, when set, is consulted before every pass. A non-empty reason means
+	// the apiserver is absent: the pass is skipped (reported as the last error)
+	// and the poll interval backs off exponentially up to MaxBackoff, so a dead
+	// endpoint is not hammered.
+	Gate func() (absentReason string)
+	// MaxBackoff caps the gated interval; zero means 5 minutes.
+	MaxBackoff time.Duration
 }
 
 // Run reconciles until ctx is cancelled. Node events trigger immediate
@@ -224,7 +232,23 @@ func (r *Reconciler) Run(ctx context.Context) {
 	setStatus(func(s *Status) { s.Started = true })
 
 	fails := 0
+	gated := false
 	pass := func() {
+		if r.Gate != nil {
+			if reason := r.Gate(); reason != "" {
+				if !gated {
+					log.Warn("nodeaddr: apiserver absent; backing off node addressing", "reason", reason)
+				}
+				gated = true
+				setStatus(func(s *Status) {
+					s.LastRunAt = time.Now()
+					s.LastError = "apiserver absent: " + reason
+					s.ConsecutiveFailures++
+				})
+				return
+			}
+			gated = false
+		}
 		err := r.Once(ctx)
 		if err == nil {
 			if fails > 0 {
@@ -277,17 +301,35 @@ func (r *Reconciler) Run(ctx context.Context) {
 		factory.Start(ctx.Done())
 	}
 
+	maxBackoff := r.MaxBackoff
+	if maxBackoff <= 0 {
+		maxBackoff = 5 * time.Minute
+	}
 	pass()
-	t := time.NewTicker(interval)
+	cur := interval
+	t := time.NewTimer(cur)
 	defer t.Stop()
+	next := func() {
+		if gated {
+			cur = min(cur*2, maxBackoff)
+		} else {
+			cur = interval
+		}
+		t.Reset(cur)
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-events:
-			pass()
+			// Node events while the apiserver is absent are noise; the timer
+			// owns the retry cadence then.
+			if !gated {
+				pass()
+			}
 		case <-t.C:
 			pass()
+			next()
 		}
 	}
 }
