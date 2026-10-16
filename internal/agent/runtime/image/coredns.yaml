@@ -68,7 +68,7 @@ spec:
       dnsPolicy: Default
       containers:
       - name: coredns
-        image: docker.io/qiangli/coredns:bashy-v1.14.7-1
+        image: localhost/bashy/coredns:bashy-v1.14.7-1
         imagePullPolicy: Never
         args: [-conf, /etc/coredns/Corefile]
         ports:

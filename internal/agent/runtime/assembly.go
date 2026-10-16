@@ -17,8 +17,8 @@ import (
 	"github.com/qiangli/yoke/pkg/binmgr"
 )
 
-const pauseImage = "docker.io/qiangli/pause:bashy-v1.37.1-1"
-const coreDNSImage = "docker.io/qiangli/coredns:bashy-v1.14.7-1"
+const pauseImage = "localhost/bashy/pause:bashy-v1.37.1-1"
+const coreDNSImage = "localhost/bashy/coredns:bashy-v1.14.7-1"
 
 // BinaryResolver returns a static Linux executable for the requested target.
 // Implementations must verify third-party artifacts against signed releases and

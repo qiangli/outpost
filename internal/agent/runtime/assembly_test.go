@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -165,6 +166,46 @@ func TestUnpublishedBinmgrFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+// Require explicit loopback names: unqualified names also default to Docker Hub.
+func assertLocalImage(t *testing.T, source, ref string) {
+	t.Helper()
+	if !strings.HasPrefix(ref, "localhost/bashy/") {
+		t.Errorf("%s: image %q must use localhost/bashy/", source, ref)
+	}
+}
+
+var runtimeImageReference = regexp.MustCompile(`(?:--[a-z-]*image(?:=|\s+)|\bimage:\s*)["']?([^\s"'\\]+)`)
+
+func assertLocalImageReferences(t *testing.T, source, content string) {
+	t.Helper()
+	for _, match := range runtimeImageReference.FindAllStringSubmatch(content, -1) {
+		assertLocalImage(t, source, match[1])
+	}
+}
+
+func TestRuntimeImagesAreLocal(t *testing.T) {
+	assertLocalImage(t, "pause archive", pauseImage)
+	assertLocalImage(t, "CoreDNS archive", coreDNSImage)
+	err := fs.WalkDir(imageFS, "image", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !(strings.HasSuffix(path, ".sh") || strings.HasSuffix(path, ".yaml")) {
+			return nil
+		}
+		content, err := imageFS.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		assertLocalImageReferences(t, path, string(content))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRuntimeK3sArgv(t *testing.T) {
 	server, _ := imageFS.ReadFile("image/server-entrypoint.sh")
 	s := string(server)
@@ -174,6 +215,7 @@ func TestRuntimeK3sArgv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
+	assertLocalImageReferences(t, "server argv", string(out))
 	for _, arg := range []string{"server", "--cluster-init", "--disable-helm-controller", "--disable=coredns,servicelb,traefik,local-storage,metrics-server", "--disable-network-policy"} {
 		if !strings.Contains("\n"+string(out), "\n"+arg+"\n") {
 			t.Errorf("server missing %s: %s", arg, out)
@@ -188,6 +230,7 @@ func TestRuntimeK3sArgv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
+	assertLocalImageReferences(t, "agent argv", string(out))
 	for _, arg := range []string{"agent", "--pause-image=" + pauseImage, "--kube-proxy-arg=proxy-mode=nftables", "--snapshotter=overlayfs"} {
 		if !strings.Contains("\n"+string(out), "\n"+arg+"\n") {
 			t.Errorf("agent missing %s: %s", arg, out)
