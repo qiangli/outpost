@@ -230,7 +230,7 @@ func assembleImageContext(ctx context.Context, opts BuildOptions, arch string) (
 	if err = put("usr/local/share/outpost/coredns.yaml", data, 0644); err != nil {
 		return dir, err
 	}
-	for _, d := range []string{"tmp", "run", "usr/sbin", "etc/cni/net.d", "etc/rancher/k3s", "var/lib/rancher/k3s/server/manifests"} {
+	for _, d := range []string{"root/.cache", "tmp", "run", "usr/sbin", "etc/cni/net.d", "etc/rancher/k3s", "var/lib/rancher/k3s/server/manifests"} {
 		if err = os.MkdirAll(filepath.Join(root, d), 0755); err != nil {
 			return dir, err
 		}
@@ -253,7 +253,7 @@ func assembleImageContext(ctx context.Context, opts BuildOptions, arch string) (
 			return dir, err
 		}
 	}
-	recipe := "FROM --platform=linux/" + arch + " scratch\nCOPY rootfs/ /\nENV PATH=/usr/local/bin:/usr/sbin:/bin:/opt/cni/bin\nENTRYPOINT [\"/entrypoint.sh\"]\n"
+	recipe := "FROM --platform=linux/" + arch + " scratch\nCOPY rootfs/ /\nENV PATH=/usr/local/bin:/usr/sbin:/bin:/opt/cni/bin\nENV HOME=/root XDG_CACHE_HOME=/root/.cache\nENTRYPOINT [\"/entrypoint.sh\"]\n"
 	err = os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(recipe), 0644)
 	return dir, err
 }

@@ -210,21 +210,21 @@ render_metrics_resources "$OUTPOST_METRICS_ADDRESS" > "$work/resources.yaml"
 # refuses ClusterIP=None, and Service clusterIP is immutable, so a one-time
 # exact-name delete is required before the corrected ordinary Service can be
 # allocated. No workloads or data hang from this Service.
-old_cluster_ip="$(k3s kubectl --kubeconfig="$internal_kubeconfig" \
+old_cluster_ip="$(kubectl --kubeconfig="$internal_kubeconfig" \
     get service metrics-server -n kube-system \
     -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
 if [ "$old_cluster_ip" = "None" ]; then
     log "migrating headless metrics Service to a private ClusterIP"
-    k3s kubectl --kubeconfig="$internal_kubeconfig" \
+    kubectl --kubeconfig="$internal_kubeconfig" \
         delete service metrics-server -n kube-system --wait=true >/dev/null 2>&1 || true
 fi
 
 # The apiserver may have opened its socket before admission/RBAC are ready.
 # Retry for two minutes, then fail the whole control-plane container loudly.
 i=0
-until k3s kubectl --kubeconfig="$internal_kubeconfig" apply -f "$work/resources.yaml" >/dev/null 2>&1; do
+until apply_error="$(kubectl --kubeconfig="$internal_kubeconfig" apply -f "$work/resources.yaml" 2>&1)"; do
     i=$((i + 1))
-    [ "$i" -lt 120 ] || { log "FATAL: could not register metrics API"; exit 1; }
+    [ "$i" -lt 120 ] || { log "FATAL: could not register metrics API: $apply_error"; exit 1; }
     sleep 1
 done
 
@@ -233,7 +233,7 @@ done
 # k3s agent/kube-proxy, so make ONLY that allocated /32 local and bridge its
 # TLS port to the unprivileged sibling process. The address exists solely in
 # this container namespace; no host/LAN port is published.
-service_ip="$(k3s kubectl --kubeconfig="$internal_kubeconfig" \
+service_ip="$(kubectl --kubeconfig="$internal_kubeconfig" \
     get service metrics-server -n kube-system \
     -o jsonpath='{.spec.clusterIP}')"
 [ -n "$service_ip" ] && [ "$service_ip" != "None" ] || {

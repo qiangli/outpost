@@ -77,8 +77,14 @@ func TestScratchContext(t *testing.T) {
 				t.Fatalf("context files:\ngot %v\nwant %v", got, want)
 			}
 			recipe, _ := os.ReadFile(filepath.Join(dir, "Dockerfile"))
-			if string(recipe) != "FROM --platform=linux/"+arch+" scratch\nCOPY rootfs/ /\nENV PATH=/usr/local/bin:/usr/sbin:/bin:/opt/cni/bin\nENTRYPOINT [\"/entrypoint.sh\"]\n" {
+			if string(recipe) != "FROM --platform=linux/"+arch+" scratch\nCOPY rootfs/ /\nENV PATH=/usr/local/bin:/usr/sbin:/bin:/opt/cni/bin\nENV HOME=/root XDG_CACHE_HOME=/root/.cache\nENTRYPOINT [\"/entrypoint.sh\"]\n" {
 				t.Fatalf("unexpected build instructions: %s", recipe)
+			}
+			for _, p := range []string{"root", "root/.cache"} {
+				info, err := os.Stat(filepath.Join(dir, "rootfs", p))
+				if err != nil || !info.IsDir() {
+					t.Fatalf("missing image directory %s: %v", p, err)
+				}
 			}
 			for _, p := range []string{"bin/bash", "bin/sh", "usr/sbin/nft", "bin/mount", "bin/umount"} {
 				target, err := os.Readlink(filepath.Join(dir, "rootfs", p))
@@ -405,4 +411,63 @@ func checkAssembledBashy(t *testing.T, path, arch string) {
 		}
 	}
 	t.Log("assembled nft/mount/umount argv0 links and linked applet dependencies verified")
+}
+
+func TestRuntimeScriptsUseK3sArgv0(t *testing.T) {
+	forbidden := regexp.MustCompile(`\bk3s\s+(kubectl|crictl|ctr)\b`)
+	err := fs.WalkDir(imageFS, "image", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".sh") {
+			return nil
+		}
+		content, err := imageFS.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if match := forbidden.Find(content); match != nil {
+			t.Errorf("%s: invoke the argv0 symlink instead of %q", path, match)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMetricsApplyRetryReportsLastError(t *testing.T) {
+	script, err := imageFS.ReadFile("image/metrics-server-supervisor.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(script)
+	start := strings.Index(s, "i=0\nuntil ")
+	if start < 0 {
+		t.Fatal("missing apply retry loop")
+	}
+	end := strings.Index(s[start:], "\ndone")
+	if end < 0 {
+		t.Fatal("missing retry loop end")
+	}
+	s = s[start : start+end+len("\ndone")]
+	// Mock only the commands: exercise the real retry bound and diagnostic.
+	prefix := `log(){ printf '%s\n' "$*"; }
+sleep(){ :; }
+internal_kubeconfig=test
+work=test
+kubectl(){ echo "apply attempt $((i + 1)): admission unavailable" >&2; return 1; }
+`
+	out, err := exec.Command("bash", "-eu", "-c", prefix+s).CombinedOutput()
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
+		t.Fatalf("expected fatal exit 1, got %v: %s", err, out)
+	}
+	if want := "FATAL: could not register metrics API: apply attempt 120: admission unavailable\n"; string(out) != want {
+		t.Fatalf("unexpected retry diagnostic: %s", out)
+	}
+	prefix = strings.Replace(prefix, "return 1;", "return 0;", 1)
+	out, err = exec.Command("bash", "-eu", "-c", prefix+s).CombinedOutput()
+	if err != nil || len(out) != 0 {
+		t.Fatalf("successful apply: %v: %s", err, out)
+	}
 }
