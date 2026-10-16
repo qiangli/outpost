@@ -44,18 +44,28 @@ type podmanCapability struct {
 	Apps   *agent.AppRegistry
 	Detect func() agent.BuiltinTarget
 
+	idleState
 	mu     sync.Mutex
 	socket string
 }
 
+// Activate registers the mount. A host with no podman socket is not a
+// failure: the capability goes idle (nothing published, reason in
+// Unavailable) and Health re-probes until a socket appears.
 func (c *podmanCapability) Activate(ctx context.Context, cfg service.Config) error {
 	if c.Apps == nil {
 		return fmt.Errorf("podman: no app registry on this host")
 	}
 	bt, err := c.resolve(cfg)
 	if err != nil {
+		if isAbsent(err) {
+			_ = c.Deactivate(ctx)
+			c.set("podman", cfg, err.Error())
+			return nil
+		}
 		return err
 	}
+	c.clear()
 	if err := c.Apps.RegisterFromConfig(conf.AppConfig{
 		// Scheme comes from the detector, never a literal: on Windows
 		// podman's endpoint is a named pipe, so a hardcoded "unix" would
@@ -96,7 +106,10 @@ func (c *podmanCapability) Deactivate(context.Context) error {
 
 // Health probes the socket. A podman that went away takes the mount's app
 // route with it instead of leaving a 502 tile on the portal.
-func (c *podmanCapability) Health(context.Context) error {
+func (c *podmanCapability) Health(ctx context.Context) error {
+	if cfg, idle := c.pending(); idle {
+		return c.Activate(ctx, cfg)
+	}
 	c.mu.Lock()
 	socket := c.socket
 	c.mu.Unlock()
@@ -244,7 +257,7 @@ func resolvePodmanTarget(what string, detect func() agent.BuiltinTarget, explici
 		if tried == "" {
 			tried = "the standard rootless and system paths"
 		}
-		return bt, fmt.Errorf("%s: no podman socket detected (tried %s) — install podman, start the machine, or set `settings.socket`", what, tried)
+		return bt, newAbsent("%s: unavailable: no podman socket detected (tried %s) — install podman, start the machine, or set `settings.socket`", what, tried)
 	}
 	return bt, nil
 }

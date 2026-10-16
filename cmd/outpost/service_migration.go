@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 
 	"github.com/qiangli/yoke/pkg/assetring"
 
@@ -16,10 +17,38 @@ type legacyServiceConfig struct {
 	OllamaEnabled     *bool
 	OllamaPoolEnabled *bool
 	ShardEnabled      *bool
+	PodmanEnabled     *bool
+	FilesEnabled      *bool
+	OtelEnabled       *bool
+	OtelPoolEnabled   *bool
+	WarmEnabled       *bool
+	WarmBudgetFrac    *float64
 }
 
-// extractLegacyServiceConfig inspects raw JSON for legacy agent.json keys:
-// ollama_enabled, ollama_pool_enabled, and shard.enabled.
+// legacyRetiredKeys are the top-level agent.json keys this migration owns and
+// removes. files_signing_key and warm_desired are daemon state and stay.
+var legacyRetiredKeys = []string{
+	"ollama_enabled", "ollama_pool_enabled",
+	"podman_enabled", "files_enabled",
+	"otel_enabled", "otel_pool_enabled",
+	"warm_serving_enabled", "warm_budget_frac",
+}
+
+func rawBool(raw map[string]json.RawMessage, key string, dst **bool) bool {
+	v, ok := raw[key]
+	if !ok {
+		return false
+	}
+	var b *bool
+	if err := json.Unmarshal(v, &b); err != nil || b == nil {
+		return false
+	}
+	*dst = b
+	return true
+}
+
+// extractLegacyServiceConfig inspects raw JSON for the retired agent.json
+// keys that now live on service units.
 func extractLegacyServiceConfig(data []byte) (*legacyServiceConfig, bool) {
 	if len(data) == 0 {
 		return nil, false
@@ -31,18 +60,23 @@ func extractLegacyServiceConfig(data []byte) (*legacyServiceConfig, bool) {
 
 	var cfg legacyServiceConfig
 	var found bool
-
-	if v, ok := raw["ollama_enabled"]; ok {
-		var b *bool
-		if err := json.Unmarshal(v, &b); err == nil && b != nil {
-			cfg.OllamaEnabled = b
+	for key, dst := range map[string]**bool{
+		"ollama_enabled":       &cfg.OllamaEnabled,
+		"ollama_pool_enabled":  &cfg.OllamaPoolEnabled,
+		"podman_enabled":       &cfg.PodmanEnabled,
+		"files_enabled":        &cfg.FilesEnabled,
+		"otel_enabled":         &cfg.OtelEnabled,
+		"otel_pool_enabled":    &cfg.OtelPoolEnabled,
+		"warm_serving_enabled": &cfg.WarmEnabled,
+	} {
+		if rawBool(raw, key, dst) {
 			found = true
 		}
 	}
-	if v, ok := raw["ollama_pool_enabled"]; ok {
-		var b *bool
-		if err := json.Unmarshal(v, &b); err == nil && b != nil {
-			cfg.OllamaPoolEnabled = b
+	if v, ok := raw["warm_budget_frac"]; ok {
+		var f *float64
+		if err := json.Unmarshal(v, &f); err == nil && f != nil {
+			cfg.WarmBudgetFrac = f
 			found = true
 		}
 	}
@@ -113,28 +147,27 @@ func migrateLegacyServices(cfgPath string, fc *conf.FileConfig, store *svcunit.S
 	}
 
 	var migratedAny bool
-	if legacy.OllamaEnabled != nil {
-		changed, err := migrateUnitOverride(store, "ollama", *legacy.OllamaEnabled)
-		if err != nil {
-			return false, fmt.Errorf("migrate ollama: %w", err)
-		}
-		if changed {
-			migratedAny = true
-		}
+	type step struct {
+		unit     string
+		enabled  *bool
+		settings map[string]string
 	}
-	if legacy.OllamaPoolEnabled != nil {
-		changed, err := migrateUnitOverride(store, "ollama-pool", *legacy.OllamaPoolEnabled)
-		if err != nil {
-			return false, fmt.Errorf("migrate ollama-pool: %w", err)
-		}
-		if changed {
-			migratedAny = true
-		}
+	steps := []step{
+		{unit: "ollama", enabled: legacy.OllamaEnabled},
+		{unit: "ollama-pool", enabled: legacy.OllamaPoolEnabled},
+		{unit: "shard", enabled: legacy.ShardEnabled},
+		{unit: "podman", enabled: legacy.PodmanEnabled},
+		{unit: "files", enabled: legacy.FilesEnabled},
+		{unit: "otel", enabled: legacy.OtelEnabled, settings: boolSetting("pool", legacy.OtelPoolEnabled)},
+		{unit: "warm", enabled: legacy.WarmEnabled, settings: floatSetting("budget_frac", legacy.WarmBudgetFrac)},
 	}
-	if legacy.ShardEnabled != nil {
-		changed, err := migrateUnitOverride(store, "shard", *legacy.ShardEnabled)
+	for _, st := range steps {
+		if st.enabled == nil && len(st.settings) == 0 {
+			continue
+		}
+		changed, err := migrateUnitOverride(store, st.unit, st.enabled, st.settings)
 		if err != nil {
-			return false, fmt.Errorf("migrate shard: %w", err)
+			return false, fmt.Errorf("migrate %s: %w", st.unit, err)
 		}
 		if changed {
 			migratedAny = true
@@ -147,8 +180,9 @@ func migrateLegacyServices(cfgPath string, fc *conf.FileConfig, store *svcunit.S
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return migratedAny, fmt.Errorf("parse legacy config: %w", err)
 	}
-	delete(raw, "ollama_enabled")
-	delete(raw, "ollama_pool_enabled")
+	for _, k := range legacyRetiredKeys {
+		delete(raw, k)
+	}
 	if shardRaw, ok := raw["shard"]; ok {
 		var shard map[string]json.RawMessage
 		if json.Unmarshal(shardRaw, &shard) == nil {
@@ -177,7 +211,24 @@ func migrateLegacyServices(cfgPath string, fc *conf.FileConfig, store *svcunit.S
 	return true, nil
 }
 
-func migrateUnitOverride(store *svcunit.Store, name string, on bool) (bool, error) {
+func boolSetting(key string, b *bool) map[string]string {
+	if b == nil {
+		return nil
+	}
+	return map[string]string{key: strconv.FormatBool(*b)}
+}
+
+func floatSetting(key string, f *float64) map[string]string {
+	if f == nil || *f <= 0 {
+		return nil
+	}
+	return map[string]string{key: strconv.FormatFloat(*f, 'g', -1, 64)}
+}
+
+// migrateUnitOverride writes the legacy choice as a unit override. enabled is
+// nil when only settings were carried over, so a baseline default is never
+// pinned by a key the operator never set.
+func migrateUnitOverride(store *svcunit.Store, name string, enabled *bool, settings map[string]string) (bool, error) {
 	unit, ok := store.Unit(name)
 	if !ok {
 		return false, nil
@@ -188,7 +239,19 @@ func migrateUnitOverride(store *svcunit.Store, name string, on bool) (bool, erro
 		return false, nil
 	}
 	after := unit
-	after.Enabled = on
+	if enabled != nil {
+		after.Enabled = *enabled
+	}
+	if len(settings) > 0 {
+		merged := make(map[string]string, len(unit.Settings)+len(settings))
+		for k, v := range unit.Settings {
+			merged[k] = v
+		}
+		for k, v := range settings {
+			merged[k] = v
+		}
+		after.Settings = merged
+	}
 	if err := store.Save(after); err != nil {
 		return false, err
 	}

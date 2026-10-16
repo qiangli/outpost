@@ -42,6 +42,10 @@ enabled: false
 `
 )
 
+func seedOn(name string) string {
+	return "name: " + name + "\nkind: service\nprovider: internal\ncapability: outpost." + name + "\nowner: outpost\nenabled: true\n"
+}
+
 func newTestMigrationStore(t *testing.T) *svcunit.Store {
 	t.Helper()
 	root := t.TempDir()
@@ -49,6 +53,10 @@ func newTestMigrationStore(t *testing.T) *svcunit.Store {
 		"baseline/services/ollama.yaml":      &fstest.MapFile{Data: []byte(testSeedOllama)},
 		"baseline/services/ollama-pool.yaml": &fstest.MapFile{Data: []byte(testSeedOllamaPool)},
 		"baseline/services/shard.yaml":       &fstest.MapFile{Data: []byte(testSeedShard)},
+		"baseline/services/podman.yaml":      &fstest.MapFile{Data: []byte(seedOn("podman"))},
+		"baseline/services/files.yaml":       &fstest.MapFile{Data: []byte(seedOn("files"))},
+		"baseline/services/otel.yaml":        &fstest.MapFile{Data: []byte(seedOn("otel"))},
+		"baseline/services/warm.yaml":        &fstest.MapFile{Data: []byte(seedOn("warm"))},
 	}
 	cat := fleet.New(fleet.WithRoot(root), fleet.WithBaselineFS(baseFS), fleet.WithoutCloudOverlay())
 	return &svcunit.Store{Catalog: cat}
@@ -454,5 +462,115 @@ func TestLegacyServiceMigration_NullValuesIgnored(t *testing.T) {
 		if u.Ring == assetring.RingLocal {
 			t.Errorf("unit %s should not have local override for null value", name)
 		}
+	}
+}
+
+func TestLegacyServiceMigration_BaselineUnits(t *testing.T) {
+	cases := []struct {
+		name         string
+		json         string
+		unit         string
+		wantEnabled  bool
+		wantLocal    bool
+		wantSettings map[string]string
+	}{
+		{"podman false", `"podman_enabled": false`, "podman", false, true, nil},
+		{"podman true", `"podman_enabled": true`, "podman", true, true, nil},
+		{"podman absent", `"unrelated": 1`, "podman", true, false, nil},
+		{"files false", `"files_enabled": false`, "files", false, true, nil},
+		{"files true", `"files_enabled": true`, "files", true, true, nil},
+		{"otel false", `"otel_enabled": false`, "otel", false, true, nil},
+		{"otel pool only", `"otel_pool_enabled": false`, "otel", true, true, map[string]string{"pool": "false"}},
+		{"otel both", `"otel_enabled": true, "otel_pool_enabled": true`, "otel", true, true, map[string]string{"pool": "true"}},
+		{"warm false", `"warm_serving_enabled": false`, "warm", false, true, nil},
+		{"warm frac only", `"warm_budget_frac": 0.25`, "warm", true, true, map[string]string{"budget_frac": "0.25"}},
+		{"warm both", `"warm_serving_enabled": false, "warm_budget_frac": 0.5`, "warm", false, true, map[string]string{"budget_frac": "0.5"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newTestMigrationStore(t)
+			cfgPath := filepath.Join(t.TempDir(), "agent.json")
+			body := `{"agent_name":"paired-box","access_token":"tok","files_signing_key":"c2VjcmV0","warm_desired":["m1"],` + tc.json + `}`
+			if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			fc, err := conf.LoadFile(cfgPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			migrated, err := migrateLegacyServices(cfgPath, fc, st)
+			if err != nil {
+				t.Fatal(err)
+			}
+			u, ok := st.Unit(tc.unit)
+			if !ok {
+				t.Fatalf("unit %s missing", tc.unit)
+			}
+			if u.Enabled != tc.wantEnabled {
+				t.Errorf("Enabled = %v, want %v", u.Enabled, tc.wantEnabled)
+			}
+			if got := u.Ring == assetring.RingLocal; got != tc.wantLocal {
+				t.Errorf("local override = %v, want %v (migrated=%v)", got, tc.wantLocal, migrated)
+			}
+			for k, v := range tc.wantSettings {
+				if u.Settings[k] != v {
+					t.Errorf("settings[%s] = %q, want %q", k, u.Settings[k], v)
+				}
+			}
+			data, _ := os.ReadFile(cfgPath)
+			var raw map[string]any
+			if err := json.Unmarshal(data, &raw); err != nil {
+				t.Fatal(err)
+			}
+			for _, k := range legacyRetiredKeys {
+				if _, ok := raw[k]; ok {
+					t.Errorf("retired key %s survived", k)
+				}
+			}
+			if raw["files_signing_key"] != "c2VjcmV0" || raw["warm_desired"] == nil {
+				t.Errorf("daemon state keys dropped: %+v", raw)
+			}
+			// Repeat run is a no-op.
+			again, err := migrateLegacyServices(cfgPath, nil, st)
+			if err != nil || again {
+				t.Errorf("repeat migrated=%v err=%v, want no-op", again, err)
+			}
+		})
+	}
+}
+
+func TestLegacyServiceMigration_BaselineLocalOverrideWins(t *testing.T) {
+	st := newTestMigrationStore(t)
+	u, _ := st.Unit("podman")
+	u.Enabled = false
+	if err := st.Save(u); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "agent.json")
+	body := `{"agent_name":"b","access_token":"t","podman_enabled":true}`
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrateLegacyServices(cfgPath, nil, st); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.Unit("podman"); got.Enabled {
+		t.Error("legacy podman_enabled=true clobbered the local override")
+	}
+}
+
+func TestLegacyServiceMigration_BaselineUnpairedUntouched(t *testing.T) {
+	st := newTestMigrationStore(t)
+	cfgPath := filepath.Join(t.TempDir(), "agent.json")
+	body := `{"otel_enabled":false}`
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := migrateLegacyServices(cfgPath, nil, st)
+	if err != nil || migrated {
+		t.Fatalf("migrated=%v err=%v", migrated, err)
+	}
+	if got, _ := st.Unit("otel"); !got.Enabled {
+		t.Error("unpaired host's otel unit was changed")
 	}
 }

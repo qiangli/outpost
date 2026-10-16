@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -289,4 +291,63 @@ func (r *goroutineRunner) active() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.started
+}
+
+// absentError marks a refusal that means "the backend this capability fronts
+// is not on this host (yet)" rather than "the capability is broken". A
+// default-on unit must stay quiet in that state: reporting it failed would
+// walk it through the monitor's start limit on every host without the
+// backend, which is what boot-time detection avoided before units existed.
+type absentError struct{ msg string }
+
+func (e *absentError) Error() string { return e.msg }
+
+func newAbsent(format string, a ...any) error {
+	return &absentError{msg: fmt.Sprintf(format, a...)}
+}
+
+func isAbsent(err error) bool {
+	var a *absentError
+	return errors.As(err, &a)
+}
+
+// idleState is the non-failing "unavailable: <what was probed>" state shared
+// by the capabilities whose backend can be missing. Activate records the
+// reason and returns nil (nothing is published); Health re-activates with the
+// remembered declaration so the capability comes up once the backend appears.
+type idleState struct {
+	mu     sync.Mutex
+	reason string
+	cfg    service.Config
+}
+
+// set records the reason, logging once per distinct reason.
+func (s *idleState) set(what string, cfg service.Config, reason string) {
+	s.mu.Lock()
+	changed := s.reason != reason
+	s.reason, s.cfg = reason, cfg
+	s.mu.Unlock()
+	if changed {
+		slog.Info(what+": unavailable, will re-probe", "reason", reason)
+	}
+}
+
+func (s *idleState) clear() {
+	s.mu.Lock()
+	s.reason = ""
+	s.mu.Unlock()
+}
+
+// pending returns the remembered declaration when the capability is idle.
+func (s *idleState) pending() (service.Config, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg, s.reason != ""
+}
+
+// Unavailable is the reason the backend is absent, "" when not idle.
+func (s *idleState) Unavailable() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reason
 }

@@ -507,9 +507,11 @@ func TestLANInferenceCapabilityServesAndWithdraws(t *testing.T) {
 // that has nothing to serve or a budget that cannot be honoured.
 func TestWarmCapabilityRefusals(t *testing.T) {
 	unpaired := &warmCapability{Paired: func() bool { return false }}
-	if err := unpaired.Activate(context.Background(), cfgOf("warm", nil)); err == nil ||
-		!strings.Contains(err.Error(), "not paired") {
-		t.Errorf("unpaired activation = %v, want a pairing refusal", err)
+	if err := unpaired.Activate(context.Background(), cfgOf("warm", nil)); err != nil {
+		t.Errorf("unpaired activation = %v, want a quiet unavailable state", err)
+	}
+	if !strings.Contains(unpaired.Unavailable(), "not paired") {
+		t.Errorf("unavailable reason = %q, want a pairing explanation", unpaired.Unavailable())
 	}
 	plane := &sysloadPlane{ctx: context.Background()}
 	badFrac := &warmCapability{
@@ -676,9 +678,11 @@ func TestOtelCapabilityRefusesWithoutAProxy(t *testing.T) {
 		Apps:   agent.NewAppRegistry(),
 		Detect: func() otel.Target { return otel.Target{ManifestPath: "/tmp/none.json"} },
 	}
-	err := cap.Activate(context.Background(), cfgOf("otel", nil))
-	if err == nil || !strings.Contains(err.Error(), "/tmp/none.json") {
-		t.Errorf("refusal = %v, want one naming the manifest it tried", err)
+	if err := cap.Activate(context.Background(), cfgOf("otel", nil)); err != nil {
+		t.Errorf("absent proxy must not fail activation: %v", err)
+	}
+	if !strings.Contains(cap.Unavailable(), "/tmp/none.json") {
+		t.Errorf("reason = %q, want one naming the manifest it tried", cap.Unavailable())
 	}
 }
 

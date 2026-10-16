@@ -36,6 +36,7 @@ type otelCapability struct {
 	Apps   *agent.AppRegistry
 	Detect func() otel.Target
 
+	idleState
 	mu         sync.Mutex
 	registered []string
 	poolShared bool
@@ -60,11 +61,14 @@ func (c *otelCapability) Activate(ctx context.Context, cfg service.Config) error
 	}
 	t := c.detect()
 	if !t.Available {
-		return fmt.Errorf("otel: no local observability proxy detected (tried %s) — run `ycode serve`, or the bashy observability stack", t.ManifestPath)
+		_ = c.Deactivate(ctx)
+		c.set("otel", cfg, fmt.Sprintf("otel: unavailable: no local observability proxy detected (tried %s) — run `ycode serve`, or the bashy observability stack", t.ManifestPath))
+		return nil
 	}
 	if err := c.Deactivate(ctx); err != nil {
 		return err
 	}
+	c.clear()
 	wrap := otel.BearerInjector(t.Token)
 	var registered []string
 	for _, surface := range otel.Surfaces() {
@@ -112,7 +116,10 @@ func (c *otelCapability) Deactivate(context.Context) error {
 
 // Health re-probes the ycode proxy. When the operator stops ycode the
 // surfaces are withdrawn rather than left as tiles that 502.
-func (c *otelCapability) Health(context.Context) error {
+func (c *otelCapability) Health(ctx context.Context) error {
+	if cfg, idle := c.pending(); idle {
+		return c.Activate(ctx, cfg)
+	}
 	c.mu.Lock()
 	n := len(c.registered)
 	c.mu.Unlock()

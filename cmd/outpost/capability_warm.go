@@ -48,6 +48,7 @@ type warmCapability struct {
 	// serving is cloudbox-driven, so an unpaired host has nothing to serve.
 	Paired func() bool
 
+	idleState
 	run goroutineRunner
 
 	mu   sync.Mutex
@@ -85,8 +86,10 @@ func (c *warmCapability) Status() (func() (int64, bool), bool) {
 
 func (c *warmCapability) Activate(ctx context.Context, cfg service.Config) error {
 	if c.Paired != nil && !c.Paired() {
-		return fmt.Errorf("warm serving: this host is not paired — cloudbox is what asks a host to warm a model")
+		c.set("warm serving", cfg, "warm serving: unavailable: this host is not paired — cloudbox is what asks a host to warm a model")
+		return nil
 	}
+	c.clear()
 	if c.Load == nil {
 		return fmt.Errorf("warm serving: no load profiler on this host")
 	}
@@ -154,7 +157,12 @@ func (c *warmCapability) Deactivate(ctx context.Context) error {
 	return nil
 }
 
-func (c *warmCapability) Health(context.Context) error { return c.run.health("warm serving") }
+func (c *warmCapability) Health(ctx context.Context) error {
+	if cfg, idle := c.pending(); idle {
+		return c.Activate(ctx, cfg)
+	}
+	return c.run.health("warm serving")
+}
 
 // sysloadPlane owns the host's single load profiler: the CPU/memory/load
 // sampler that learns a per-hour-of-day baseline and answers Busy() /
