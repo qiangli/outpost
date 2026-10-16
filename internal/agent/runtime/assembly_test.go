@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -259,7 +260,8 @@ func TestRuntimeBashyTags(t *testing.T) {
 		valid bool
 	}{
 		{"", false}, {"fb_archives", false}, {"not_bashy_dks_runtime", false},
-		{"bashy_dks_runtime", true}, {"fb_archives,bashy_dks_runtime", true},
+		{"bashy_dks_runtime", false}, {"bashy_scratch", false},
+		{"bashy_scratch,bashy_dks_runtime", true}, {"fb_archives,bashy_dks_runtime,bashy_scratch", true},
 	} {
 		info := &debug.BuildInfo{Settings: []debug.BuildSetting{{Key: "-tags", Value: tc.tags}}}
 		if err := validateRuntimeBashyTags(info); (err == nil) != tc.valid {
@@ -321,14 +323,14 @@ func TestRuntimeModuleWarning(t *testing.T) {
 }
 
 // This gate downloads all 28 signed DKS pins into a disposable cache and
-// never runs a Linux executable.
+// checks the runtime bashy applets (executes only on matching Linux hosts).
 func TestDKSResolve(t *testing.T) {
 	if os.Getenv("OUTPOST_DKS_RESOLVE") != "1" {
 		t.Skip("set OUTPOST_DKS_RESOLVE=1 for signed release resolution")
 	}
 	t.Setenv("BASHY_BIN_CACHE", t.TempDir())
 	r := binmgrResolver{workDir: t.TempDir()}
-	names := []string{"k3s", "containerd-shim-runc-v2", "runc", "metrics-server", "tailscale", "tailscaled", "pause", "coredns", "cni-bridge", "cni-host-local", "cni-loopback", "cni-bandwidth", "cni-firewall", "cni-portmap"}
+	names := []string{"bashy", "k3s", "containerd-shim-runc-v2", "runc", "metrics-server", "tailscale", "tailscaled", "pause", "coredns", "cni-bridge", "cni-host-local", "cni-loopback", "cni-bandwidth", "cni-firewall", "cni-portmap"}
 	for _, arch := range []string{"amd64", "arm64"} {
 		for _, name := range names {
 			t.Run(name+"/"+arch, func(t *testing.T) {
@@ -342,14 +344,65 @@ func TestDKSResolve(t *testing.T) {
 				if err := validateStaticLinux(path, arch); err != nil {
 					t.Fatal(err)
 				}
+				if name == "bashy" {
+					checkAssembledBashy(t, path, arch)
+				}
+				t.Logf("%s/linux-%s: static ELF, no PT_INTERP", name, arch)
 			})
 		}
 	}
 }
 
-func TestRuntimeBashyUnavailable(t *testing.T) {
-	_, err := (binmgrResolver{}).Resolve(context.Background(), "bashy", "amd64")
-	if err == nil || !strings.Contains(err.Error(), "runtime bashy unavailable") {
-		t.Fatalf("got %v", err)
+// Only bashy is real here; unrelated payloads use the hermetic fixture.
+type bashyContextResolver struct {
+	bashy    string
+	fallback *fakeBinaryResolver
+}
+
+func (r bashyContextResolver) Resolve(ctx context.Context, name, arch string) (string, error) {
+	if name == "bashy" {
+		return r.bashy, nil
 	}
+	return r.fallback.Resolve(ctx, name, arch)
+}
+func checkAssembledBashy(t *testing.T, path, arch string) {
+	t.Helper()
+	dir, err := assembleImageContext(context.Background(), BuildOptions{Resolver: bashyContextResolver{path, fixtureResolver(t)}}, arch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	binary := filepath.Join(dir, "rootfs/bin/bashy")
+	out, err := exec.Command("go", "version", "-m", binary).CombinedOutput()
+	if err != nil {
+		t.Fatalf("build info: %v: %s", err, out)
+	}
+	for _, dep := range []string{"github.com/qiangli/yoke\tv0.0.0-20261016224718-61be2116b8d9", "github.com/google/nftables", "-tags=" + runtimeBashyTags, "CGO_ENABLED=0"} {
+		if !strings.Contains(string(out), dep) {
+			t.Fatalf("missing %s in build info: %s", dep, out)
+		}
+	}
+	symbols, err := exec.Command("go", "tool", "nm", binary).CombinedOutput()
+	if err != nil {
+		t.Fatalf("linked symbols: %v: %s", err, symbols)
+	}
+	for _, pkg := range []string{"github.com/qiangli/yoke/cmds/nft.", "github.com/qiangli/yoke/cmds/mount."} {
+		if !strings.Contains(string(symbols), pkg) {
+			t.Fatalf("missing linked applet %s", pkg)
+		}
+	}
+	for _, applet := range []string{"usr/sbin/nft", "bin/mount", "bin/umount"} {
+		target, err := os.Readlink(filepath.Join(dir, "rootfs", applet))
+		if err != nil || target != "/bin/bashy" {
+			t.Fatalf("%s -> %s: %v", applet, target, err)
+		}
+		if runtime.GOOS == "linux" && runtime.GOARCH == arch {
+			cmd := exec.Command(binary, "--help")
+			cmd.Args[0] = filepath.Base(applet)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("argv0 %s: %v: %s", applet, err, out)
+			}
+		}
+	}
+	t.Log("assembled nft/mount/umount argv0 links and linked applet dependencies verified")
 }

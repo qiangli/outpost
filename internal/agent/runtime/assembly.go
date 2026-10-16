@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"debug/buildinfo"
 	"debug/elf"
 	"encoding/json"
 	"fmt"
@@ -18,8 +19,13 @@ import (
 	"github.com/qiangli/yoke/pkg/binmgr"
 )
 
-// runtimeBashyTags enables the nft, mount and umount argv0 applets.
-const runtimeBashyTags = "bashy_dks_runtime"
+// bashy_scratch removes the dynamic loader; bashy_dks_runtime enables the
+// nft, mount and umount argv0 applets.
+const runtimeBashyTags = "bashy_scratch,bashy_dks_runtime"
+
+// Build in bashy's own module so its dependency and replace pins apply, rather
+// than outpost's module graph. This is bashy c9c65d57, pinning yoke 61be2116.
+const runtimeBashyModule = "github.com/qiangli/bashy@v1.0.0-rc.5-dev.0.20261016225530-c9c65d571ffb"
 
 const pauseImage = "localhost/bashy/pause:" + binmgr.PauseVersion
 const coreDNSImage = "localhost/bashy/coredns:bashy-v1.14.7-1"
@@ -39,7 +45,34 @@ func (r binmgrResolver) Resolve(ctx context.Context, name, arch string) (string,
 		return "", fmt.Errorf("unsupported runtime architecture %q", arch)
 	}
 	if name == "bashy" {
-		return "", fmt.Errorf("runtime bashy unavailable: need a static Linux build with implemented -tags=%s applets; reviewed source 7252aa862303 fails the ELF static-link gate", runtimeBashyTags)
+		cmd := exec.CommandContext(ctx, "go", "mod", "download", "-json", runtimeBashyModule)
+		cmd.Env = runtimeBuildEnv(arch)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("resolve cached runtime bashy source: %w: %s", err, out)
+		}
+		var module struct{ Dir string }
+		if err := json.Unmarshal(out, &module); err != nil {
+			return "", err
+		}
+		if module.Dir == "" {
+			return "", fmt.Errorf("runtime bashy module has no source directory")
+		}
+		dest := filepath.Join(r.workDir, "bashy-"+arch)
+		cmd = exec.CommandContext(ctx, "go", "build", "-mod=readonly", "-tags="+runtimeBashyTags, "-trimpath", "-o", dest, "./cmd/bashy")
+		cmd.Dir = module.Dir
+		cmd.Env = runtimeBuildEnv(arch)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("build runtime bashy from %s: %w: %s", runtimeBashyModule, err, out)
+		}
+		if err := validateStaticLinux(dest, arch); err != nil {
+			return "", err
+		}
+		info, err := buildinfo.ReadFile(dest)
+		if err != nil {
+			return "", err
+		}
+		return dest, validateRuntimeBashyTags(info)
 	}
 	if name == "outpost" || name == "outpost-cni" {
 		pkg := "./cmd/outpost"
@@ -71,16 +104,20 @@ func runtimeBuildEnv(arch string) []string {
 }
 
 func validateRuntimeBashyTags(info *debug.BuildInfo) error {
+	tags := map[string]bool{}
 	for _, setting := range info.Settings {
 		if setting.Key == "-tags" {
 			for _, tag := range strings.FieldsFunc(setting.Value, func(r rune) bool { return r == ',' || r == ' ' }) {
-				if tag == runtimeBashyTags {
-					return nil
-				}
+				tags[tag] = true
 			}
 		}
 	}
-	return fmt.Errorf("runtime bashy must be built with -tags=%s", runtimeBashyTags)
+	for _, tag := range strings.Split(runtimeBashyTags, ",") {
+		if !tags[tag] {
+			return fmt.Errorf("runtime bashy must be built with -tags=%s", runtimeBashyTags)
+		}
+	}
+	return nil
 }
 
 func validateStaticLinux(path, arch string) error {

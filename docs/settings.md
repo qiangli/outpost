@@ -988,15 +988,19 @@ caches. It checks ELF architecture and static linkage without executing target
 binaries on the host. Outpost and its CNI plugin are cross-built from the
 selected source checkout with cached dependencies.
 
-Runtime shell resolution currently fails closed: the reviewed bashy source
-`7252aa862303` built with `CGO_ENABLED=0 -tags=bashy_dks_runtime` still has a
-dynamic ELF interpreter on both Linux architectures, and that source has no
-implementation guarded by `bashy_dks_runtime`. A verified static shell with
-those applets is required before image assembly can complete.
+Runtime bashy is built from its own pinned module at `c9c65d571ffb`
+(`v1.0.0-rc.5-dev.0.20261016225530-c9c65d571ffb`), which pins yoke
+`61be2116b8d9`. The build uses `GOWORK=off`, `CGO_ENABLED=0` and
+`-tags=bashy_scratch,bashy_dks_runtime`: scratch removes the dynamic loader,
+and the runtime tag includes the nft/mount/umount applets. Source and dependency
+modules must already be in the Go cache; runtime cross-builds disable module
+network access. Prewarm with `go mod download` in that bashy module as well as
+in the selected outpost checkout. Both Linux architectures must pass the ELF
+architecture and no-interpreter checks.
 
 The scratch runtime image uses nftables and has no iptables or modprobe.
 `hostPort` pods are unsupported: CNI portmap v1.5.1 requires iptables and is
-omitted. Its bashy binary must be built with `-tags=bashy_dks_runtime`, providing
+omitted. Its bashy binary must be built with `-tags=bashy_scratch,bashy_dks_runtime`, providing
 `/usr/sbin/nft`, `/bin/mount` and `/bin/umount` applets. Before starting the
 runtime, the Linux host (or container VM) must have `br_netfilter`, `overlay`,
 `nf_tables` and `vxlan` available. Preload these on the host; the entrypoint
