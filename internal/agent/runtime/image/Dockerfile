@@ -1,3 +1,5 @@
+# LEGACY — unused by BuildImage. Retained until the live three-OS proof
+# passes (replace-before-remove); assembly.go generates the scratch recipe.
 # outpost-runtime image — the Linux kubelet runtime an outpost spins up
 # when cluster.runtimes.agent is on. The outpost daemon itself runs on the
 # host OS (macOS, Linux, Windows); only this image runs k3s agent +

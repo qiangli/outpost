@@ -107,10 +107,21 @@ allowUsers = ["*"]
 EOF
 
 # --------------------------------------------------------- k3s server ----
+# Install our image-only addon manifest before k3s starts watching this directory.
+# Custom service CIDRs must supply their matching cluster DNS address.
+: "${OUTPOST_CLUSTER_DNS:=10.43.0.10}"
+mkdir -p /var/lib/rancher/k3s/server/manifests
+sed "s/@CLUSTER_DNS@/${OUTPOST_CLUSTER_DNS}/g" \
+    /usr/local/share/outpost/coredns.yaml > /var/lib/rancher/k3s/server/manifests/outpost-coredns.yaml
+
 set -- server \
+    --cluster-init \
+    --disable-helm-controller \
+    --disable-network-policy \
+    --cluster-dns="${OUTPOST_CLUSTER_DNS}" \
     --disable-agent \
     --disable-cloud-controller \
-    --disable=traefik,servicelb,metrics-server \
+    --disable=coredns,servicelb,traefik,local-storage,metrics-server \
     --egress-selector-mode=disabled \
     --write-kubeconfig=/etc/rancher/k3s/k3s-internal.yaml \
     --write-kubeconfig-mode=644 \

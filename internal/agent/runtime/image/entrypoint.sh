@@ -477,23 +477,9 @@ iptables -t nat -I OUTPUT 1 -d "${APISERVER_SVC_IP}/32" -p tcp --dport "${APISER
     log "armed ${POD_BRIDGE}.route_localnet=1 after bridge creation"
 ) &
 
-# Snapshotter selection: native `overlayfs` is preferred when the
-# container's rootfs storage supports stacked overlay mounts AND we
-# have CAP_SYS_ADMIN. Some podman storage backends (e.g. fuse-
-# overlayfs-on-the-podman-side) break native overlay inside the
-# container because the inner overlay can't stack on top of an outer
-# overlay. The native path also occasionally hits "read-only file
-# system" on /proc mounts inside the pod sandbox when the underlying
-# rootfs comes from a podman named volume.
-#
-# fuse-overlayfs is the portable fallback — it adds a FUSE layer that
-# survives any host rootfs config. Slightly slower but reliable across
-# the matrix of podman storage configurations we see in the wild.
-#
-# Operators can override by exporting SNAPSHOTTER (e.g. SNAPSHOTTER=
-# overlayfs) when launching the container if they know their host
-# supports native overlay.
-SNAPSHOTTER="${SNAPSHOTTER:-fuse-overlayfs}"
+# Select a supported snapshotter on the actual containerd filesystem.
+. /usr/local/bin/snapshotter.sh
+select_snapshotter
 SNAPSHOTTER_ARGS="--snapshotter=${SNAPSHOTTER}"
 log "snapshotter=${SNAPSHOTTER}"
 
@@ -589,6 +575,8 @@ log "exec k3s agent --server=https://127.0.0.1:${OUTPOST_API_PORT} --node-name=$
 # vendored k3s patch that isn't actually present in the build — so
 # we close the gap on the agent side instead.
 exec /usr/local/bin/k3s agent \
+    --pause-image=docker.io/qiangli/pause:bashy-v1.37.1-1 \
+    --kube-proxy-arg=proxy-mode=nftables \
     --server="https://127.0.0.1:${OUTPOST_API_PORT}" \
     --token="${OUTPOST_NODE_TOKEN}" \
     --node-name="${OUTPOST_AGENT_NAME}" \

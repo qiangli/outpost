@@ -389,23 +389,15 @@ func clusterBuildRuntimeCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "build-runtime",
-		Short: "Build the outpost-runtime container image from embedded sources",
-		Long: `Materialize the embedded Dockerfile + entrypoint + outpost-cni
-source to a tempdir and drive ` + "`podman build`" + ` to produce the
-local outpost-runtime image the DKS agent supervisor expects.
+		Short: "Assemble the outpost-runtime scratch image",
+		Long: `Assemble a Linux rootfs from signed, SHA-256-pinned bashy-built
+binaries obtained through yoke binmgr, then package it with the local engine.
+Missing releases or pins fail closed before the engine runs. No base images,
+package managers, or third-party download scripts are used.
 
-Caching: base images (` + "`golang:1.25-alpine`, `debian:trixie-slim`" + `)
-are cached in podman's local image store — important because Docker
-Hub rate-limits anonymous pulls. Intermediate RUN layers are NOT
-cached by ycode podman (the engine doesn't surface buildah's
-` + "`--layers`" + ` flag), so every rebuild re-executes the apt +
-curl steps. That's ~130 MB of network from non-rate-limited sources
-(GitHub releases, Tailscale CDN, Debian mirrors) — annoying but not
-blocking. Time to first-good-image is ~25 s on a fresh host.
-
-To force a clean rebuild including base images, remove them first
-(` + "`podman image rm outpost-runtime:dev golang:1.25-alpine debian:trixie-slim`" + `)
-then re-run.
+Run from an outpost checkout with Go and its dependencies already cached to
+cross-build outpost and outpost-cni. The selected architecture applies to all
+binaries and the image. Pause and CoreDNS ship as local image archives.
 
 Examples:
   outpost cluster build-runtime

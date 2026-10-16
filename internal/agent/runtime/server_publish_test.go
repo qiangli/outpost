@@ -129,7 +129,7 @@ func TestPeerMetricsServerIsColocatedWithoutEnablingAgent(t *testing.T) {
 	for _, required := range []string{
 		"--disable-agent",
 		"--disable-cloud-controller",
-		"--disable=traefik,servicelb,metrics-server",
+		"--disable=coredns,servicelb,traefik,local-storage,metrics-server",
 		"--egress-selector-mode=disabled",
 		"--kube-apiserver-arg=kubelet-preferred-address-types=ExternalIP",
 		"--kube-apiserver-arg=kubelet-certificate-authority=",
@@ -159,22 +159,6 @@ func TestPeerMetricsServerIsColocatedWithoutEnablingAgent(t *testing.T) {
 		t.Error("apiserver must not fall back from reconciler-owned ExternalIP to unreachable worker addresses")
 	}
 
-	dockerfile, err := os.ReadFile(filepath.Join("image", "Dockerfile"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, required := range []string{
-		"ARG METRICS_SERVER_VERSION=v0.8.1",
-		"metrics-server-linux-${TARGETARCH}",
-		"dd2455a5902d100aab7e5f7f9bcd8f715b6d39f97f161bbe87e3c24f61fa296c",
-		"0a3a052c44111dd0cc4ee86729d1eb621dd12b064f4dfb92e012d420ef0fd06f",
-		`sha256sum -c -`,
-		"COPY metrics-server-supervisor.sh /usr/local/bin/metrics-server-supervisor.sh",
-	} {
-		if !strings.Contains(string(dockerfile), required) {
-			t.Errorf("runtime image missing metrics-server artifact contract %q", required)
-		}
-	}
 }
 
 func TestPeerMetricsResourcesPreserveTunnelBoundary(t *testing.T) {
