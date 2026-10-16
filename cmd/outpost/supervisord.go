@@ -15,6 +15,7 @@ import (
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/supervisor"
+	"github.com/qiangli/outpost/internal/agent/svcunit"
 )
 
 // envSupervised is set to "1" in the daemon's env by the supervisor. The
@@ -78,6 +79,11 @@ container's PID 1 with --pid1.`,
 	return cmd
 }
 
+// initSelf is the path init was launched from, captured before any swap: on
+// Linux os.Executable() reports "<path> (deleted)" once the file is replaced,
+// so the re-exec must use the path as it was.
+var initSelf string
+
 func runSupervisord(ctx context.Context) error {
 	if err := claimSupervisordPidFile(); err != nil {
 		return err
@@ -88,7 +94,25 @@ func runSupervisord(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("resolve own path: %w", err)
 	}
+	initSelf = self
 
+	// Translate SIGINT/SIGTERM into a context cancel so the supervisor
+	// gracefully stops the daemon before we exit.
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Init must follow an upgrade: a swap of its own binary (or the bashy
+	// monitor's) stops both children and re-execs init onto the new code.
+	// Before this, an init started before the init/monitor split kept its old
+	// code forever and never brought bashy supervisord up.
+	return runInitLoop(ctx, func(ctx context.Context) (bool, error) {
+		return superviseOnce(ctx, self)
+	}, reexecInit)
+}
+
+// superviseOnce resolves the children and supervises them until ctx ends or
+// one of their binaries is replaced (swapped=true).
+func superviseOnce(ctx context.Context, self string) (bool, error) {
 	// The daemon's stdout/stderr land in a log next to its pidfile so the
 	// supervisor's own OS-service log stays uncluttered.
 	logPath := ""
@@ -102,7 +126,7 @@ func runSupervisord(ctx context.Context) error {
 	// every enabled unit was abandoned.
 	bashy, err := bashyResolver.Path(ctx)
 	if err != nil {
-		return fmt.Errorf("resolve bashy supervisord: %w", err)
+		return false, fmt.Errorf("resolve bashy supervisord: %w", err)
 	}
 	bashyLogPath := ""
 	if dir, derr := conf.DefaultCacheDir(); derr == nil {
@@ -116,17 +140,14 @@ func runSupervisord(ctx context.Context) error {
 		programs[0].PreStart = watchdogPreStart(dir)
 	}
 
-	// Translate SIGINT/SIGTERM into a context cancel so the supervisor
-	// gracefully stops the daemon before we exit.
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	slog.Info("supervisord: starting", "binary", self, "daemon_log", logPath,
 		"bashy_supervisord_log", bashyLogPath)
 	mgr := supervisor.New(programs...)
-	err = mgr.Run(ctx)
-	slog.Info("supervisord: stopped")
-	return err
+	swapped, err := superviseUntilSwap(ctx, mgr.Run, func(ctx context.Context) bool {
+		return watchBinarySwap(ctx, []string{self, bashy}, binarySwapInterval, fileIdentity)
+	})
+	slog.Info("supervisord: stopped", "binary_swapped", swapped)
+	return swapped, err
 }
 
 // supervisordPrograms is deliberately closed over two processes. The helper
@@ -158,21 +179,21 @@ func supervisordStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Report whether outpost init is running (for per-service state use `outpost services`)",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			p, err := supervisordPidFilePath()
-			if err != nil {
-				return err
-			}
-			data, err := os.ReadFile(p)
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			pid, reexecs, err := readSupervisordPidFile()
 			if err != nil {
 				fmt.Println("supervisord: not running (no pidfile)")
 				return nil
 			}
-			pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
-			if pid > 0 && processAlive(pid) {
-				fmt.Printf("supervisord: running (pid %d)\n", pid)
-			} else {
+			if pid <= 0 || !processAlive(pid) {
 				fmt.Printf("supervisord: not running (stale pidfile, last pid %d)\n", pid)
+				return nil
+			}
+			fmt.Printf("supervisord: running (pid %d)\n", pid)
+			mon := &svcunit.Monitor{Run: svcunit.ExecRunner(bashyResolver.Path)}
+			_, merr := mon.Statuses(cmd.Context())
+			for _, w := range initStatusWarnings(reexecs, merr) {
+				fmt.Println(w)
 			}
 			return nil
 		},
@@ -197,12 +218,11 @@ func claimSupervisordPidFile() error {
 	if err != nil {
 		return err
 	}
-	if data, err := os.ReadFile(p); err == nil {
-		if oldPid, perr := strconv.Atoi(strings.TrimSpace(string(data))); perr == nil && oldPid > 0 && processAlive(oldPid) && pidIsOutpost(oldPid) {
-			return fmt.Errorf("outpost supervisord is already running (pid %d)", oldPid)
-		}
+	// An exec-in-place re-exec keeps our pid, so the pidfile naming it is ours.
+	if oldPid, _, err := readSupervisordPidFile(); err == nil && oldPid > 0 && oldPid != os.Getpid() && processAlive(oldPid) && pidIsOutpost(oldPid) {
+		return fmt.Errorf("outpost supervisord is already running (pid %d)", oldPid)
 	}
-	return os.WriteFile(p, []byte(strconv.Itoa(os.Getpid())), 0o600)
+	return os.WriteFile(p, []byte(strconv.Itoa(os.Getpid())+"\n"+initReexecMarker+"\n"), 0o600)
 }
 
 // pidIsOutpost reports whether a live pid from a stale pidfile is still an
@@ -229,8 +249,15 @@ func sameExecutableName(name string) bool {
 	return strings.HasPrefix(trim(name), "outpost")
 }
 
+// removeSupervisordPidFile removes the pidfile only while it still names this
+// process, so a successor init that already claimed it keeps it.
 func removeSupervisordPidFile() {
-	if p, err := supervisordPidFilePath(); err == nil {
-		_ = os.Remove(p)
+	p, err := supervisordPidFilePath()
+	if err != nil {
+		return
 	}
+	if pid, _, err := readSupervisordPidFile(); err == nil && pid != os.Getpid() {
+		return
+	}
+	_ = os.Remove(p)
 }

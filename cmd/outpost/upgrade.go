@@ -237,6 +237,11 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.
 				return fmt.Errorf("waiting for daemon to come back: %w (binary is swapped — investigate with `outpost status`)", err)
 			}
 			fmt.Printf("ready:    %s at %s\n", after.Build.Short(), after.BinaryPath)
+			// The daemon follows the swap; an init too old to re-exec itself
+			// does not, and without the new init bashy supervisord never runs.
+			for _, line := range handOffLegacyInit(before.BinaryPath) {
+				fmt.Println(line)
+			}
 			return nil
 		},
 	}
