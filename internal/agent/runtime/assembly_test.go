@@ -65,7 +65,7 @@ func TestScratchContext(t *testing.T) {
 			}
 			want := []string{"Dockerfile"}
 			for _, p := range strings.Fields(`bin/bashy bin/bash bin/sh bin/cat bin/mkdir bin/rm bin/mv bin/cp bin/chmod bin/chown bin/sleep bin/head bin/tr bin/sed bin/awk bin/hostname bin/base64 bin/grep bin/tail bin/timeout bin/setpriv bin/mount bin/umount bin/sysctl usr/sbin/nft bin/ip bin/ipset bin/conntrack bin/ethtool bin/nsenter bin/mountpoint bin/uname bin/ln bin/readlink bin/stat
- entrypoint.sh server-entrypoint.sh
+ etc/passwd etc/group entrypoint.sh server-entrypoint.sh
  usr/local/bin/outpost usr/local/bin/k3s usr/local/bin/containerd usr/local/bin/kubectl usr/local/bin/crictl usr/local/bin/ctr usr/local/bin/containerd-shim-runc-v2 usr/local/bin/runc usr/local/bin/tailscale usr/local/bin/tailscaled usr/local/bin/metrics-server usr/local/bin/frpc-supervisor.sh usr/local/bin/metrics-server-supervisor.sh usr/local/bin/snapshotter.sh
  opt/cni/bin/outpost-cni opt/cni/bin/bridge opt/cni/bin/host-local opt/cni/bin/loopback opt/cni/bin/bandwidth opt/cni/bin/firewall
  usr/local/share/outpost/coredns.yaml var/lib/rancher/k3s/agent/images/pause.tar var/lib/rancher/k3s/agent/images/coredns.tar`) {
@@ -79,6 +79,15 @@ func TestScratchContext(t *testing.T) {
 			recipe, _ := os.ReadFile(filepath.Join(dir, "Dockerfile"))
 			if string(recipe) != "FROM --platform=linux/"+arch+" scratch\nCOPY rootfs/ /\nENV PATH=/usr/local/bin:/usr/sbin:/bin:/opt/cni/bin\nENV HOME=/root XDG_CACHE_HOME=/root/.cache\nENTRYPOINT [\"/entrypoint.sh\"]\n" {
 				t.Fatalf("unexpected build instructions: %s", recipe)
+			}
+			for name, record := range map[string]string{
+				"etc/passwd": "nonroot:x:65532:65532:",
+				"etc/group":  "nonroot:x:65532:",
+			} {
+				data, err := os.ReadFile(filepath.Join(dir, "rootfs", name))
+				if err != nil || !strings.Contains(string(data), record) {
+					t.Fatalf("missing metrics account in %s: %s (%v)", name, data, err)
+				}
 			}
 			for _, p := range []string{"root", "root/.cache"} {
 				info, err := os.Stat(filepath.Join(dir, "rootfs", p))

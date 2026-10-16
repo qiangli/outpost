@@ -234,6 +234,19 @@ while kill -0 "$FRPS_PID" 2>/dev/null && kill -0 "$K3S_PID" 2>/dev/null && \
       kill -0 "${METRICS_PID:-0}" 2>/dev/null; do
     sleep 5
 done
+# Reap the failed child before terminating its siblings so its real status
+# is preserved (including a clean but unexpected exit).
+for child in "frps:$FRPS_PID" "k3s:$K3S_PID" "metrics-supervisor:${METRICS_PID:-}"; do
+    name=${child%%:*}
+    pid=${child#*:}
+    if [ -z "$pid" ]; then
+        log "$name was not started"
+    elif ! kill -0 "$pid" 2>/dev/null; then
+        rc=0
+        wait "$pid" || rc=$?
+        log "$name (pid $pid) exited with code $rc"
+    fi
+done
 log "a control-plane process exited; stopping so the supervisor recreates us"
 kill "$FRPS_PID" "$K3S_PID" "${METRICS_PID:-0}" 2>/dev/null || true
 wait "$K3S_PID" 2>/dev/null || true

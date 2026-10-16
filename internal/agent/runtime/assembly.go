@@ -180,6 +180,16 @@ func assembleImageContext(ctx context.Context, opts BuildOptions, arch string) (
 		}
 		return os.WriteFile(dst, data, mode)
 	}
+	// Scratch has no account database. The pure-Go ownership tools consult it
+	// even for numeric IDs before falling back to a numeric lookup.
+	for name, data := range map[string]string{
+		"etc/passwd": "root:x:0:0:root:/root:/bin/sh\nnonroot:x:65532:65532:nonroot:/:/bin/false\n",
+		"etc/group":  "root:x:0:\nnonroot:x:65532:\n",
+	} {
+		if err := put(name, []byte(data), 0644); err != nil {
+			return dir, err
+		}
+	}
 	for _, b := range runtimeBinaries {
 		src, e := resolver.Resolve(ctx, b.name, arch)
 		if e != nil {
