@@ -33,9 +33,9 @@ func TestEnsureBundledPodmanConf(t *testing.T) {
 	}
 	for _, w := range []string{
 		`conmon_path = ["` + lib + `/conmon"]`,
-		`helper_binaries_dir = ["` + lib + `"]`,
-		`crun = ["` + lib + `/crun"]`,
-		`runc = ["` + lib + `/runc"]`,
+		`helper_binaries_dir = ["` + lib + `", "` + filepath.Join(root, "libexec", "podman") + `", "` + filepath.Join(root, "bin") + `"]`,
+		`crun = ["` + filepath.Join(root, "bin") + `/crun"]`,
+		`runc = ["` + filepath.Join(root, "bin") + `/runc"]`,
 		"[engine.runtimes]",
 	} {
 		if !strings.Contains(string(b), w) {

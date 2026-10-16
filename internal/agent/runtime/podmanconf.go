@@ -13,8 +13,9 @@ func ensureBundledPodmanConf(bin string) {
 	if os.Getenv("CONTAINERS_CONF_OVERRIDE") != "" {
 		return
 	}
-	libDir := filepath.Join(filepath.Dir(bin), "..", "lib", "podman")
-	libDir = filepath.Clean(libDir)
+	binDir := filepath.Dir(bin)
+	root := filepath.Clean(filepath.Join(binDir, ".."))
+	libDir := filepath.Join(root, "lib", "podman")
 	if st, err := os.Stat(libDir); err != nil || !st.IsDir() {
 		return
 	}
@@ -29,12 +30,13 @@ func ensureBundledPodmanConf(bin string) {
 	path := filepath.Join(dir, "containers.conf")
 	want := fmt.Sprintf(`[engine]
 conmon_path = [%[1]q]
-helper_binaries_dir = [%[2]q]
+helper_binaries_dir = [%[2]q, %[3]q, %[4]q]
 
 [engine.runtimes]
-crun = [%[3]q]
-runc = [%[4]q]
-`, filepath.Join(libDir, "conmon"), libDir, filepath.Join(libDir, "crun"), filepath.Join(libDir, "runc"))
+crun = [%[5]q]
+runc = [%[6]q]
+`, filepath.Join(libDir, "conmon"), libDir, filepath.Join(root, "libexec", "podman"), binDir,
+		filepath.Join(binDir, "crun"), filepath.Join(binDir, "runc"))
 	if cur, err := os.ReadFile(path); err != nil || string(cur) != want {
 		tmp := path + ".tmp"
 		if err := os.WriteFile(tmp, []byte(want), 0o644); err != nil {
