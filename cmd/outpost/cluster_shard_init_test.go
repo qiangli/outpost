@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -21,7 +23,7 @@ func renderShard(t *testing.T, in shardInput) string {
 func baseShardInput() shardInput {
 	return shardInput{
 		name:       "llama70b",
-		image:      "ghcr.io/ggml-org/llama.cpp:full",
+		image:      "test-registry.local/llama.cpp:custom",
 		model:      "/models/llama-70b-q4.gguf",
 		workerIPs:  "192.168.1.21, 192.168.1.22",
 		rpcPort:    50052,
@@ -283,5 +285,130 @@ func TestShardManifestPinsBackend(t *testing.T) {
 	in.backend = ""
 	if out := renderShard(t, in); strings.Contains(out, "outpost.dhnt.io/backend") {
 		t.Errorf("empty --backend must drop the term\n---\n%s", out)
+	}
+}
+
+// TestShardInitRefusesWithoutImage ensures that without --image, shard-init
+// RunE and buildShardVars refuse with a clear error pointing out that no
+// bashy-built llama.cpp image exists and directing operators to prima sharding.
+func TestShardInitRefusesWithoutImage(t *testing.T) {
+	cmd := clusterShardInitCmd()
+	cmd.SetArgs([]string{
+		"--name", "llama70b",
+		"--model", "/models/llama-70b-q4.gguf",
+		"--worker-ips", "192.168.1.21,192.168.1.22",
+	})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error executing shard-init without --image, got nil")
+	}
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "no bashy-built llama.cpp image exists") {
+		t.Errorf("expected error to mention no bashy-built llama.cpp image exists, got: %q", errMsg)
+	}
+	if !strings.Contains(errMsg, "outpost shard") {
+		t.Errorf("expected error to point to 'outpost shard', got: %q", errMsg)
+	}
+	if !strings.Contains(errMsg, "prima sharding") {
+		t.Errorf("expected error to mention prima sharding, got: %q", errMsg)
+	}
+
+	in := baseShardInput()
+	in.image = ""
+	_, err = buildShardVars(in)
+	if err == nil {
+		t.Fatal("expected error from buildShardVars with empty image, got nil")
+	}
+	if !strings.Contains(err.Error(), "no bashy-built llama.cpp image exists") || !strings.Contains(err.Error(), "outpost shard") {
+		t.Errorf("unexpected buildShardVars error: %v", err)
+	}
+}
+
+// TestShardInitExplicitImageRendersManifest verifies that providing an explicit
+// --image flag successfully renders the manifest in both topologies and via CLI.
+func TestShardInitExplicitImageRendersManifest(t *testing.T) {
+	const customImage = "registry.local/custom/llama.cpp:v1.2.3"
+	in := baseShardInput()
+	in.image = customImage
+
+	for _, topo := range []string{"lws", "deployment"} {
+		t.Run(topo, func(t *testing.T) {
+			in.topology = topo
+			out := renderShard(t, in)
+			if !strings.Contains(out, "image: "+customImage) {
+				t.Errorf("%s manifest missing explicit image %q\n---\n%s", topo, customImage, out)
+			}
+			if got := strings.Count(out, "image: "+customImage); got < 2 {
+				t.Errorf("%s expected explicit image on leader and worker (at least 2), got %d\n---\n%s", topo, got, out)
+			}
+		})
+	}
+
+	tmpOut := filepath.Join(t.TempDir(), "manifest.yaml")
+	cmd := clusterShardInitCmd()
+	cmd.SetArgs([]string{
+		"--name", "llama70b",
+		"--image", customImage,
+		"--model", "/models/llama-70b-q4.gguf",
+		"--worker-ips", "192.168.1.21,192.168.1.22",
+		"--output", tmpOut,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute with explicit image failed: %v", err)
+	}
+	data, err := os.ReadFile(tmpOut)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", tmpOut, err)
+	}
+	rendered := string(data)
+	if !strings.Contains(rendered, "image: "+customImage) {
+		t.Errorf("manifest rendered via CLI missing explicit image %q\n---\n%s", customImage, rendered)
+	}
+	if !strings.Contains(rendered, "kind: LeaderWorkerSet") {
+		t.Errorf("manifest rendered via CLI missing LeaderWorkerSet\n---\n%s", rendered)
+	}
+}
+
+// TestShardInitNoGHCRReferences asserts that no "ghcr.io/" literal remains in the
+// command's flags or help text, that --image defaults to empty, and that the
+// third-party ghcr.io/ggml-org reference is completely absent.
+func TestShardInitNoGHCRReferences(t *testing.T) {
+	cmd := clusterShardInitCmd()
+
+	imgFlag := cmd.Flag("image")
+	if imgFlag == nil {
+		t.Fatal("expected --image flag on shard-init")
+	}
+	if imgFlag.DefValue != "" {
+		t.Errorf("expected empty default for --image, got %q", imgFlag.DefValue)
+	}
+
+	usages := cmd.Flags().FlagUsages()
+	if strings.Contains(usages, "ghcr.io/") {
+		t.Errorf("flag usages contain 'ghcr.io/':\n%s", usages)
+	}
+	if strings.Contains(usages, "ghcr.io/ggml-org") {
+		t.Errorf("flag usages contain 'ghcr.io/ggml-org':\n%s", usages)
+	}
+
+	if strings.Contains(cmd.Long, "ghcr.io/") {
+		t.Errorf("cmd.Long contains 'ghcr.io/':\n%s", cmd.Long)
+	}
+	if strings.Contains(cmd.Short, "ghcr.io/") {
+		t.Errorf("cmd.Short contains 'ghcr.io/':\n%s", cmd.Short)
+	}
+
+	var buf strings.Builder
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	if err := cmd.Help(); err != nil {
+		t.Fatalf("cmd.Help(): %v", err)
+	}
+	helpText := buf.String()
+	if strings.Contains(helpText, "ghcr.io/") {
+		t.Errorf("cmd help text contains 'ghcr.io/':\n%s", helpText)
+	}
+	if strings.Contains(helpText, "ghcr.io/ggml-org") {
+		t.Errorf("cmd help text contains 'ghcr.io/ggml-org':\n%s", helpText)
 	}
 }

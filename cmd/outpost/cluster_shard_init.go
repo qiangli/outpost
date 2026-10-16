@@ -80,12 +80,15 @@ as native host processes with no pod network.
 Example:
 
   outpost cluster shard-init --name llama70b \
-    --image ghcr.io/ggml-org/llama.cpp:full \
+    --image <bashy-built llama.cpp image> \
     --model /models/llama-70b-q4.gguf \
     --worker-ips 192.168.1.21,192.168.1.22 \
     --gpu-kind nvidia --tier lan \
     --leader-vram 24Gi --worker-vram 24Gi | kubectl apply -f -`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(image) == "" {
+				return errors.New("--image required: no bashy-built llama.cpp image exists; use prima sharding (`outpost shard`) as the supported path")
+			}
 			data, err := buildShardVars(shardInput{
 				name:       name,
 				image:      image,
@@ -124,7 +127,7 @@ Example:
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "Shard group name (leader + workers + Service prefix) [required]")
-	cmd.Flags().StringVar(&image, "image", "ghcr.io/ggml-org/llama.cpp:full", "llama.cpp container image (must ship llama-server + rpc-server)")
+	cmd.Flags().StringVar(&image, "image", "", "llama.cpp container image (must ship llama-server + rpc-server)")
 	cmd.Flags().StringVar(&model, "model", "", "Model path inside the container (e.g. /models/llama-70b.gguf) [required]")
 	cmd.Flags().StringVar(&workerIPs, "worker-ips", "", "Comma-separated rpc-server host IPs the leader shards to [required]")
 	cmd.Flags().IntVar(&rpcPort, "rpc-port", 50052, "Port each rpc-server listens on")
@@ -185,7 +188,7 @@ func buildShardVars(in shardInput) (shardVars, error) {
 		return shardVars{}, errors.New("--name required")
 	}
 	if strings.TrimSpace(in.image) == "" {
-		return shardVars{}, errors.New("--image required")
+		return shardVars{}, errors.New("--image required: no bashy-built llama.cpp image exists; use prima sharding (`outpost shard`) as the supported path")
 	}
 	if strings.TrimSpace(in.model) == "" {
 		return shardVars{}, errors.New("--model required")
