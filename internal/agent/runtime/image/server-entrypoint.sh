@@ -208,6 +208,10 @@ if listening "${OUTPOST_API_PORT}" && [ -s /etc/rancher/k3s/k3s-internal.yaml ];
     sed "s#server: https://127.0.0.1:${OUTPOST_API_PORT}#server: https://127.0.0.1:${OUTPOST_HOST_API_PORT}#" \
         /etc/rancher/k3s/k3s-internal.yaml > /etc/rancher/k3s/k3s.yaml.new
     chmod 0644 /etc/rancher/k3s/k3s.yaml.new
+    # k3s creates its default path as an absolute symlink to the internal
+    # config. Remove it explicitly: it dangles outside this bind mount, and
+    # file utilities must not follow it and overwrite the internal config.
+    rm -f /etc/rancher/k3s/k3s.yaml
     mv -f /etc/rancher/k3s/k3s.yaml.new /etc/rancher/k3s/k3s.yaml
 
     # A scheduled metrics-server Pod cannot reach this namespace's loopback

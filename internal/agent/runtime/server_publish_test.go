@@ -261,3 +261,69 @@ sleep 0.1
 		})
 	}
 }
+
+// Exercise the actual export block with the absolute default symlink k3s
+// leaves in the mounted directory. Host consumers must get a regular file
+// and the published port, while internal clients retain the internal port.
+func TestServerKubeconfigExportReplacesAbsoluteSymlink(t *testing.T) {
+	body, err := os.ReadFile("image/server-entrypoint.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(body)
+	start := strings.Index(script, "    sed ")
+	if start < 0 {
+		t.Fatal("missing kubeconfig export command")
+	}
+	end := strings.Index(script[start:], "\n    # A scheduled metrics-server")
+	if end < 0 {
+		t.Fatal("missing kubeconfig export block")
+	}
+	export := script[start : start+end]
+	for _, shell := range []string{"bash", "bashy"} {
+		t.Run(shell, func(t *testing.T) {
+			bin, err := exec.LookPath(shell)
+			if err != nil {
+				t.Skipf("%s unavailable", shell)
+			}
+			for _, port := range []string{"16443", "26443"} {
+				t.Run(port, func(t *testing.T) {
+					dir := t.TempDir()
+					internal := filepath.Join(dir, "k3s-internal.yaml")
+					host := filepath.Join(dir, "k3s.yaml")
+					original := "clusters:\n- cluster:\n    server: https://127.0.0.1:6443\n    certificate-authority-data: fixture\n"
+					if err := os.WriteFile(internal, []byte(original), 0600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(internal, host); err != nil {
+						t.Fatal(err)
+					}
+					block := strings.ReplaceAll(export, "/etc/rancher/k3s", dir)
+					cmd := exec.Command(bin, "-c", "set -eu\nOUTPOST_API_PORT=6443\nOUTPOST_HOST_API_PORT="+port+"\n"+block)
+					if out, err := cmd.CombinedOutput(); err != nil {
+						t.Fatalf("export: %v\n%s", err, out)
+					}
+					info, err := os.Lstat(host)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !info.Mode().IsRegular() {
+						t.Fatalf("mounted kubeconfig must be a regular file, got %s", info.Mode())
+					}
+					got, err := os.ReadFile(host)
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := strings.ReplaceAll(original, ":6443", ":"+port)
+					if string(got) != want {
+						t.Fatalf("host kubeconfig = %q, want %q", got, want)
+					}
+					got, err = os.ReadFile(internal)
+					if err != nil || string(got) != original {
+						t.Fatalf("internal kubeconfig changed: %q, %v", got, err)
+					}
+				})
+			}
+		})
+	}
+}
