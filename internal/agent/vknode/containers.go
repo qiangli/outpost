@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -445,6 +446,11 @@ func (c *Client) RemoveVolume(ctx context.Context, name string, force bool) erro
 // ref ("docker.io/library/alpine:3.20").
 func (c *Client) PullImage(ctx context.Context, reference string) error {
 	q := url.Values{"reference": []string{reference}}
+	if loopbackRegistry(reference) {
+		// The host's own registry (zot on 127.0.0.1) serves plain HTTP; like
+		// Docker, a loopback registry needs no TLS. Remote registries keep it.
+		q.Set("tlsVerify", "false")
+	}
 	resp, err := c.do(ctx, http.MethodPost, apiPrefix+"/libpod/images/pull", q, nil)
 	if err != nil {
 		return err
@@ -472,4 +478,23 @@ func (c *Client) PullImage(ctx context.Context, reference string) error {
 		}
 	}
 	return nil
+}
+
+// loopbackRegistry reports whether reference names a registry on this host:
+// localhost, 127.0.0.0/8 or ::1, with or without a port. A reference with no
+// registry component (alpine:3.20, library/alpine) is never loopback.
+func loopbackRegistry(reference string) bool {
+	host, _, found := strings.Cut(reference, "/")
+	if !found || !strings.ContainsAny(host, ".:") && host != "localhost" {
+		return false
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

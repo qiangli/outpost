@@ -296,6 +296,31 @@ func TestClient_PullImage_StreamSuccess(t *testing.T) {
 	}
 }
 
+func TestClient_PullImage_LoopbackRegistrySkipsTLS(t *testing.T) {
+	for ref, want := range map[string]string{
+		"127.0.0.1:5000/tier5-smoke/hello:1": "false",
+		"localhost:5000/app:1":               "false",
+		"[::1]:5000/app:1":                   "false",
+		"localhost/app:1":                    "false",
+		"alpine:3.20":                        "",
+		"library/alpine:3.20":                "",
+		"docker.io/library/alpine:3.20":      "",
+		"10.0.0.5:5000/app:1":                "",
+		"localhostfoo.example/app:1":         "",
+	} {
+		sock := startFakeLibpod(t, func(w http.ResponseWriter, r *http.Request) {
+			if got := r.URL.Query().Get("tlsVerify"); got != want {
+				t.Errorf("%s: tlsVerify=%q, want %q", ref, got, want)
+			}
+			_, _ = io.WriteString(w, `{"images":["x"]}`+"\n")
+		})
+		c, _ := NewClient(sock)
+		if err := c.PullImage(context.Background(), ref); err != nil {
+			t.Fatalf("%s: pull: %v", ref, err)
+		}
+	}
+}
+
 func TestClient_PullImage_StreamError(t *testing.T) {
 	sock := startFakeLibpod(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
