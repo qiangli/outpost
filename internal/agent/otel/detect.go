@@ -97,13 +97,17 @@ func Detect() Target {
 //
 // bashy's stack advertises no manifest: it is a fixed proxy port, and the
 // canonical way to locate it is the same one `bashy otel --url` uses —
-// $BASHY_OTEL_QUERY_URL, else the default proxy port. So probe that directly.
+// $BASHY_OTEL_URL, then $BASHY_OTEL_QUERY_URL, else the default proxy port.
+// Probe that directly.
 // No token: the stack binds loopback and does not authenticate.
 //
 // Kept as a fallback rather than a replacement so a host still running the
 // older ycode-served stack keeps working.
 func detectBashyStack(t Target) Target {
-	url := strings.TrimRight(strings.TrimSpace(os.Getenv("BASHY_OTEL_QUERY_URL")), "/")
+	url := strings.TrimRight(strings.TrimSpace(os.Getenv("BASHY_OTEL_URL")), "/")
+	if url == "" {
+		url = strings.TrimRight(strings.TrimSpace(os.Getenv("BASHY_OTEL_QUERY_URL")), "/")
+	}
 	if url == "" {
 		url = DefaultProxyURL
 	}

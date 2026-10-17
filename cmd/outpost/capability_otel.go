@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 
@@ -41,6 +42,7 @@ type otelCapability struct {
 	mu         sync.Mutex
 	registered []string
 	poolShared bool
+	target     otel.Target
 }
 
 // PoolShared reports whether cloudbox may federate queries and fan out
@@ -54,6 +56,22 @@ func (c *otelCapability) PoolShared() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.poolShared
+}
+
+// MetricsTarget exposes the collector only while the otel unit is activated.
+func (c *otelCapability) MetricsTarget() (string, string, bool) {
+	if c == nil {
+		return "", "", false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.registered) == 0 {
+		return "", "", false
+	}
+	if endpoint := strings.TrimSpace(os.Getenv("BASHY_OTEL_URL")); endpoint != "" {
+		return endpoint, "", true
+	}
+	return c.target.ProxyURL, c.target.Token, true
 }
 
 func (c *otelCapability) Activate(ctx context.Context, cfg service.Config) error {
@@ -89,6 +107,7 @@ func (c *otelCapability) Activate(ctx context.Context, cfg service.Config) error
 	}
 	c.mu.Lock()
 	c.registered, c.poolShared = registered, settingBoolDefault(cfg, "pool", true)
+	c.target = t
 	c.mu.Unlock()
 	slog.Info("otel: observability surfaces registered", "surfaces", strings.Join(registered, ","), "proxy", t.ProxyURL, "pool", c.PoolShared())
 	return nil

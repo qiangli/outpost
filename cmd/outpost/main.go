@@ -1579,6 +1579,7 @@ func startCmd() *cobra.Command {
 			// confusing failure: the workers' symptom would be "connection
 			// refused" with nothing wrong on their side.
 			startControlPlaneTunnel(gctx, g, fc, cfgPath)
+			startControlPlaneTelemetry(gctx, g, fc, caps.Otel)
 
 			if runtimeErr := fc.Cluster.ValidateRuntimes(); fc.ClusterOn() && runtimeErr != nil {
 				slog.Warn("cluster: disabled by invalid runtime configuration", "err", runtimeErr)

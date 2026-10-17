@@ -53,6 +53,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/qiangli/outpost/internal/agent/clustertelemetry"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/nodeaddr"
 	"github.com/qiangli/outpost/internal/agent/nodecap"
@@ -304,4 +305,19 @@ func runControlPlaneReconcilers(ctx context.Context, fc *conf.FileConfig, cs kub
 	}
 
 	wg.Wait()
+}
+
+// startControlPlaneTelemetry shares the hosted plane's kubeconfig retry path.
+// The unit target is checked each tick, including when activated after startup.
+func startControlPlaneTelemetry(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, otel *otelCapability) {
+	if fc == nil || fc.Cluster == nil || !fc.Cluster.ControlPlaneOn() || strings.TrimSpace(fc.Cluster.ControlPlaneKubeconfig) == "" {
+		return
+	}
+	g.Go(func() error {
+		cs, err := awaitControlPlaneClient(ctx, fc.Cluster.ControlPlaneKubeconfig, slog.Default())
+		if err == nil {
+			(&clustertelemetry.Reconciler{Client: cs, Target: otel.MetricsTarget, Log: slog.Default()}).Run(ctx)
+		}
+		return nil
+	})
 }
