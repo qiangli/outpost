@@ -86,6 +86,13 @@ exit 0
 		t.Fatalf("no `run` invocation recorded; calls were:\n%s", b)
 	}
 
+	if !strings.Contains(runLine, "-v "+opts.KubeconfigDir+":/run/outpost/kubeconfig") {
+		t.Fatalf("missing dedicated kubeconfig mount: %s", runLine)
+	}
+	if strings.Contains(runLine, ":/etc/rancher/k3s") {
+		t.Fatalf("k3s private directory must not be mounted: %s", runLine)
+	}
+
 	// The tunnel listener is the one the operator chose to widen.
 	if !strings.Contains(runLine, "0.0.0.0:7000:7000") {
 		t.Errorf("tunnel publish should honor --bind-addr: %s", runLine)
@@ -262,9 +269,8 @@ sleep 0.1
 	}
 }
 
-// Exercise the actual export block with the absolute default symlink k3s
-// leaves in the mounted directory. Host consumers must get a regular file
-// and the published port, while internal clients retain the internal port.
+// Exercise the export with separate private and mounted directories, including
+// an old dangling host symlink and k3s recreating its private default symlink.
 func TestServerKubeconfigExportReplacesAbsoluteSymlink(t *testing.T) {
 	body, err := os.ReadFile("image/server-entrypoint.sh")
 	if err != nil {
@@ -289,19 +295,25 @@ func TestServerKubeconfigExportReplacesAbsoluteSymlink(t *testing.T) {
 			for _, port := range []string{"16443", "26443"} {
 				t.Run(port, func(t *testing.T) {
 					dir := t.TempDir()
+					mounted := t.TempDir()
 					internal := filepath.Join(dir, "k3s-internal.yaml")
-					host := filepath.Join(dir, "k3s.yaml")
-					original := "clusters:\n- cluster:\n    server: https://127.0.0.1:6443\n    certificate-authority-data: fixture\n"
+					host := KubeconfigPath(mounted)
+					original := "clusters:\n- cluster:\n    server: https://192.0.2.10:6443\n    certificate-authority-data: fixture\n"
 					if err := os.WriteFile(internal, []byte(original), 0600); err != nil {
 						t.Fatal(err)
 					}
-					if err := os.Symlink(internal, host); err != nil {
+					if err := os.Symlink("/etc/rancher/k3s/k3s-internal.yaml", host); err != nil {
 						t.Fatal(err)
 					}
 					block := strings.ReplaceAll(export, "/etc/rancher/k3s", dir)
+					block = strings.ReplaceAll(block, "/run/outpost/kubeconfig", mounted)
 					cmd := exec.Command(bin, "-c", "set -eu\nOUTPOST_API_PORT=6443\nOUTPOST_HOST_API_PORT="+port+"\n"+block)
 					if out, err := cmd.CombinedOutput(); err != nil {
 						t.Fatalf("export: %v\n%s", err, out)
+					}
+					// k3s can recreate its default symlink after export.
+					if err := os.Symlink(internal, filepath.Join(dir, "k3s.yaml")); err != nil {
+						t.Fatal(err)
 					}
 					info, err := os.Lstat(host)
 					if err != nil {
@@ -314,7 +326,7 @@ func TestServerKubeconfigExportReplacesAbsoluteSymlink(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					want := strings.ReplaceAll(original, ":6443", ":"+port)
+					want := strings.ReplaceAll(original, "https://192.0.2.10:6443", "https://127.0.0.1:"+port)
 					if string(got) != want {
 						t.Fatalf("host kubeconfig = %q, want %q", got, want)
 					}

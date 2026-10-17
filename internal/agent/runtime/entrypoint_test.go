@@ -71,7 +71,7 @@ func TestEmbeddedServerEntrypointWaitsForKubeconfigBeforeExport(t *testing.T) {
 	if waitAt < 0 {
 		t.Fatal("server entrypoint does not wait for k3s to write its kubeconfig")
 	}
-	sedAt := strings.Index(script, "/etc/rancher/k3s/k3s-internal.yaml > /etc/rancher/k3s/k3s.yaml.new")
+	sedAt := strings.Index(script, "/etc/rancher/k3s/k3s-internal.yaml > /run/outpost/kubeconfig/k3s.yaml.new")
 	if sedAt < 0 {
 		t.Fatal("server entrypoint no longer exports the host kubeconfig")
 	}

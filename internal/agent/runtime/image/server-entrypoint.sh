@@ -203,16 +203,16 @@ done
 if listening "${OUTPOST_API_PORT}" && [ -s /etc/rancher/k3s/k3s-internal.yaml ]; then
     # k3s must run on its native internal port, but the host deliberately
     # publishes it on 16443 to avoid colliding with a worker's local visitor.
-    # Export a host-usable kubeconfig without changing any internal component
-    # kubeconfig.
-    sed "s#server: https://127.0.0.1:${OUTPOST_API_PORT}#server: https://127.0.0.1:${OUTPOST_HOST_API_PORT}#" \
-        /etc/rancher/k3s/k3s-internal.yaml > /etc/rancher/k3s/k3s.yaml.new
-    chmod 0644 /etc/rancher/k3s/k3s.yaml.new
-    # k3s creates its default path as an absolute symlink to the internal
-    # config. Remove it explicitly: it dangles outside this bind mount, and
-    # file utilities must not follow it and overwrite the internal config.
-    rm -f /etc/rancher/k3s/k3s.yaml
-    mv -f /etc/rancher/k3s/k3s.yaml.new /etc/rancher/k3s/k3s.yaml
+    # Export into a dedicated host mount: k3s maintains a default-path
+    # symlink in /etc/rancher/k3s, which must remain container-private.
+    sed "s#server: .*#server: https://127.0.0.1:${OUTPOST_HOST_API_PORT}#" \
+        /etc/rancher/k3s/k3s-internal.yaml > /run/outpost/kubeconfig/k3s.yaml.new
+    chmod 0644 /run/outpost/kubeconfig/k3s.yaml.new
+    # Remove a dangling symlink left by older images before publishing.
+    if [ -L /run/outpost/kubeconfig/k3s.yaml ]; then
+        rm -f /run/outpost/kubeconfig/k3s.yaml
+    fi
+    mv -f /run/outpost/kubeconfig/k3s.yaml.new /run/outpost/kubeconfig/k3s.yaml
 
     # A scheduled metrics-server Pod cannot reach this namespace's loopback
     # FRP listeners, even with hostNetwork: it gets the WORKER host namespace.

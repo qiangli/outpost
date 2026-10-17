@@ -143,8 +143,9 @@ func serverFingerprint(ctx context.Context, bin string, o ServerOptions) (string
 	}
 	b, err := json.Marshal(struct {
 		ServerOptions
-		ImageIdentity string
-	}{ServerOptions: o, ImageIdentity: identity})
+		ImageIdentity   string
+		KubeconfigMount string
+	}{ServerOptions: o, ImageIdentity: identity, KubeconfigMount: "/run/outpost/kubeconfig"})
 	if err != nil {
 		return "", err
 	}
@@ -201,9 +202,9 @@ func UpServer(ctx context.Context, opts ServerOptions) error {
 		// Cluster state must survive a recreate, or every restart mints a new
 		// cluster and every worker's join token becomes invalid.
 		"-v", serverDataVolume(opts.AgentName) + ":/var/lib/rancher/k3s",
-		// The admin kubeconfig is written HERE so the host can read it without
-		// `podman exec` — that path is what makes the cluster operable.
-		"-v", opts.KubeconfigDir + ":/etc/rancher/k3s",
+		// Export separately from k3s-owned paths so its default symlink
+		// stays container-private. Host readers still use KubeconfigPath.
+		"-v", opts.KubeconfigDir + ":/run/outpost/kubeconfig",
 		// Workers reach frps through this — honors the operator's
 		// TunnelBindAddr, so `--bind-addr 0.0.0.0` lets workers join
 		// directly from the network.
