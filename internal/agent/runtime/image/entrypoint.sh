@@ -93,8 +93,8 @@ fi
 # read-only; the container is privileged so the insert into the shared VM
 # kernel succeeds.
 modprobe br_netfilter 2>/dev/null || true
-sysctl -w net.bridge.bridge-nf-call-iptables=1 2>/dev/null || true
-sysctl -w net.bridge.bridge-nf-call-ip6tables=1 2>/dev/null || true
+(echo 1 > /proc/sys/net/bridge/bridge-nf-call-iptables) 2>/dev/null || true
+(echo 1 > /proc/sys/net/bridge/bridge-nf-call-ip6tables) 2>/dev/null || true
 
 # Pre-create /etc/machine-id so kubelet doesn't log noisy errors.
 [ -f /etc/machine-id ] || cat /proc/sys/kernel/random/uuid | tr -d - > /etc/machine-id 2>/dev/null || true
@@ -401,7 +401,7 @@ if [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ]; then
     # the refresher heals once the visitor comes up. NEVER fall back to the
     # public URL: it is fronted by Cloudflare and structurally cannot carry
     # ts2021, so an attempt there only wastes a registration.
-    for i in $(seq 1 20); do
+    for ((i=1; i<=20; i++)); do
         if (: >/dev/tcp/127.0.0.1/${OVERLAY_CONTROL_BACKEND_PORT}) 2>/dev/null; then
             log "overlay-control visitor reachable on 127.0.0.1:${OVERLAY_CONTROL_BACKEND_PORT} (attempt $i)"
             break
@@ -454,34 +454,27 @@ POD_BRIDGE="cbr0"
 if [ "${OUTPOST_POD_NETWORK_MODE}" = "peer-flannel" ]; then
     POD_BRIDGE="cni0"
 fi
-sysctl -w net.ipv4.conf.all.route_localnet=1 >/dev/null
+echo 1 > /proc/sys/net/ipv4/conf/all/route_localnet
 for iface in lo eth0 default "${POD_BRIDGE}"; do
-    sysctl -w net.ipv4.conf.${iface}.route_localnet=1 2>/dev/null >/dev/null || true
+    (echo 1 > "/proc/sys/net/ipv4/conf/${iface}/route_localnet") 2>/dev/null || true
 done
-# Watchdog: kube-proxy reconciles iptables every ~30s and re-inserts its
-# KUBE-SERVICES jump at PREROUTING position 1, displacing ours. Without
-# this loop, the kube-proxy DNAT for the kubernetes Service (10.43.0.1)
-# fires first and sends pod traffic to cloudbox's unreachable mesh IP.
-# Re-arm position 1 every 3s so our DNAT consistently wins.
-(
-    while true; do
-        if ! iptables -t nat -L PREROUTING --line-numbers -n 2>/dev/null | head -3 | grep -q "^1 .*${APISERVER_SVC_IP}.*to:127.0.0.1:${OUTPOST_API_PORT}"; then
-            iptables -t nat -D PREROUTING -d "${APISERVER_SVC_IP}/32" -p tcp --dport "${APISERVER_SVC_PORT}" \
-                -j DNAT --to-destination "127.0.0.1:${OUTPOST_API_PORT}" 2>/dev/null || true
-            iptables -t nat -I PREROUTING 1 -d "${APISERVER_SVC_IP}/32" -p tcp --dport "${APISERVER_SVC_PORT}" \
-                -j DNAT --to-destination "127.0.0.1:${OUTPOST_API_PORT}" 2>/dev/null || true
-        fi
-        sleep 3
-    done
-) &
-# OUTPUT chain isn't touched by kube-proxy, so one shot is enough.
-iptables -t nat -I OUTPUT 1 -d "${APISERVER_SVC_IP}/32" -p tcp --dport "${APISERVER_SVC_PORT}" \
-    -j DNAT --to-destination "127.0.0.1:${OUTPOST_API_PORT}"
+# Run before kube-proxy's dstnat chains without racing its reconciliation.
+# The table belongs to this container's network namespace and is replaced
+# atomically when the entrypoint restarts.
+nft add table ip outpost
+nft -f - <<EOF
+delete table ip outpost
+add table ip outpost
+add chain ip outpost prerouting { type nat hook prerouting priority -110; policy accept; }
+add chain ip outpost output { type nat hook output priority -110; policy accept; }
+add rule ip outpost prerouting ip daddr ${APISERVER_SVC_IP} tcp dport ${APISERVER_SVC_PORT} dnat to 127.0.0.1:${OUTPOST_API_PORT}
+add rule ip outpost output ip daddr ${APISERVER_SVC_IP} tcp dport ${APISERVER_SVC_PORT} dnat to 127.0.0.1:${OUTPOST_API_PORT}
+EOF
 # Arm ${POD_BRIDGE}.route_localnet=1 once the CNI bridge appears (kubelet
 # creates it lazily on first pod).
 (
     while ! outpost netaddr exists "${POD_BRIDGE}" >/dev/null 2>&1; do sleep 2; done
-    sysctl -w net.ipv4.conf.${POD_BRIDGE}.route_localnet=1 >/dev/null 2>&1
+    echo 1 > "/proc/sys/net/ipv4/conf/${POD_BRIDGE}/route_localnet"
     log "armed ${POD_BRIDGE}.route_localnet=1 after bridge creation"
 ) &
 

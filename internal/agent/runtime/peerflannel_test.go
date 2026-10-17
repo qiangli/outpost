@@ -200,7 +200,7 @@ func TestEntrypointRouteLocalnetBridgeIsModeAware(t *testing.T) {
 	if !strings.Contains(script, `while ! outpost netaddr exists "${POD_BRIDGE}" >/dev/null 2>&1; do sleep 2; done`) {
 		t.Error("the bridge-appearance watchdog does not wait on ${POD_BRIDGE}")
 	}
-	if !strings.Contains(script, `sysctl -w net.ipv4.conf.${POD_BRIDGE}.route_localnet=1 >/dev/null 2>&1`) {
+	if !strings.Contains(script, `echo 1 > "/proc/sys/net/ipv4/conf/${POD_BRIDGE}/route_localnet"`) {
 		t.Error("the watchdog does not arm net.ipv4.conf.${POD_BRIDGE}.route_localnet")
 	}
 	// No hardcoded cbr0 arming should remain in either the loop or the
