@@ -24,13 +24,14 @@ type fakeLibpod struct {
 }
 
 type fakeContainer struct {
-	ID       string
-	Name     string
-	Image    string
-	Labels   map[string]string
-	State    string // "created" | "running" | "exited"
-	ExitCode int32
-	Logs     string
+	NetworkSettings InspectNetworkSettings
+	ID              string
+	Name            string
+	Image           string
+	Labels          map[string]string
+	State           string // "created" | "running" | "exited"
+	ExitCode        int32
+	Logs            string
 }
 
 func newFakeLibpod() *fakeLibpod {
@@ -121,11 +122,12 @@ func (f *fakeLibpod) handler(t *testing.T) http.HandlerFunc {
 				return
 			}
 			ins := InspectContainer{
-				ID:        c.ID,
-				Name:      c.Name,
-				ImageName: c.Image,
-				Image:     "sha256:fake-" + c.Image,
-				Config:    InspectConfig{Labels: c.Labels},
+				NetworkSettings: c.NetworkSettings,
+				ID:              c.ID,
+				Name:            c.Name,
+				ImageName:       c.Image,
+				Image:           "sha256:fake-" + c.Image,
+				Config:          InspectConfig{Labels: c.Labels},
 			}
 			ins.State.Status = c.State
 			ins.State.Running = (c.State == "running")

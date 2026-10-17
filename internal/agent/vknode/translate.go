@@ -105,7 +105,10 @@ func BuildSpecForCluster(pod *corev1.Pod, clusterID string) (*SpecGenerator, err
 		// don't apply because the container shares the host's port
 		// space directly.
 		spec.NetNS = &Namespace{NSMode: "host"}
-	} else if len(c.Ports) > 0 {
+	} else {
+		// Match the hosted control plane's explicit default bridge. In particular,
+		// rootless Podman's implicit pasta/slirp network is not a shared pod network.
+		spec.NetNS = &Namespace{NSMode: "bridge"}
 		spec.PortMappings = buildPortMappings(c.Ports)
 	}
 

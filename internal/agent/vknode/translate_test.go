@@ -328,8 +328,8 @@ func TestBuildSpec_PortsAndHostNetwork(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if spec.NetNS != nil {
-			t.Errorf("NetNS should be unset for default networking: %+v", spec.NetNS)
+		if spec.NetNS == nil || spec.NetNS.NSMode != "bridge" {
+			t.Errorf("NetNS should use the shared bridge: %+v", spec.NetNS)
 		}
 		if len(spec.PortMappings) != 2 {
 			t.Fatalf("PortMappings: %+v", spec.PortMappings)

@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -187,6 +189,9 @@ fi
 		t.Fatalf("no `podman run` command was recorded: %s", data)
 	}
 
+	if !strings.Contains(runCmd, "--network=bridge") {
+		t.Fatalf("control plane cannot reach local vk-podman bridge IPs: %s", runCmd)
+	}
 	wantTunnel := fmt.Sprintf("-p 0.0.0.0:%d:%d", 7000, 7000)
 	if !strings.Contains(runCmd, wantTunnel) {
 		t.Errorf("run command missing wide tunnel publish %q: %s", wantTunnel, runCmd)
@@ -200,5 +205,26 @@ fi
 	wideAPI := fmt.Sprintf("0.0.0.0:%d", DefaultControlPlaneAPIPort)
 	if strings.Contains(runCmd, wideAPI) {
 		t.Errorf("apiserver publish followed the wide tunnel bind — security contract violated: %s", runCmd)
+	}
+}
+
+// A plane created before explicit bridge mode must not be reused on upgrade.
+func TestServerFingerprint_RecreatesImplicitNetwork(t *testing.T) {
+	opts := validServerOpts(t)
+	opts.applyDefaults()
+	legacy, err := json.Marshal(struct {
+		ServerOptions
+		ImageIdentity   string
+		KubeconfigMount string
+	}{opts, opts.Image, "/run/outpost/kubeconfig"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := serverFingerprint(context.Background(), "/nonexistent/podman", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == fmt.Sprintf("%x", sha256.Sum256(legacy)) {
+		t.Fatal("implicit-network plane would be reused")
 	}
 }

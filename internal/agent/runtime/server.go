@@ -145,7 +145,8 @@ func serverFingerprint(ctx context.Context, bin string, o ServerOptions) (string
 		ServerOptions
 		ImageIdentity   string
 		KubeconfigMount string
-	}{ServerOptions: o, ImageIdentity: identity, KubeconfigMount: "/run/outpost/kubeconfig"})
+		NetworkMode     string
+	}{ServerOptions: o, ImageIdentity: identity, KubeconfigMount: "/run/outpost/kubeconfig", NetworkMode: "bridge"})
 	if err != nil {
 		return "", err
 	}
@@ -197,6 +198,9 @@ func UpServer(ctx context.Context, opts ServerOptions) error {
 		"--label", runtimeConfigLabel + "=" + fingerprint,
 		"--privileged",
 		"--cgroupns=host",
+		// Share Podman's default bridge with local vk-podman workloads so the
+		// apiserver can dial their PodIPs at the original Service target port.
+		"--network=bridge",
 		// The one entrypoint difference between the two roles.
 		"--entrypoint", "/server-entrypoint.sh",
 		// Cluster state must survive a recreate, or every restart mints a new

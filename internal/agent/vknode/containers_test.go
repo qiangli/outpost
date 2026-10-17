@@ -222,7 +222,8 @@ func TestClient_InspectContainer(t *testing.T) {
 			"State":{"Status":"running","Running":true,"Pid":1234,"ExitCode":0,"StartedAt":"2026-01-01T00:00:00Z"},
 			"Config":{"Labels":{"outpost.io/managed":"true"},"Env":["FOO=bar"]},
 			"Image":"sha256:deadbeef",
-			"ImageName":"alpine:3.20"
+			"ImageName":"alpine:3.20",
+			"NetworkSettings":{"IPAddress":"192.0.2.10","Networks":{"podman":{"IPAddress":"192.0.2.10","GlobalIPv6Address":"2001:db8::10"}}}
 		}`)
 	})
 	c, _ := NewClient(sock)
@@ -238,6 +239,9 @@ func TestClient_InspectContainer(t *testing.T) {
 	}
 	if got.Config.Labels[ManagedLabel] != "true" {
 		t.Errorf("labels not parsed: %+v", got.Config.Labels)
+	}
+	if got.NetworkSettings.IPAddress != "192.0.2.10" || got.NetworkSettings.Networks["podman"].GlobalIPv6Address != "2001:db8::10" {
+		t.Fatalf("network addresses not decoded: %+v", got.NetworkSettings)
 	}
 	if got.ImageName != "alpine:3.20" {
 		t.Errorf("imageName: %q", got.ImageName)

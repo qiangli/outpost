@@ -186,18 +186,30 @@ func (c *Client) RemoveContainer(ctx context.Context, id string, force, volumes 
 	}
 }
 
+// InspectNetwork contains addresses assigned by Podman's bridge/IPAM.
+type InspectNetwork struct {
+	IPAddress         string `json:"IPAddress"`
+	GlobalIPv6Address string `json:"GlobalIPv6Address"`
+}
+
+type InspectNetworkSettings struct {
+	InspectNetwork
+	Networks map[string]InspectNetwork `json:"Networks"`
+}
+
 // InspectContainer issues GET /libpod/containers/{id}/json. Returns
 // only the fields the provider's status reporter actually reads — the
 // full inspect schema is sprawling and we'd rather track adds explicitly
 // than carry every podman field as dead code.
 type InspectContainer struct {
-	ID        string        `json:"Id"`
-	Name      string        `json:"Name"`
-	State     InspectState  `json:"State"`
-	Config    InspectConfig `json:"Config"`
-	Image     string        `json:"Image"`
-	ImageName string        `json:"ImageName"`
-	Created   time.Time     `json:"Created"`
+	NetworkSettings InspectNetworkSettings `json:"NetworkSettings"`
+	ID              string                 `json:"Id"`
+	Name            string                 `json:"Name"`
+	State           InspectState           `json:"State"`
+	Config          InspectConfig          `json:"Config"`
+	Image           string                 `json:"Image"`
+	ImageName       string                 `json:"ImageName"`
+	Created         time.Time              `json:"Created"`
 }
 
 // InspectState mirrors the subset of /containers/{id}/json State we read.

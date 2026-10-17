@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
+	"sort"
 	"sync"
 	"time"
 
@@ -415,8 +417,11 @@ func inspectToPodStatus(ctx context.Context, pod *corev1.Pod, ins *InspectContai
 	status := &corev1.PodStatus{
 		Phase:             phaseFromContainer(cs),
 		HostIP:            "",
-		PodIP:             "",
+		PodIPs:            inspectPodIPs(ins.NetworkSettings),
 		ContainerStatuses: []corev1.ContainerStatus{cs},
+	}
+	if len(status.PodIPs) > 0 {
+		status.PodIP = status.PodIPs[0].IP
 	}
 	if !ins.State.StartedAt.IsZero() {
 		t := metav1.NewTime(ins.State.StartedAt)
@@ -449,12 +454,10 @@ func inspectToPodStatus(ctx context.Context, pod *corev1.Pod, ins *InspectContai
 		if err := runReadinessProbe(ctx, c, fallbackPort, ins.State.StartedAt); err != nil {
 			readyState = corev1.ConditionFalse
 			readyReason = "ReadinessProbeFailed"
-			// cs.Ready mirrors the pod-level Ready so kubectl get pods
-			// and the apiserver's endpoint controller see the same
-			// truth.
-			cs.Ready = false
 		}
 	}
+	// Update the returned copy, not the local cs copied into status above.
+	status.ContainerStatuses[0].Ready = readyState == corev1.ConditionTrue
 	now := metav1.Now()
 	status.Conditions = append(status.Conditions,
 		corev1.PodCondition{
@@ -518,3 +521,35 @@ func waitingReason(s InspectState) string {
 // conditions). 30s is well under the typical node-monitor-grace-period
 // of 40s and the default Lease.RenewDeadline of 10s.
 const staticHeartbeat = 30 * time.Second
+
+// Kubernetes allows at most one address per family. Prefer the legacy primary
+// address, then attachments in stable order so map iteration cannot churn status.
+func inspectPodIPs(settings InspectNetworkSettings) []corev1.PodIP {
+	var out []corev1.PodIP
+	seen := map[bool]bool{}
+	add := func(raw string) {
+		ip := net.ParseIP(raw)
+		if ip == nil || !ip.IsGlobalUnicast() {
+			return
+		}
+		v4 := ip.To4() != nil
+		if seen[v4] {
+			return
+		}
+		seen[v4] = true
+		out = append(out, corev1.PodIP{IP: ip.String()})
+	}
+	add(settings.IPAddress)
+	add(settings.GlobalIPv6Address)
+	names := make([]string, 0, len(settings.Networks))
+	for name := range settings.Networks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		network := settings.Networks[name]
+		add(network.IPAddress)
+		add(network.GlobalIPv6Address)
+	}
+	return out
+}
