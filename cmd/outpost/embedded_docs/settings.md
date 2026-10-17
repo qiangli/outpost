@@ -861,6 +861,20 @@ Platform support per mode:
 | `vk-native` / `vk-ollama` (pods → host processes) | yes | yes | yes |
 | `vk-podman` (pods → libpod containers) | yes | yes | yes |
 
+On Linux, selecting `vk-podman` starts a per-user Podman API service when no
+reachable socket is detected. Provision the managed binary first with
+`bashy podman`; the daemon uses only the binmgr cache for this service, never
+Podman from PATH. The socket is under the user cache at
+`outpost/podman/api.sock`. The service uses the bundled helper paths through
+`CONTAINERS_CONF_OVERRIDE` (an existing operator override is respected) and
+stops with the daemon.
+
+For a peer-plane join with `--cluster-agent=off`, the daemon runs the
+authenticated STCP apiserver visitor on loopback at `cluster.k8s_api_port`
+(default 6443). Virtual nodes use this visitor. With the agent runtime enabled,
+the container continues to own the visitor and publishes its dedicated bridge.
+
+
 Two things to know before choosing a mode on macOS or Windows:
 
 - **Pods in containers there run inside podman's Linux VM**, so the host

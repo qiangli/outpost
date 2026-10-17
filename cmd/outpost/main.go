@@ -2159,6 +2159,12 @@ func logPeerOverlayFetch(node string, haveKey bool, err error) {
 // Returns once the join succeeds; startClusterRunner owns the long-lived
 // goroutines from that point on.
 func joinClusterWithRetry(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service, load *sysloadPlane) {
+	if err := startPeerVirtualVisitor(ctx, g, fc, func(tc agent.TunnelConfig, visitors []agent.STCPVisitor) (peerVisitorTunnel, error) {
+		return agent.NewTunnel(tc, nil, visitors, nil)
+	}); err != nil {
+		slog.Error("cluster peer apiserver visitor: disabled", "err", err)
+		return
+	}
 	const (
 		firstDelay = 5 * time.Second
 		maxDelay   = 2 * time.Minute
@@ -3812,8 +3818,7 @@ func clusterAPIPort(cc *conf.ClusterConfig) int {
 // peerVirtualAPIURL is the host-side endpoint for a peer plane. When the
 // physical agent runtime is present it owns the authenticated STCP visitor in
 // its container namespace and publishes it on a dedicated host-loopback port
-// for virtual nodes. Virtual-only configurations retain the existing local
-// visitor address until they gain a dedicated tunnel sidecar.
+// for virtual nodes. Virtual-only configurations use the daemon-owned visitor.
 func peerVirtualAPIURL(cc *conf.ClusterConfig) string {
 	if cc != nil && cc.JoinsPeerPlane() && cc.HasAgentRuntime() {
 		return fmt.Sprintf("https://127.0.0.1:%d", runtime.DefaultPeerAPIBridgePort)

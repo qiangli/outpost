@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/qiangli/outpost/internal/agent"
+	agentruntime "github.com/qiangli/outpost/internal/agent/runtime"
 )
 
 // ensurePodmanRuntime resolves a reachable podman socket, starting the podman
@@ -31,11 +32,9 @@ func ensurePodmanRuntime(ctx context.Context) (string, error) {
 	if bt := agent.DetectPodman(); bt.Available && bt.Socket != "" {
 		return bt.Socket, nil
 	}
-	// Linux runs podman natively — there is no VM to start, so a missing
-	// socket means the service itself isn't running and starting a
-	// "machine" would be meaningless.
+	// Linux uses the provisioned managed binary directly, never PATH.
 	if runtime.GOOS == "linux" {
-		return "", errors.New("podman socket not detected (is the podman service running?)")
+		return agentruntime.EnsurePodmanService(ctx)
 	}
 
 	podman, err := podmanCommand(ctx)
