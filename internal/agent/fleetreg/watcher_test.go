@@ -214,7 +214,9 @@ func TestRunPushesOnChangeAndHeartbeat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	// ~200 unchanged ticks: wide enough that a slow host still completes the
+	// first Snapshot+Push inside the window (60ms flaked on a 2-vCPU droplet).
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	w.Run(ctx)
 
