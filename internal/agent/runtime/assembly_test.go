@@ -474,7 +474,10 @@ kubectl(){ echo "apply attempt $((i + 1)): admission unavailable" >&2; return 1;
 	if want := "FATAL: could not register metrics API: apply attempt 120: admission unavailable\n"; string(out) != want {
 		t.Fatalf("unexpected retry diagnostic: %s", out)
 	}
-	prefix = strings.Replace(prefix, "return 1;", "return 0;", 1)
+	// An unavailable aggregate can break OpenAPI discovery before its own
+	// endpoint is repaired. Applying built-in resources must bypass validation.
+	prefix = strings.Replace(prefix, `kubectl(){ echo "apply attempt $((i + 1)): admission unavailable" >&2; return 1; }`,
+		`kubectl(){ case " $* " in *" --validate=false "*) return 0;; *) echo "OpenAPI unavailable" >&2; return 1;; esac; }`, 1)
 	out, err = exec.Command("bash", "-eu", "-c", prefix+s).CombinedOutput()
 	if err != nil || len(out) != 0 {
 		t.Fatalf("successful apply: %v: %s", err, out)

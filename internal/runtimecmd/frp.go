@@ -20,7 +20,7 @@ import (
 
 // Register adds the runtime utilities to outpost's root command.
 func Register(root *cobra.Command) {
-	root.AddCommand(frpCmd(false), frpCmd(true), certgenCmd(), tlsproxyCmd(), netaddrCmd(), metricsExecCmd())
+	root.AddCommand(frpCmd(false), frpCmd(true), certgenCmd(), tlsproxyCmd(), netaddrCmd(), metricsExecCmd(), etcdPeerCmd())
 }
 
 func signalContext(cmd *cobra.Command) (context.Context, context.CancelFunc) {

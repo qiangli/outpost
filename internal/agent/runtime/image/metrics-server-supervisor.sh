@@ -222,7 +222,7 @@ fi
 # The apiserver may have opened its socket before admission/RBAC are ready.
 # Retry for two minutes, then fail the whole control-plane container loudly.
 i=0
-until apply_error="$(kubectl --kubeconfig="$internal_kubeconfig" apply -f "$work/resources.yaml" 2>&1)"; do
+until apply_error="$(kubectl --kubeconfig="$internal_kubeconfig" apply --validate=false -f "$work/resources.yaml" 2>&1)"; do
     i=$((i + 1))
     [ "$i" -lt 120 ] || { log "FATAL: could not register metrics API: $apply_error"; exit 1; }
     sleep 1

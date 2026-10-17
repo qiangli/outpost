@@ -128,6 +128,7 @@ set -- server \
     --https-listen-port="${OUTPOST_API_PORT}" \
     --tls-san=127.0.0.1 \
     --tls-san=localhost \
+    --node-ip="$ADVERTISE_ADDR" \
     --advertise-address="$ADVERTISE_ADDR"
 [ -n "${OUTPOST_TLS_SAN:-}" ] && for s in $(echo "${OUTPOST_TLS_SAN}" | tr ',' ' '); do
     set -- "$@" --tls-san="$s"
@@ -185,6 +186,20 @@ set -- "$@" --kube-apiserver-arg=kubelet-certificate-authority=
 log "exec k3s $*"
 k3s "$@" &
 K3S_PID=$!
+
+# Reconcile only this single-member datastore; never reset or discard it.
+# A recreated bridge container may have a new IP while etcd retains its old
+# peer URL. k3s will not finish startup until that membership matches.
+i=0
+until peer_error="$(outpost etcd-peer "$ADVERTISE_ADDR" 2>&1)"; do
+    i=$((i + 1))
+    if [ "$i" -ge 60 ] || ! kill -0 "$K3S_PID" 2>/dev/null; then
+        log "FATAL: could not reconcile local etcd peer: $peer_error"
+        kill "$K3S_PID" "$FRPS_PID" 2>/dev/null || true
+        exit 1
+    fi
+    sleep 1
+done
 
 # Publish the apiserver once it answers. Doing this AFTER k3s starts avoids a
 # proxy that points at a dead port during startup.
