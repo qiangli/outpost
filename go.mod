@@ -317,3 +317,5 @@ replace go.podman.io/podman/v6 => github.com/qiangli/podman/v6 v6.0.0-2026100906
 replace github.com/qiangli/yoke/pkg/llmgw => github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261014085036-9d08a1bef6be
 
 replace github.com/qiangli/yoke/pkg/oci => github.com/qiangli/yoke/pkg/oci v0.0.0-20261014085036-9d08a1bef6be
+
+replace modernc.org/sqlite => github.com/qiangli/sqlite v1.50.2-0.20261018085128-5fb52bf328cb
