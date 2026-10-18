@@ -63,9 +63,7 @@ func peersStatusCmd() *cobra.Command {
 				return err
 			}
 			if jsonOut {
-				b, _ := json.MarshalIndent(peers, "", "  ")
-				fmt.Println(string(b))
-				return nil
+				return writePeersStatusGraph(cmd.OutOrStdout(), peers)
 			}
 			if len(peers) == 0 {
 				fmt.Println("No peers visible. Is this host paired (`outpost status`), and do you own or share any hosts?")
@@ -100,7 +98,7 @@ func peersStatusCmd() *cobra.Command {
 			return w.Flush()
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit JSON instead of a table")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit a bashy-graph-v1 stream of visible peers")
 	return cmd
 }
 
