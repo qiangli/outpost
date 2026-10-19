@@ -18,9 +18,9 @@ func osMachineID() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	cmdName := "ioreg"
+	cmdName := "/usr/sbin/ioreg"
 	if _, err := exec.LookPath(cmdName); err != nil {
-		cmdName = "/usr/sbin/ioreg"
+		cmdName = "ioreg"
 	}
 
 	out, err := exec.CommandContext(ctx, cmdName, "-rd1", "-c", "IOPlatformExpertDevice").Output()
