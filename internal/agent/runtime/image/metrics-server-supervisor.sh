@@ -158,14 +158,34 @@ fi
 
 : "${OUTPOST_METRICS_ADDRESS:?required: control-plane container address}"
 : "${OUTPOST_METRICS_PORT:=10250}"
-work=/run/outpost-metrics-server
-internal_kubeconfig=/etc/rancher/k3s/k3s-internal.yaml
+# Every absolute path and every budget is a seam. Defaults are exactly the
+# in-container locations and timings; a test overrides them to run the real
+# supervisor against stub binaries on a temporary PATH.
+work="${OUTPOST_METRICS_WORK_DIR:-/run/outpost-metrics-server}"
+internal_kubeconfig="${OUTPOST_METRICS_KUBECONFIG:-/etc/rancher/k3s/k3s-internal.yaml}"
+tls_dir="${OUTPOST_METRICS_TLS_DIR:-/var/lib/rancher/k3s/server/tls}"
+# The distroless uid the metrics child drops to. Empty skips the chown for a
+# test running off-image, where that account does not exist.
+metrics_owner="${OUTPOST_METRICS_OWNER-65532:65532}"
+# Bounded wait for the apiserver's authorizer to catch up with the bindings
+# applied below (tries x interval seconds).
+auth_wait_tries="${OUTPOST_METRICS_AUTH_WAIT_TRIES:-60}"
+auth_wait_interval="${OUTPOST_METRICS_AUTH_WAIT_INTERVAL:-2}"
+# Bounded restart budget for a metrics-server that exits on a forbidden error.
+retry_budget="${OUTPOST_METRICS_RETRY_BUDGET:-10}"
+retry_backoff="${OUTPOST_METRICS_RETRY_BACKOFF:-2}"
+retry_backoff_max="${OUTPOST_METRICS_RETRY_BACKOFF_MAX:-30}"
+# Liveness poll interval and the rotation deadline measured in those ticks
+# (8640 x 10s = 24h).
+tick_seconds="${OUTPOST_METRICS_TICK_SECONDS:-10}"
+rotate_ticks="${OUTPOST_METRICS_ROTATE_TICKS:-8640}"
 mkdir -p "$work/certs"
 chmod 0700 "$work" "$work/certs"
+metrics_log="$work/metrics-server.log"
 
-client_ca=/var/lib/rancher/k3s/server/tls/client-ca.crt
-client_key=/var/lib/rancher/k3s/server/tls/client-ca.key
-server_ca=/var/lib/rancher/k3s/server/tls/server-ca.crt
+client_ca="$tls_dir/client-ca.crt"
+client_key="$tls_dir/client-ca.key"
+server_ca="$tls_dir/server-ca.crt"
 for f in "$client_ca" "$client_key" "$server_ca"; do
     [ -s "$f" ] || { log "FATAL: required k3s credential missing: $f"; exit 1; }
 done
@@ -201,7 +221,40 @@ contexts:
 current-context: local
 EOF
     chmod 0600 "$work/kubeconfig"
-    chown -R 65532:65532 "$work"
+    [ -z "$metrics_owner" ] || chown -R "$metrics_owner" "$work"
+}
+
+# The apiserver's authorizer caches RBAC: it can accept the bindings applied
+# below and still answer 403 for the metrics-server identity for a moment
+# afterwards. metrics-server treats that 403 as fatal and exits, so ask the
+# authorizer directly, with a bounded budget, before handing it the process.
+metrics_rbac_ready() {
+    [ "$(kubectl --kubeconfig="$internal_kubeconfig" auth can-i get \
+        configmaps/extension-apiserver-authentication -n kube-system \
+        --as=system:serviceaccount:kube-system:metrics-server 2>/dev/null || true)" = yes ]
+}
+
+wait_for_metrics_rbac() {
+    waited=0
+    while ! metrics_rbac_ready; do
+        waited=$((waited + 1))
+        if [ "$waited" -ge "$auth_wait_tries" ]; then
+            log "WARNING: authorizer still refuses the metrics-server identity after ${waited} checks; starting anyway"
+            return 0
+        fi
+        sleep "$auth_wait_interval"
+    done
+    [ "$waited" -eq 0 ] || log "authorizer admitted the metrics-server identity after ${waited} checks"
+}
+
+# A forbidden exit is the bootstrap race, not a broken deployment: retry it.
+# Both spellings the apiserver uses ("is forbidden", "403 Forbidden") match
+# without depending on a grep -i the scratch image need not provide.
+metrics_exit_was_forbidden() {
+    case "$(tail -n 200 "$metrics_log" 2>/dev/null || true)" in
+        *orbidden*) return 0 ;;
+    esac
+    return 1
 }
 
 render_metrics_resources "$OUTPOST_METRICS_ADDRESS" > "$work/resources.yaml"
@@ -265,9 +318,15 @@ stop_service_proxy() {
 }
 trap 'stop_metrics; stop_service_proxy; exit 0' TERM INT
 
+restarts=0
+backoff="$retry_backoff"
 while :; do
     mint_credentials
+    wait_for_metrics_rbac
     log "serving on ${OUTPOST_METRICS_ADDRESS}:${OUTPOST_METRICS_PORT}"
+    # Captured rather than streamed so the supervisor can classify an early
+    # exit; the tail is echoed to the container log whenever the child dies.
+    : > "$metrics_log"
     # Virtual runtimes implement Pod lifecycle, not the kubelet resource
     # metrics endpoint. Scraping them can never succeed and otherwise wakes
     # the control plane every metric-resolution interval just to log "no
@@ -284,22 +343,39 @@ while :; do
         --kubelet-preferred-address-types=ExternalIP \
         --kubelet-use-node-status-port \
         --kubelet-insecure-tls \
-        --metric-resolution=15s &
+        --metric-resolution=15s >>"$metrics_log" 2>&1 &
     metrics_pid=$!
 
     # Rotate after 24h. Polling also notices an unexpected child exit within
     # ten seconds and fails the control-plane container instead of going green
     # with a dead Metrics API.
     ticks=0
-    while [ "$ticks" -lt 8640 ] && kill -0 "$metrics_pid" 2>/dev/null; do
-        sleep 10
+    while [ "$ticks" -lt "$rotate_ticks" ] && kill -0 "$metrics_pid" 2>/dev/null; do
+        sleep "$tick_seconds"
         ticks=$((ticks + 1))
     done
     if ! kill -0 "$metrics_pid" 2>/dev/null; then
+        rc=0
         wait "$metrics_pid" || rc=$?
-        log "FATAL: metrics-server exited unexpectedly (${rc:-0})"
+        metrics_pid=""
+        tail -n 20 "$metrics_log" >&2 || true
+        # Only the RBAC race is survivable. Any other failure still takes the
+        # control-plane container down on the first exit, as it always has.
+        if metrics_exit_was_forbidden && [ "$restarts" -lt "$retry_budget" ]; then
+            restarts=$((restarts + 1))
+            log "metrics-server exited (${rc}) on a forbidden error; retry ${restarts}/${retry_budget} in ${backoff}s"
+            sleep "$backoff"
+            if [ "$backoff" -lt "$retry_backoff_max" ]; then
+                backoff=$((backoff * 2))
+                [ "$backoff" -le "$retry_backoff_max" ] || backoff="$retry_backoff_max"
+            fi
+            continue
+        fi
+        log "FATAL: metrics-server exited unexpectedly (${rc})"
         exit 1
     fi
+    restarts=0
+    backoff="$retry_backoff"
     log "rotating metrics-server client certificate"
     stop_metrics
 done
