@@ -1198,6 +1198,23 @@ function serviceRow(u) {
       msg('err', e.message || 'Toggle failed');
     }
   });
+  if (u.name === 'apps') {
+    const lan = switchEl({checked: (u.ports || []).some(p => !p.startsWith('127.0.0.1:') && !p.startsWith('[::1]:'))});
+    lan.input.setAttribute('aria-label', 'LAN access');
+    lan.input.addEventListener('change', async () => {
+      lan.input.disabled = true;
+      try {
+        await api('POST', 'api/config/builtins', {service_settings: {apps: {
+          'ports.0.bind': lan.input.checked ? 'lan' : '127.0.0.1',
+          'settings.pair': String(lan.input.checked),
+        }}});
+        msg('ok', 'LAN setting saved. Restart to apply.');
+        noteRestartPending({restarting: true});
+      } catch (e) { lan.input.checked = !lan.input.checked; msg('err', e.message || 'Save failed'); }
+      finally { lan.input.disabled = false; }
+    });
+    row.append(lan.wrap, el('span', {}, 'LAN access'));
+  }
   row.append(btn);
   return row;
 }
