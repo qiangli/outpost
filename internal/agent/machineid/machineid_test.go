@@ -188,3 +188,52 @@ func TestMachineIDHook(t *testing.T) {
 		t.Errorf("RawOSIdentifier() = %q, want %q", raw, "injected-source-id")
 	}
 }
+
+// TestMachineIDFallbackDoesNotTouchRealHome verifies that when the OS source returns
+// an error and XDG_CONFIG_HOME is set to a temp dir, Get() writes the fallback UUID
+// ONLY under that temp dir, and does not create machine_id in the real home directory.
+func TestMachineIDFallbackDoesNotTouchRealHome(t *testing.T) {
+	cleanup := SetOSSourceForTest(func() (string, error) {
+		return "", errors.New("simulated error: no OS machine identifier")
+	})
+	defer cleanup()
+
+	tempDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tempDir)
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	realHomePath := filepath.Join(home, ".config", "matrix", fallbackFileName)
+	_, existedBefore := os.Stat(realHomePath)
+
+	id, err := Get()
+	if err != nil {
+		t.Fatalf("Get() failed: %v", err)
+	}
+	if id == "" {
+		t.Fatal("Get() returned empty ID")
+	}
+
+	// Verify fallback file was created under tempDir.
+	tempFallback := filepath.Join(tempDir, "matrix", fallbackFileName)
+	data, err := os.ReadFile(tempFallback)
+	if err != nil {
+		t.Fatalf("expected fallback file at %s, got err: %v", tempFallback, err)
+	}
+	rawUUID := strings.TrimSpace(string(data))
+	if rawUUID == "" {
+		t.Fatalf("fallback file at %s is empty", tempFallback)
+	}
+	if Hash(rawUUID) != id {
+		t.Errorf("Hash(%q) = %q, want %q", rawUUID, Hash(rawUUID), id)
+	}
+
+	// Assert the real-home path was not created by the test.
+	_, existedAfter := os.Stat(realHomePath)
+	if os.IsNotExist(existedBefore) && !os.IsNotExist(existedAfter) {
+		_ = os.Remove(realHomePath)
+		t.Fatalf("real-home path %s was created by the test", realHomePath)
+	}
+}
