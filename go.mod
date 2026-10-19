@@ -21,7 +21,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/pkg/sftp v1.13.10
-	github.com/qiangli/yoke v0.0.0-20261018111219-3d1129ec669c
+	github.com/qiangli/yoke v0.0.0-20261019140108-7c0c8676ad38
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.53.0
 	github.com/spf13/cobra v1.10.2
@@ -156,6 +156,7 @@ require (
 	github.com/klauspost/reedsolomon v1.12.0 // indirect
 	github.com/koron/go-ssdp v0.0.6 // indirect
 	github.com/kr/fs v0.1.0 // indirect
+	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/libp2p/go-buffer-pool v0.1.0 // indirect
 	github.com/libp2p/go-flow-metrics v0.2.0 // indirect
@@ -190,7 +191,9 @@ require (
 	github.com/multiformats/go-multistream v0.6.1 // indirect
 	github.com/multiformats/go-varint v0.0.7 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/nguyenthenguyen/docx v0.0.0-20230621112118-9c8e795a11db // indirect
 	github.com/nwaples/rardecode/v2 v2.2.3 // indirect
+	github.com/odvcencio/gotreesitter v0.16.0 // indirect
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58 // indirect
 	github.com/pelletier/go-toml/v2 v2.3.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.27 // indirect
@@ -220,11 +223,14 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
-	github.com/qiangli/coreutils v0.0.0-20261018024844-02b24ff1db5d // indirect
+	github.com/qiangli/coreutils v0.0.0-20261019134046-ccd5c756c64e // indirect
+	github.com/qiangli/gfy v0.0.0-20261013004914-30d38f086034 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.1 // indirect
 	github.com/quic-go/webtransport-go v0.10.0 // indirect
 	github.com/redis/go-redis/v9 v9.20.1 // indirect
+	github.com/richardlehane/mscfb v1.0.6 // indirect
+	github.com/richardlehane/msoleps v1.0.6 // indirect
 	github.com/rjeczalik/notify v0.9.3 // indirect
 	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06 // indirect
 	github.com/sean-/seed v0.0.0-20170313163322-e2103e2c3529 // indirect
@@ -241,7 +247,9 @@ require (
 	github.com/stangelandcl/ppmd v0.1.1 // indirect
 	github.com/templexxx/cpu v0.1.1 // indirect
 	github.com/templexxx/xorsimd v0.4.3 // indirect
+	github.com/tiendc/go-deepcopy v1.7.2 // indirect
 	github.com/tjfoc/gmsm v1.4.1 // indirect
+	github.com/tklauser/ps v0.0.5-0.20260804061010-39c4acb07b31 // indirect
 	github.com/tomasen/realip v0.0.0-20180522021738-f0c99a92ddce // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/u-root/u-root v0.16.0 // indirect
@@ -252,6 +260,9 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
 	github.com/xtaci/kcp-go/v5 v5.6.13 // indirect
+	github.com/xuri/efp v0.0.1 // indirect
+	github.com/xuri/excelize/v2 v2.10.1 // indirect
+	github.com/xuri/nfp v0.0.2-0.20250530014748-2ddeb826f9a9 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.6.0 // indirect
@@ -298,7 +309,7 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 v3.0.0-20261014083225-477b218e535d
+replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 v3.0.0-20261019130812-6bf0a3d23481
 
 replace github.com/filebrowser/filebrowser/v2 => github.com/qiangli/filebrowser/v2 v2.0.0-20261013004903-9c7b5c8e3d09
 
