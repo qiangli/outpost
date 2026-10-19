@@ -19,6 +19,7 @@ import (
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
+	"github.com/qiangli/outpost/internal/agent/machineid"
 	"github.com/qiangli/outpost/internal/jitter"
 )
 
@@ -115,6 +116,9 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		"has_auth_url":    authURL != "",
 		"client_only":     req.ClientOnly,
 		"ring":            strings.TrimSpace(req.Ring),
+	}
+	if mid, err := machineid.Get(); err == nil && mid != "" {
+		payload["machine_id"] = mid
 	}
 	body, _ := json.Marshal(payload)
 	url := strings.TrimRight(req.ServerURL, "/") + "/api/register/exchange"
