@@ -699,8 +699,8 @@ github.com/qiangli/sh/v3 v3.0.0-20261019130812-6bf0a3d23481 h1:qYYqUupRccI2Yruuu
 github.com/qiangli/sh/v3 v3.0.0-20261019130812-6bf0a3d23481/go.mod h1:tyFtJgC2PikzHoF5joV+bRq5JdGSisHLNPZNsh9nxgI=
 github.com/qiangli/sqlite v1.50.2-0.20261018085128-5fb52bf328cb h1:LLfdQXY/uXHpJm9eYP0sdcFg4IHQHzIOUwslX9TpqxI=
 github.com/qiangli/sqlite v1.50.2-0.20261018085128-5fb52bf328cb/go.mod h1:tcNzv5p84E0skkmJn038y+hWJbLQXQqEnQfeh5r2JLM=
-github.com/qiangli/yoke v0.0.0-20261019140108-7c0c8676ad38 h1:CAKbCqTqUQRCVE5duTPWz80qDem8FgER+TexsA+TgP4=
-github.com/qiangli/yoke v0.0.0-20261019140108-7c0c8676ad38/go.mod h1:WcF0+y21dAYt+54lEwXZk0XrUuYDF9cxR0QlGr/PqSE=
+github.com/qiangli/yoke v0.0.0-20261019160245-b7b8e9c4d020 h1:vrv8ieGoy92fWZO/ZH1fNoliU0gpPyl+35aQ7qGYd1k=
+github.com/qiangli/yoke v0.0.0-20261019160245-b7b8e9c4d020/go.mod h1:WcF0+y21dAYt+54lEwXZk0XrUuYDF9cxR0QlGr/PqSE=
 github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261014085036-9d08a1bef6be h1:aDgeAgPkUDOxrLYVtKQikZNnr8SsGdzvazd/f9eWnOg=
 github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261014085036-9d08a1bef6be/go.mod h1:UnJ5Aw/zCOdFgHdziuLv9sU0t/KT8dcOrGfmwcm6X4E=
 github.com/quic-go/qpack v0.6.0 h1:g7W+BMYynC1LbYLSqRt8PBg5Tgwxn214ZZR34VIOjz8=
