@@ -5,7 +5,6 @@ description: For outpost release QA pollers, do not pipe lane detection or REMOT
 status: candidate
 source:
     tool: codex-gpt-5.5-b
-    host: dragon
     episode: weave-issue-2
 created: "2026-08-29T18:45:21Z"
 ---

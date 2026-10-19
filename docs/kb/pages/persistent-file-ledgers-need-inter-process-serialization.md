@@ -16,7 +16,6 @@ status: validated
 evidence: outpost aa65b9f; merged-tree CNI count=20, race count=3, Linux static build; independent review green
 source:
     tool: qiangli
-    host: dragon
 created: "2026-07-29T16:46:32Z"
 updated: "2026-07-29T16:46:37Z"
 ---

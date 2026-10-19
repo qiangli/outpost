@@ -8,7 +8,6 @@ description: Go on Windows maps os.OpenFile mode only to the read-only attribute
 status: candidate
 source:
     tool: opencode-glm-5.3-l
-    host: dragon
     episode: ep-dd7732ba7e9c708e
 created: "2026-10-11T19:16:49Z"
 ---

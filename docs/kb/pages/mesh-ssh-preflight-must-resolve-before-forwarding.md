@@ -6,7 +6,6 @@ status: validated
 evidence: Focused regression tests verify an unpublished direct peer stops after resolve with zero forward and ticket calls; published peer opens the forward and requests one ticket. Full make test passes.
 source:
     tool: codex-gpt5.6-terra-b
-    host: dragon
     episode: weave-issue-2
 created: "2026-08-29T11:57:29Z"
 updated: "2026-08-29T11:57:36Z"

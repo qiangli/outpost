@@ -16,7 +16,7 @@ resolution: fixed
 closed_by: codex-gpt6-astra-u
 ---
 
-Correction to Outpost interim a713c58c / Story 625828548647. yoke/pkg/binmgr/prima.go now provides PrimaTool and EnsurePrima with immutable repo, release tag, exact identity/issuer and committed-pin fail closed. Remove duplicate Outpost primaReleaseRepo, primaWorkflowIdentity, primaSHA256Pins and primaSignedTool; ensureBinaries must call binmgr.EnsurePrima(ctx) and install only verified path for leader/worker roles. Keep fail closed until signed assets and pins land. Reconcile duplicate docs/todo/625828548647 story files: worker-created tracked s436-... and generated untracked original; retain one canonical file in worker commit. Add focused tests proving call path and no fallback. Worker alone commits with trailers and story files, no push or Dragon native build/container.
+Correction to Outpost interim a713c58c / Story 625828548647. yoke/pkg/binmgr/prima.go now provides PrimaTool and EnsurePrima with immutable repo, release tag, exact identity/issuer and committed-pin fail closed. Remove duplicate Outpost primaReleaseRepo, primaWorkflowIdentity, primaSHA256Pins and primaSignedTool; ensureBinaries must call binmgr.EnsurePrima(ctx) and install only verified path for leader/worker roles. Keep fail closed until signed assets and pins land. Reconcile duplicate docs/todo/625828548647 story files: worker-created tracked s436-... and generated untracked original; retain one canonical file in worker commit. Add focused tests proving call path and no fallback. Worker alone commits with trailers and story files, no push or dev-host native build/container.
 
 
 Delivery: removed Outpost's duplicate Prima declaration and delegated directly

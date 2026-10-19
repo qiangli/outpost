@@ -20,4 +20,4 @@ Requirements worth pinning down before implementing:
   - Availability-driven, not all-OS: the gate is whichever OS set is configured, so a fleet without a Linux QA host still promotes.
   - Fail loud. A prod poller that stops silently looks exactly like 'nothing to promote' — the same failure mode that hid puppy's dead QA scheduler for 10 days (2026-07-11 to 07-21).
 
-Runs on a token-holding host (dragon today) on the same 15m schedule as the QA pollers. It should be registered under outpost's 'supervised' config (v0.14.4+) rather than 'bashy schedule start', so it survives a reboot — that non-persistence is exactly what killed the QA lane.
+Runs on a token-holding host (dev-host today) on the same 15m schedule as the QA pollers. It should be registered under outpost's 'supervised' config (v0.14.4+) rather than 'bashy schedule start', so it survives a reboot — that non-persistence is exactly what killed the QA lane.

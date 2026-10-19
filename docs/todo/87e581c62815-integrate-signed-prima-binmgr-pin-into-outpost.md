@@ -15,7 +15,7 @@ closed: 2026-10-13T16:28:24.49566Z
 closed_by: s436-codex-manager
 ---
 
-After Yoke commits real four-platform SHA pins and the final signed Prima 0.1.1 release version with independent Sigstore verification, bump Outpost Yoke module to the pushed commit and verify provision.go direct binmgr.EnsurePrima path remains fail-closed. Focused Go test/vet, no Dragon heavy build/container. Commit worker story file and code with trailers; no push. Manager integrates/pushes and bumps umbrella pin.
+After Yoke commits real four-platform SHA pins and the final signed Prima 0.1.1 release version with independent Sigstore verification, bump Outpost Yoke module to the pushed commit and verify provision.go direct binmgr.EnsurePrima path remains fail-closed. Focused Go test/vet, no dev-host heavy build/container. Commit worker story file and code with trailers; no push. Manager integrates/pushes and bumps umbrella pin.
 
 Delivery (2026-10-13):
 

@@ -8,7 +8,6 @@ description: When a default-on BashyService also needs generated per-service SSO
 status: superseded
 source:
     tool: codex-gpt-5.5-a
-    host: dragon
     episode: weave-issue-1
 created: "2026-08-31T08:11:16Z"
 updated: "2026-10-11T08:23:15Z"

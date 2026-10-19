@@ -50,11 +50,11 @@ echo ">> qa-runtime PASS on $("$BIN" version | head -1)"
 
 ### qa-mac
 macOS QA gate = build+unit (test-host) + runtime smoke (qa-runtime) on a macOS
-runner (dragon). Run by the workflow on `runs-on: [self-hosted, sdlc, macos]`.
+runner (dev-host). Run by the workflow on `runs-on: [self-hosted, sdlc, macos]`.
 Requires: test-host qa-runtime
 Effects: write
 ```bash
-echo ">> qa-mac = test-host + qa-runtime on macOS (dragon)"
+echo ">> qa-mac = test-host + qa-runtime on macOS (dev-host)"
 ```
 
 ### qa-linux

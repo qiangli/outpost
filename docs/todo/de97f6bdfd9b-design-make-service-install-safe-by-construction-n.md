@@ -27,13 +27,13 @@ customizations that exist ONLY in the plist. Any 'preserve the edits' mechanism
 it.
 
 Evidence from the fleet on 2026-07-22:
-  - novidesign  hand-rolled plist: PATH + OUTPOST_ADMIN_ADDR. Its LAN admin bind
+  - macos-host  hand-rolled plist: PATH + OUTPOST_ADMIN_ADDR. Its LAN admin bind
                 comes ENTIRELY from that env var — agent.json has no admin_addr,
                 and `config show` reports the default while the daemon listens
                 on *:17777.
   - novicortex  same shape, until install regenerated it. Lost PATH; cluster
                 mode=agent then could not find podman.
-  - dragon      no service registration at all; runs from a shell and inherits
+  - dev-host      no service registration at all; runs from a shell and inherits
                 an interactive PATH.
 
 So NO host ran the generated template. The installer was effectively untested
@@ -44,7 +44,7 @@ until its first real use, which caused an outage.
 Make the generated definition SUFFICIENT, so nothing needs hand editing and
 regenerating loses nothing:
   - PATH — done in 90e5063.
-  - admin_addr / admin_users — config fields already exist; novidesign is still
+  - admin_addr / admin_users — config fields already exist; macos-host is still
     env-only and should be migrated.
   - anything else operators customize should get a config field rather than a
     plist edit.

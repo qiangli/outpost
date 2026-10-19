@@ -8,7 +8,6 @@ description: 'When outpost needs a host''s service declarations or desired state
 status: candidate
 source:
     tool: claude-opus5-c
-    host: dragon
     episode: ep-dd7732ba7e9c708e
 created: "2026-10-11T08:23:15Z"
 supersedes: default-on-bashy-services-need-explicit-enabled-tracking

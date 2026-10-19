@@ -14,13 +14,13 @@ We should not depend on PATH for tools we already ship.
 
 ## We already have the cached copies
 
-The bashy bin cache on dragon (binmgr.CacheDir() = $BASHY_BIN_CACHE, else <UserCacheDir>/bashy/bin) contains:
+The bashy bin cache on dev-host (binmgr.CacheDir() = $BASHY_BIN_CACHE, else <UserCacheDir>/bashy/bin) contains:
 
   act act_runner bashy doctl gh go gvproxy helm kubectl loom maven mise node
   ollama podman podman-remote rg rustup-init temurin-jdk-21 uv vfkit
   victoria-logs victoria-metrics victoria-traces
 
-podman, ollama and the otel stack (victoria-*) are all present, plus podman's own machine deps (gvproxy, vfkit). dragon's PATH-visible podman is just a symlink into it:
+podman, ollama and the otel stack (victoria-*) are all present, plus podman's own machine deps (gvproxy, vfkit). dev-host's PATH-visible podman is just a symlink into it:
 
   ~/bin/podman -> ~/Library/Caches/bashy/bin/podman
 
