@@ -1204,10 +1204,10 @@ function serviceRow(u) {
     lan.input.addEventListener('change', async () => {
       lan.input.disabled = true;
       try {
-        await api('POST', 'api/config/builtins', {service_settings: {apps: {
+        await fetchWithRetry('POST', 'api/config/builtins', {service_settings: {apps: {
           'ports.0.bind': lan.input.checked ? 'lan' : '127.0.0.1',
           'settings.pair': String(lan.input.checked),
-        }}});
+        }}}, {tries: 3, delayMs: 500});
         msg('ok', 'LAN setting saved. Restart to apply.');
         noteRestartPending({restarting: true});
       } catch (e) { lan.input.checked = !lan.input.checked; msg('err', e.message || 'Save failed'); }
