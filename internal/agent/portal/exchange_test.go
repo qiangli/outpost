@@ -3,13 +3,19 @@ package portal
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/qiangli/outpost/internal/agent/machineid"
 )
 
 // TestExchangeRoundTrip covers the happy path: the portal returns a
@@ -314,5 +320,129 @@ func TestExchangeRetryPreservesFirstError(t *testing.T) {
 	}
 	if !strings.Contains(msg, "UNIQUE constraint failed") {
 		t.Errorf("error should preserve the first attempt's root cause, got: %s", msg)
+	}
+}
+
+// TestExchangeRequestCarriesMachineID asserts that the exchange request includes
+// a machine_id field, which is a 64-character lowercase hex SHA-256 digest of
+// the physical machine identifier, not equal to the raw OS identifier, and
+// identical across two Exchange calls.
+func TestExchangeRequestCarriesMachineID(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var m map[string]any
+		_ = json.Unmarshal(raw, &m)
+		bodies = append(bodies, m)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+		  "agent_name": "laptop-alice",
+		  "server_addr": "edge.example.com",
+		  "server_port": 443,
+		  "protocol": "wss",
+		  "token": "secret-token",
+		  "remote_port": 7100
+		}`)
+	}))
+	defer server.Close()
+
+	// Call 1
+	_, err := Exchange(context.Background(), ExchangeRequest{
+		ServerURL: server.URL,
+		Code:      "code1",
+		Name:      "laptop",
+	})
+	if err != nil {
+		t.Fatalf("Exchange 1: %v", err)
+	}
+
+	// Call 2
+	_, err = Exchange(context.Background(), ExchangeRequest{
+		ServerURL: server.URL,
+		Code:      "code2",
+		Name:      "laptop",
+	})
+	if err != nil {
+		t.Fatalf("Exchange 2: %v", err)
+	}
+
+	if len(bodies) != 2 {
+		t.Fatalf("expected 2 requests captured, got %d", len(bodies))
+	}
+
+	mid1, ok1 := bodies[0]["machine_id"].(string)
+	if !ok1 || mid1 == "" {
+		t.Fatalf("first request missing machine_id: %+v", bodies[0])
+	}
+	mid2, ok2 := bodies[1]["machine_id"].(string)
+	if !ok2 || mid2 == "" {
+		t.Fatalf("second request missing machine_id: %+v", bodies[1])
+	}
+
+	re := regexp.MustCompile(`^[0-9a-f]{64}$`)
+	if !re.MatchString(mid1) {
+		t.Errorf("machine_id %q does not match ^[0-9a-f]{64}$", mid1)
+	}
+
+	if mid1 != mid2 {
+		t.Errorf("machine_id changed across calls: %q vs %q", mid1, mid2)
+	}
+
+	// Assert machine_id is NOT equal to the raw OS identifier.
+	if raw := machineid.RawOSIdentifier(); raw != "" && mid1 == raw {
+		t.Errorf("machine_id %q must NOT be equal to raw OS identifier %q", mid1, raw)
+	}
+}
+
+// TestExchangeRequestOmitsMachineIDOnFailure verifies that if computing machine_id
+// fails, the field is omitted from the request body and pairing succeeds as before.
+func TestExchangeRequestOmitsMachineIDOnFailure(t *testing.T) {
+	// Point XDG_CONFIG_HOME at a read-only file or simulate failure.
+	cleanup := machineid.SetOSSourceForTest(func() (string, error) {
+		return "", errors.New("os identifier unavailable")
+	})
+	defer cleanup()
+
+	// Make stateDir point to an invalid path that cannot be created.
+	// Using a file as XDG_CONFIG_HOME so MkdirAll fails.
+	tempFile := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(tempFile, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", tempFile)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+		  "agent_name": "laptop-alice",
+		  "server_addr": "edge.example.com",
+		  "server_port": 443,
+		  "protocol": "wss",
+		  "token": "secret-token",
+		  "remote_port": 7100
+		}`)
+	}))
+	defer server.Close()
+
+	fc, err := Exchange(context.Background(), ExchangeRequest{
+		ServerURL: server.URL,
+		Code:      "code1",
+		Name:      "laptop",
+	})
+	if err != nil {
+		t.Fatalf("Exchange must succeed even if machine_id computation fails: %v", err)
+	}
+	if fc.AgentName != "laptop-alice" {
+		t.Errorf("AgentName = %q, want laptop-alice", fc.AgentName)
+	}
+
+	if _, ok := gotBody["machine_id"]; ok {
+		t.Errorf("machine_id should be omitted on failure, but was present: %+v", gotBody["machine_id"])
 	}
 }

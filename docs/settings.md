@@ -85,7 +85,10 @@ audiences differ — and the mapping is one-to-one.
 Pairing always goes through `portal.Exchange` (cloudbox issues
 `token` + `access_token` + `remote_port`). `register` and
 `outpost_pair` are the same code path; `register` runs daemon-less
-so installer scripts can provision before `start`.
+so installer scripts can provision before `start`. The exchange
+request body includes an optional `machine_id` (a SHA-256 digest of
+the OS machine identifier) so the server can recognise the same machine
+across re-pairs.
 
 To clear a pairing: `outpost unpair --yes` (CLI), the equivalent MCP
 tool, or wipe `agent.json` by hand.
