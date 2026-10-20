@@ -215,3 +215,130 @@ func TestClusterAsset_NeverShipsTheNodeToken(t *testing.T) {
 		t.Fatalf("node token leaked into the reported detail: %s", a.Detail)
 	}
 }
+
+// A federated host reports its federation INSIDE the one kind:cluster row —
+// an attribute over clusters, not a second row or a second identity. The
+// round-trip proves the wire shape cloudbox groups on, and the nil case proves
+// an unfederated host's row is byte-for-byte what it was before the field
+// existed (so content_hash does not churn across the fleet).
+func TestClusterInfoFederationJSON(t *testing.T) {
+	const fedHash = "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100"
+	base := ClusterInfo{
+		Placement: PlacementSelf,
+		Endpoint:  "https://127.0.0.1:6443",
+		CA:        []byte(testCA),
+	}
+	fed := base
+	fed.Federation = NewFederationInfo(fedHash, FederationRoleHost, "host-a", FederationSyncPull)
+
+	raw, err := json.Marshal(fed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]string
+	if err := json.Unmarshal(m["federation"], &wire); err != nil {
+		t.Fatalf("federation key missing or malformed in %s: %v", raw, err)
+	}
+	want := map[string]string{
+		"id":           "fed-" + fedHash[:12],
+		"role":         "host",
+		"cluster_name": "host-a",
+		"sync_mode":    "Pull",
+	}
+	if len(wire) != len(want) {
+		t.Errorf("federation wire keys = %v, want exactly %v", wire, want)
+	}
+	for k, v := range want {
+		if wire[k] != v {
+			t.Errorf("federation.%s = %q, want %q", k, wire[k], v)
+		}
+	}
+	var back ClusterInfo
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.Federation == nil || *back.Federation != *fed.Federation {
+		t.Errorf("round-trip changed the federation: %+v -> %+v", fed.Federation, back.Federation)
+	}
+
+	// No federation: no key at all. omitempty on a nil pointer is the promise.
+	plain, err := json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(plain), "federation") {
+		t.Errorf("unfederated row carries a federation key: %s", plain)
+	}
+
+	// The cluster identity is the cluster's, with or without a federation.
+	if fed.ClusterID() != base.ClusterID() || fed.ClusterID() == "" {
+		t.Errorf("federation changed ClusterID: %q vs %q", fed.ClusterID(), base.ClusterID())
+	}
+	if fed.ClusterID() == fed.Federation.ID {
+		t.Error("cluster id and federation id collided — they are two identities")
+	}
+}
+
+// "Filled iff a CA hash is known": the constructor is where that rule lives,
+// so clusterReport cannot emit a nameless federation.
+func TestNewFederationInfo_RequiresCAHash(t *testing.T) {
+	const h = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	cases := []struct {
+		name   string
+		caHash string
+		wantID string
+	}{
+		{"bare hex", h, "fed-" + h[:12]},
+		{"kubeadm sha256: prefix", "sha256:" + h, "fed-" + h[:12]},
+		{"surrounding whitespace", "  " + h + "\n", "fed-" + h[:12]},
+		{"upper-case hex normalised", strings.ToUpper(h), "fed-" + h[:12]},
+		{"empty", "", ""},
+		{"too short", h[:40], ""},
+		{"not hex", strings.Replace(h, "a", "z", -1), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := NewFederationInfo(tc.caHash, FederationRoleMember, "host-b", FederationSyncPull)
+			if tc.wantID == "" {
+				if got != nil {
+					t.Fatalf("got %+v, want nil — no identity, no federation", got)
+				}
+				return
+			}
+			if got == nil || got.ID != tc.wantID {
+				t.Fatalf("got %+v, want id %q", got, tc.wantID)
+			}
+			if got.Role != FederationRoleMember || got.ClusterName != "host-b" || got.SyncMode != FederationSyncPull {
+				t.Errorf("fields lost: %+v", got)
+			}
+		})
+	}
+}
+
+// The federation is reported in the row's Detail, where cloudbox groups on it.
+func TestClusterAsset_CarriesFederation(t *testing.T) {
+	const h = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	a, ok := clusterAsset(&ClusterInfo{
+		Placement:  PlacementPeer,
+		Endpoint:   "https://127.0.0.1:36443",
+		CA:         []byte(testCA),
+		Federation: NewFederationInfo(h, FederationRoleMember, "host-b", FederationSyncPull),
+	})
+	if !ok {
+		t.Fatal("expected a row")
+	}
+	if a.Kind != "cluster" {
+		t.Errorf("a federated host still reports exactly one kind:cluster row, got kind %q", a.Kind)
+	}
+	var back ClusterInfo
+	if err := json.Unmarshal([]byte(a.Detail), &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.Federation == nil || back.Federation.ID != "fed-"+h[:12] {
+		t.Errorf("detail lost the federation: %s", a.Detail)
+	}
+}

@@ -2692,6 +2692,11 @@ func rememberControlPlaneKubeconfig(fc *conf.FileConfig, cfgPath, path string) e
 // be on a cloudbox-hosted plane today and a peer-hosted one tomorrow. Pushing
 // the cluster identity is what makes that move visible in one place instead of
 // requiring a walk through every host's config.
+//
+// The federation (dhnt/docs/dks-federation-karmada.md §5.5) rides the same
+// row as an attribute: filled iff a CA hash is known, nil otherwise, so an
+// unfederated host's row is unchanged. The facts are read through
+// federationFacts below.
 func clusterReport(fc *conf.FileConfig, cloudboxBase string) *fleetreg.ClusterInfo {
 	if fc == nil || !fc.ClusterOn() {
 		return nil
@@ -2747,7 +2752,27 @@ func clusterReport(fc *conf.FileConfig, cloudboxBase string) *fleetreg.ClusterIn
 			info.Nodes = append(info.Nodes, base+"-"+mode)
 		}
 	}
+	// NewFederationInfo returns nil without a usable CA hash — that is the
+	// "iff" — so a host whose federation config is absent, off, or still
+	// waiting on its discovery hash reports no federation rather than a
+	// nameless one.
+	info.Federation = fleetreg.NewFederationInfo(federationFacts(cc))
 	return info
+}
+
+// federationFacts yields this host's federation participation for the fleet
+// row: the Karmada CA hash (the identity), the role (host|member), the name
+// this cluster is registered under, and Karmada's sync mode. Empty strings
+// mean "not federated".
+//
+// It is an injection point, the same shape as ControlPlaneStatusProber: the
+// config that carries these facts (conf.ClusterConfig.Federation, Sprint 210
+// W2) lands on different files than this report (W4), so the report declares
+// what it needs here and the config side assigns a reader when it merges —
+// `federationFacts = func(cc) { f := cc.Federation; … }`. Until then no host
+// is federated, and the default says exactly that.
+var federationFacts = func(cc *conf.ClusterConfig) (caHash, role, clusterName, syncMode string) {
+	return "", "", "", ""
 }
 
 // shouldFetchKubeconfig reports whether the boot path should ask

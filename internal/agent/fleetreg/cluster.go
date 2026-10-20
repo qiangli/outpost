@@ -66,12 +66,90 @@ type ClusterInfo struct {
 	// this host runs one.
 	ControlPlaneEndpoint string `json:"control_plane_endpoint,omitempty"`
 
+	// Federation is the Karmada federation this cluster belongs to, when it
+	// belongs to one (dhnt/docs/dks-federation-karmada.md §5.5). It is an
+	// ATTRIBUTE OVER CLUSTERS, not a second row and not a second cluster
+	// identity: the host keeps exactly one kind:cluster row, ClusterID() is
+	// untouched, and cloudbox groups rows by Federation.ID on top of the
+	// cluster grouping it already does. nil (the key is omitted) means the
+	// host reports no federation — so every unfederated row is byte-for-byte
+	// what it was before the field existed and content_hash does not churn.
+	Federation *FederationInfo `json:"federation,omitempty"`
+
 	// CA is the cluster's TLS CA bundle. Never serialized — it is read only to
 	// derive the cluster identity below.
 	CA []byte `json:"-"`
 	// NodeToken is the k3s join token. Never serialized — it is a CREDENTIAL,
 	// read only for the CA hash it embeds.
 	NodeToken string `json:"-"`
+}
+
+// Federation roles and Karmada sync modes as they appear on the wire.
+const (
+	// FederationRoleHost — this cluster runs the Karmada control plane.
+	FederationRoleHost = "host"
+	// FederationRoleMember — this cluster is registered into someone's
+	// federation.
+	FederationRoleMember = "member"
+
+	// FederationSyncPull / FederationSyncPush are Karmada's own
+	// Cluster.spec.syncMode values, kept verbatim so the row and
+	// `kubectl get clusters` say the same word.
+	FederationSyncPull = "Pull"
+	FederationSyncPush = "Push"
+)
+
+// FederationInfo is what a host reports about its federation participation.
+//
+// Like ClusterInfo it is a REPORT: the facts come from the host's own
+// federation config (the admin kubeconfig it materialised, or the
+// discovery hash it was handed at join), never from cloudbox.
+type FederationInfo struct {
+	// ID is the federation identity, `fed-<12hex>`: the kubeadm/Karmada
+	// discovery hash of the Karmada apiserver CA, truncated the same way
+	// ClusterID truncates the cluster CA hash. Host and members compute it
+	// independently from the same certificate, so two cloudbox instances
+	// that each see half of a federation agree on the id without talking.
+	ID string `json:"id"`
+	// Role is FederationRoleHost or FederationRoleMember.
+	Role string `json:"role"`
+	// ClusterName is the name this cluster is registered under in Karmada.
+	ClusterName string `json:"cluster_name"`
+	// SyncMode is Karmada's Cluster.spec.syncMode for this member.
+	SyncMode string `json:"sync_mode"`
+}
+
+// NewFederationInfo builds the report from a Karmada CA hash, or returns nil
+// when there is no hash to build it from.
+//
+// THIS IS WHERE "FILLED IFF A CA HASH IS KNOWN" LIVES. A federation without an
+// identity cannot be grouped on, so reporting one would put an un-groupable
+// federation header on the cluster page — the same "misconfigured" reading
+// clusterAsset refuses to produce for a nameless cluster. The hash is accepted
+// as kubeadm prints it (`sha256:<64hex>`) or bare, and must be a full sha256
+// hex digest; anything else is not an identity and yields nil.
+func NewFederationInfo(caHash, role, clusterName, syncMode string) *FederationInfo {
+	id := FederationID(caHash)
+	if id == "" {
+		return nil
+	}
+	return &FederationInfo{
+		ID:          id,
+		Role:        strings.TrimSpace(role),
+		ClusterName: strings.TrimSpace(clusterName),
+		SyncMode:    strings.TrimSpace(syncMode),
+	}
+}
+
+// FederationID renders a Karmada CA discovery hash as `fed-<12hex>`, or ""
+// when the input is not a sha256 hex digest.
+func FederationID(caHash string) string {
+	h := strings.ToLower(strings.TrimSpace(caHash))
+	h = strings.TrimPrefix(h, "sha256:")
+	if !isSHA256Hex(h) {
+		return ""
+	}
+	return "fed-" + h[:12]
 }
 
 // ClusterID is the stable identity of the cluster this host joined.
@@ -130,15 +208,24 @@ func caHashFromNodeToken(tok string) string {
 	}
 	h := rest[:i]
 	// Must look like a sha256 hex digest; anything else is not an identity.
-	if len(h) != 64 {
+	if !isSHA256Hex(h) {
 		return ""
+	}
+	return h
+}
+
+// isSHA256Hex reports whether h is a full lower-case sha256 hex digest — the
+// only shape either identity (cluster or federation) is derived from.
+func isSHA256Hex(h string) bool {
+	if len(h) != 64 {
+		return false
 	}
 	for _, r := range h {
 		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
-			return ""
+			return false
 		}
 	}
-	return h
+	return true
 }
 
 // normalizePEM strips whitespace differences so two hosts holding the same CA
