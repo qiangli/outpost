@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
 	"strings"
+
+	"github.com/qiangli/yoke/external/registry"
 )
 
 // Runner executes karmadactl. A seam: tests substitute a fake and never need
@@ -29,23 +30,27 @@ func CheckOS() error {
 	return nil
 }
 
-// ExecRunner runs a karmadactl binary: $OUTPOST_KARMADACTL, else PATH.
-type ExecRunner struct{}
+// ExecRunner runs the pinned, sha256-verified karmadactl from Yoke's managed
+// registry. Ensure is a test seam; production callers leave it nil.
+type ExecRunner struct {
+	Ensure func(context.Context) (string, error)
+}
 
-// Resolve returns the karmadactl path or an actionable error.
-func (ExecRunner) Resolve() (string, error) {
-	if p := strings.TrimSpace(os.Getenv("OUTPOST_KARMADACTL")); p != "" {
-		return p, nil
+// Resolve provisions the managed CLI on demand. Outpost can run independently
+// of bashy's process, so the binary cannot be assumed to be on PATH.
+func (r ExecRunner) Resolve(ctx context.Context) (string, error) {
+	if r.Ensure != nil {
+		return r.Ensure(ctx)
 	}
-	p, err := exec.LookPath("karmadactl")
-	if err != nil {
-		return "", fmt.Errorf("karmadactl not found: set OUTPOST_KARMADACTL or put it on PATH (`bashy dks federation` fetches the pinned release)")
+	entry, ok := registry.Lookup("karmadactl")
+	if !ok {
+		return "", fmt.Errorf("karmadactl is not registered in the managed CLI catalog")
 	}
-	return p, nil
+	return entry.Ensure(ctx)
 }
 
 func (r ExecRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
-	bin, err := r.Resolve()
+	bin, err := r.Resolve(ctx)
 	if err != nil {
 		return nil, err
 	}

@@ -687,6 +687,8 @@ github.com/qiangli/bonsai v0.0.0-20261013041512-fbfc95fa4dda h1:ONMy/PmqSAQA3bzb
 github.com/qiangli/bonsai v0.0.0-20261013041512-fbfc95fa4dda/go.mod h1:XPDzA91wEz1K4qkkXyqGpkd41M+zDIY6wkz5Aird7Vs=
 github.com/qiangli/coreutils v0.0.0-20261019134046-ccd5c756c64e h1:Kki6LQtii2X+jD7TQoLX6/UzzzexnVMYA4riRgYto44=
 github.com/qiangli/coreutils v0.0.0-20261019134046-ccd5c756c64e/go.mod h1:nP8R/LOBZFHjHvzgE+TX3nASmemDaiMjOnei+YPuxq8=
+github.com/qiangli/coreutils v0.0.0-20261019154849-42845e33d023 h1:joFralXICBvq9NQUbT2Ip98b4RUcRuoG9Y4ryRlBACI=
+github.com/qiangli/coreutils v0.0.0-20261019154849-42845e33d023/go.mod h1:nP8R/LOBZFHjHvzgE+TX3nASmemDaiMjOnei+YPuxq8=
 github.com/qiangli/coreutils/third_party/goawk v0.0.0-20261013004930-226a73d9a214 h1:GJpDEV5I8DVqQJMulCZVpPnxWNiRuRE81oKBblbrs1Y=
 github.com/qiangli/coreutils/third_party/goawk v0.0.0-20261013004930-226a73d9a214/go.mod h1:p0JkVxHS3JKYxDz8kOYvMdPM8YRH94vZoWaFljD1vAg=
 github.com/qiangli/filebrowser/v2 v2.0.0-20261013004903-9c7b5c8e3d09 h1:8BBH4NPnF6UYP5GbGGu2iM6TS1h3EY+v8ml/555jcsg=
@@ -701,8 +703,12 @@ github.com/qiangli/sqlite v1.50.2-0.20261018085128-5fb52bf328cb h1:LLfdQXY/uXHpJ
 github.com/qiangli/sqlite v1.50.2-0.20261018085128-5fb52bf328cb/go.mod h1:tcNzv5p84E0skkmJn038y+hWJbLQXQqEnQfeh5r2JLM=
 github.com/qiangli/yoke v0.0.0-20261019160245-b7b8e9c4d020 h1:vrv8ieGoy92fWZO/ZH1fNoliU0gpPyl+35aQ7qGYd1k=
 github.com/qiangli/yoke v0.0.0-20261019160245-b7b8e9c4d020/go.mod h1:WcF0+y21dAYt+54lEwXZk0XrUuYDF9cxR0QlGr/PqSE=
+github.com/qiangli/yoke v0.0.0-20261020170337-1673f1b7fc8a h1:/0ZWR8UVpqCwDuxfv+MX25kS0EzoF7m8st9MhqPn/Es=
+github.com/qiangli/yoke v0.0.0-20261020170337-1673f1b7fc8a/go.mod h1:Vm8wA8dXjMuEUuXF4YHEToDJWIHqqJkxhF4MdVAHe8U=
 github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261014085036-9d08a1bef6be h1:aDgeAgPkUDOxrLYVtKQikZNnr8SsGdzvazd/f9eWnOg=
 github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261014085036-9d08a1bef6be/go.mod h1:UnJ5Aw/zCOdFgHdziuLv9sU0t/KT8dcOrGfmwcm6X4E=
+github.com/qiangli/yoke/pkg/provider v0.0.0-20261020170337-1673f1b7fc8a h1:EXxutUT77zZY5HlW5tLF4teFq4KCO0YbJsHbhVWLqhk=
+github.com/qiangli/yoke/pkg/provider v0.0.0-20261020170337-1673f1b7fc8a/go.mod h1:AklFvdbEWnpyb9XUNRhiD0P/AuDnEsUDpAYoSzqZb5Y=
 github.com/quic-go/qpack v0.6.0 h1:g7W+BMYynC1LbYLSqRt8PBg5Tgwxn214ZZR34VIOjz8=
 github.com/quic-go/qpack v0.6.0/go.mod h1:lUpLKChi8njB4ty2bFLX2x4gzDqXwUpaO1DP9qMDZII=
 github.com/quic-go/quic-go v0.59.1 h1:0Gmua0HW1Tv7ANR7hUYwRyD0MG5OJfgvYSZasGZzBic=
