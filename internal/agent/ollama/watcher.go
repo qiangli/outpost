@@ -381,7 +381,7 @@ func (w *Watcher) bumpBackoff(cur time.Duration) time.Duration {
 // false-positive "change detected" pushes. ContentHash projects onto
 // the stable fields so timestamp noise is invisible.
 func (w *Watcher) tick(ctx context.Context, lastSnapshot *[]ModelInfo, lastPushedHash *string, lastPushAt *time.Time) error {
-	models, err := w.fetchModels(ctx)
+	models, sources, err := w.fetchModelsWithSources(ctx)
 	if err != nil {
 		return fmt.Errorf("fetch tags: %w", err)
 	}
@@ -406,6 +406,9 @@ func (w *Watcher) tick(ctx context.Context, lastSnapshot *[]ModelInfo, lastPushe
 	heartbeatDue := time.Since(*lastPushAt) >= w.cfg.HeartbeatInterval
 	if !changed && !heartbeatDue {
 		return nil
+	}
+	if err := w.probeModels(ctx, models, sources); err != nil {
+		return err
 	}
 	if err := w.push(ctx, models, currentHash, cluster); err != nil {
 		return err
@@ -532,9 +535,17 @@ func unionStrings(a, b []string) []string {
 // that adds a row to the inventory, and that's not a hot path. Sorted by
 // name so equality comparisons are stable.
 func (w *Watcher) fetchModels(ctx context.Context) ([]ModelInfo, error) {
+	models, _, err := w.fetchModelsWithSources(ctx)
+	return models, err
+}
+
+// fetchModelsWithSources returns the inventory plus the daemon that supplied
+// each model. The source map lets tick prove the actual serving engine before
+// advertising its model to cloudbox.
+func (w *Watcher) fetchModelsWithSources(ctx context.Context) ([]ModelInfo, map[string]string, error) {
 	models, err := w.fetchTagsFrom(ctx, w.cfg.OllamaURL)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sources := make(map[string]string, len(models))
 	for _, m := range models {
@@ -561,7 +572,55 @@ func (w *Watcher) fetchModels(ctx context.Context) ([]ModelInfo, error) {
 		models[i].ContextLength = d.ContextLength
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
-	return models, nil
+	return models, sources, nil
+}
+
+// probeModels verifies that every locally inventoried model can serve a real
+// inference before the watcher publishes it. Cluster-only models are owned by
+// their cluster source and therefore have no local source entry here.
+func (w *Watcher) probeModels(ctx context.Context, models []ModelInfo, sources map[string]string) error {
+	for _, model := range models {
+		baseURL := sources[model.Name]
+		if baseURL == "" {
+			continue
+		}
+		if err := w.probeInference(ctx, baseURL, model.Name); err != nil {
+			return fmt.Errorf("inference probe for %q: %w", model.Name, err)
+		}
+	}
+	return nil
+}
+
+func (w *Watcher) probeInference(ctx context.Context, baseURL, model string) error {
+	pctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	body, err := json.Marshal(map[string]any{
+		"model":   model,
+		"prompt":  "ready",
+		"stream":  false,
+		"options": map[string]int{"num_predict": 1},
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(pctx, http.MethodPost,
+		baseURL+"/api/generate", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+w.cfg.AccessToken)
+	resp, err := w.cfg.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return nil
 }
 
 // fetchTagsFrom GETs one daemon's /api/tags. Any failure is fatal to the

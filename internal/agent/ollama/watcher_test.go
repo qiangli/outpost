@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -91,6 +92,12 @@ func (s *stubPS) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 // returning 404 (which exercises the watcher's graceful-degrade path
 // — the cache stays stale rather than being wiped).
 func newTestWatcher(t *testing.T, tags *stubTags, reg *capturingRegistry, ps *stubPS) (*Watcher, *httptest.Server, *httptest.Server) {
+	return newTestWatcherWithInference(t, tags, reg, ps, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"response":"ok","done":true}`)
+	}))
+}
+
+func newTestWatcherWithInference(t *testing.T, tags *stubTags, reg *capturingRegistry, ps *stubPS, inference http.Handler) (*Watcher, *httptest.Server, *httptest.Server) {
 	t.Helper()
 	ollamaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -103,6 +110,9 @@ func newTestWatcher(t *testing.T, tags *stubTags, reg *capturingRegistry, ps *st
 				return
 			}
 			ps.ServeHTTP(w, r)
+			return
+		case "/api/generate":
+			inference.ServeHTTP(w, r)
 			return
 		}
 		http.NotFound(w, r)
@@ -133,6 +143,49 @@ func newTestWatcher(t *testing.T, tags *stubTags, reg *capturingRegistry, ps *st
 		t.Fatalf("New: %v", err)
 	}
 	return w, ollamaSrv, cloudSrv
+}
+
+func TestWatcher_NoPublishBeforeInferenceProbe(t *testing.T) {
+	tags := &stubTags{bodies: []string{
+		`{"models":[{"name":"llama3.2:1b","digest":"d1","size":100}]}`,
+	}}
+	reg := &capturingRegistry{}
+	var probeCalls atomic.Int32
+	inference := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probeCalls.Add(1)
+		if got := r.Header.Get("Authorization"); got != "Bearer TOKEN-XYZ" {
+			t.Errorf("inference Authorization=%q, want Bearer TOKEN-XYZ", got)
+		}
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode inference probe: %v", err)
+		}
+		if body.Model != "llama3.2:1b" {
+			t.Errorf("inference model=%q, want llama3.2:1b", body.Model)
+		}
+		http.Error(w, `{"error":"model requires more system memory than is available"}`, http.StatusInternalServerError)
+	})
+	w, _, _ := newTestWatcherWithInference(t, tags, reg, nil, inference)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_ = w.Run(ctx)
+
+	if got := probeCalls.Load(); got == 0 {
+		t.Error("inference probe was not called")
+	}
+	if got := reg.calls.Load(); got != 0 {
+		t.Errorf("registry calls=%d, want 0 while inference probe fails", got)
+	}
+	status := w.Status()
+	if status.PushCount != 0 || !status.LastPushAt.IsZero() {
+		t.Errorf("watcher published ready state after failed inference probe: %+v", status)
+	}
+	if reason := strings.ToLower(status.LastError); !strings.Contains(reason, "inference probe") || !strings.Contains(reason, "memory") {
+		t.Errorf("not-ready reason=%q, want inference probe OOM reason", status.LastError)
+	}
 }
 
 func TestWatcher_New_Validation(t *testing.T) {

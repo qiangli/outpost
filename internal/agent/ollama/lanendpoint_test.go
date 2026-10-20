@@ -108,8 +108,12 @@ func TestWatcher_PushLANEndpoint(t *testing.T) {
 	run := func(t *testing.T, lanEndpoint string) RegistryPushPayload {
 		t.Helper()
 		ollamaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/tags" {
+			switch r.URL.Path {
+			case "/api/tags":
 				_, _ = io.WriteString(w, body)
+				return
+			case "/api/generate":
+				_, _ = io.WriteString(w, `{"response":"ok","done":true}`)
 				return
 			}
 			http.NotFound(w, r)
