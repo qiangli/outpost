@@ -341,3 +341,147 @@ func TestServerKubeconfigExportReplacesAbsoluteSymlink(t *testing.T) {
 		})
 	}
 }
+
+// renderPublishToml runs the entrypoint's "apiserver publisher" section under
+// the given environment and returns the frpc-publish.toml it writes.
+func renderPublishToml(t *testing.T, env ...string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("image", "server-entrypoint.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, ok := strings.Cut(string(b), "# ------------------------------------------------- apiserver publisher ----")
+	if !ok {
+		t.Fatal("missing apiserver publisher section")
+	}
+	section, _, ok := strings.Cut(rest, "# --------------------------------------------------------- k3s server ----")
+	if !ok {
+		t.Fatal("missing end of apiserver publisher section")
+	}
+	dir := t.TempDir()
+	out := filepath.Join(dir, "frpc-publish.toml")
+	section = strings.ReplaceAll(section, "/tmp/frpc-publish.toml", out)
+	script := "set -eu\nlog() { :; }\n" + section
+	cmd := exec.Command("/bin/sh", "-c", script)
+	cmd.Env = append([]string{
+		"PATH=" + os.Getenv("PATH"),
+		"OUTPOST_TUNNEL_PORT=7000", "OUTPOST_TUNNEL_TOKEN=tok",
+		"OUTPOST_STCP_SECRET=sec", "OUTPOST_API_PORT=6443",
+	}, env...)
+	if o, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("render: %v\n%s", err, o)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(got)
+}
+
+// The federation host publishes the Karmada apiserver as a SECOND stcp proxy
+// on the existing frps — iff OUTPOST_FEDERATION_PUBLISH=1. An unfederated
+// plane's toml must be byte-for-byte what it was.
+func TestServerPublishKarmadaProxyIffFederationEnv(t *testing.T) {
+	plain := renderPublishToml(t)
+	if strings.Contains(plain, "karmada-apiserver") {
+		t.Fatalf("unfederated toml carries the karmada proxy:\n%s", plain)
+	}
+	if !strings.Contains(plain, `name = "k3s-apiserver"`) {
+		t.Fatalf("k3s-apiserver proxy missing:\n%s", plain)
+	}
+	for _, off := range []string{"", "0", "true"} {
+		if got := renderPublishToml(t, "OUTPOST_FEDERATION_PUBLISH="+off); strings.Contains(got, "karmada-apiserver") {
+			t.Fatalf("OUTPOST_FEDERATION_PUBLISH=%q must not publish karmada:\n%s", off, got)
+		}
+	}
+
+	fed := renderPublishToml(t, "OUTPOST_FEDERATION_PUBLISH=1")
+	for _, want := range []string{
+		`name = "k3s-apiserver"`,
+		`name = "karmada-apiserver"`,
+		`secretKey = "sec"`,
+		`localPort = 15443`,
+		`localIP = "127.0.0.1"`,
+		`type = "stcp"`,
+	} {
+		if !strings.Contains(fed, want) {
+			t.Errorf("federated toml missing %q:\n%s", want, fed)
+		}
+	}
+	if n := strings.Count(fed, "[[proxies]]"); n != 2 {
+		t.Errorf("want exactly 2 proxies, got %d:\n%s", n, fed)
+	}
+
+	custom := renderPublishToml(t, "OUTPOST_FEDERATION_PUBLISH=1", "OUTPOST_FEDERATION_PORT=25443")
+	if !strings.Contains(custom, "localPort = 25443") {
+		t.Errorf("OUTPOST_FEDERATION_PORT not honoured:\n%s", custom)
+	}
+}
+
+func TestFederationPublishRecreatesAndExportsEnv(t *testing.T) {
+	base := ServerOptions{AgentName: "h", TunnelToken: "t", STCPSecret: "s", KubeconfigDir: "/k"}
+	fed := base
+	fed.FederationPublish = true
+	a, err := serverFingerprint(context.Background(), "/nonexistent-podman", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := serverFingerprint(context.Background(), "/nonexistent-podman", fed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b {
+		t.Fatal("toggling FederationPublish must change the fingerprint so the container is recreated")
+	}
+
+	dir := t.TempDir()
+	log := filepath.Join(dir, "calls.log")
+	stub := filepath.Join(dir, "podman-stub")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + log + "\ncase \"$1\" in\n  image) echo sha256:stub ;;\n  inspect) exit 1 ;;\n  run) echo cid ;;\nesac\nexit 0\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, on := range []bool{false, true} {
+		_ = os.Remove(log)
+		o := base
+		o.KubeconfigDir = filepath.Join(dir, "kube")
+		o.PodmanBin = stub
+		o.FederationPublish = on
+		if err := UpServer(context.Background(), o); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(log)
+		has := strings.Contains(string(b), "OUTPOST_FEDERATION_PUBLISH=1") && strings.Contains(string(b), "OUTPOST_FEDERATION_PORT=15443")
+		if has != on {
+			t.Fatalf("federation=%v but env present=%v:\n%s", on, has, b)
+		}
+		if strings.Contains(string(b), ":15443:") {
+			t.Fatalf("the federation port must never be host-published on the control plane:\n%s", b)
+		}
+	}
+}
+
+func TestKarmadaPublisherBackoffAndKubeconfig(t *testing.T) {
+	helper := filepath.Join("image", "karmada-publisher.sh")
+	out, err := exec.Command("/bin/sh", "-c",
+		`OUTPOST_PUBLISHER_LIB_ONLY=1 . "$1"; b=2; for i in 1 2 3 4 5 6; do printf '%s ' $b; b=$(next_backoff $b); done`, "sh", helper).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "2 4 8 16 30 30" {
+		t.Fatalf("backoff schedule = %q, want 2 4 8 16 30 30", got)
+	}
+	body, _ := os.ReadFile(helper)
+	for _, want := range []string{"/etc/rancher/k3s/k3s-internal.yaml", "port-forward", "--address 127.0.0.1", "svc/$SVC", "karmada-system"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("publisher missing %q", want)
+		}
+	}
+	if strings.Contains(string(body), "/etc/rancher/k3s/k3s.yaml") {
+		t.Error("publisher must not use the host-port-rewritten k3s.yaml")
+	}
+	ep, _ := os.ReadFile(filepath.Join("image", "server-entrypoint.sh"))
+	if !strings.Contains(string(ep), "PUBLISHER_PID") || !strings.Contains(string(ep), `kill -0 "$PUBLISHER_PID"`) {
+		t.Error("publisher pid must join the liveness set")
+	}
+}

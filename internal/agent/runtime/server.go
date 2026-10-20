@@ -79,9 +79,25 @@ type ServerOptions struct {
 	ClusterCIDR string
 	ServiceCIDR string
 
+	// FederationPublish makes this plane a Karmada federation host: the
+	// container publishes the Karmada apiserver as a second STCP proxy on its
+	// existing frps and runs karmada-publisher.sh. It is part of
+	// serverFingerprint (the whole struct is hashed), so toggling it recreates
+	// the container with the data volume kept.
+	FederationPublish bool
+	// FederationPort is the in-container loopback port the publisher holds;
+	// 0 means DefaultFederationAPIPort.
+	FederationPort int
+
 	PodmanBin     string
 	ForceRecreate bool
 }
+
+// DefaultFederationAPIPort is the federation apiserver's loopback port. Port
+// ladder (docs/dks-federation-karmada.md 5.3): 6443 visitor of a joined plane,
+// 16443 hosted k3s apiserver, 16444 peer vk bridge, 7000 frps, 8092 overlay,
+// 15443 federation.
+const DefaultFederationAPIPort = 15443
 
 // DefaultControlPlaneAPIPort is where a HOSTED apiserver listens. Deliberately
 // not 6443: that belongs to the visitor for a cluster this host JOINS.
@@ -114,6 +130,13 @@ func (o ServerOptions) validate() error {
 	return nil
 }
 
+func (o ServerOptions) federationPort() int {
+	if o.FederationPort > 0 {
+		return o.FederationPort
+	}
+	return DefaultFederationAPIPort
+}
+
 func (o *ServerOptions) applyDefaults() {
 	if o.Image == "" {
 		o.Image = DefaultImage
@@ -126,6 +149,9 @@ func (o *ServerOptions) applyDefaults() {
 	}
 	if o.APIPort == 0 {
 		o.APIPort = DefaultControlPlaneAPIPort
+	}
+	if o.FederationPublish && o.FederationPort == 0 {
+		o.FederationPort = DefaultFederationAPIPort
 	}
 }
 
@@ -225,6 +251,11 @@ func UpServer(ctx context.Context, opts ServerOptions) error {
 		"-e", fmt.Sprintf("OUTPOST_TUNNEL_PORT=%d", opts.TunnelBindPort),
 		"-e", fmt.Sprintf("OUTPOST_API_PORT=%d", controlPlaneContainerAPIPort),
 		"-e", fmt.Sprintf("OUTPOST_HOST_API_PORT=%d", opts.APIPort),
+	}
+	if opts.FederationPublish {
+		args = append(args,
+			"-e", "OUTPOST_FEDERATION_PUBLISH=1",
+			"-e", fmt.Sprintf("OUTPOST_FEDERATION_PORT=%d", opts.federationPort()))
 	}
 	if opts.TLSSANs != "" {
 		args = append(args, "-e", "OUTPOST_TLS_SAN="+opts.TLSSANs)

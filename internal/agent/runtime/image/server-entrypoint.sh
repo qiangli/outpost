@@ -106,6 +106,22 @@ localPort = ${OUTPOST_API_PORT}
 allowUsers = ["*"]
 EOF
 
+# Federation host (docs/dks-federation-karmada.md 5.3): publish the Karmada
+# apiserver as a SECOND stcp proxy on this same frps. Exactly "1" enables it;
+# anything else leaves the toml untouched.
+if [ "${OUTPOST_FEDERATION_PUBLISH:-}" = "1" ]; then
+    cat >> /tmp/frpc-publish.toml <<EOF
+
+[[proxies]]
+name = "karmada-apiserver"
+type = "stcp"
+secretKey = "${OUTPOST_STCP_SECRET}"
+localIP = "127.0.0.1"
+localPort = ${OUTPOST_FEDERATION_PORT:-15443}
+allowUsers = ["*"]
+EOF
+fi
+
 # --------------------------------------------------------- k3s server ----
 # Install our image-only addon manifest before k3s starts watching this directory.
 # Custom service CIDRs must supply their matching cluster DNS address.
@@ -239,6 +255,14 @@ if listening "${OUTPOST_API_PORT}" && [ -s /etc/rancher/k3s/k3s-internal.yaml ];
         /usr/local/bin/metrics-server-supervisor.sh &
     METRICS_PID=$!
 
+    # Federation host only: hold a retry-forever port-forward of the Karmada
+    # apiserver Service on the loopback port the proxy above publishes.
+    if [ "${OUTPOST_FEDERATION_PUBLISH:-}" = "1" ]; then
+        log "federation: publishing karmada-apiserver via 127.0.0.1:${OUTPOST_FEDERATION_PORT:-15443}"
+        /usr/local/bin/karmada-publisher.sh &
+        PUBLISHER_PID=$!
+    fi
+
     log "publishing apiserver 127.0.0.1:${OUTPOST_API_PORT} as stcp k3s-apiserver"
     outpost frpc -c /tmp/frpc-publish.toml &
 else
@@ -250,15 +274,18 @@ fi
 # accepts workers and serves nothing — both look "running" to the supervisor,
 # so neither may be survived silently.
 while kill -0 "$FRPS_PID" 2>/dev/null && kill -0 "$K3S_PID" 2>/dev/null && \
-      kill -0 "${METRICS_PID:-0}" 2>/dev/null; do
+      kill -0 "${METRICS_PID:-0}" 2>/dev/null && \
+      { [ -z "${PUBLISHER_PID:-}" ] || kill -0 "$PUBLISHER_PID" 2>/dev/null; }; do
     sleep 5
 done
 # Reap the failed child before terminating its siblings so its real status
 # is preserved (including a clean but unexpected exit).
-for child in "frps:$FRPS_PID" "k3s:$K3S_PID" "metrics-supervisor:${METRICS_PID:-}"; do
+for child in "frps:$FRPS_PID" "k3s:$K3S_PID" "metrics-supervisor:${METRICS_PID:-}" "karmada-publisher:${PUBLISHER_PID:-x}"; do
     name=${child%%:*}
     pid=${child#*:}
-    if [ -z "$pid" ]; then
+    if [ "$pid" = "x" ]; then
+        continue
+    elif [ -z "$pid" ]; then
         log "$name was not started"
     elif ! kill -0 "$pid" 2>/dev/null; then
         rc=0
@@ -267,6 +294,6 @@ for child in "frps:$FRPS_PID" "k3s:$K3S_PID" "metrics-supervisor:${METRICS_PID:-
     fi
 done
 log "a control-plane process exited; stopping so the supervisor recreates us"
-kill "$FRPS_PID" "$K3S_PID" "${METRICS_PID:-0}" 2>/dev/null || true
+kill "$FRPS_PID" "$K3S_PID" "${METRICS_PID:-0}" ${PUBLISHER_PID:+"$PUBLISHER_PID"} 2>/dev/null || true
 wait "$K3S_PID" 2>/dev/null || true
 exit 1

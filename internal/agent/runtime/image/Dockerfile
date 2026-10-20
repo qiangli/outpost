@@ -134,11 +134,13 @@ RUN chmod +x /opt/cni/bin/outpost-cni && mkdir -p /etc/cni/net.d
 # tailscaled (if overlay creds are set), then exec's k3s agent.
 COPY frpc-supervisor.sh /usr/local/bin/frpc-supervisor.sh
 COPY metrics-server-supervisor.sh /usr/local/bin/metrics-server-supervisor.sh
+COPY karmada-publisher.sh /usr/local/bin/karmada-publisher.sh
 COPY entrypoint.sh /entrypoint.sh
 # The control-plane half. One image, two roles: the supervisor picks the
 # entrypoint, so an operator never has to keep two images in step.
 COPY server-entrypoint.sh /server-entrypoint.sh
 RUN chmod +x /entrypoint.sh /server-entrypoint.sh \
-        /usr/local/bin/frpc-supervisor.sh /usr/local/bin/metrics-server-supervisor.sh
+        /usr/local/bin/frpc-supervisor.sh /usr/local/bin/metrics-server-supervisor.sh \
+        /usr/local/bin/karmada-publisher.sh
 
 ENTRYPOINT ["/entrypoint.sh"]

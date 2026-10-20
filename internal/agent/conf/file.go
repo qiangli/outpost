@@ -589,6 +589,11 @@ type ClusterConfig struct {
 	// missing or unknown assets fail closed. Live — read on each install.
 	BundleCatalog string `json:"bundle_catalog,omitempty"`
 
+	// Federation is this host's Karmada federation participation
+	// (dhnt/docs/dks-federation-karmada.md 5.4). nil and Enabled=false are
+	// both off; an unfederated config is byte-for-byte unchanged.
+	Federation *FederationConfig `json:"federation,omitempty"`
+
 	// JoinEndpoint / JoinToken point this host at a control plane that is
 	// NOT cloudbox's — the worker-side counterpart of ControlPlane above.
 	//
@@ -2000,3 +2005,78 @@ func (fc *FileConfig) PeerImageServiceOrDefault() string {
 	}
 	return PeerImageDefaultService
 }
+
+// FederationConfig is the Karmada federation block of ClusterConfig.
+//
+// A HOST (Host=true) runs the Karmada control plane on its own DKS plane and
+// publishes the apiserver as a second STCP proxy on the plane's frps. A MEMBER
+// (Host=false, Endpoint set) reaches a host's frps and registers its plane
+// there. The host reuses the plane's TunnelToken + STCPSecret (members are the
+// worker trust tier); the host-side fields here carry no extra secret.
+type FederationConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+	// Host is true on the federation host.
+	Host bool `json:"host,omitempty"`
+	// Endpoint is the host's frps address (member side).
+	Endpoint string `json:"endpoint,omitempty"`
+	// Token / STCPSecret are the host's tunnel token and STCP secret, as given
+	// to a member by `federation token` (member side).
+	Token      string `json:"token,omitempty"`
+	STCPSecret string `json:"stcp_secret,omitempty"`
+	// CAHash is the Karmada apiserver CA discovery hash (sha256 of the CA's
+	// SubjectPublicKeyInfo, hex). The federation id fed-<12hex> derives from it.
+	CAHash string `json:"ca_hash,omitempty"`
+	// ClusterName is the name this plane is registered under in Karmada.
+	ClusterName string `json:"cluster_name,omitempty"`
+	// APIPort is the loopback federation apiserver port; 0 means
+	// DefaultFederationAPIPort.
+	APIPort int `json:"api_port,omitempty"`
+	// Kubeconfig is the materialised host kubeconfig path; empty means
+	// DefaultFederationKubeconfig.
+	Kubeconfig string `json:"kubeconfig,omitempty"`
+}
+
+// DefaultFederationAPIPort mirrors runtime.DefaultFederationAPIPort (conf must
+// not import runtime).
+const DefaultFederationAPIPort = 15443
+
+// DefaultFederationKubeconfigRel is the kubeconfig path relative to $HOME.
+const DefaultFederationKubeconfigRel = ".kube/outpost-federation/karmada.yaml"
+
+// On reports whether federation is enabled in any role.
+func (f *FederationConfig) On() bool { return f != nil && f.Enabled }
+
+// HostOn reports whether this host runs the federation control plane.
+func (f *FederationConfig) HostOn() bool { return f.On() && f.Host }
+
+// MemberOn reports whether this host is a federation member.
+func (f *FederationConfig) MemberOn() bool { return f.On() && !f.Host }
+
+// Port returns the configured federation apiserver port or the default.
+func (f *FederationConfig) Port() int {
+	if f != nil && f.APIPort > 0 {
+		return f.APIPort
+	}
+	return DefaultFederationAPIPort
+}
+
+// KubeconfigPath returns the materialised kubeconfig path, honouring an
+// explicit override, then $DKS_FEDERATION_KUBECONFIG, then the default under
+// the home directory. Empty only when no home directory can be resolved.
+func (f *FederationConfig) KubeconfigPath() string {
+	if f != nil && strings.TrimSpace(f.Kubeconfig) != "" {
+		return strings.TrimSpace(f.Kubeconfig)
+	}
+	if p := strings.TrimSpace(os.Getenv("DKS_FEDERATION_KUBECONFIG")); p != "" {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, filepath.FromSlash(DefaultFederationKubeconfigRel))
+}
+
+// FederationOn reports whether this cluster config carries an enabled
+// federation block.
+func (c *ClusterConfig) FederationOn() bool { return c != nil && c.Federation.On() }
