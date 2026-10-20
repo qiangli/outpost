@@ -225,6 +225,30 @@ func TestMemberReconcilerCompletesPendingJoin(t *testing.T) {
 	}
 }
 
+func TestMemberReconcilerFindsSuffixedAgentNode(t *testing.T) {
+	ctx := context.Background()
+	actual := "member-b-d99afcba"
+	agent := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: AgentDeploymentName, Namespace: KarmadaNamespace}}
+	cs := fake.NewClientset(memberNode(actual, "10.88.0.7"), agentKubeconfigSecret(t, "https://127.0.0.1:15443"), agent)
+	r := &MemberReconciler{Client: cs, NodeName: "member-b", Port: 15443,
+		PendingPath: filepath.Join(t.TempDir(), "pending.json"),
+		Dial:        func(context.Context, int) error { return errors.New("not ready") },
+	}
+	if err := r.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.State().MirrorIP; got != "10.88.0.7" {
+		t.Fatalf("mirror IP = %q, want agent node IP", got)
+	}
+	if ep := mirrorEndpoints(t, cs); !subsetsMatch(ep.Subsets, "10.88.0.7", 15443) {
+		t.Fatalf("mirror endpoint = %+v, want agent node", ep.Subsets)
+	}
+	d, err := cs.AppsV1().Deployments(KarmadaNamespace).Get(ctx, AgentDeploymentName, metav1.GetOptions{})
+	if err != nil || d.Spec.Template.Spec.NodeSelector[hostnameLabel] != actual {
+		t.Fatalf("agent node selector = %+v, err = %v", d.Spec.Template.Spec.NodeSelector, err)
+	}
+}
+
 func TestWritePendingJoinRejectsMalformedToken(t *testing.T) {
 	if err := WritePendingJoin(filepath.Join(t.TempDir(), "j.json"), PendingJoin{BootstrapToken: "not-a-token"}); err == nil {
 		t.Fatal("malformed bootstrap token accepted")

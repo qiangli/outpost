@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -255,7 +257,11 @@ func (r *MemberReconciler) Reconcile(ctx context.Context) (err error) {
 	bound := dial(ctx, r.Port) == nil
 	r.set(func(s *HostState) { s.VisitorBound = bound })
 
-	ip, err := EnsureMirror(ctx, r.Client, r.NodeName, r.Port)
+	nodeName, err := resolveAgentNodeName(ctx, r.Client, r.NodeName)
+	if err != nil {
+		return fmt.Errorf("resolve agent node: %w", err)
+	}
+	ip, err := EnsureMirror(ctx, r.Client, nodeName, r.Port)
 	if err != nil {
 		return fmt.Errorf("mirror service: %w", err)
 	}
@@ -281,7 +287,7 @@ func (r *MemberReconciler) Reconcile(ctx context.Context) (err error) {
 		}
 		r.set(func(s *HostState) { s.JoinPending = false })
 	}
-	if _, err := applyFixups(ctx, r.Client, r.NodeName); err != nil {
+	if _, err := applyFixups(ctx, r.Client, nodeName); err != nil {
 		return err
 	}
 	exists, ready, err := AgentReady(ctx, r.Client)
@@ -290,6 +296,42 @@ func (r *MemberReconciler) Reconcile(ctx context.Context) (err error) {
 	}
 	r.set(func(s *HostState) { s.SelfRegistered, s.AgentReady = exists, ready })
 	return nil
+}
+
+// The k3s agent registers as <base>-<eight-hex-node-id>. Other virtual nodes
+// on this host use names such as <base>-vk-native and must not back the mirror.
+func resolveAgentNodeName(ctx context.Context, cs kubernetes.Interface, base string) (string, error) {
+	if _, err := cs.CoreV1().Nodes().Get(ctx, base, metav1.GetOptions{}); err == nil {
+		return base, nil
+	} else if !apierrors.IsNotFound(err) {
+		return "", err
+	}
+	nodes, err := cs.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", err
+	}
+	prefix := base + "-"
+	var found string
+	for _, node := range nodes.Items {
+		if !strings.HasPrefix(node.Name, prefix) {
+			continue
+		}
+		suffix := strings.TrimPrefix(node.Name, prefix)
+		if len(suffix) != 8 {
+			continue
+		}
+		if _, err := strconv.ParseUint(suffix, 16, 32); err != nil {
+			continue
+		}
+		if found != "" {
+			return "", fmt.Errorf("multiple k3s agent nodes match %q", base)
+		}
+		found = node.Name
+	}
+	if found == "" {
+		return "", fmt.Errorf("no k3s agent node matches %q", base)
+	}
+	return found, nil
 }
 
 // Run reconciles every Interval (default 30 s) until ctx is cancelled,
