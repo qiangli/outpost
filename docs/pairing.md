@@ -38,10 +38,12 @@ outpost peers status        # wait for <host> to show `online`
 A code is minted by cloudbox and bound to **your account**, so the host
 you pair ends up owned by you. Two ways to get one:
 
-- **From an already-paired host on the same account** (no browser):
+- **From an already-paired host on the same account** (no browser). Note
+  this MINTS a real invite, so it is confirm-gated — `--yes` is required
+  and without it the command makes no request at all:
 
   ```bash
-  outpost peers help-mint-invite
+  outpost peers help-mint-invite --yes
   # → Code: <CODE>   Expires: ... (~30 min)
   ```
 
