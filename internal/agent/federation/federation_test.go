@@ -220,6 +220,10 @@ func TestHostReconcilerConvergesInOrder(t *testing.T) {
 	if posts != 1 || len(runner.calls) != 2 || !r.State().SelfRegistered {
 		t.Fatalf("re-registered: posts=%d calls=%d", posts, len(runner.calls))
 	}
+	state := r.State()
+	if len(state.Members) != 1 || state.Members[0].Name != "host-a" || !state.Members[0].Ready {
+		t.Fatalf("member readiness missing from status: %+v", state.Members)
+	}
 }
 
 func TestHostReconcilerReportsRegisterFailure(t *testing.T) {

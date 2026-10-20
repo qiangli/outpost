@@ -129,10 +129,10 @@ func TestFederationStatusReportsReconcilerState(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.deps.FederationState = func() federation.HostState {
-		return federation.HostState{Phase: federation.PhaseInstalling, SelfRegistered: false, LastError: "dial refused"}
+		return federation.HostState{Phase: federation.PhaseInstalling, SelfRegistered: false, LastError: "dial refused", Members: []federation.Member{{Name: "member-a", Ready: true}}}
 	}
 	st, _ := s.FederationStatus()
-	if st.Phase != "installing" || st.LastError != "dial refused" || st.SelfRegistered {
+	if st.Phase != "installing" || st.LastError != "dial refused" || st.SelfRegistered || len(st.Members) != 1 || st.Members[0].Name != "member-a" || !st.Members[0].Ready {
 		t.Fatalf("%+v", st)
 	}
 }

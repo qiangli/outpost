@@ -141,6 +141,10 @@ func printFederation(out admincore.FederationResult, asJSON bool) error {
 	fmt.Printf("api port:       %d\n", out.APIPort)
 	fmt.Printf("kubeconfig:     %s (present: %v)\n", out.Kubeconfig, out.KubeconfigOK)
 	fmt.Printf("registered:     %v\n", out.SelfRegistered)
+	fmt.Printf("members:        %d\n", len(out.Members))
+	for _, member := range out.Members {
+		fmt.Printf("  %s  ready=%v  sync=%s\n", member.Name, member.Ready, orDash(member.SyncMode))
+	}
 	if out.LastError != "" {
 		fmt.Printf("last error:     %s\n", out.LastError)
 	}

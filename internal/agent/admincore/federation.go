@@ -31,21 +31,22 @@ type FederationParams struct {
 
 // FederationResult never carries a secret.
 type FederationResult struct {
-	OK             bool   `json:"ok"`
-	Enabled        bool   `json:"enabled"`
-	Role           string `json:"role,omitempty"`
-	ControlPlane   bool   `json:"control_plane"`
-	Phase          string `json:"phase,omitempty"`
-	Kubeconfig     string `json:"kubeconfig,omitempty"`
-	KubeconfigOK   bool   `json:"kubeconfig_present"`
-	APIPort        int    `json:"api_port,omitempty"`
-	ClusterName    string `json:"cluster_name,omitempty"`
-	CAHash         string `json:"ca_hash,omitempty"`
-	FederationID   string `json:"federation_id,omitempty"`
-	SelfRegistered bool   `json:"self_registered"`
-	LastError      string `json:"last_error,omitempty"`
-	RestartPending bool   `json:"restart_pending"`
-	Warning        string `json:"warning,omitempty"`
+	OK             bool                `json:"ok"`
+	Enabled        bool                `json:"enabled"`
+	Role           string              `json:"role,omitempty"`
+	ControlPlane   bool                `json:"control_plane"`
+	Phase          string              `json:"phase,omitempty"`
+	Kubeconfig     string              `json:"kubeconfig,omitempty"`
+	KubeconfigOK   bool                `json:"kubeconfig_present"`
+	APIPort        int                 `json:"api_port,omitempty"`
+	ClusterName    string              `json:"cluster_name,omitempty"`
+	CAHash         string              `json:"ca_hash,omitempty"`
+	FederationID   string              `json:"federation_id,omitempty"`
+	SelfRegistered bool                `json:"self_registered"`
+	Members        []federation.Member `json:"members,omitempty"`
+	LastError      string              `json:"last_error,omitempty"`
+	RestartPending bool                `json:"restart_pending"`
+	Warning        string              `json:"warning,omitempty"`
 }
 
 // FederationTokenResult is the revealed join material for a member.
@@ -88,6 +89,7 @@ func federationResult(fc *conf.FileConfig, st federation.HostState) FederationRe
 	out.FederationID = federation.FederationID(out.CAHash)
 	out.Phase = string(st.Phase)
 	out.SelfRegistered = st.SelfRegistered
+	out.Members = append([]federation.Member(nil), st.Members...)
 	out.LastError = st.LastError
 	out.Kubeconfig = f.KubeconfigPath()
 	if _, err := os.Stat(out.Kubeconfig); err == nil {

@@ -126,6 +126,7 @@ type HostState struct {
 	KubeconfigPath string
 	CAHash         string
 	SelfRegistered bool
+	Members        []Member
 	LastError      string
 	LastRunAt      time.Time
 }
@@ -159,7 +160,9 @@ type HostReconciler struct {
 func (r *HostReconciler) State() HostState {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.state
+	state := r.state
+	state.Members = append([]Member(nil), state.Members...)
+	return state
 }
 
 func (r *HostReconciler) set(f func(*HostState)) {
@@ -236,6 +239,7 @@ func (r *HostReconciler) ensureSelfRegistered(ctx context.Context) error {
 	if r.Members != nil {
 		members, err := r.Members(ctx, r.KubeconfigPath)
 		if err == nil {
+			r.set(func(s *HostState) { s.Members = append([]Member(nil), members...) })
 			for _, m := range members {
 				if m.Name == r.ClusterName {
 					r.set(func(s *HostState) { s.SelfRegistered = true })
@@ -247,6 +251,7 @@ func (r *HostReconciler) ensureSelfRegistered(ctx context.Context) error {
 		// A listing error usually means the loopback endpoint is not up yet;
 		// try to register anyway only when we could list.
 		if err != nil {
+			r.set(func(s *HostState) { s.Members = nil })
 			return fmt.Errorf("list Karmada clusters: %w", err)
 		}
 	}
