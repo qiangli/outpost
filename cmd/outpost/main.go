@@ -1603,7 +1603,7 @@ func startCmd() *cobra.Command {
 					// restarted the daemon. Runs in the background so bringing
 					// a cold runtime up never holds the tunnel or admin UI.
 					g.Go(func() error {
-						joinClusterWithRetry(gctx, g, fc, cfgPath, apps, peerPlaneSvc, loadPlane)
+						joinClusterWithRetry(gctx, g, fc, cfgPath, apps, peerPlaneSvc, loadPlane, caps.Ollama)
 						return nil
 					})
 				}
@@ -2164,7 +2164,7 @@ func logPeerOverlayFetch(node string, haveKey bool, err error) {
 //
 // Returns once the join succeeds; startClusterRunner owns the long-lived
 // goroutines from that point on.
-func joinClusterWithRetry(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service, load *sysloadPlane) {
+func joinClusterWithRetry(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service, load *sysloadPlane, pool *ollamaCapability) {
 	if err := startPeerVirtualVisitor(ctx, g, fc, func(tc agent.TunnelConfig, visitors []agent.STCPVisitor) (peerVisitorTunnel, error) {
 		return agent.NewTunnel(tc, nil, visitors, nil)
 	}); err != nil {
@@ -2176,7 +2176,7 @@ func joinClusterWithRetry(ctx context.Context, g *errgroup.Group, fc *conf.FileC
 		maxDelay   = 2 * time.Minute
 	)
 	for attempt, delay := 1, firstDelay; ; attempt++ {
-		err := startClusterRunner(ctx, g, fc, cfgPath, apps, peerSvc, load)
+		err := startClusterRunner(ctx, g, fc, cfgPath, apps, peerSvc, load, workerBootstrapJoiners{Pool: pool})
 		if err == nil {
 			return
 		}
@@ -2196,7 +2196,7 @@ func joinClusterWithRetry(ctx context.Context, g *errgroup.Group, fc *conf.FileC
 	}
 }
 
-func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service, load *sysloadPlane) error {
+func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service, load *sysloadPlane, joiners ...workerBootstrapJoiners) error {
 	nodeBase := fc.ClusterNodeName()
 	if nodeBase == "" {
 		return errors.New("ClusterNodeName empty (agent_name unset?)")
@@ -2262,6 +2262,7 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 		if err != nil {
 			return fmt.Errorf("cluster mode: materialize peer credential: %w", err)
 		}
+		tokenFile = files.TokenFile
 		kubeCfg, err = cred.RestConfig(files)
 		if err != nil {
 			return err
@@ -2422,6 +2423,28 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 			backend: backend,
 			labels:  labels,
 		})
+	}
+
+	// Reconcile the existing worker identity with the scoped credential and
+	// backend just prepared. Enrollment failures leave a partial phase and
+	// retry without blocking the virtual node's normal controller loops.
+	for _, spec := range specs {
+		if spec.mode != conf.ClusterRuntimeVKOllama {
+			continue
+		}
+		deps := workerBootstrapJoiners{}
+		if len(joiners) > 0 {
+			deps = joiners[0]
+		}
+		input := workerBootstrapInput{
+			Config: fc, Cluster: cc, NodeName: spec.node, Backend: spec.backend,
+			Kube: kubeCfg, TokenFile: tokenFile, CacheBase: cacheBase,
+			CloudboxBase: cloudboxBase, PeerService: peerSvc,
+		}
+		if err := bootstrapWorker(ctx, input, deps); err != nil {
+			slog.Warn("cluster worker bootstrap: partial; will retry", "err", err)
+			g.Go(func() error { retryWorkerBootstrap(ctx, input, deps); return nil })
+		}
 	}
 
 	// Start only after every backend has initialized successfully. Each runner

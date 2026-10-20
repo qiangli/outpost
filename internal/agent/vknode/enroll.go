@@ -217,6 +217,9 @@ type ScopedCredential struct {
 	APIURL string
 	Token  string
 	CA     []byte
+	// Reuse the live credential files already used by the virtual node.
+	TokenFile string
+	CAFile    string
 }
 
 // DKSJoiner mints the scoped credential that registers nodeName with the
@@ -308,6 +311,10 @@ type BootstrapOptions struct {
 	// Both nil/zero skips the engine step (DKS/sphere-only enrollment).
 	Engine     Backend
 	EngineSpec EngineSpec
+	// ExistingEngine identifies the engine pod already owned by the runner.
+	// Bootstrap records it without calling Ensure or starting another process.
+	ExistingEngineUID string
+	ExistingEngineURL string
 
 	DKS    DKSJoiner
 	Sphere SphereJoiner
@@ -353,7 +360,10 @@ func DeriveNodeName(override, machineID, hostname, backend string) (string, erro
 	default:
 		return "", errors.New("vknode: enroll: no node identity (machine_id, hostname or override)")
 	}
-	name := strings.ToLower(sanitizeLabelValue(base + "-" + backend))
+	if !strings.HasSuffix(base, "-"+backend) {
+		base += "-" + backend
+	}
+	name := strings.ToLower(sanitizeLabelValue(base))
 	name = strings.ReplaceAll(name, "_", "-")
 	name = strings.Trim(name, "-.")
 	if name == "" {
@@ -473,6 +483,22 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) (*BootstrapResult, er
 	}
 
 	// --- engine: one native-process registry row ----------------------------
+	if opts.ExistingEngineUID == "" && len(opts.EngineSpec.Command) == 0 && st.EngineUID != "" {
+		st.EngineUID, st.EngineURL = "", ""
+		st.clear(PhaseSphereJoined)
+		st.clear(PhaseModelReady)
+	}
+	if opts.ExistingEngineUID != "" && opts.ExistingEngineURL != "" {
+		if st.EngineUID != opts.ExistingEngineUID || st.EngineURL != opts.ExistingEngineURL {
+			st.clear(PhaseSphereJoined)
+			st.clear(PhaseModelReady)
+		}
+		st.EngineUID = opts.ExistingEngineUID
+		st.EngineURL = opts.ExistingEngineURL
+		if err := SaveEnrollState(opts.StateDir, st); err != nil {
+			return fail("persist engine", err)
+		}
+	}
 	if opts.Engine != nil && len(opts.EngineSpec.Command) > 0 {
 		pod, url := engineSpecPod(st.NodeName, backend, opts.EngineSpec)
 		if err := opts.Engine.Ensure(ctx, pod); err != nil {
@@ -551,6 +577,16 @@ func dksInvalidReason(st *EnrollState, pairingID string) string {
 // <stateDir>/dks. Same bytes → same files (atomic rename), so a restart
 // re-materializes without churn.
 func materializeScoped(stateDir string, cred *ScopedCredential) (tokenFile, caFile string, err error) {
+	if cred.TokenFile != "" {
+		data, readErr := os.ReadFile(cred.TokenFile)
+		if readErr != nil {
+			return "", "", readErr
+		}
+		if strings.TrimSpace(string(data)) != strings.TrimSpace(cred.Token) {
+			return "", "", errors.New("live scoped token file differs from credential")
+		}
+		return cred.TokenFile, cred.CAFile, nil
+	}
 	dir := filepath.Join(stateDir, "dks")
 	tokenFile = filepath.Join(dir, "token")
 	if err := WriteTokenFile(tokenFile, cred.Token); err != nil {
