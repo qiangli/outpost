@@ -65,6 +65,9 @@ func (s *Server) Pair(ctx context.Context, p PairParams) (PairResult, error) {
 	if err != nil {
 		return PairResult{}, err
 	}
+	// Remember which server issued whatever cluster join is cached before
+	// the pairing fields are overlaid — the comparison below needs both.
+	prevBase := CloudboxHTTPBase(existing)
 	merged := *existing
 	merged.AgentName = exchanged.AgentName
 	merged.ServerAddr = exchanged.ServerAddr
@@ -75,6 +78,13 @@ func (s *Server) Pair(ctx context.Context, p PairParams) (PairResult, error) {
 	merged.AuthURL = exchanged.AuthURL
 	merged.AccessToken = exchanged.AccessToken
 	merged.ClientOnly = exchanged.ClientOnly
+
+	// S482: a re-pair onto a DIFFERENT server drops the previous server's
+	// cached cluster join for a plain server-plane member (same fields
+	// `outpost cluster clear` wipes); same-server re-pairs, peer-plane
+	// members and control-plane hosts keep theirs. Mirrors
+	// cmd/outpost's mergePairing.
+	DropClusterJoinOnServerChange(&merged, prevBase, CloudboxHTTPBase(&merged))
 
 	if err := conf.SaveFile(s.deps.ConfigPath, &merged); err != nil {
 		return PairResult{}, internalErr("%s", err.Error())
