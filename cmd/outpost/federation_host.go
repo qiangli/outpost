@@ -200,7 +200,7 @@ func startFederationMember(ctx context.Context, g *errgroup.Group, fc *conf.File
 // federationLeave is admincore's FederationLeave seam: unregister through the
 // still-running visitor, then drop the mirror. A join that never registered
 // has nothing to unregister.
-func federationLeave(ctx context.Context, clusterName, planeKubeconfig string, pending bool) error {
+func federationLeave(ctx context.Context, clusterName, planeKubeconfig, karmadaConfig string, pending bool) error {
 	cs, err := buildControlPlaneClient(planeKubeconfig)
 	if err != nil {
 		return err
@@ -208,5 +208,5 @@ func federationLeave(ctx context.Context, clusterName, planeKubeconfig string, p
 	if pending {
 		return federation.RemoveMirror(ctx, cs)
 	}
-	return federation.LeaveMember(ctx, federation.ExecRunner{}, cs, clusterName, planeKubeconfig)
+	return federation.LeaveMember(ctx, federation.ExecRunner{}, cs, clusterName, planeKubeconfig, karmadaConfig)
 }

@@ -241,10 +241,10 @@ func TestLeaveMemberUnregistersThenRemovesMirror(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &recordRunner{}
-	if err := LeaveMember(ctx, runner, cs, "member-b", "/plane.yaml"); err != nil {
+	if err := LeaveMember(ctx, runner, cs, "member-b", "/plane.yaml", "/host-karmada.yaml"); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(runner.calls[0], " "); got != "unregister member-b --cluster-kubeconfig /plane.yaml" {
+	if got := strings.Join(runner.calls[0], " "); got != "unregister member-b --cluster-kubeconfig /plane.yaml --karmada-config /host-karmada.yaml" {
 		t.Fatalf("unregister call = %q", got)
 	}
 	if _, err := cs.CoreV1().Services(KarmadaNamespace).Get(ctx, APIServerServiceName, metav1.GetOptions{}); err == nil {
@@ -254,7 +254,7 @@ func TestLeaveMemberUnregistersThenRemovesMirror(t *testing.T) {
 	// A failed unregister keeps the mirror: a retry needs it to reach Karmada.
 	cs2 := fake.NewClientset(memberNode("member-b", "10.88.0.7"))
 	_, _ = EnsureMirror(ctx, cs2, "member-b", 15443)
-	if err := LeaveMember(ctx, &recordRunner{err: errors.New("boom")}, cs2, "member-b", "/plane.yaml"); err == nil {
+	if err := LeaveMember(ctx, &recordRunner{err: errors.New("boom")}, cs2, "member-b", "/plane.yaml", "/host-karmada.yaml"); err == nil {
 		t.Fatal("leave swallowed an unregister failure")
 	}
 	if _, err := cs2.CoreV1().Services(KarmadaNamespace).Get(ctx, APIServerServiceName, metav1.GetOptions{}); err != nil {

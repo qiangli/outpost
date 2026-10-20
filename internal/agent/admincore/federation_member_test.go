@@ -142,25 +142,32 @@ func TestFederationLeaveUnregistersAndClears(t *testing.T) {
 		t.Fatal(err)
 	}
 	var gotName string
+	var gotKarmadaConfig string
 	var gotPending bool
 	fail := errors.New("unregister: dial 127.0.0.1:15443 refused")
-	s.deps.FederationLeave = func(_ context.Context, name, _ string, pending bool) error {
-		gotName, gotPending = name, pending
+	s.deps.FederationLeave = func(_ context.Context, name, _, karmadaConfig string, pending bool) error {
+		gotName, gotKarmadaConfig, gotPending = name, karmadaConfig, pending
 		return fail
 	}
-	if _, err := s.FederationLeave(context.Background(), FederationParams{}); err == nil {
+	if _, err := s.FederationLeave(context.Background(), FederationParams{}); err == nil || !strings.Contains(err.Error(), "karmada-config") {
+		t.Fatalf("registered member left without host admin kubeconfig: %v", err)
+	}
+	if gotName != "" {
+		t.Fatal("unregister ran before the host admin kubeconfig was supplied")
+	}
+	if _, err := s.FederationLeave(context.Background(), FederationParams{KarmadaConfig: "/host-karmada.yaml"}); err == nil {
 		t.Fatal("leave swallowed an unregister failure")
 	}
 	if st, _ := s.FederationStatus(); !st.Enabled {
 		t.Fatal("a failed leave cleared the config")
 	}
-	if gotName != "member-b" || gotPending {
-		t.Fatalf("leave called with name=%q pending=%v", gotName, gotPending)
+	if gotName != "member-b" || gotKarmadaConfig != "/host-karmada.yaml" || gotPending {
+		t.Fatalf("leave called with name=%q karmadaConfig=%q pending=%v", gotName, gotKarmadaConfig, gotPending)
 	}
 
-	s.deps.FederationLeave = func(context.Context, string, string, bool) error { return nil }
+	s.deps.FederationLeave = func(context.Context, string, string, string, bool) error { return nil }
 	// `off` on a member is leave.
-	res, err := s.FederationOff(context.Background(), FederationParams{})
+	res, err := s.FederationOff(context.Background(), FederationParams{KarmadaConfig: "/host-karmada.yaml"})
 	if err != nil || res.Enabled || res.Warning != "" {
 		t.Fatalf("leave: %+v %v", res, err)
 	}
@@ -175,7 +182,7 @@ func TestFederationLeaveForceAndPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	var sawPending bool
-	s.deps.FederationLeave = func(_ context.Context, _, _ string, pending bool) error {
+	s.deps.FederationLeave = func(_ context.Context, _, _, _ string, pending bool) error {
 		sawPending = pending
 		return errors.New("plane unreachable")
 	}
@@ -191,5 +198,20 @@ func TestFederationLeaveForceAndPending(t *testing.T) {
 	}
 	if _, err := s.FederationLeave(context.Background(), FederationParams{}); AsAPIError(err) == nil {
 		t.Fatal("leave on a non-member must be refused")
+	}
+}
+
+func TestFederationLeaveForceWithoutHostConfigWarns(t *testing.T) {
+	s, pending := memberServer(t)
+	if _, err := s.FederationJoin(joinParams()); err != nil {
+		t.Fatal(err)
+	}
+	if err := federation.RemovePendingJoin(pending); err != nil {
+		t.Fatal(err)
+	}
+	s.deps.FederationLeave = func(context.Context, string, string, string, bool) error { return nil }
+	res, err := s.FederationLeave(context.Background(), FederationParams{Force: true})
+	if err != nil || !strings.Contains(res.Warning, "RBAC may remain") {
+		t.Fatalf("force without control-plane cleanup warning: %+v %v", res, err)
 	}
 }

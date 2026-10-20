@@ -15,7 +15,8 @@ type federationOnIn struct {
 }
 
 type federationOffIn struct {
-	Force bool `json:"force,omitempty" jsonschema:"clear the config even if the karmada built-in cannot be uninstalled"`
+	Force         bool   `json:"force,omitempty" jsonschema:"clear the config even if the karmada built-in cannot be uninstalled"`
+	KarmadaConfig string `json:"karmada_config,omitempty" jsonschema:"leave: host-accessible Karmada admin kubeconfig path for control-plane RBAC cleanup"`
 }
 
 type federationJoinIn struct {
@@ -92,7 +93,7 @@ func (s *Server) registerFederationTools() {
 		Name:        "outpost_federation_leave",
 		Description: "Leave the Karmada federation this member joined: karmadactl unregister (removes karmada-agent and the Cluster object), remove the mirror Service/Endpoints and the federation visitor. Triggers a restart.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in federationOffIn) (*mcp.CallToolResult, admincore.FederationResult, error) {
-		res, err := s.core.FederationLeave(ctx, admincore.FederationParams{Force: in.Force})
+		res, err := s.core.FederationLeave(ctx, admincore.FederationParams{Force: in.Force, KarmadaConfig: in.KarmadaConfig})
 		if err != nil {
 			return apiErrResult[admincore.FederationResult](err)
 		}

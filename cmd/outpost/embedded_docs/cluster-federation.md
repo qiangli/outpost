@@ -76,7 +76,7 @@ export OUTPOST_FEDERATION_STCP_SECRET=...     # STCP secret
 export OUTPOST_FEDERATION_BOOTSTRAP_TOKEN=... # bootstrap token
 outpost cluster federation join <endpoint> --ca-hash sha256:<hex> [--cluster-name NAME]
 outpost cluster federation             # follow progress
-outpost cluster federation leave [--force]
+outpost cluster federation leave --karmada-config /path/to/karmada-admin.yaml [--force]
 ```
 
 `--token`, `--token-stdin`, `--stcp-secret` and `--bootstrap-token` are
@@ -104,10 +104,17 @@ retrying sooner while not converged):
 
 Member `status` reports the endpoint, federation id, whether the join is still
 pending, whether the visitor is bound, the mirror address, and whether
-`karmada-agent` is installed and ready. `leave` (or `off` on a member) runs
-`karmadactl unregister` while the visitor is still up, removes the mirror
+`karmada-agent` is installed and ready. For a registered member, copy the
+federation host's materialised admin kubeconfig securely to a path readable by
+the member's Outpost daemon, and pass that path as `--karmada-config` when
+leaving. The member's visitor serves the same `127.0.0.1:15443` endpoint.
+`leave` (or `off` on a member, with the same `karmada_config` parameter) runs
+`karmadactl unregister` while the visitor is still up, removes the control-plane
+agent RBAC and the mirror
 Service/Endpoints and the pending token, clears the config and restarts without
-the visitor. An unregister failure blocks unless `--force`. `karmadactl` is the
+the visitor. A registered leave without that admin kubeconfig, or an unregister
+failure, blocks unless `--force`; force can leave control-plane RBAC behind.
+Remove the temporary admin kubeconfig after leave. `karmadactl` is the
 pinned, sha256-verified build from the managed CLI registry.
 
 ## Surfaces

@@ -23,9 +23,10 @@ const federationBuiltin = "karmada"
 
 // FederationParams is a partial update; omitted fields are left alone.
 type FederationParams struct {
-	ClusterName string `json:"cluster_name,omitempty"`
-	APIPort     int    `json:"api_port,omitempty"`
-	Kubeconfig  string `json:"kubeconfig,omitempty"`
+	ClusterName   string `json:"cluster_name,omitempty"`
+	APIPort       int    `json:"api_port,omitempty"`
+	Kubeconfig    string `json:"kubeconfig,omitempty"`
+	KarmadaConfig string `json:"karmada_config,omitempty"`
 	// Force lets `off` proceed when the built-in cannot be uninstalled.
 	Force bool `json:"force,omitempty"`
 }
@@ -446,13 +447,19 @@ func (s *Server) FederationLeave(ctx context.Context, p FederationParams) (Feder
 		// may already exist.
 		warning = "join was still pending; nothing was registered"
 	}
+	if !pending && strings.TrimSpace(p.KarmadaConfig) == "" {
+		if !p.Force {
+			return FederationResult{}, badRequest("registered member leave requires --karmada-config to remove control-plane agent RBAC")
+		}
+		warning = "no Karmada admin kubeconfig supplied; control-plane agent RBAC may remain"
+	}
 	leave := s.deps.FederationLeave
 	if leave == nil {
-		leave = func(context.Context, string, string, bool) error {
+		leave = func(context.Context, string, string, string, bool) error {
 			return errors.New("federation leave is not wired in this process")
 		}
 	}
-	if err := leave(ctx, f.ClusterName, fc.Cluster.ControlPlaneKubeconfig, pending); err != nil {
+	if err := leave(ctx, f.ClusterName, fc.Cluster.ControlPlaneKubeconfig, p.KarmadaConfig, pending); err != nil {
 		if !p.Force {
 			return FederationResult{}, badRequest("leaving the federation failed (re-run with force to clear the config anyway): %s", err.Error())
 		}

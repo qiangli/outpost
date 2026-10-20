@@ -69,7 +69,7 @@ func resolveFederationJoin(cmd *cobra.Command, endpoint, clusterName string, f *
 //	outpost cluster federation leave
 func clusterFederationCmd() *cobra.Command {
 	var jsonOut, force bool
-	var clusterName, kubeconfig string
+	var clusterName, kubeconfig, karmadaConfig string
 	var apiPort int
 	var jf federationJoinFlags
 
@@ -185,7 +185,7 @@ Federation is not supported on Windows (karmadactl has no Windows release).`,
 				return nil
 			case "leave":
 				var out admincore.FederationResult
-				if err := session.callTool(ctx, "outpost_federation_leave", map[string]any{"force": force}, &out); err != nil {
+				if err := session.callTool(ctx, "outpost_federation_leave", map[string]any{"force": force, "karmada_config": karmadaConfig}, &out); err != nil {
 					return err
 				}
 				if err := printFederation(out, jsonOut); err != nil {
@@ -229,6 +229,7 @@ Federation is not supported on Windows (karmadactl has no Windows release).`,
 	cmd.Flags().StringVar(&jf.caHash, "ca-hash", "", "join: Karmada CA hash, sha256:<hex>")
 	cmd.Flags().IntVar(&apiPort, "api-port", 0, "on: loopback port of the federation apiserver forward (default 15443)")
 	cmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "on: path for the materialised Karmada kubeconfig")
+	cmd.Flags().StringVar(&karmadaConfig, "karmada-config", "", "leave: host-accessible Karmada admin kubeconfig for complete control-plane RBAC cleanup")
 	return cmd
 }
 

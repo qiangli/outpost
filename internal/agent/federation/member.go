@@ -127,11 +127,11 @@ func DialVisitor(ctx context.Context, port int) error {
 // (removes karmada-agent and the Cluster object, through the still-running
 // visitor), then the mirror Service/Endpoints. Unregister runs first because
 // its auto-fetched control-plane credential dials the mirror.
-func LeaveMember(ctx context.Context, r Runner, cs kubernetes.Interface, clusterName, planeKubeconfig string) error {
+func LeaveMember(ctx context.Context, r Runner, cs kubernetes.Interface, clusterName, planeKubeconfig, karmadaConfig string) error {
 	if err := CheckOS(); err != nil {
 		return err
 	}
-	if err := UnregisterMember(ctx, r, clusterName, planeKubeconfig, ""); err != nil {
+	if err := UnregisterMember(ctx, r, clusterName, planeKubeconfig, karmadaConfig); err != nil {
 		return err
 	}
 	if err := RemoveMirror(ctx, cs); err != nil {

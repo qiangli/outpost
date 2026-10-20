@@ -46,11 +46,9 @@ func RegisterMember(ctx context.Context, r Runner, endpoint, bootstrapToken, caH
 }
 
 // UnregisterMember runs `karmadactl unregister`. The member admin kubeconfig is
-// required; karmadaConfig (the host's materialised admin kubeconfig) is passed
-// when known so the control-plane RBAC is cleaned up too (§9.5). A member has
-// no host kubeconfig, so it leaves it empty and karmadactl reads the
-// credential off the agent Deployment — which dials the mirror Service, so
-// leave must run while the visitor is still up.
+// required. A registered leave must also pass the federation host's admin
+// kubeconfig so karmadactl removes control-plane agent RBAC (§9.5). Both
+// kubeconfigs reach the federation visitor, so leave runs while it is up.
 func UnregisterMember(ctx context.Context, r Runner, clusterName, planeKubeconfig, karmadaConfig string) error {
 	args := []string{"unregister", clusterName, "--cluster-kubeconfig", planeKubeconfig}
 	if karmadaConfig != "" {
