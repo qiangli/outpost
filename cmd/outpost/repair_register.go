@@ -3,7 +3,7 @@
 //
 // Counterpart to `outpost peers help-mint-invite`:
 //
-//   1. operator runs `outpost peers help-mint-invite <broken>` on a
+//   1. operator runs `outpost peers help-mint-invite --yes <broken>` on a
 //      healthy peer → cloudbox returns a one-time code
 //   2. operator runs `outpost repair register --to <broken>
 //      --code <code> --name <broken>` on the same healthy peer
@@ -46,7 +46,7 @@ func repairRegisterCmd() *cobra.Command {
 		Short: "Drive `outpost register` on a broken peer via SSH using a freshly-minted invite code",
 		Long: `Runs 'outpost register --code <code> --name <name> --server <url>'
 on a broken peer via SSH. The invite code typically comes from
-'outpost peers help-mint-invite <peer>' on this same healthy
+'outpost peers help-mint-invite --yes <peer>' on this same healthy
 outpost, but a code from any source (SPA copy, another peer)
 works the same way.
 
@@ -63,7 +63,7 @@ peer to a different cloudbox account.`,
 				return fmt.Errorf("--to <peer> is required (the SSH target alias of the broken peer)")
 			}
 			if codeFlag == "" {
-				return fmt.Errorf("--code <invite> is required (mint one via 'outpost peers help-mint-invite')")
+				return fmt.Errorf("--code <invite> is required (mint one via 'outpost peers help-mint-invite --yes')")
 			}
 			if nameFlag == "" {
 				// Default the host name to the peer alias — operator

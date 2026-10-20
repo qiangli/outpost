@@ -102,7 +102,7 @@ go run ./cmd/outpost reach [user@]host               # lan|cloudbox|offline clas
 
 # Discovery + peer-assisted repair (Wave 3A):
 go run ./cmd/outpost scan                            # mDNS browse for outposts on the LAN
-go run ./cmd/outpost peers {list,route-to,history,predicted,help-mint-invite}
+go run ./cmd/outpost peers {list,route-to,history,predicted,help-mint-invite --yes}
 go run ./cmd/outpost repair {cloudbox-url,binary,register,remote-binary}  # recover from a broken peer
 go run ./cmd/outpost version                         # build provenance (commit, dirty flag, Go version)
 ```
