@@ -472,6 +472,9 @@ func TestKarmadaPublisherBackoffAndKubeconfig(t *testing.T) {
 		t.Fatalf("backoff schedule = %q, want 2 4 8 16 30 30", got)
 	}
 	body, _ := os.ReadFile(helper)
+	if !strings.HasPrefix(string(body), "#!/bin/bash\n") || strings.Contains(string(body), "$(date ") {
+		t.Error("publisher must run in the scratch image's Bashy shell without an unshipped date command")
+	}
 	for _, want := range []string{"/etc/rancher/k3s/k3s-internal.yaml", "port-forward", "--address 127.0.0.1", "svc/$SVC", "karmada-system"} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("publisher missing %q", want)

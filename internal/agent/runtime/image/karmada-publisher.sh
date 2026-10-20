@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # karmada-publisher.sh — hold the Karmada apiserver on 127.0.0.1:<port> inside
 # the control-plane container so frpc's stcp "karmada-apiserver" proxy has
 # something to dial (docs/dks-federation-karmada.md 5.3).
@@ -41,14 +41,14 @@ next_backoff() {
 
 backoff="$MIN_BACKOFF"
 while :; do
-    started=$(date +%s)
+    started=$SECONDS
     # The Service appears only once the operator has built the control plane.
     if $KUBECTL --kubeconfig "$KUBECONFIG_FILE" -n "$NS" get "svc/$SVC" >/dev/null 2>&1; then
         log "forwarding svc/$SVC:$SVC_PORT -> 127.0.0.1:$PORT"
         $KUBECTL --kubeconfig "$KUBECONFIG_FILE" --address 127.0.0.1 -n "$NS" \
             port-forward "svc/$SVC" "$PORT:$SVC_PORT" || true
         # A forward that held for a while earns a fresh backoff.
-        if [ $(($(date +%s) - started)) -ge 60 ]; then backoff="$MIN_BACKOFF"; fi
+        if [ $((SECONDS - started)) -ge 60 ]; then backoff="$MIN_BACKOFF"; fi
         log "port-forward exited; retrying in ${backoff}s"
     else
         log "svc/$SVC not present yet in $NS; retrying in ${backoff}s"
