@@ -144,6 +144,10 @@ func TestToolListAndStatusResource(t *testing.T) {
 		"outpost_control_plane",
 		"outpost_set_control_plane",
 		"outpost_control_plane_token",
+		"outpost_federation",
+		"outpost_federation_on",
+		"outpost_federation_off",
+		"outpost_federation_token",
 		"outpost_rotate_control_plane_token",
 		"outpost_control_plane_status",
 		// Peer-plane join — the worker-side twin. Named _peer because

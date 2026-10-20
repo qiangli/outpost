@@ -134,6 +134,7 @@ func TestBearerCannotReachCredentialEndpoints(t *testing.T) {
 		{http.MethodPost, "/api/mcp/token/rotate"},
 		{http.MethodGet, "/api/cluster/control-plane/token"},
 		{http.MethodPost, "/api/cluster/control-plane/token/rotate"},
+		{http.MethodGet, "/api/cluster/federation/token"},
 	} {
 		w := bearerReq(s, tc.method, tc.path, "127.0.0.1:5000", "Bearer "+testMCPToken)
 		if w.Code != http.StatusForbidden {

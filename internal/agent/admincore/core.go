@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/qiangli/outpost/internal/agent/federation"
 	"net/http"
 	"sync"
 	"time"
@@ -184,6 +185,13 @@ type Deps struct {
 	// cached LastServerHealth) and threads them through an interface seam for
 	// testing. Closure-captured dependencies keep admincore focused.
 	ControlPlaneStatusProber ControlPlaneStatusProber
+
+	// FederationState reports the host reconciler's last observation. Nil when
+	// the reconciler is not running (federation off, or not a host).
+	FederationState func() federation.HostState
+	// FederationRunner runs karmadactl for `federation token`. Nil means the
+	// real ExecRunner.
+	FederationRunner federation.Runner
 
 	// BundleApplyClient, when set, builds the Kubernetes client
 	// BundleApply drives — tests inject a deterministic fake here. Nil

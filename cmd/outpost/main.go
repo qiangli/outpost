@@ -799,6 +799,7 @@ func startCmd() *cobra.Command {
 				ShardTrigger:        shardTrigger,
 				ShardStatus:         shardStatus,
 				ShardLog:            shardLog,
+				FederationState:     federationHostState,
 				ControlPlaneStatusProber: admincore.NewDefaultControlPlaneStatusProber(
 					fc.AgentName,
 					controlPlaneEnabled,
@@ -1579,6 +1580,7 @@ func startCmd() *cobra.Command {
 			// confusing failure: the workers' symptom would be "connection
 			// refused" with nothing wrong on their side.
 			startControlPlaneTunnel(gctx, g, fc, cfgPath)
+			startFederationHost(gctx, g, fc, core)
 			startControlPlaneTelemetry(gctx, g, fc, caps.Otel)
 
 			if runtimeErr := fc.Cluster.ValidateRuntimes(); fc.ClusterOn() && runtimeErr != nil {
@@ -2608,6 +2610,9 @@ func startControlPlaneTunnel(ctx context.Context, g *errgroup.Group, fc *conf.Fi
 		APIPort:       runtime.DefaultControlPlaneAPIPort,
 		KubeconfigDir: kubeDir,
 		TLSSANs:       fc.Cluster.TunnelSANs(),
+
+		FederationPublish: fc.Cluster.Federation.HostOn(),
+		FederationPort:    fc.Cluster.Federation.Port(),
 	}
 	if opts.AgentName == "" {
 		slog.Warn("control plane: disabled (no node name)")
@@ -2765,15 +2770,9 @@ func clusterReport(fc *conf.FileConfig, cloudboxBase string) *fleetreg.ClusterIn
 // this cluster is registered under, and Karmada's sync mode. Empty strings
 // mean "not federated".
 //
-// It is an injection point, the same shape as ControlPlaneStatusProber: the
-// config that carries these facts (conf.ClusterConfig.Federation, Sprint 210
-// W2) lands on different files than this report (W4), so the report declares
-// what it needs here and the config side assigns a reader when it merges —
-// `federationFacts = func(cc) { f := cc.Federation; … }`. Until then no host
-// is federated, and the default says exactly that.
-var federationFacts = func(cc *conf.ClusterConfig) (caHash, role, clusterName, syncMode string) {
-	return "", "", "", ""
-}
+// It is an injection point (tests override it); production reads
+// conf.ClusterConfig.Federation via federationFactsFromConfig.
+var federationFacts = federationFactsFromConfig
 
 // shouldFetchKubeconfig reports whether the boot path should ask
 // cloudbox for fresh credentials before joining. True when there's no

@@ -374,6 +374,12 @@ func (s *Server) registerRoutes() {
 	api.GET("/cluster/control-plane/token", s.denyBearer(), s.handleRevealControlPlaneToken)
 	api.POST("/cluster/control-plane/token/rotate", s.denyBearer(), s.handleRotateControlPlaneToken)
 
+	// Karmada federation — host-side publish + status; the token reveals join
+	// credentials so it is interactive-login only.
+	api.GET("/cluster/federation", s.handleGetFederation)
+	api.POST("/cluster/federation", s.handleSetFederation)
+	api.GET("/cluster/federation/token", s.denyBearer(), s.handleFederationToken)
+
 	// Peer-plane JOIN — which control plane this host is a node OF, when that
 	// is not the cloudbox-hosted one. The mirror image of the block above:
 	// GET is redacted (has_* flags only), POST carries the credentials in,
