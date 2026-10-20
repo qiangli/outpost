@@ -345,6 +345,9 @@ func TestBootstrap_RepairInvalidatesStaleDKSJoin(t *testing.T) {
 	if dks.joins != 2 {
 		t.Errorf("DKS joins = %d, want 2 after re-pair", dks.joins)
 	}
+	if sphere.joins != 2 {
+		t.Errorf("sphere joins = %d, want 2 after re-pair", sphere.joins)
+	}
 	if r2.CredentialFingerprint == r1.CredentialFingerprint {
 		t.Errorf("re-pair must mint a fresh scoped credential")
 	}
@@ -353,6 +356,18 @@ func TestBootstrap_RepairInvalidatesStaleDKSJoin(t *testing.T) {
 	}
 	if launches != 1 {
 		t.Errorf("re-pair relaunched engine (%d launches)", launches)
+	}
+}
+
+func TestBootstrap_RequiresPairingIdentity(t *testing.T) {
+	_, err := Bootstrap(context.Background(), BootstrapOptions{
+		MachineID: "abababababababababababababababab",
+		StateDir:  t.TempDir(),
+		DKS:       &fakeDKS{},
+		Sphere:    &fakeSphere{},
+	})
+	if err == nil {
+		t.Fatal("bootstrap without a pairing identity must fail closed")
 	}
 }
 

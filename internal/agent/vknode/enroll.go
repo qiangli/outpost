@@ -376,6 +376,9 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) (*BootstrapResult, er
 	if opts.Sphere == nil {
 		return nil, errors.New("vknode: enroll: sphere joiner required")
 	}
+	if strings.TrimSpace(opts.PairingID) == "" {
+		return nil, errors.New("vknode: enroll: pairing identity required")
+	}
 	backend := opts.Backend
 	if backend == "" {
 		backend = DefaultBootstrapBackend
@@ -431,6 +434,13 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) (*BootstrapResult, er
 	}
 
 	// --- phase: dks_joined --------------------------------------------------
+	if st.PairingID != opts.PairingID {
+		// A different satellite has a different sphere pool as well as a
+		// different DKS plane. Keep the host/peer identities but re-enroll
+		// both sides and recheck model readiness there.
+		st.clear(PhaseSphereJoined)
+		st.clear(PhaseModelReady)
+	}
 	if st.Done(PhaseDKSJoined) && !dksJoinValid(st, opts.PairingID) {
 		slog.Info("vknode: enroll: cached DKS join invalid; re-joining",
 			"node", st.NodeName, "reason", dksInvalidReason(st, opts.PairingID))
