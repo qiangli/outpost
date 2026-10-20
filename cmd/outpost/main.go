@@ -800,6 +800,7 @@ func startCmd() *cobra.Command {
 				ShardStatus:         shardStatus,
 				ShardLog:            shardLog,
 				FederationState:     federationHostState,
+				FederationLeave:     federationLeave,
 				ControlPlaneStatusProber: admincore.NewDefaultControlPlaneStatusProber(
 					fc.AgentName,
 					controlPlaneEnabled,
@@ -1581,6 +1582,7 @@ func startCmd() *cobra.Command {
 			// refused" with nothing wrong on their side.
 			startControlPlaneTunnel(gctx, g, fc, cfgPath)
 			startFederationHost(gctx, g, fc, core)
+			startFederationMember(gctx, g, fc)
 			startControlPlaneTelemetry(gctx, g, fc, caps.Otel)
 
 			if runtimeErr := fc.Cluster.ValidateRuntimes(); fc.ClusterOn() && runtimeErr != nil {
@@ -1776,6 +1778,7 @@ func startK3sAgentRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 		OverlayAuthKey:     cc.OverlayAuthKey,
 		PeerFlannel:        cc.JoinsPeerPlane(),
 	}
+	applyFederationVisitor(cc, &rtOpts)
 	if cc.JoinsPeerPlane() && len(cc.VirtualRuntimes()) > 0 {
 		// The authenticated peer visitor lives inside the physical agent's
 		// runtime container. Publish that exact listener back to host loopback

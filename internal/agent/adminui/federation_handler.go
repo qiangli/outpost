@@ -53,3 +53,33 @@ func (s *Server) handleFederationToken(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, res)
 }
+
+func (s *Server) handleFederationJoin(c *gin.Context) {
+	var body admincore.FederationJoinParams
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		return
+	}
+	res, err := s.core.FederationJoin(body)
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
+func (s *Server) handleFederationLeave(c *gin.Context) {
+	var body admincore.FederationParams
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+			return
+		}
+	}
+	res, err := s.core.FederationLeave(c.Request.Context(), body)
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}

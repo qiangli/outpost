@@ -192,6 +192,13 @@ type Deps struct {
 	// FederationRunner runs karmadactl for `federation token`. Nil means the
 	// real ExecRunner.
 	FederationRunner federation.Runner
+	// FederationPendingPath overrides where `federation join` parks the
+	// bootstrap token (tests); empty means federation.DefaultPendingJoinPath.
+	FederationPendingPath string
+	// FederationLeave unregisters this member plane and removes the mirror
+	// objects (federation.LeaveMember in production). pending reports a join
+	// that never registered. Nil makes leave fail unless forced.
+	FederationLeave func(ctx context.Context, clusterName, planeKubeconfig string, pending bool) error
 
 	// BundleApplyClient, when set, builds the Kubernetes client
 	// BundleApply drives — tests inject a deterministic fake here. Nil
