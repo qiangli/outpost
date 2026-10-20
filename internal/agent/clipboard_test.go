@@ -4,7 +4,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -17,6 +20,9 @@ import (
 func TestClipboardRoundTrip(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("clipboard bridge only implemented on darwin")
+	}
+	if err := exec.Command("launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())).Run(); err != nil {
+		t.Skip("clipboard bridge requires a macOS GUI session")
 	}
 	gin.SetMode(gin.TestMode)
 
