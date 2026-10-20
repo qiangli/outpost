@@ -248,9 +248,6 @@ func UpServer(ctx context.Context, opts ServerOptions) error {
 		"-p", fmt.Sprintf("127.0.0.1:%d:%d", opts.APIPort, controlPlaneContainerAPIPort),
 		"-e", "OUTPOST_TUNNEL_TOKEN=" + opts.TunnelToken,
 		"-e", "OUTPOST_STCP_SECRET=" + opts.STCPSecret,
-		// The signed Apache-2.0 runc omits LGPL libseccomp. Its explicit
-		// Outpost-only opt-in warns before ignoring CRI's seccomp section.
-		"-e", "OUTPOST_DKS_ALLOW_NO_SECCOMP=1",
 		"-e", fmt.Sprintf("OUTPOST_TUNNEL_PORT=%d", opts.TunnelBindPort),
 		"-e", fmt.Sprintf("OUTPOST_API_PORT=%d", controlPlaneContainerAPIPort),
 		"-e", fmt.Sprintf("OUTPOST_HOST_API_PORT=%d", opts.APIPort),
