@@ -3399,6 +3399,9 @@ func mergePairing(path string, exchanged *conf.FileConfig) *conf.FileConfig {
 	if existing, err := conf.LoadFile(path); err == nil && existing != nil {
 		merged = existing
 	}
+	// Remember which server issued whatever cluster join is cached before
+	// the pairing fields are overlaid — the S482 comparison below needs both.
+	prevBase := cloudboxHTTPBase(merged)
 	merged.AgentName = exchanged.AgentName
 	merged.ServerAddr = exchanged.ServerAddr
 	merged.ServerPort = exchanged.ServerPort
@@ -3408,6 +3411,18 @@ func mergePairing(path string, exchanged *conf.FileConfig) *conf.FileConfig {
 	merged.AuthURL = exchanged.AuthURL
 	merged.AccessToken = exchanged.AccessToken
 	merged.ClientOnly = exchanged.ClientOnly
+
+	// S482: a re-pair (register / recover) onto a DIFFERENT server drops the
+	// previous server's cached cluster join — api_url / token / ca and the
+	// rest of the membership `outpost cluster clear` wipes — for a plain
+	// server-plane member. Nothing below overlays the join triple (the
+	// server issues it on the next boot's fetch, not at exchange), so without
+	// this the host kept dialing the old server's apiserver until the
+	// operator ran clear + join by hand. Same-server re-pairs keep the join;
+	// peer-plane members and control-plane hosts keep their own credentials.
+	// It runs BEFORE the membership overlay so the new server's node token /
+	// secret / ports / overlay land on a clean block.
+	admincore.DropClusterJoinOnServerChange(merged, prevBase, cloudboxHTTPBase(merged))
 
 	// Cloudbox issues fresh cluster-join credentials at every pairing (node
 	// token / STCP secret / ports / overlay + observability endpoints). Carry

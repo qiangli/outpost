@@ -3,6 +3,7 @@ package admincore
 import (
 	"context"
 	"log/slog"
+	"strings"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/userkube"
@@ -93,27 +94,42 @@ func disableClusterMembership(fc *conf.FileConfig) {
 	}
 	disabled := false
 	fc.Cluster.Enabled = &disabled
+	ClearCachedClusterJoin(fc.Cluster)
+}
+
+// ClearCachedClusterJoin drops every cached cluster-membership field from cc
+// — the field list `outpost cluster clear` wipes, minus the enabled bit and
+// the runtime selection, which are the operator's. It reports whether
+// anything was cleared. This is the ONE place that list lives: the clear
+// path (disableClusterMembership) and the re-pair path
+// (DropClusterJoinOnServerChange) both call it, so a membership field added
+// later is forgotten by neither.
+func ClearCachedClusterJoin(cc *conf.ClusterConfig) bool {
+	if cc == nil {
+		return false
+	}
+	before := *cc
 
 	// Cloud-issued membership. A rejoin's boot reattach re-fetches all of it,
 	// so clearing it is what lets a rejoin start from a clean slate rather than
 	// presenting stale credentials to an apiserver that has moved on.
-	fc.Cluster.NodeToken = ""
-	fc.Cluster.APIURL = ""
-	fc.Cluster.Token = ""
-	fc.Cluster.CA = nil
-	fc.Cluster.K8sAPIPort = 0
-	fc.Cluster.KubeletProxyPort = 0
-	fc.Cluster.OverlayLoginServer = ""
-	fc.Cluster.OverlayAuthKey = ""
-	fc.Cluster.OverlayPodCIDR = ""
+	cc.NodeToken = ""
+	cc.APIURL = ""
+	cc.Token = ""
+	cc.CA = nil
+	cc.K8sAPIPort = 0
+	cc.KubeletProxyPort = 0
+	cc.OverlayLoginServer = ""
+	cc.OverlayAuthKey = ""
+	cc.OverlayPodCIDR = ""
 
 	// Peer-plane membership (the worker-side twin of the hosting fields). A
 	// peer-joined node keeps join_endpoint/join_token pointing at its plane;
 	// leaving must drop them too, or the node stays half-attached — JoinsPeerPlane
 	// still true, the next boot's frpc still dialing a plane the operator left.
 	// A rejoin re-supplies these from the hosting machine.
-	fc.Cluster.JoinEndpoint = ""
-	fc.Cluster.JoinToken = ""
+	cc.JoinEndpoint = ""
+	cc.JoinToken = ""
 
 	// STCPSecret is dual-purpose: a WORKER's visitor secret AND a hosting
 	// control plane's PUBLISHED secret. Clearing it is correct for a worker but
@@ -122,9 +138,71 @@ func disableClusterMembership(fc *conf.FileConfig) {
 	// the hosting block — control_plane / tunnel_token / tunnel bind /
 	// control_plane_api_addr / control_plane_kubeconfig are never touched here)
 	// when this host is itself a control plane.
-	if !fc.Cluster.ControlPlaneOn() {
-		fc.Cluster.STCPSecret = ""
+	if !cc.ControlPlaneOn() {
+		cc.STCPSecret = ""
 	}
+
+	return before.NodeToken != cc.NodeToken ||
+		before.APIURL != cc.APIURL ||
+		before.Token != cc.Token ||
+		len(before.CA) != 0 ||
+		before.K8sAPIPort != cc.K8sAPIPort ||
+		before.KubeletProxyPort != cc.KubeletProxyPort ||
+		before.OverlayLoginServer != cc.OverlayLoginServer ||
+		before.OverlayAuthKey != cc.OverlayAuthKey ||
+		before.OverlayPodCIDR != cc.OverlayPodCIDR ||
+		before.JoinEndpoint != cc.JoinEndpoint ||
+		before.JoinToken != cc.JoinToken ||
+		before.STCPSecret != cc.STCPSecret
+}
+
+// PairingServerChanged reports whether a re-pair moves this host from the
+// server whose HTTP base is prev to one whose base is next (both as
+// CloudboxHTTPBase renders them). The cluster join endpoint is built from
+// that base, so comparing bases is exactly "would the cluster endpoint
+// change": a different host is a change; the same host on a different
+// port or scheme counts only when the rendered base differs (wss:443 and
+// https:443 render identically; wss:443 and wss:8443 do not). An empty
+// prev — a host that was never paired, or was unpaired first — is NOT a
+// change: there is no previous server to have issued the cached join, so
+// nothing is dropped (a dev config pointing cluster.api_url at a local
+// k3s stays as the operator wrote it).
+func PairingServerChanged(prev, next string) bool {
+	prev = strings.ToLower(strings.TrimSpace(prev))
+	next = strings.ToLower(strings.TrimSpace(next))
+	return prev != "" && prev != next
+}
+
+// DropClusterJoinOnServerChange is the re-pair half of S482: when the
+// pairing server changes, a PLAIN server-plane member drops its cached join
+// (the same fields `outpost cluster clear` wipes) so the next boot fetches a
+// fresh one from the new server instead of dialing the previous server's
+// apiserver forever. The operator's opt-in (cluster.enabled) and runtime
+// selection are kept — the host asked to be a cluster node, and the pairing
+// is what moved.
+//
+// It leaves two kinds of host alone, whatever the server did:
+//   - a peer-plane member (JoinsPeerPlane): its credentials belong to the
+//     peer's plane, which did not move;
+//   - a control-plane host (ControlPlaneOn): it mints its own.
+//
+// A same-server re-pair (a replacement instance at the same address) keeps
+// the join. Reports whether anything was dropped and logs one line (no
+// secrets) when it was. Callers hold whatever lock guards fc.
+func DropClusterJoinOnServerChange(fc *conf.FileConfig, prevBase, nextBase string) bool {
+	if fc == nil || fc.Cluster == nil || !PairingServerChanged(prevBase, nextBase) {
+		return false
+	}
+	cc := fc.Cluster
+	if cc.JoinsPeerPlane() || cc.ControlPlaneOn() {
+		return false
+	}
+	if !ClearCachedClusterJoin(cc) {
+		return false
+	}
+	slog.Info("pairing moved to a different server; dropped the cached cluster join (re-issued on next boot)",
+		"previous", prevBase, "next", nextBase)
+	return true
 }
 
 // LeaveCluster is the per-node "leave DKS" state change — distinct from

@@ -782,6 +782,19 @@ run one real k3s-agent Node and one Node for each selected virtual-kubelet
 backend concurrently. Virtual node names are `<node>-vk-native`,
 `<node>-vk-podman`, and `<node>-vk-ollama`.
 
+**Re-pairing to a different server.** `register` / `recover` keep
+`cluster.enabled`, the runtime selection and the node name, but the cached
+join (`api_url` / `token` / `ca` and the rest of the server-issued
+membership — the same fields `cluster clear` wipes) is dropped when the
+pairing moves to a different server, and re-fetched from the new one on the
+next boot. "Different" means the server's HTTP base changed: another host
+always counts; the same host on another port or scheme counts only when
+that changes the rendered base. A same-server re-pair (a replacement
+instance at the same address) keeps the join; a host joined to a peer plane
+or hosting its own control plane keeps its credentials regardless. One log
+line reports the drop. Older releases keep the previous server's join —
+there, run `cluster clear --yes` then `cluster join` after re-pairing.
+
 ### Control-plane placement
 
 Whether this host **hosts** the apiserver rather than merely joining one.
