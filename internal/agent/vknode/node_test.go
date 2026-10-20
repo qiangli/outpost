@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"runtime"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -461,5 +462,53 @@ func TestCapacityFromInfo_VRAMSumsAcrossVendors(t *testing.T) {
 	})
 	if got := cap[resourceVRAM]; got.Value() != discrete+integrated {
 		t.Errorf("VRAM capacity = %s, want %d", got.String(), int64(discrete+integrated))
+	}
+}
+
+// TestCapacityFromInfo_SingleDeviceFitUsesPerDeviceVRAM guards the
+// single-device-fit signal: two 24 GiB cards sum to 48 GiB of aggregate
+// dhnt.io/vram, but the largest single device is still 24 GiB, so a 40 GiB
+// single-device model must not look placeable.
+func TestCapacityFromInfo_SingleDeviceFitUsesPerDeviceVRAM(t *testing.T) {
+	const gib = 1024 * 1024 * 1024
+	info := sysinfo.Info{
+		CPUCount:      16,
+		MemTotalBytes: 64 * gib,
+		GPUs: []sysinfo.GPU{
+			{Kind: sysinfo.GPUKindNVIDIA, Count: 1, VRAMTotalBytes: 24 * gib},
+			{Kind: sysinfo.GPUKindNVIDIA, Count: 1, VRAMTotalBytes: 24 * gib},
+		},
+	}
+	n := BuildNodeFromInfo("node-a", nil, info)
+
+	if got := n.Status.Capacity[resourceVRAM]; got.Value() != 48*gib {
+		t.Errorf("aggregate VRAM = %s, want 48Gi", got.String())
+	}
+	raw, ok := n.Labels["dhnt.io/vram-device-max"]
+	if !ok {
+		t.Fatalf("missing dhnt.io/vram-device-max label: %+v", n.Labels)
+	}
+	max, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		t.Fatalf("label %q not integer bytes: %v", raw, err)
+	}
+	if max != 24*gib {
+		t.Errorf("vram-device-max = %d, want %d (24Gi, not 48Gi)", max, int64(24*gib))
+	}
+	if fits := max >= 40*gib; fits {
+		t.Errorf("40Gi single-device model must not fit: max=%d", max)
+	}
+
+	// Count>1 on one entry means VRAMTotalBytes covers all its devices.
+	grouped := BuildNodeFromInfo("node-a", nil, sysinfo.Info{GPUs: []sysinfo.GPU{
+		{Kind: sysinfo.GPUKindNVIDIA, Count: 2, VRAMTotalBytes: 48 * gib},
+	}})
+	if got := grouped.Labels["dhnt.io/vram-device-max"]; got != strconv.FormatInt(24*gib, 10) {
+		t.Errorf("grouped vram-device-max = %q, want 24Gi bytes", got)
+	}
+
+	none := BuildNodeFromInfo("node-a", nil, sysinfo.Info{GPUs: []sysinfo.GPU{{Kind: sysinfo.GPUKindNVIDIA, Count: 1}}})
+	if _, ok := none.Labels["dhnt.io/vram-device-max"]; ok {
+		t.Errorf("unmeasured VRAM must not stamp a device-max label")
 	}
 }
