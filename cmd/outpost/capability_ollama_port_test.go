@@ -46,6 +46,8 @@ func TestNonDefaultOllamaUnitPortFlowsThroughPoolShardLAN(t *testing.T) {
 					{"name": stubModel, "model": stubModel, "digest": "sha256:hermetic", "size": 1234},
 				},
 			})
+		case r.URL.Path == "/api/generate":
+			_ = json.NewEncoder(w).Encode(map[string]any{"response": "ok", "done": true})
 		case strings.HasPrefix(r.URL.Path, "/v1/"):
 			_, _ = w.Write([]byte("LAN-PROXY-OK"))
 		default:
