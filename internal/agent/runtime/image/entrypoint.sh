@@ -354,6 +354,73 @@ if [ "${OVERLAY_RELAY_ACTIVE}" = "1" ] && [ -n "${OUTPOST_OVERLAY_AUTHKEY}" ]; t
         /usr/local/bin/frpc-supervisor.sh &
 fi
 
+# Federation member visitor (docs/dks-federation-karmada.md §5.3). When this
+# host has joined a Karmada federation (`outpost cluster federation join`),
+# a THIRD frpc session dials the federation HOST's frps and carries exactly
+# one visitor: karmada-apiserver, published there by user "control-plane".
+# It binds 0.0.0.0 inside this container — never published to the LAN; the
+# daemon adds -p 127.0.0.1:<port>:<port> — because the member's
+# selectorless Service karmada-system/karmada-apiserver points its
+# Endpoints at this node's InternalIP, and Kubernetes rejects loopback
+# Endpoints. Own session + own supervisor, same reason as the overlay relay:
+# the federation host going away must not restart this plane's apiserver
+# tunnel, and vice versa.
+# --- federation-visitor (begin) ---
+: "${OUTPOST_FEDERATION_HOST:=}"
+: "${OUTPOST_FEDERATION_SERVER_PORT:=7000}"
+: "${OUTPOST_FEDERATION_PROTOCOL:=tcp}"
+: "${OUTPOST_FEDERATION_TOKEN:=}"
+: "${OUTPOST_FEDERATION_STCP_SECRET:=}"
+: "${OUTPOST_FEDERATION_SERVER_USER:=control-plane}"
+: "${OUTPOST_FEDERATION_BIND_PORT:=15443}"
+: "${FRPC_FEDERATION_CONFIG:=/tmp/frpc-federation.toml}"
+FEDERATION_ACTIVE=0
+FEDERATION_REQUIRED_PORTS=""
+if [ -n "${OUTPOST_FEDERATION_HOST}" ] && [ -n "${OUTPOST_FEDERATION_STCP_SECRET}" ]; then
+    FEDERATION_ACTIVE=1
+    FEDERATION_REQUIRED_PORTS="${OUTPOST_FEDERATION_BIND_PORT}"
+    log "writing ${FRPC_FEDERATION_CONFIG}: host=${OUTPOST_FEDERATION_HOST}:${OUTPOST_FEDERATION_SERVER_PORT} visitor=karmada-apiserver -> 0.0.0.0:${OUTPOST_FEDERATION_BIND_PORT}"
+    cat > "${FRPC_FEDERATION_CONFIG}" <<EOF
+serverAddr = "${OUTPOST_FEDERATION_HOST}"
+serverPort = ${OUTPOST_FEDERATION_SERVER_PORT}
+user = "${OUTPOST_AGENT_NAME}"
+# Same rationale as the main session: never exit on a failed login.
+loginFailExit = false
+
+[auth]
+method = "token"
+token = "${OUTPOST_FEDERATION_TOKEN}"
+
+[transport]
+protocol = "${OUTPOST_FEDERATION_PROTOCOL}"
+
+[transport.tls]
+enable = false
+
+[[visitors]]
+name = "karmada-apiserver-visitor"
+type = "stcp"
+serverUser = "${OUTPOST_FEDERATION_SERVER_USER}"
+serverName = "karmada-apiserver"
+secretKey = "${OUTPOST_FEDERATION_STCP_SECRET}"
+bindAddr = "0.0.0.0"
+bindPort = ${OUTPOST_FEDERATION_BIND_PORT}
+EOF
+fi
+# --- federation-visitor (end) ---
+if [ "${FEDERATION_ACTIVE}" = "1" ]; then
+    log "starting federation frpc supervisor (host ${OUTPOST_FEDERATION_HOST}:${OUTPOST_FEDERATION_SERVER_PORT})"
+    FRPC_REQUIRED_PORTS="${FEDERATION_REQUIRED_PORTS}" \
+    FRPC_CONFIG="${FRPC_FEDERATION_CONFIG}" \
+    FRPC_LOG=/tmp/frpc-federation.log \
+    FRPC_STARTUP_GRACE_TICKS="${FRPC_STARTUP_GRACE_TICKS:-20}" \
+    FRPC_MISS_THRESHOLD="${FRPC_MISS_THRESHOLD:-3}" \
+    FRPC_PROBE_INTERVAL="${FRPC_PROBE_INTERVAL:-2}" \
+    FRPC_RESTART_BACKOFF="${FRPC_RESTART_BACKOFF:-2}" \
+    FRPC_RESTART_BACKOFF_MAX="${FRPC_RESTART_BACKOFF_MAX:-30}" \
+        /usr/local/bin/frpc-supervisor.sh &
+fi
+
 # Wait for the STCP visitor to bind locally. The visitor LISTENS even
 # before the publisher accepts a stream, so a successful connect to
 # 127.0.0.1:6443 means the tunnel is at least architecturally in place.

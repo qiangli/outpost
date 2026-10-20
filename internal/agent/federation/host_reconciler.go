@@ -129,6 +129,13 @@ type HostState struct {
 	Members        []Member
 	LastError      string
 	LastRunAt      time.Time
+
+	// Member-side observations (MemberReconciler). SelfRegistered there
+	// means "karmada-agent is installed on this plane".
+	JoinPending  bool   // a bootstrap token awaits `karmadactl register`
+	VisitorBound bool   // 127.0.0.1:<port> accepts (the federation visitor)
+	MirrorIP     string // the mirror Endpoints address (node InternalIP)
+	AgentReady   bool   // karmada-agent has a ready replica
 }
 
 // HostReconciler drives a federation host: install the builtin, materialise

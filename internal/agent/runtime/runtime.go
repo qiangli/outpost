@@ -186,6 +186,22 @@ type Options struct {
 	OverlayRelaySecret   string
 	OverlayRelayUser     string
 
+	// Federation* describe the THIRD frpc session a Karmada federation
+	// MEMBER's container opens — to the federation HOST's frps — for exactly
+	// one visitor: karmada-apiserver (published there by user
+	// "control-plane"), bound 0.0.0.0:<FederationBindPort> inside the
+	// container and published on host loopback at the same port
+	// (docs/dks-federation-karmada.md §5.3). Host/Port/Token/Secret come from
+	// `outpost cluster federation join`; Protocol defaults to tcp in the
+	// entrypoint. Host+Secret both empty disables the session.
+	FederationHost     string
+	FederationPort     int
+	FederationProtocol string
+	FederationToken    string
+	FederationSecret   string
+	// FederationBindPort is the visitor port; 0 means DefaultFederationAPIPort.
+	FederationBindPort int
+
 	// PodmanBin overrides the autodetected `podman`/`docker` binary.
 	// Empty triggers PATH lookup; tests set it.
 	PodmanBin string
@@ -385,6 +401,7 @@ func Up(ctx context.Context, opts Options) error {
 		args = append(args, "-e", "OUTPOST_OVERLAY_AUTHKEY="+opts.OverlayAuthKey)
 	}
 	args = append(args, overlayRelayEnvArgs(opts)...)
+	args = append(args, federationArgs(opts)...)
 	args = append(args, podNetworkEnvArgs(opts)...)
 	for _, kv := range opts.ExtraEnv {
 		args = append(args, "-e", kv)
@@ -449,7 +466,15 @@ type fingerprintInput struct {
 	OverlayRelayToken    string
 	OverlayRelaySecret   string
 	OverlayRelayUser     string
-	ExtraEnv             []string
+	// The federation visitor adds a third frpc session and a host publish;
+	// joining, leaving or a rotated credential must recreate the container.
+	FederationHost     string `json:",omitempty"`
+	FederationPort     int    `json:",omitempty"`
+	FederationProtocol string `json:",omitempty"`
+	FederationToken    string `json:",omitempty"`
+	FederationSecret   string `json:",omitempty"`
+	FederationBindPort int    `json:",omitempty"`
+	ExtraEnv           []string
 }
 
 func runtimeFingerprint(ctx context.Context, bin, image string, opts Options) (string, error) {
@@ -484,6 +509,14 @@ func runtimeFingerprint(ctx context.Context, bin, image string, opts Options) (s
 		OverlayRelaySecret:   opts.OverlayRelaySecret,
 		OverlayRelayUser:     opts.OverlayRelayUser,
 		ExtraEnv:             opts.ExtraEnv,
+	}
+	if opts.FederationActive() {
+		input.FederationHost = opts.FederationHost
+		input.FederationPort = opts.FederationPort
+		input.FederationProtocol = opts.FederationProtocol
+		input.FederationToken = opts.FederationToken
+		input.FederationSecret = opts.FederationSecret
+		input.FederationBindPort = opts.federationBindPort()
 	}
 	payload, err := json.Marshal(input)
 	if err != nil {

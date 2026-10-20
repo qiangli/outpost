@@ -23,12 +23,7 @@ type Runner interface {
 var ErrUnsupportedOS = fmt.Errorf("federation is not supported on windows: karmadactl has no Windows release")
 
 // CheckOS refuses federation verbs on Windows with a clear error.
-func CheckOS() error {
-	if runtime.GOOS == "windows" {
-		return ErrUnsupportedOS
-	}
-	return nil
-}
+func CheckOS() error { return CheckOSFor(runtime.GOOS) }
 
 // ExecRunner runs the pinned, sha256-verified karmadactl from Yoke's managed
 // registry. Ensure is a test seam; production callers leave it nil.
@@ -73,6 +68,10 @@ func firstArg(a []string) string {
 var tokenFlag = regexp.MustCompile(`(--token[= ])\S+`)
 
 func redactTokens(s string) string { return tokenFlag.ReplaceAllString(s, "${1}<redacted>") }
+
+// LoopbackEndpoint is the host:port karmadactl dials: the federation port on
+// host loopback (the publisher's forward on a host, the visitor on a member).
+func LoopbackEndpoint(port int) string { return fmt.Sprintf("127.0.0.1:%d", port) }
 
 // RegisterCommand is what `karmadactl token create --print-register-command`
 // prints, parsed.
@@ -128,12 +127,7 @@ func RegisterSelf(ctx context.Context, r Runner, karmadaKubeconfig, planeKubecon
 	if err != nil {
 		return err
 	}
-	endpoint := fmt.Sprintf("127.0.0.1:%d", port)
-	if _, err := r.Run(ctx, "register", endpoint,
-		"--token", rc.Token,
-		"--discovery-token-ca-cert-hash", "sha256:"+rc.CAHash,
-		"--cluster-name", clusterName,
-		"--kubeconfig", planeKubeconfig); err != nil {
+	if err := RegisterMember(ctx, r, LoopbackEndpoint(port), rc.Token, rc.CAHash, clusterName, planeKubeconfig); err != nil {
 		return err
 	}
 	if post != nil {
