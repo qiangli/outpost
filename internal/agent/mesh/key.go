@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 )
@@ -34,6 +35,31 @@ func LoadOrCreateKey() (crypto.PrivKey, error) {
 		return nil, err
 	}
 	return loadOrCreateKeyAt(filepath.Join(dir, keyFileName))
+}
+
+// PeerIDForDir returns the stable libp2p peer ID of the mesh identity kept
+// under dir (<dir>/mesh_ed25519), generating the key on first call exactly
+// like LoadOrCreateKey. It is the sphere-peer half of the worker bootstrap
+// (vknode.Bootstrap): the same key file the mesh host loads at boot, so the
+// peer ID a worker enrolls with is the one its mesh host later announces —
+// no second identity, and a restart reads the same ID back.
+func PeerIDForDir(dir string) (string, error) {
+	if dir == "" {
+		d, err := conf.DefaultConfigDir()
+		if err != nil {
+			return "", err
+		}
+		dir = d
+	}
+	priv, err := loadOrCreateKeyAt(filepath.Join(dir, keyFileName))
+	if err != nil {
+		return "", err
+	}
+	id, err := peer.IDFromPrivateKey(priv)
+	if err != nil {
+		return "", fmt.Errorf("derive mesh peer id: %w", err)
+	}
+	return id.String(), nil
 }
 
 // loadOrCreateKeyAt is the path-explicit body of LoadOrCreateKey, exposed for
