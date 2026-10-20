@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/qiangli/outpost/internal/agent/ollama"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -279,9 +281,9 @@ type EngineSpec struct {
 	Image string
 }
 
-// defaultEnginePort mirrors ollama.BashyManagedPort without importing the
-// ollama package into vknode.
-const defaultEnginePort int32 = 11435
+// defaultEnginePort uses the service's declaring constant so bootstrap and
+// the managed engine cannot drift to different ports.
+const defaultEnginePort int32 = ollama.BashyManagedPort
 
 // BootstrapOptions configures one Bootstrap run.
 type BootstrapOptions struct {
