@@ -314,6 +314,8 @@ replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 v3.0.0-20261019130812-6bf0a3d
 
 replace github.com/filebrowser/filebrowser/v2 => github.com/qiangli/filebrowser/v2 v2.0.0-20261013004903-9c7b5c8e3d09
 
+replace github.com/hashicorp/yamux => github.com/qiangli/yamux v0.1.0
+
 // Dependency replaces are not transitive: coreutils' embedded awk needs the
 // fork (it imports goawk/regex, which upstream v1.31.0 does not contain), and
 // coreutils' own replace does not reach this module. Same pin bashy carries.
