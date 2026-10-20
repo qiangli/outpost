@@ -64,3 +64,37 @@ func TestResolveFailsClosed(t *testing.T) {
 		t.Fatalf("symlink escape: %v", err)
 	}
 }
+
+// TestSiblingCatalogListsKarmada asserts that the OSS appstore checkout
+// mounted beside outpost in the dhnt umbrella ships the karmada built-in
+// (operator + Karmada CR, DKS federation control plane) and that it is
+// discoverable the same way `outpost bundle catalog` discovers it: as a
+// regular builtin/<name>/install.yaml, no network fallback. The test is
+// skipped outside the umbrella (a standalone outpost clone has no sibling
+// appstore), so it never fails CI for the wrong reason.
+func TestSiblingCatalogListsKarmada(t *testing.T) {
+	sibling := filepath.Join("..", "..", "..", "..", "appstore")
+	if _, err := os.Stat(filepath.Join(sibling, "builtin")); err != nil {
+		t.Skipf("no sibling appstore checkout at %s: %v", sibling, err)
+	}
+	root, names, err := List(sibling)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, name := range names {
+		if name == "karmada" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("catalog %s lists %v; want karmada", root, names)
+	}
+	entry, err := Resolve(sibling, "karmada")
+	if err != nil {
+		t.Fatalf("Resolve(karmada): %v", err)
+	}
+	if filepath.Base(filepath.Dir(entry.Manifest)) != "karmada" {
+		t.Fatalf("unexpected manifest path %q", entry.Manifest)
+	}
+}
