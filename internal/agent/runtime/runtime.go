@@ -360,6 +360,7 @@ func Up(ctx context.Context, opts Options) error {
 		"-e", "OUTPOST_AGENT_NAME="+opts.AgentName,
 		"-e", "OUTPOST_HOST_NAME="+hostName,
 		"-e", "OUTPOST_NODE_TOKEN="+opts.NodeToken,
+		"-e", "OUTPOST_DKS_ALLOW_NO_SECCOMP=1",
 	)
 	if runtimeRecreated {
 		args = append(args, "-e", "OUTPOST_RUNTIME_RECREATED=1")

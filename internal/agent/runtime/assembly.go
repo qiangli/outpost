@@ -27,6 +27,9 @@ const runtimeBashyTags = "bashy_scratch,bashy_dks_runtime"
 // than outpost's module graph. This is bashy c9c65d57, pinning yoke 61be2116.
 const runtimeBashyModule = "github.com/qiangli/bashy@v1.0.0-rc.5-dev.0.20261016225530-c9c65d571ffb"
 
+const flannelCNIModule = "github.com/flannel-io/cni-plugin@v1.9.1-flannel3"
+const flannelCNISum = "h1:y1Q5z7JUKPAr8629VWU5lGfZwVnSP5bKfnzRupS5bUE="
+
 const pauseImage = "localhost/bashy/pause:" + binmgr.PauseVersion
 const coreDNSImage = "localhost/bashy/coredns:bashy-v1.14.7-1"
 
@@ -73,6 +76,29 @@ func (r binmgrResolver) Resolve(ctx context.Context, name, arch string) (string,
 			return "", err
 		}
 		return dest, validateRuntimeBashyTags(info)
+	}
+	if name == "flannel" {
+		cmd := exec.CommandContext(ctx, "go", "mod", "download", "-json", flannelCNIModule)
+		cmd.Env = runtimeBuildEnv(arch)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("resolve cached flannel CNI source: %w: %s", err, out)
+		}
+		var module struct{ Dir, Sum string }
+		if err := json.Unmarshal(out, &module); err != nil {
+			return "", err
+		}
+		if module.Dir == "" || module.Sum != flannelCNISum {
+			return "", fmt.Errorf("flannel CNI source pin mismatch: %s", flannelCNIModule)
+		}
+		dest := filepath.Join(r.workDir, "flannel-"+arch)
+		cmd = exec.CommandContext(ctx, "go", "build", "-mod=readonly", "-trimpath", "-o", dest, ".")
+		cmd.Dir = module.Dir
+		cmd.Env = runtimeBuildEnv(arch)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("build flannel CNI from %s: %w: %s", flannelCNIModule, err, out)
+		}
+		return dest, validateStaticLinux(dest, arch)
 	}
 	if name == "outpost" || name == "outpost-cni" {
 		pkg := "./cmd/outpost"
@@ -149,6 +175,7 @@ var runtimeBinaries = []struct{ name, dest string }{
 	{"tailscale", "usr/local/bin/tailscale"}, {"tailscaled", "usr/local/bin/tailscaled"},
 	{"cni-bridge", "opt/cni/bin/bridge"}, {"cni-host-local", "opt/cni/bin/host-local"},
 	{"cni-loopback", "opt/cni/bin/loopback"},
+	{"flannel", "opt/cni/bin/flannel"}, {"cni-portmap", "opt/cni/bin/portmap"},
 	{"cni-bandwidth", "opt/cni/bin/bandwidth"}, {"cni-firewall", "opt/cni/bin/firewall"},
 }
 

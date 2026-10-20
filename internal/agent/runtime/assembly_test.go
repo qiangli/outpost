@@ -174,6 +174,19 @@ func TestScratchMissingBinaryFailsBeforeEngine(t *testing.T) {
 		})
 	}
 }
+
+func TestPeerFlannelPluginsBundled(t *testing.T) {
+	want := map[string]string{
+		"flannel":     "opt/cni/bin/flannel",
+		"cni-portmap": "opt/cni/bin/portmap",
+	}
+	for _, binary := range runtimeBinaries {
+		delete(want, binary.name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("peer flannel CNI plugins missing from runtime image: %v", want)
+	}
+}
 func TestUnpublishedBinmgrFailsClosed(t *testing.T) {
 	r := binmgrResolver{}
 	for _, name := range []string{"no-such-runtime-binary"} {

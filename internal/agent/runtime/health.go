@@ -82,16 +82,11 @@ var probeClient = &http.Client{
 // names, because the container publishes the apiserver there precisely so the
 // kubeconfig is valid unmodified.
 //
-// A wildcard bind is probed on loopback: 0.0.0.0 is where the listener accepts,
-// not an address anything dials.
+// The apiserver is always published on loopback. TunnelBindAddr applies only
+// to frps and may be a Podman bridge address that does not serve the API.
 func (o ServerOptions) APIReadyURL() string {
 	o.applyDefaults()
-	host := o.TunnelBindAddr
-	switch host {
-	case "", "0.0.0.0", "::", "[::]":
-		host = "127.0.0.1"
-	}
-	return "https://" + net.JoinHostPort(host, strconv.Itoa(o.APIPort)) + serverReadyPath
+	return "https://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(o.APIPort)) + serverReadyPath
 }
 
 // ProbeAPIServer asks one question: does an apiserver answer at endpoint?

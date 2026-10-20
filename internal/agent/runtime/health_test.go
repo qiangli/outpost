@@ -72,3 +72,10 @@ func TestAPIReadyURL_NormalizesWildcardBindToLoopback(t *testing.T) {
 		}
 	}
 }
+
+func TestAPIReadyURL_UsesPublishedLoopbackWhenTunnelBindsBridge(t *testing.T) {
+	o := ServerOptions{TunnelBindAddr: "10.88.0.1", APIPort: 16443}
+	if got, want := o.APIReadyURL(), "https://127.0.0.1:16443/readyz"; got != want {
+		t.Fatalf("APIReadyURL() = %q, want %q", got, want)
+	}
+}
