@@ -51,9 +51,10 @@ the host plane is registered and the last error. It never prints a credential.
 | 7000  | tunnel server                         |
 | 15443 | federation apiserver (loopback only)  |
 
-On a host, 15443 is never published; it is reached through the tunnel. On a
-member, the federation visitor binds 15443 inside the runtime container and is
-published only on host loopback (`127.0.0.1:15443`).
+On a host, the Karmada port-forward is published only on host loopback
+(`127.0.0.1:15443`); remote members use the authenticated tunnel. On a member,
+the federation visitor binds 15443 inside the runtime container and is
+published only on host loopback.
 
 ## Credentials
 

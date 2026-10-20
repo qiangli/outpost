@@ -455,8 +455,12 @@ func TestFederationPublishRecreatesAndExportsEnv(t *testing.T) {
 		if has != on {
 			t.Fatalf("federation=%v but env present=%v:\n%s", on, has, b)
 		}
-		if strings.Contains(string(b), ":15443:") {
-			t.Fatalf("the federation port must never be host-published on the control plane:\n%s", b)
+		hasLoopback := strings.Contains(string(b), "127.0.0.1:15443:15443")
+		if hasLoopback != on {
+			t.Fatalf("federation=%v but loopback publish=%v:\n%s", on, hasLoopback, b)
+		}
+		if strings.Contains(string(b), "0.0.0.0:15443:15443") {
+			t.Fatalf("federation apiserver must stay on host loopback:\n%s", b)
 		}
 	}
 }
@@ -475,7 +479,7 @@ func TestKarmadaPublisherBackoffAndKubeconfig(t *testing.T) {
 	if !strings.HasPrefix(string(body), "#!/bin/bash\n") || strings.Contains(string(body), "$(date ") {
 		t.Error("publisher must run in the scratch image's Bashy shell without an unshipped date command")
 	}
-	for _, want := range []string{"/etc/rancher/k3s/k3s-internal.yaml", "port-forward", "--address 127.0.0.1", "svc/$SVC", "karmada-system"} {
+	for _, want := range []string{"/etc/rancher/k3s/k3s-internal.yaml", "port-forward", "--address 0.0.0.0", "svc/$SVC", "karmada-system"} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("publisher missing %q", want)
 		}

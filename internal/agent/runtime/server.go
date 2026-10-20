@@ -254,6 +254,7 @@ func UpServer(ctx context.Context, opts ServerOptions) error {
 	}
 	if opts.FederationPublish {
 		args = append(args,
+			"-p", fmt.Sprintf("127.0.0.1:%d:%d", opts.federationPort(), opts.federationPort()),
 			"-e", "OUTPOST_FEDERATION_PUBLISH=1",
 			"-e", fmt.Sprintf("OUTPOST_FEDERATION_PORT=%d", opts.federationPort()))
 	}

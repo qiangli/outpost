@@ -45,7 +45,7 @@ while :; do
     # The Service appears only once the operator has built the control plane.
     if $KUBECTL --kubeconfig "$KUBECONFIG_FILE" -n "$NS" get "svc/$SVC" >/dev/null 2>&1; then
         log "forwarding svc/$SVC:$SVC_PORT -> 127.0.0.1:$PORT"
-        $KUBECTL --kubeconfig "$KUBECONFIG_FILE" --address 127.0.0.1 -n "$NS" \
+        $KUBECTL --kubeconfig "$KUBECONFIG_FILE" --address 0.0.0.0 -n "$NS" \
             port-forward "svc/$SVC" "$PORT:$SVC_PORT" || true
         # A forward that held for a while earns a fresh backoff.
         if [ $((SECONDS - started)) -ge 60 ]; then backoff="$MIN_BACKOFF"; fi
