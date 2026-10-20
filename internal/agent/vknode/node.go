@@ -5,6 +5,7 @@ import (
 	"maps"
 	"math"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -19,6 +20,11 @@ const (
 	labelGPU      = "outpost.dhnt.io/gpu"
 	labelGPUKind  = "outpost.dhnt.io/gpu-kind"
 	labelGPUModel = "outpost.dhnt.io/gpu-model"
+
+	// labelVRAMDeviceMax is the largest measured single-device VRAM in
+	// bytes. dhnt.io/vram is an aggregate, so it cannot answer "does this
+	// model fit on one device".
+	labelVRAMDeviceMax = "dhnt.io/vram-device-max"
 
 	// resourceVRAM is the vendor-neutral GPU-memory resource, in bytes.
 	// It is THE quantity to request when a workload needs to fit in GPU
@@ -243,6 +249,9 @@ func BuildNodeFromInfo(nodeName string, extraLabels map[string]string, info sysi
 		NodeHostLabel:          nodeName,
 	}
 	addGPULabels(labels, info.GPUs)
+	if max := maxDeviceVRAM(info.GPUs); max > 0 {
+		labels[labelVRAMDeviceMax] = strconv.FormatUint(max, 10)
+	}
 	maps.Copy(labels, extraLabels)
 
 	capacity := capacityFromInfo(info)
@@ -359,6 +368,23 @@ func capacityFromInfo(info sysinfo.Info) corev1.ResourceList {
 		capacity[resourceNVIDIAGPU] = *resource.NewQuantity(nvidiaGPUs, resource.DecimalSI)
 	}
 	return capacity
+}
+
+// maxDeviceVRAM returns the largest measured per-device VRAM. An entry's
+// VRAMTotalBytes covers its Count devices (capacityFromInfo sums it as-is),
+// so the per-device figure is the total divided by Count.
+func maxDeviceVRAM(gpus []sysinfo.GPU) uint64 {
+	var max uint64
+	for _, gpu := range gpus {
+		n := uint64(1)
+		if gpu.Count > 1 {
+			n = uint64(gpu.Count)
+		}
+		if per := gpu.VRAMTotalBytes / n; per > max {
+			max = per
+		}
+	}
+	return max
 }
 
 func addGPULabels(labels map[string]string, gpus []sysinfo.GPU) {
