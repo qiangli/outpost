@@ -21,7 +21,7 @@ const (
 	APIServerServicePort     = 5443
 	InClusterServer          = "https://karmada-apiserver.karmada-system.svc:5443"
 	memberKubeconfigSecret   = "karmada-kubeconfig"
-	memberKubeconfigSecretKV = "karmada.config"
+	memberKubeconfigSecretKV = "karmada-kubeconfig"
 )
 
 // LoopbackServer is the apiserver URL the materialised kubeconfig dials. Only

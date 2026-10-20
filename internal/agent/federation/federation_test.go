@@ -247,14 +247,14 @@ func TestRewriteMemberAgentKubeconfigRepointsAtService(t *testing.T) {
 	ca, _ := testCA(t)
 	cs := fake.NewSimpleClientset(&corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Namespace: KarmadaNamespace, Name: "karmada-kubeconfig"},
-		Data:       map[string][]byte{"karmada.config": adminKubeconfig(t, ca, "https://127.0.0.1:15443")},
+		Data:       map[string][]byte{"karmada-kubeconfig": adminKubeconfig(t, ca, "https://127.0.0.1:15443")},
 	})
 	if err := RewriteMemberAgentKubeconfig(context.Background(), cs); err != nil {
 		t.Fatal(err)
 	}
 	sec, _ := cs.CoreV1().Secrets(KarmadaNamespace).Get(context.Background(), "karmada-kubeconfig", metav1.GetOptions{})
-	if !strings.Contains(string(sec.Data["karmada.config"]), InClusterServer) {
-		t.Fatalf("not rewritten:\n%s", sec.Data["karmada.config"])
+	if !strings.Contains(string(sec.Data["karmada-kubeconfig"]), InClusterServer) {
+		t.Fatalf("not rewritten:\n%s", sec.Data["karmada-kubeconfig"])
 	}
 	if err := RewriteMemberAgentKubeconfig(context.Background(), cs); err != nil {
 		t.Fatalf("second pass must be a no-op: %v", err)

@@ -155,9 +155,10 @@ type HostReconciler struct {
 	// RecordHash persists a newly learned CA hash.
 	RecordHash func(hash string) error
 	// PostRegister repoints the agent kubeconfig on the hosting plane.
-	PostRegister func(ctx context.Context) error
-	Interval     time.Duration
-	Log          *slog.Logger
+	PostRegister    func(ctx context.Context) error
+	EnsureDiscovery func(ctx context.Context, kubeconfig string, port int) error
+	Interval        time.Duration
+	Log             *slog.Logger
 
 	mu    sync.Mutex
 	state HostState
@@ -238,6 +239,11 @@ func (r *HostReconciler) Reconcile(ctx context.Context) (err error) {
 	}
 	if phase != PhaseReady {
 		return nil // register only against a Ready control plane
+	}
+	if r.EnsureDiscovery != nil {
+		if err := r.EnsureDiscovery(ctx, r.KubeconfigPath, r.Port); err != nil {
+			return fmt.Errorf("ensure Karmada bootstrap discovery: %w", err)
+		}
 	}
 	return r.ensureSelfRegistered(ctx)
 }

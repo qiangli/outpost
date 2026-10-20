@@ -112,9 +112,10 @@ func startFederationHost(ctx context.Context, g *errgroup.Group, fc *conf.FileCo
 				}
 				return k.Members(ctx)
 			},
-			RecordHash:   core.RecordFederationCAHash,
-			PostRegister: func(ctx context.Context) error { return federation.RewriteMemberAgentKubeconfig(ctx, cs) },
-			Log:          slog.Default(),
+			RecordHash:      core.RecordFederationCAHash,
+			PostRegister:    func(ctx context.Context) error { return federation.RewriteMemberAgentKubeconfig(ctx, cs) },
+			EnsureDiscovery: federation.EnsureBootstrapDiscovery,
+			Log:             slog.Default(),
 		}
 		federationHost.Store(r)
 		r.Run(ctx)
