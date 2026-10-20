@@ -511,4 +511,15 @@ func TestCapacityFromInfo_SingleDeviceFitUsesPerDeviceVRAM(t *testing.T) {
 	if _, ok := none.Labels["dhnt.io/vram-device-max"]; ok {
 		t.Errorf("unmeasured VRAM must not stamp a device-max label")
 	}
+
+	// A caller-supplied label cannot turn an unmeasured or 24 GiB host into
+	// a 40 GiB single-device placement candidate.
+	spoofed := BuildNodeFromInfo("node-a", map[string]string{labelVRAMDeviceMax: strconv.FormatInt(40*gib, 10)}, info)
+	if got := spoofed.Labels[labelVRAMDeviceMax]; got != strconv.FormatInt(24*gib, 10) {
+		t.Errorf("measured device max overridden by extra label: %q", got)
+	}
+	unmeasured := BuildNodeFromInfo("node-a", map[string]string{labelVRAMDeviceMax: strconv.FormatInt(40*gib, 10)}, sysinfo.Info{})
+	if _, ok := unmeasured.Labels[labelVRAMDeviceMax]; ok {
+		t.Error("unmeasured device max must not be supplied by extra labels")
+	}
 }

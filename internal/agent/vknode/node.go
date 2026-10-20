@@ -249,10 +249,12 @@ func BuildNodeFromInfo(nodeName string, extraLabels map[string]string, info sysi
 		NodeHostLabel:          nodeName,
 	}
 	addGPULabels(labels, info.GPUs)
+	maps.Copy(labels, extraLabels)
 	if max := maxDeviceVRAM(info.GPUs); max > 0 {
 		labels[labelVRAMDeviceMax] = strconv.FormatUint(max, 10)
+	} else {
+		delete(labels, labelVRAMDeviceMax)
 	}
-	maps.Copy(labels, extraLabels)
 
 	capacity := capacityFromInfo(info)
 
