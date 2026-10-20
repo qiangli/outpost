@@ -57,7 +57,7 @@ func (s *Server) registerFederationTools() {
 		Name:        "outpost_federation_off",
 		Description: "Stop federating: uninstall the karmada built-in, remove the materialised kubeconfig and clear the federation config. Members registered elsewhere are not touched. Triggers a restart.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in federationOffIn) (*mcp.CallToolResult, admincore.FederationResult, error) {
-		res, err := s.core.FederationOff(ctx, admincore.FederationParams{Force: in.Force})
+		res, err := s.core.FederationOff(ctx, admincore.FederationParams{Force: in.Force, KarmadaConfig: in.KarmadaConfig})
 		if err != nil {
 			return apiErrResult[admincore.FederationResult](err)
 		}
