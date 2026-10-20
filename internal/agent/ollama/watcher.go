@@ -32,6 +32,7 @@ const (
 	defaultHeartbeatInterval = 5 * time.Minute
 	defaultMinBackoff        = 5 * time.Second
 	defaultMaxBackoff        = 5 * time.Minute
+	maxInferenceProbeBody    = 64 << 10
 )
 
 // CapacitySource is what the watcher calls to populate the capacity
@@ -619,7 +620,26 @@ func (w *Watcher) probeInference(ctx context.Context, baseURL, model string) err
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxInferenceProbeBody+1))
+	if err != nil {
+		return fmt.Errorf("read inference response: %w", err)
+	}
+	if len(responseBody) > maxInferenceProbeBody {
+		return fmt.Errorf("inference response exceeds %d bytes", maxInferenceProbeBody)
+	}
+	var result struct {
+		Done  bool   `json:"done"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(responseBody, &result); err != nil {
+		return fmt.Errorf("decode inference response: %w", err)
+	}
+	if result.Error != "" {
+		return fmt.Errorf("inference response error: %s", result.Error)
+	}
+	if !result.Done {
+		return errors.New("inference response missing done=true")
+	}
 	return nil
 }
 

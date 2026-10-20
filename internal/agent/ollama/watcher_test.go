@@ -188,6 +188,46 @@ func TestWatcher_NoPublishBeforeInferenceProbe(t *testing.T) {
 	}
 }
 
+func TestWatcher_NoPublishForInvalidInferenceSuccess(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "empty-body", body: "", want: "response"},
+		{name: "malformed-body", body: `{`, want: "response"},
+		{name: "oversized-body", body: strings.Repeat("x", maxInferenceProbeBody+1), want: "exceeds"},
+		{name: "done-false", body: `{"response":"ok","done":false}`, want: "done=true"},
+		{name: "error-body", body: `{"done":true,"error":"model requires more system memory than is available"}`, want: "memory"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tags := &stubTags{bodies: []string{
+				`{"models":[{"name":"llama3.2:1b","digest":"d1","size":100}]}`,
+			}}
+			reg := &capturingRegistry{}
+			inference := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, tt.body)
+			})
+			w, _, _ := newTestWatcherWithInference(t, tags, reg, nil, inference)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			_ = w.Run(ctx)
+
+			if got := reg.calls.Load(); got != 0 {
+				t.Errorf("registry calls=%d, want 0 for invalid inference success body", got)
+			}
+			status := w.Status()
+			if status.PushCount != 0 || !status.LastPushAt.IsZero() {
+				t.Errorf("watcher published ready state for invalid inference success body: %+v", status)
+			}
+			if reason := strings.ToLower(status.LastError); !strings.Contains(reason, tt.want) {
+				t.Errorf("not-ready reason=%q, want it to contain %q", status.LastError, tt.want)
+			}
+		})
+	}
+}
+
 func TestWatcher_New_Validation(t *testing.T) {
 	if _, err := New(Config{}); err == nil {
 		t.Fatal("empty config should error")
@@ -275,7 +315,13 @@ func TestWatcher_HeartbeatFiresWithoutChange(t *testing.T) {
 	// Cloud + ollama plumbing identical to newTestWatcher but with a
 	// very short heartbeat interval so the second push fires within
 	// the test budget.
-	ollamaSrv := httptest.NewServer(tags)
+	ollamaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/generate" {
+			_, _ = io.WriteString(w, `{"response":"ok","done":true}`)
+			return
+		}
+		tags.ServeHTTP(w, r)
+	}))
 	t.Cleanup(ollamaSrv.Close)
 	cloudSrv := httptest.NewServer(reg)
 	t.Cleanup(cloudSrv.Close)
@@ -936,7 +982,13 @@ func TestWatcher_MergesExtraOllamaModels(t *testing.T) {
 	w, _, _ := newTestWatcher(t, tags, reg, nil)
 
 	bashyTags := &stubTags{bodies: []string{`{"models":[{"name":"bashy-model:1b","digest":"b1","size":200}]}`}}
-	bashySrv := httptest.NewServer(bashyTags)
+	bashySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/generate" {
+			_, _ = io.WriteString(w, `{"response":"ok","done":true}`)
+			return
+		}
+		bashyTags.ServeHTTP(w, r)
+	}))
 	t.Cleanup(bashySrv.Close)
 	w.cfg.ExtraOllamaURLs = []string{bashySrv.URL}
 
