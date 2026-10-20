@@ -997,9 +997,14 @@ expect "cluster-dns: rc!=0 -> FAIL despite the address appearing" 1 \
     "CHECK cluster-dns FAIL" "CHECK cluster-dns PASS"
 
 stub_reset; STUB_READY_A=true; STUB_READY_B=true; STUB_TIMEOUT=1
-STUB_SVC_IP="10.43.9.9"; STUB_DNS_OUT="$FIX/dns-ok"; STUB_DNS_RC=0
+STUB_SVC_IP="10.43.9.9"; STUB_DNS_OUT="$FIX/dns-ok"; STUB_DNS_RC=0; STUB_LOG="$FIX/log-dns-fqdn"
 run_case_on_peer_venue cluster-dns
 expect "cluster-dns: rc 0 + clusterIP resolved -> PASS" 0 "CHECK cluster-dns PASS"
+if grep -Eq 'nslookup dksacc-[0-9]+-svc\.default\.svc\.cluster\.local\.' "$STUB_LOG"; then
+    ok "cluster-dns: queries one fully qualified Service name"
+else
+    bad "cluster-dns: queries one fully qualified Service name" "$(grep nslookup "$STUB_LOG" | tail -1)"
+fi
 
 stub_reset; STUB_READY_A=true; STUB_READY_B=true; STUB_TIMEOUT=1
 STUB_SVC_IP="10.43.9.9"; STUB_DNS_OUT="$FIX/dns-nxdomain"; STUB_DNS_RC=1

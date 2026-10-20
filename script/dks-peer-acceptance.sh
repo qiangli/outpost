@@ -1086,12 +1086,16 @@ if dks_selected cluster-dns; then
         dks_record cluster-dns BLOCKED "no Service to resolve (backend pod on $NODE_B unavailable)"
     else
         # rc AND a positive content assertion (the exact clusterIP).
-        OUT="$(k exec "$POD_A" -- sh -c "nslookup $SVC" 2>&1)"; RC=$?
+        # BusyBox can resolve the first search suffix successfully yet exit 1
+        # after querying later suffixes that return NXDOMAIN. Ask for the
+        # exact Service FQDN so rc and the answer describe the same lookup.
+        SVC_FQDN="$SVC.$DKS_NAMESPACE.svc.cluster.local."
+        OUT="$(k exec "$POD_A" -- sh -c "nslookup $SVC_FQDN" 2>&1)"; RC=$?
         OUT="$(printf '%s\n' "$OUT" | tail -6)"
         if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -qF "$SVC_IP"; then
-            dks_record cluster-dns PASS "short name $SVC resolved to $SVC_IP from $POD_A@$NODE_A"
+            dks_record cluster-dns PASS "$SVC_FQDN resolved to $SVC_IP from $POD_A@$NODE_A"
         else
-            dks_record cluster-dns FAIL "short name $SVC did not resolve to $SVC_IP (exec rc=$RC): $OUT"
+            dks_record cluster-dns FAIL "$SVC_FQDN did not resolve to $SVC_IP (exec rc=$RC): $OUT"
         fi
     fi
 fi
