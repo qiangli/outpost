@@ -194,7 +194,8 @@ func TestMemberReconcilerCompletesPendingJoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"register", "127.0.0.1:15443", "--token", "abcdef.0123456789abcdef",
-		"--discovery-token-ca-cert-hash", "sha256:" + hash, "--cluster-name", "member-b", "--kubeconfig", "/plane.yaml"}
+		"--discovery-token-ca-cert-hash", "sha256:" + hash, "--cluster-name", "member-b", "--kubeconfig", "/plane.yaml",
+		"--discovery-timeout", "15m"}
 	if len(runner.calls) != 1 || strings.Join(runner.calls[0], " ") != strings.Join(want, " ") {
 		t.Fatalf("karmadactl calls = %v, want %v", runner.calls, want)
 	}

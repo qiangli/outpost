@@ -41,7 +41,10 @@ func RegisterMember(ctx context.Context, r Runner, endpoint, bootstrapToken, caH
 		"--token", bootstrapToken,
 		"--discovery-token-ca-cert-hash", "sha256:"+hash,
 		"--cluster-name", clusterName,
-		"--kubeconfig", planeKubeconfig)
+		"--kubeconfig", planeKubeconfig,
+		// Karmada deletes the generated member RBAC if its rollout wait times
+		// out. Slow first image pulls can exceed its five-minute default.
+		"--discovery-timeout", "15m")
 	return err
 }
 
