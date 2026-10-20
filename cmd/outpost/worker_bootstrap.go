@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"time"
@@ -37,6 +38,9 @@ type workerBootstrapJoiners struct {
 	DKS    vknode.DKSJoiner
 	Sphere vknode.SphereJoiner
 	Pool   *ollamaCapability
+	// Backend lets startup tests inspect an existing engine without starting one.
+	Backend   vknode.Backend
+	Attempted chan error
 }
 
 type existingDKSJoiner struct{ credential vknode.ScopedCredential }
@@ -59,7 +63,7 @@ func (j workerSphereJoiner) Identity(_ string) (string, error) {
 	return mesh.PeerIDForDir("")
 }
 
-func (j workerSphereJoiner) Join(ctx context.Context, req vknode.SphereJoinRequest) error {
+func (j workerSphereJoiner) Ready(_ context.Context, req vknode.SphereJoinRequest) error {
 	if j.peer == nil || j.pool == nil {
 		return errors.New("peer service or model pool is not configured")
 	}
@@ -73,7 +77,16 @@ func (j workerSphereJoiner) Join(ctx context.Context, req vknode.SphereJoinReque
 	if len(candidates) == 0 {
 		return errors.New("peer service has no reachability candidates")
 	}
-	return (&peerplane.Client{BaseURL: j.base, Token: j.token}).Announce(ctx, j.host, req.PeerID, candidates, nil)
+	return nil
+}
+
+func (j workerSphereJoiner) Join(ctx context.Context, req vknode.SphereJoinRequest) error {
+	if err := j.Ready(ctx, req); err != nil {
+		return err
+	}
+	candidates := j.peer.Candidates()
+	return (&peerplane.Client{BaseURL: j.base, Token: j.token, HC: &http.Client{Timeout: 10 * time.Second}}).
+		Announce(ctx, j.host, req.PeerID, candidates, nil)
 }
 
 func bootstrapWorker(ctx context.Context, in workerBootstrapInput, deps workerBootstrapJoiners) error {
@@ -148,15 +161,23 @@ func retryWorkerBootstrap(ctx context.Context, in workerBootstrapInput, deps wor
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
+		attemptCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := bootstrapWorker(attemptCtx, in, deps)
+		cancel()
+		if deps.Attempted != nil {
+			select {
+			case deps.Attempted <- err:
+			default:
+			}
+		}
+		if err == nil || ctx.Err() != nil {
+			return
+		}
+		slog.Warn("cluster worker bootstrap: partial; will retry", "err", err)
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := bootstrapWorker(ctx, in, deps); err == nil {
-				return
-			} else {
-				slog.Warn("cluster worker bootstrap: still partial", "err", err)
-			}
 		}
 	}
 }

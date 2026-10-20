@@ -2425,28 +2425,6 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 		})
 	}
 
-	// Reconcile the existing worker identity with the scoped credential and
-	// backend just prepared. Enrollment failures leave a partial phase and
-	// retry without blocking the virtual node's normal controller loops.
-	for _, spec := range specs {
-		if spec.mode != conf.ClusterRuntimeVKOllama {
-			continue
-		}
-		deps := workerBootstrapJoiners{}
-		if len(joiners) > 0 {
-			deps = joiners[0]
-		}
-		input := workerBootstrapInput{
-			Config: fc, Cluster: cc, NodeName: spec.node, Backend: spec.backend,
-			Kube: kubeCfg, TokenFile: tokenFile, CacheBase: cacheBase,
-			CloudboxBase: cloudboxBase, PeerService: peerSvc,
-		}
-		if err := bootstrapWorker(ctx, input, deps); err != nil {
-			slog.Warn("cluster worker bootstrap: partial; will retry", "err", err)
-			g.Go(func() error { retryWorkerBootstrap(ctx, input, deps); return nil })
-		}
-	}
-
 	// Start only after every backend has initialized successfully. Each runner
 	// owns its retry loop: setup succeeding merely means the goroutines were
 	// launched, not that a runner can never lose its apiserver connection or
@@ -2483,6 +2461,28 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 				})
 			return nil
 		})
+	}
+
+	// Reconcile after launching the virtual node loops. A slow peer announce
+	// must never delay DKS startup; each enrollment attempt has its own bound.
+	for _, spec := range specs {
+		if spec.mode != conf.ClusterRuntimeVKOllama {
+			continue
+		}
+		deps := workerBootstrapJoiners{}
+		if len(joiners) > 0 {
+			deps = joiners[0]
+		}
+		backend := spec.backend
+		if deps.Backend != nil {
+			backend = deps.Backend
+		}
+		input := workerBootstrapInput{
+			Config: fc, Cluster: cc, NodeName: spec.node, Backend: backend,
+			Kube: kubeCfg, TokenFile: tokenFile, CacheBase: cacheBase,
+			CloudboxBase: cloudboxBase, PeerService: peerSvc,
+		}
+		g.Go(func() error { retryWorkerBootstrap(ctx, input, deps); return nil })
 	}
 
 	// Peer-plane bearer-token rotation (cloudbox-free). Re-reads the persisted

@@ -263,6 +263,12 @@ type SphereJoiner interface {
 	Join(ctx context.Context, req SphereJoinRequest) error
 }
 
+// SphereReadiness is an optional live prerequisite check. A completed join
+// cannot advertise readiness after its peer service or engine disappears.
+type SphereReadiness interface {
+	Ready(ctx context.Context, req SphereJoinRequest) error
+}
+
 // EngineSpec describes the single native-process engine the worker owns.
 // It is realized as one pod on the native-process backend with a UID
 // derived from the node name, so Ensure adopts the running process on
@@ -513,13 +519,20 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) (*BootstrapResult, er
 	}
 
 	// --- phase: sphere_joined -------------------------------------------------
-	if !st.Done(PhaseSphereJoined) {
-		req := SphereJoinRequest{
-			MachineID: st.MachineID,
-			NodeName:  st.NodeName,
-			PeerID:    st.PeerID,
-			EngineURL: st.EngineURL,
+	req := SphereJoinRequest{
+		MachineID: st.MachineID,
+		NodeName:  st.NodeName,
+		PeerID:    st.PeerID,
+		EngineURL: st.EngineURL,
+	}
+	if checker, ok := opts.Sphere.(SphereReadiness); ok {
+		if err := checker.Ready(ctx, req); err != nil {
+			st.clear(PhaseSphereJoined)
+			st.clear(PhaseModelReady)
+			return fail("sphere prerequisites", err)
 		}
+	}
+	if !st.Done(PhaseSphereJoined) {
 		if err := opts.Sphere.Join(ctx, req); err != nil {
 			return fail("sphere join", err)
 		}
