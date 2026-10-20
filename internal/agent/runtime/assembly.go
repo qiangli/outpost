@@ -247,7 +247,7 @@ func assembleImageContext(ctx context.Context, opts BuildOptions, arch string) (
 			return dir, e
 		}
 	}
-	for _, script := range []string{"entrypoint.sh", "server-entrypoint.sh", "frpc-supervisor.sh", "metrics-server-supervisor.sh", "snapshotter.sh"} {
+	for _, script := range []string{"entrypoint.sh", "server-entrypoint.sh", "frpc-supervisor.sh", "metrics-server-supervisor.sh", "snapshotter.sh", "karmada-publisher.sh"} {
 		data, e := imageFS.ReadFile("image/" + script)
 		if e != nil {
 			return dir, e
