@@ -607,6 +607,8 @@ github.com/qiangli/coreutils/third_party/goawk v0.0.0-20261013004930-226a73d9a21
 github.com/qiangli/coreutils/third_party/goawk v0.0.0-20261013004930-226a73d9a214/go.mod h1:p0JkVxHS3JKYxDz8kOYvMdPM8YRH94vZoWaFljD1vAg=
 github.com/qiangli/filebrowser/v2 v2.0.0-20261013004903-9c7b5c8e3d09 h1:8BBH4NPnF6UYP5GbGGu2iM6TS1h3EY+v8ml/555jcsg=
 github.com/qiangli/filebrowser/v2 v2.0.0-20261013004903-9c7b5c8e3d09/go.mod h1:86f/lT85KHk1f2smUl+MdgDvX4nO2lQqA+tWrGZhj0A=
+github.com/qiangli/filebrowser/v2 v2.0.0-20261021004418-d1d2feab4473 h1:3L6uJHiZ+gliJlpEjAjdnxTsVNr06+twiJvVpoYLNlI=
+github.com/qiangli/filebrowser/v2 v2.0.0-20261021004418-d1d2feab4473/go.mod h1:B6SGbzVBL1P5wBIfC1J8pX+gSUBrx6J8dBb+UK7ZnTs=
 github.com/qiangli/gfy v0.0.0-20261013004914-30d38f086034 h1:XHTsT5keRw4zmpOmnwUM1uiAtRlh2eJa/38OLDEtHmA=
 github.com/qiangli/gfy v0.0.0-20261013004914-30d38f086034/go.mod h1:20Lh1QjBlapQPgOsBpLT6lb7Cs7idsMhi/NqvqU6cG0=
 github.com/qiangli/gotreesitter v0.0.0-20261011020812-226bfcd2c541 h1:jI/ak3MTkoqTaAeCRLaeSGnLPz8+s3sed1hY+i0wwy4=
@@ -619,6 +621,8 @@ github.com/qiangli/yamux v0.1.0 h1:nmfx1HPvOMR3x6ZkctdBuk98fmUHSp2DOxnbYA7gGR0=
 github.com/qiangli/yamux v0.1.0/go.mod h1:vEKjIFDLV3jWXYQ7cRDlw0agqWiTiTYzINNBKqqGar8=
 github.com/qiangli/yoke v0.0.0-20261020213217-d416105391d3 h1:bTK8/d3ZAJRDrr9TCV+JHFL7WrUdw60QO4ic0Nkgmx0=
 github.com/qiangli/yoke v0.0.0-20261020213217-d416105391d3/go.mod h1:Vm8wA8dXjMuEUuXF4YHEToDJWIHqqJkxhF4MdVAHe8U=
+github.com/qiangli/yoke/external/go-billy v0.0.0-20261021004834-b008dcc14dfa h1:tvU9VJSqqtYJ/uc/IOLNMPQ5n4uZiC5nJp+x7lOI7xs=
+github.com/qiangli/yoke/external/go-billy v0.0.0-20261021004834-b008dcc14dfa/go.mod h1:Q0Q5T6VFoIzC2QCjcH2DnKhvD6lvneoJKxG0TYasq8E=
 github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261014085036-9d08a1bef6be h1:aDgeAgPkUDOxrLYVtKQikZNnr8SsGdzvazd/f9eWnOg=
 github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261014085036-9d08a1bef6be/go.mod h1:UnJ5Aw/zCOdFgHdziuLv9sU0t/KT8dcOrGfmwcm6X4E=
 github.com/qiangli/yoke/pkg/provider v0.0.0-20261020170337-1673f1b7fc8a h1:EXxutUT77zZY5HlW5tLF4teFq4KCO0YbJsHbhVWLqhk=
