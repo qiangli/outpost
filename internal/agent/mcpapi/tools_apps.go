@@ -15,11 +15,12 @@ import (
 type upsertAppIn struct {
 	Name               string   `json:"name" jsonschema:"Logical name; reachable at cloudbox /h/<host>/app/<name>/"`
 	Icon               string   `json:"icon,omitempty"`
-	URL                string   `json:"url,omitempty" jsonschema:"Single-URL target (http://, https://, tcp://, unix:///, npipe://). Wins over scheme/host/port/socket when set."`
-	Scheme             string   `json:"scheme,omitempty" jsonschema:"http|https|tcp|unix|npipe"`
-	Host               string   `json:"host,omitempty" jsonschema:"Defaults to 127.0.0.1 for TCP schemes"`
+	URL                string   `json:"url,omitempty" jsonschema:"Single-URL target (http://, https://, tcp://, unix:///, npipe://, egress://). Wins over scheme/host/port/socket when set."`
+	Scheme             string   `json:"scheme,omitempty" jsonschema:"http|https|tcp|unix|npipe|egress"`
+	Host               string   `json:"host,omitempty" jsonschema:"Defaults to 127.0.0.1 for TCP schemes; ignored for egress"`
 	Port               int      `json:"port,omitempty"`
 	Socket             string   `json:"socket,omitempty" jsonschema:"Required for unix/npipe; ignored otherwise"`
+	Allow              []string `json:"allow,omitempty" jsonschema:"Egress destination allowlist (host or *.domain, optional :port); empty refuses all"`
 	Enabled            bool     `json:"enabled" jsonschema:"Whether the app proxy is mounted live"`
 	RequireLogin       bool     `json:"require_login,omitempty" jsonschema:"Require an authenticated, authorized cloudbox user (owner or sharee). Default false."`
 	ElevationRequired  bool     `json:"elevation_required,omitempty" jsonschema:"Additionally require OS-password (PAM) elevation. Only meaningful with require_login. Default false."`
@@ -88,6 +89,7 @@ func (s *Server) registerAppsTools() {
 				Host:               in.Host,
 				Port:               in.Port,
 				Socket:             in.Socket,
+				Allow:              in.Allow,
 				Enabled:            in.Enabled,
 				RequireLogin:       in.RequireLogin,
 				ElevationRequired:  in.ElevationRequired,
