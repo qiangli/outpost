@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -117,6 +118,11 @@ type AppRegistry struct {
 	// they get a dedicated WS↔TCP bridge handler rather than the
 	// ReverseProxy path.
 	tcp map[string]string
+	// expose holds the per-app expose-token guard (S487.2). Present
+	// only for apps registered with an ExposeTokenSHA256; every other
+	// app is unguarded. Keyed by app name alongside the mode maps, so
+	// the guard applies to HTTP, tcp and egress apps alike.
+	expose map[string]exposeGuard
 	// egress holds the destination allowlist for egress-scheme apps.
 	// Its key set is disjoint from both `proxy` and `tcp` — like TCP
 	// apps, egress apps accept a WebSocket upgrade on /app/<name>/,
@@ -132,6 +138,72 @@ type AppRegistry struct {
 	// for git-scheme apps (default: `git credential fill`). Injectable
 	// so tests can fake it without touching a credential store.
 	gitCredentialFill gitCredentialFillFunc
+}
+
+// exposeTokenHeader is the header `bashy dks relay` (and any other
+// caller of an exposed app) must carry. Outpost strips it before
+// proxying upstream so the credential never leaves the daemon.
+const exposeTokenHeader = "X-Dhnt-Expose-Token"
+
+// exposeGuard is one app's expose-token policy: the sha256 digest of
+// the accepted bearer plus the instant it stops being accepted. Both
+// are set at register time from AppConfig; expiry is evaluated per
+// request so a lapsed expose is cut immediately, no restart.
+type exposeGuard struct {
+	// sum is the raw (decoded) 32-byte sha256 digest. Decoded once at
+	// register time so the per-request path is a constant-time compare
+	// against the hash of the presented token.
+	sum []byte
+	// expires is the RFC3339 deadline, already parsed.
+	expires time.Time
+}
+
+// allow reports whether the presented token is the guarded one and the
+// guard has not lapsed. The returned reason is log-safe — it never
+// carries the token or the digest.
+func (g exposeGuard) allow(token string, now time.Time) (bool, string) {
+	if !now.Before(g.expires) {
+		return false, "expired"
+	}
+	if token == "" {
+		return false, "missing-token"
+	}
+	sum := sha256.Sum256([]byte(token))
+	if subtle.ConstantTimeCompare(sum[:], g.sum) != 1 {
+		return false, "bad-token"
+	}
+	return true, ""
+}
+
+// parseExposeGuard builds the guard for one app. ok is false when no
+// expose hash is declared (the unguarded, historic case); err is
+// non-nil when the declaration is unusable — a malformed digest or
+// deadline must fail loudly at register time rather than silently
+// leave the app ungated. Errors name the app and the expected shape,
+// never the supplied digest.
+func parseExposeGuard(name, hash, expires string) (g exposeGuard, ok bool, err error) {
+	hash = strings.ToLower(strings.TrimSpace(hash))
+	if hash == "" {
+		return exposeGuard{}, false, nil
+	}
+	sum, derr := hex.DecodeString(hash)
+	if derr != nil || len(sum) != sha256.Size {
+		return exposeGuard{}, false, fmt.Errorf("app %q: expose_token_sha256 must be 64 hex characters", name)
+	}
+	deadline, perr := time.Parse(time.RFC3339, strings.TrimSpace(expires))
+	if perr != nil {
+		return exposeGuard{}, false, fmt.Errorf("app %q: expose_expires must be an RFC3339 timestamp", name)
+	}
+	return exposeGuard{sum: sum, expires: deadline}, true, nil
+}
+
+// setExpose records (or clears) name's expose guard. Caller holds r.mu.
+func (r *AppRegistry) setExpose(name string, g exposeGuard, guarded bool) {
+	if guarded {
+		r.expose[name] = g
+		return
+	}
+	delete(r.expose, name)
 }
 
 // appIntercept binds a path-prefix to a handler that pre-empts the
@@ -192,6 +264,7 @@ func NewAppRegistry() *AppRegistry {
 		egress:             map[string][]string{},
 		git:                map[string]*gitApp{},
 		gitCredentialFill:  gitCredentialFill,
+		expose:             map[string]exposeGuard{},
 	}
 }
 
@@ -331,6 +404,13 @@ type AppMeta struct {
 	// Remote-User on a request that bypasses outpost). Empty means no
 	// signature is stamped — upstream falls back to its own login.
 	SSOSecret string
+	// ExposeTokenSHA256 / ExposeExpires carry the expose-token guard
+	// (S487.2): hex sha256 of the bearer every caller must present in
+	// X-Dhnt-Expose-Token, plus the RFC3339 instant it lapses. Both or
+	// neither; a malformed pair is a register error. Empty leaves the
+	// app unguarded.
+	ExposeTokenSHA256 string
+	ExposeExpires     string
 }
 
 // Register adds (or replaces) an app entry with the default
@@ -366,6 +446,10 @@ func (r *AppRegistry) RegisterWithMeta(name, target string, meta AppMeta) error 
 // unchanged via the request clone; outpost only fills in defaults when
 // a header is missing (the common case for direct loopback access).
 func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, transport http.RoundTripper) error {
+	guard, guarded, err := parseExposeGuard(name, meta.ExposeTokenSHA256, meta.ExposeExpires)
+	if err != nil {
+		return err
+	}
 	trustIdentity := meta.TrustCloudIdentity
 	rp := &httputil.ReverseProxy{
 		Transport: transport,
@@ -540,6 +624,7 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 	delete(r.tcp, name)
 	delete(r.egress, name)
 	delete(r.git, name)
+	r.setExpose(name, guard, guarded)
 	r.mu.Unlock()
 	return nil
 }
@@ -662,6 +747,7 @@ func (r *AppRegistry) Unregister(name string) {
 	delete(r.tcp, name)
 	delete(r.egress, name)
 	delete(r.git, name)
+	delete(r.expose, name)
 	r.mu.Unlock()
 }
 
@@ -691,6 +777,8 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 		IndexPath:          ac.IndexPath,
 		TrustCloudIdentity: ac.TrustCloudIdentity,
 		SSOSecret:          ac.SSOSecret,
+		ExposeTokenSHA256:  ac.ExposeTokenSHA256,
+		ExposeExpires:      ac.ExposeExpires,
 	}
 	scheme := strings.ToLower(strings.TrimSpace(ac.Scheme))
 	if scheme == "" {
@@ -762,6 +850,10 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 // (no path concept) but we store the value verbatim so an HTTP↔TCP
 // mode swap on the same name keeps the operator's declarations intact.
 func (r *AppRegistry) registerTCP(name, addr string, meta AppMeta) error {
+	guard, guarded, err := parseExposeGuard(name, meta.ExposeTokenSHA256, meta.ExposeExpires)
+	if err != nil {
+		return err
+	}
 	r.mu.Lock()
 	// Same name can't be in two modes at once.
 	delete(r.apps, name)
@@ -778,6 +870,7 @@ func (r *AppRegistry) registerTCP(name, addr string, meta AppMeta) error {
 	// stamp — but we keep the map entry in sync with the others so a
 	// later HTTP-mode swap on the same name reads the right value.
 	r.trustCloudIdentity[name] = meta.TrustCloudIdentity
+	r.setExpose(name, guard, guarded)
 	r.mu.Unlock()
 	return nil
 }
@@ -789,6 +882,10 @@ func (r *AppRegistry) registerTCP(name, addr string, meta AppMeta) error {
 // a valid registered state meaning default-deny. Disjoint from the HTTP
 // register and registerTCP: a name is in exactly one mode at a time.
 func (r *AppRegistry) registerEgress(name string, allow []string, meta AppMeta) error {
+	guard, guarded, err := parseExposeGuard(name, meta.ExposeTokenSHA256, meta.ExposeExpires)
+	if err != nil {
+		return err
+	}
 	r.mu.Lock()
 	// Same name can't be in two modes at once.
 	delete(r.apps, name)
@@ -805,6 +902,7 @@ func (r *AppRegistry) registerEgress(name string, allow []string, meta AppMeta) 
 	// nothing to stamp — kept in sync for the same mode-swap reason
 	// as registerTCP.
 	r.trustCloudIdentity[name] = meta.TrustCloudIdentity
+	r.setExpose(name, guard, guarded)
 	r.mu.Unlock()
 	return nil
 }
@@ -879,7 +977,25 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	lanOnly := r.lanOnly[name]
 	intercepts := r.intercepts[name]
 	wrap := r.proxyWrap[name]
+	guard, guarded := r.expose[name]
 	r.mu.RUnlock()
+	// Expose-token guard (S487.2). Runs FIRST — before the intercepts,
+	// the reverse proxy and the tcp/egress WebSocket bridges — so a
+	// caller without the bearer never reaches an upgrade, let alone an
+	// upstream. Unconditional: unlike the cloud-side gate below it does
+	// not care whether the hop came through cloudbox, because the
+	// expose token IS the app-local credential. Expiry is re-read per
+	// request, so a lapsed expose is cut without a restart.
+	if guarded {
+		if ok, reason := guard.allow(c.Request.Header.Get(exposeTokenHeader), time.Now()); !ok {
+			slog.Warn("expose refused", "app", name, "reason", reason)
+			c.String(http.StatusForbidden, "forbidden\n")
+			c.Abort()
+			return
+		}
+		// Never let the credential reach the upstream app.
+		c.Request.Header.Del(exposeTokenHeader)
+	}
 	// Two-rule cloud-side gate. Both rules apply only when the inbound
 	// request carries X-Forwarded-Prefix (i.e. came via cloudbox).
 	// Direct loopback hits (admin UI subpath, local /app/<name>/* via

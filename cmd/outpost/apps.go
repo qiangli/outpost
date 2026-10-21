@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -131,7 +133,7 @@ the same data the SPA renders for that host's tiles.`,
 				fmt.Println("No apps registered.")
 				return nil
 			}
-			fmt.Printf("%-20s  %-8s  %-7s  %-30s  %s\n", "NAME", "SCHEME", "ENABLED", "TARGET", "FLAGS")
+			fmt.Printf("%-20s  %-8s  %-7s  %-30s  %-26s  %s\n", "NAME", "SCHEME", "ENABLED", "TARGET", "EXPOSE", "FLAGS")
 			for _, a := range view.Apps {
 				flags := []string{}
 				if a.RequireLogin {
@@ -160,8 +162,8 @@ the same data the SPA renders for that host's tiles.`,
 						target = fmt.Sprintf("%s:%d", a.Host, a.Port)
 					}
 				}
-				fmt.Printf("%-20s  %-8s  %-7t  %-30s  %s\n",
-					a.Name, a.Scheme, a.Enabled, target, strings.Join(flags, " "))
+				fmt.Printf("%-20s  %-8s  %-7t  %-30s  %-26s  %s\n",
+					a.Name, a.Scheme, a.Enabled, target, exposeColumn(a), strings.Join(flags, " "))
 			}
 			return nil
 		},
@@ -309,6 +311,7 @@ func fetchRemoteHostApps(ctx context.Context, server string, port int, protocol,
 func appsAddCmd() *cobra.Command {
 	var (
 		url, target, scheme, host, socket, indexPath, icon  string
+		exposeTokenSHA256, exposeExpires                    string
 		port                                                int
 		requireLogin, trustCloudIdentity, elevationRequired bool
 		lanOnly                                             []string
@@ -326,6 +329,9 @@ func appsAddCmd() *cobra.Command {
 			if u == "" {
 				u = target
 			}
+			if err := validateExposeFlags(exposeTokenSHA256, exposeExpires); err != nil {
+				return err
+			}
 			ac := conf.AppConfig{
 				Name:               args[0],
 				Icon:               icon,
@@ -339,6 +345,8 @@ func appsAddCmd() *cobra.Command {
 				RequireLogin:       requireLogin,
 				ElevationRequired:  elevationRequired,
 				TrustCloudIdentity: trustCloudIdentity,
+				ExposeTokenSHA256:  exposeTokenSHA256,
+				ExposeExpires:      exposeExpires,
 				Enabled:            !disabled,
 			}
 			params := admincore.AppUpsertParams{AppConfig: ac, URL: u}
@@ -361,10 +369,54 @@ func appsAddCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&requireLogin, "require-login", false, "Require an authenticated, authorized cloudbox user (owner or sharee)")
 	cmd.Flags().BoolVar(&elevationRequired, "elevation-required", false, "Additionally require OS-password (PAM) elevation; only meaningful with --require-login")
 	cmd.Flags().BoolVar(&trustCloudIdentity, "trust-cloud-identity", false, "Forward cloudbox-vouched identity as Remote-User / Remote-Email")
+	cmd.Flags().StringVar(&exposeTokenSHA256, "expose-token-sha256", "", "Hex sha256 (64 chars) of the bearer callers must send as X-Dhnt-Expose-Token (requires --expose-expires)")
+	cmd.Flags().StringVar(&exposeExpires, "expose-expires", "", "RFC3339 instant the expose token lapses, enforced per request (requires --expose-token-sha256)")
 	cmd.Flags().BoolVar(&disabled, "disabled", false, "Persist the entry but skip live registration")
 	cmd.Flags().BoolVar(&offline, "offline", false, "Mutate the FileConfig directly without contacting the daemon (installer-script mode)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit JSON instead of a one-line summary")
 	return cmd
+}
+
+// validateExposeFlags rejects a malformed --expose-token-sha256 /
+// --expose-expires pair before the CLI dials the daemon, so a typo
+// fails locally with the same message admincore.ValidateApp would
+// return. Never echoes the supplied digest.
+func validateExposeFlags(hash, expires string) error {
+	hash = strings.ToLower(strings.TrimSpace(hash))
+	expires = strings.TrimSpace(expires)
+	switch {
+	case hash == "" && expires == "":
+		return nil
+	case hash == "" || expires == "":
+		return errors.New("--expose-token-sha256 and --expose-expires must be set together")
+	}
+	if len(hash) != 2*sha256.Size {
+		return fmt.Errorf("--expose-token-sha256 must be 64 hex characters (got %d)", len(hash))
+	}
+	if _, err := hex.DecodeString(hash); err != nil {
+		return errors.New("--expose-token-sha256 must be 64 hex characters")
+	}
+	if _, err := time.Parse(time.RFC3339, expires); err != nil {
+		return fmt.Errorf("--expose-expires must be an RFC3339 timestamp (e.g. %s)", time.Now().UTC().Add(time.Hour).Format(time.RFC3339))
+	}
+	return nil
+}
+
+// exposeColumn renders an app's expose-token guard for `apps list`:
+// "until <RFC3339>" while live, "expired" once the deadline passed,
+// "-" for an unguarded app. The digest itself is never printed.
+func exposeColumn(ac conf.AppConfig) string {
+	if !ac.ExposeGuarded() {
+		return "-"
+	}
+	at, ok := ac.ExposeExpiresAt()
+	if !ok {
+		return "expired"
+	}
+	if !time.Now().Before(at) {
+		return "expired"
+	}
+	return "until " + at.UTC().Format(time.RFC3339)
 }
 
 func runAppUpsertViaMCP(ctx context.Context, params admincore.AppUpsertParams, jsonOut bool) error {
