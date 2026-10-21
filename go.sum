@@ -625,12 +625,16 @@ github.com/qiangli/yamux/v5 v5.0.0 h1:c0Jbq9IkVOO0kD2n8cTlHHIRqKtyy5Gy08RR3uEoyU
 github.com/qiangli/yamux/v5 v5.0.0/go.mod h1:YmWeys9yLj7O+j3afOEuWqgda3tbg7NOLsLmBtvD//o=
 github.com/qiangli/yoke v0.0.0-20261020213217-d416105391d3 h1:bTK8/d3ZAJRDrr9TCV+JHFL7WrUdw60QO4ic0Nkgmx0=
 github.com/qiangli/yoke v0.0.0-20261020213217-d416105391d3/go.mod h1:Vm8wA8dXjMuEUuXF4YHEToDJWIHqqJkxhF4MdVAHe8U=
+github.com/qiangli/yoke v0.0.0-20261021020216-636e2fd289e9 h1:6AnZjL9NXXfYCR9+lH5J6KGP7Boyn+GgxGgvuPOeZAk=
+github.com/qiangli/yoke v0.0.0-20261021020216-636e2fd289e9/go.mod h1:wz3VwR8LEYp6cnc111QI91sZGWYEN4gJug3t+QXl1RE=
 github.com/qiangli/yoke/external/go-billy v0.0.0-20261021004834-b008dcc14dfa h1:tvU9VJSqqtYJ/uc/IOLNMPQ5n4uZiC5nJp+x7lOI7xs=
 github.com/qiangli/yoke/external/go-billy v0.0.0-20261021004834-b008dcc14dfa/go.mod h1:Q0Q5T6VFoIzC2QCjcH2DnKhvD6lvneoJKxG0TYasq8E=
 github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261014085036-9d08a1bef6be h1:aDgeAgPkUDOxrLYVtKQikZNnr8SsGdzvazd/f9eWnOg=
 github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261014085036-9d08a1bef6be/go.mod h1:UnJ5Aw/zCOdFgHdziuLv9sU0t/KT8dcOrGfmwcm6X4E=
 github.com/qiangli/yoke/pkg/provider v0.0.0-20261020170337-1673f1b7fc8a h1:EXxutUT77zZY5HlW5tLF4teFq4KCO0YbJsHbhVWLqhk=
 github.com/qiangli/yoke/pkg/provider v0.0.0-20261020170337-1673f1b7fc8a/go.mod h1:AklFvdbEWnpyb9XUNRhiD0P/AuDnEsUDpAYoSzqZb5Y=
+github.com/qiangli/yoke/pkg/provider v0.0.0-20261021020216-636e2fd289e9 h1:3GKDTD41Sj2rTySxG9LktYGLPbfsK/YeQeqzDE1YPts=
+github.com/qiangli/yoke/pkg/provider v0.0.0-20261021020216-636e2fd289e9/go.mod h1:AklFvdbEWnpyb9XUNRhiD0P/AuDnEsUDpAYoSzqZb5Y=
 github.com/quic-go/qpack v0.6.0 h1:g7W+BMYynC1LbYLSqRt8PBg5Tgwxn214ZZR34VIOjz8=
 github.com/quic-go/qpack v0.6.0/go.mod h1:lUpLKChi8njB4ty2bFLX2x4gzDqXwUpaO1DP9qMDZII=
 github.com/quic-go/quic-go v0.59.1 h1:0Gmua0HW1Tv7ANR7hUYwRyD0MG5OJfgvYSZasGZzBic=
