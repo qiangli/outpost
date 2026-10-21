@@ -83,6 +83,10 @@ func (r *AppRegistry) registerGit(name string, target *url.URL, allow []string, 
 	if err != nil {
 		return fmt.Errorf("app %q: %w", name, err)
 	}
+	guard, guarded, err := parseExposeGuard(name, meta.ExposeTokenSHA256, meta.ExposeExpires)
+	if err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	// A name is one of http/tcp/egress/git at a time; clear the other modes.
@@ -97,6 +101,7 @@ func (r *AppRegistry) registerGit(name string, target *url.URL, allow []string, 
 	r.indexPath[name] = meta.IndexPath
 	r.capabilities[name] = meta.Capabilities
 	r.trustCloudIdentity[name] = meta.TrustCloudIdentity
+	r.setExpose(name, guard, guarded)
 	return nil
 }
 

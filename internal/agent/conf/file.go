@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // FileConfig is what the register command writes and `start` reads from
@@ -1176,6 +1177,21 @@ type AppConfig struct {
 	// agent.json files. NewFromJSON migrates "guest" → RequireLogin
 	// false; "user"/"admin"/empty → true.
 	Role string `json:"role,omitempty"`
+
+	// ExposeTokenSHA256 is the hex-encoded sha256 of the bearer that
+	// every request and WebSocket upgrade to /app/<name>/ must carry
+	// in the X-Dhnt-Expose-Token header. Set together with
+	// ExposeExpires by `bashy dks expose` (via `outpost apps add
+	// --expose-token-sha256 --expose-expires`); only the digest ever
+	// reaches outpost. Empty means the app is unguarded — the historic
+	// behaviour, gated by RequireLogin / the cloudbox edge alone.
+	ExposeTokenSHA256 string `json:"expose_token_sha256,omitempty"`
+
+	// ExposeExpires is the RFC3339 instant after which the expose
+	// token stops being accepted. Evaluated per request, so an expired
+	// app is cut immediately without a restart. Required whenever
+	// ExposeTokenSHA256 is set (and meaningless without it).
+	ExposeExpires string `json:"expose_expires,omitempty"`
 }
 
 // IsSocket reports whether ac targets a local socket (unix or npipe)
@@ -1196,6 +1212,28 @@ func (ac AppConfig) IsTCP() bool {
 // destination, but only when the destination matches ac.Allow.
 func (ac AppConfig) IsEgress() bool {
 	return strings.EqualFold(strings.TrimSpace(ac.Scheme), "egress")
+}
+
+// ExposeGuarded reports whether ac carries an expose-token guard: a
+// request to /app/<name>/ must then present X-Dhnt-Expose-Token whose
+// sha256 equals ExposeTokenSHA256, before ExposeExpires.
+func (ac AppConfig) ExposeGuarded() bool {
+	return strings.TrimSpace(ac.ExposeTokenSHA256) != ""
+}
+
+// ExposeExpiresAt parses ExposeExpires. ok is false when the value is
+// empty or not RFC3339 — callers treat that as "no usable deadline"
+// (ValidateApp refuses to persist such a pair in the first place).
+func (ac AppConfig) ExposeExpiresAt() (t time.Time, ok bool) {
+	raw := strings.TrimSpace(ac.ExposeExpires)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 // SplitEgressAllowEntry parses one egress allowlist entry of the form

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -199,4 +200,95 @@ func TestExposeGuardAppliesToTCPAndEgressWebSocket(t *testing.T) {
 	}
 	echo(wsBase + "/app/raw/")
 	echo(wsBase + "/app/eg/?dst=127.0.0.1:" + strconv.Itoa(port))
+}
+
+// TestExposeGuardAppliesToGitApp: an exposed git app is guarded like
+// every other kind. The guard runs BEFORE the git handler, so a
+// tokenless or wrong-token clone is refused with 403 without the
+// allowlist, the credential filler or the upstream ever being reached;
+// with the token the clone proceeds and the upstream never sees the
+// expose header.
+func TestExposeGuardAppliesToGitApp(t *testing.T) {
+	const token = "expose-token-git"
+
+	var mu sync.Mutex
+	hits := 0
+	var leaked string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		if v := r.Header.Get("X-Dhnt-Expose-Token"); v != "" {
+			leaked = v
+		}
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
+		_, _ = io.WriteString(w, "001e# service=git-upload-pack")
+	}))
+	defer upstream.Close()
+
+	target, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream url: %v", err)
+	}
+	reg := NewAppRegistry()
+	filler := &fakeGitFiller{user: "u", pass: "p"}
+	reg.gitCredentialFill = filler.fill
+	if err := reg.registerGit("code", target, []string{"octocat/hello"}, AppMeta{
+		ExposeTokenSHA256: exposeHash(token),
+		ExposeExpires:     time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("registerGit guarded: %v", err)
+	}
+
+	front := httptest.NewServer(newTestRouter(reg))
+	defer front.Close()
+
+	// An otherwise-allowlisted clone: only the expose token is in question.
+	const clone = "/app/code/octocat/hello.git/info/refs?service=git-upload-pack"
+	get := func(tok string) int {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, front.URL+clone, nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		if tok != "" {
+			req.Header.Set("X-Dhnt-Expose-Token", tok)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v", clone, err)
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode
+	}
+
+	if code := get(""); code != http.StatusForbidden {
+		t.Errorf("git clone without token: status=%d, want 403", code)
+	}
+	if code := get("wrong-token"); code != http.StatusForbidden {
+		t.Errorf("git clone with wrong token: status=%d, want 403", code)
+	}
+	mu.Lock()
+	refusedHits := hits
+	mu.Unlock()
+	if refusedHits != 0 {
+		t.Errorf("upstream hit %d times by refused requests, want 0", refusedHits)
+	}
+	if n := filler.callCount(); n != 0 {
+		t.Errorf("credential fill called %d times for refused requests, want 0", n)
+	}
+
+	if code := get(token); code != http.StatusOK {
+		t.Errorf("git clone with valid token: status=%d, want 200", code)
+	}
+	mu.Lock()
+	okHits, sawHeader := hits, leaked
+	mu.Unlock()
+	if okHits != 1 {
+		t.Errorf("upstream hit %d times, want 1 (the token-carrying clone)", okHits)
+	}
+	if sawHeader != "" {
+		t.Errorf("git upstream saw X-Dhnt-Expose-Token=%q, want it stripped", sawHeader)
+	}
 }

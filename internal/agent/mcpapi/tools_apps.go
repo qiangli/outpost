@@ -27,6 +27,8 @@ type upsertAppIn struct {
 	LANOnlyPaths       []string `json:"lan_only_paths,omitempty" jsonschema:"Path prefixes 404'd when X-Forwarded-Prefix is present"`
 	IndexPath          string   `json:"index_path,omitempty" jsonschema:"Landing sub-path the cloudbox SPA prepends"`
 	TrustCloudIdentity bool     `json:"trust_cloud_identity,omitempty" jsonschema:"Forward cloudbox-vouched identity as Remote-User / Remote-Email"`
+	ExposeTokenSHA256  string   `json:"expose_token_sha256,omitempty" jsonschema:"Hex sha256 (64 chars) of the bearer every caller must send as X-Dhnt-Expose-Token. Set together with expose_expires."`
+	ExposeExpires      string   `json:"expose_expires,omitempty" jsonschema:"RFC3339 instant the expose token lapses; enforced per request. Set together with expose_token_sha256."`
 }
 
 type listAppsOut struct {
@@ -96,6 +98,8 @@ func (s *Server) registerAppsTools() {
 				LANOnlyPaths:       in.LANOnlyPaths,
 				IndexPath:          in.IndexPath,
 				TrustCloudIdentity: in.TrustCloudIdentity,
+				ExposeTokenSHA256:  in.ExposeTokenSHA256,
+				ExposeExpires:      in.ExposeExpires,
 			},
 			URL: in.URL,
 		}

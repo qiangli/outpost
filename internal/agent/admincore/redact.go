@@ -16,8 +16,19 @@ type SecretPresence struct {
 func RedactApp(ac conf.AppConfig) conf.AppConfig {
 	ac.ProvisioningToken = ""
 	ac.SSOSecret = ""
+	// The expose digest is not a credential, but it identifies one, so
+	// no surface prints it in full: keep the first 8 hex characters —
+	// enough to tell two exposes apart in a listing, not enough to
+	// reconstruct the hash.
+	if len(ac.ExposeTokenSHA256) > exposeDigestPreview {
+		ac.ExposeTokenSHA256 = ac.ExposeTokenSHA256[:exposeDigestPreview]
+	}
 	return ac
 }
+
+// exposeDigestPreview is how many leading hex characters of an expose
+// digest a redacted view may carry.
+const exposeDigestPreview = 8
 
 // RedactApps returns a redacted copy; the input slice is left untouched.
 func RedactApps(apps []conf.AppConfig) []conf.AppConfig {

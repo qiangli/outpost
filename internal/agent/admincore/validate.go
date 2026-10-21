@@ -1,8 +1,11 @@
 package admincore
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 )
@@ -117,6 +120,27 @@ func ValidateApp(ac *conf.AppConfig) error {
 		ac.Allow = kept
 	default:
 		return badRequest("scheme must be one of http|https|tcp|unix|npipe|egress|git")
+	}
+	// Expose-token guard (S487.2): both fields or neither. Validate
+	// the shape here — this is the authoritative gate every surface
+	// (SPA / MCP / CLI) converges on. Messages never echo the digest.
+	ac.ExposeTokenSHA256 = strings.ToLower(strings.TrimSpace(ac.ExposeTokenSHA256))
+	ac.ExposeExpires = strings.TrimSpace(ac.ExposeExpires)
+	switch {
+	case ac.ExposeTokenSHA256 == "" && ac.ExposeExpires == "":
+		// Unguarded — the historic behaviour.
+	case ac.ExposeTokenSHA256 == "" || ac.ExposeExpires == "":
+		return badRequest("expose_token_sha256 and expose_expires must be set together")
+	default:
+		if len(ac.ExposeTokenSHA256) != 2*sha256.Size {
+			return badRequest("expose_token_sha256 must be 64 hex characters (got %d)", len(ac.ExposeTokenSHA256))
+		}
+		if _, err := hex.DecodeString(ac.ExposeTokenSHA256); err != nil {
+			return badRequest("expose_token_sha256 must be 64 hex characters")
+		}
+		if _, err := time.Parse(time.RFC3339, ac.ExposeExpires); err != nil {
+			return badRequest("expose_expires must be an RFC3339 timestamp")
+		}
 	}
 	// Path-prefix fields: canonicalize so /admin, admin, and /admin/
 	// all become "/admin". Empty input stays empty.
