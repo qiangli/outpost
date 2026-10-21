@@ -371,37 +371,61 @@ type secretRedactingReader struct {
 	secrets []string
 	keep    int
 	chunk   []byte
-	buf     []byte
+	// buf holds bytes not yet released to the caller: freshly read
+	// data plus the held-back tail that a secret spanning into future
+	// reads may still complete. The tail may already carry
+	// "[redacted]" spans cut in half at the hold boundary.
+	buf []byte
+	// pending holds redacted-but-unsent bytes from a previous Read
+	// whose p was too small; they are emitted verbatim, never run
+	// through replace again.
+	pending []byte
 	eof     bool
 }
 
 func (rr *secretRedactingReader) Read(p []byte) (int, error) {
-	for len(rr.buf)-rr.keep <= 0 && !rr.eof {
-		n, err := rr.r.Read(rr.chunk)
-		if n > 0 {
-			rr.buf = append(rr.buf, rr.chunk[:n]...)
-		}
-		if err == io.EOF {
-			rr.eof = true
-		} else if err != nil {
-			return 0, err
-		}
+	if len(rr.pending) > 0 {
+		n := copy(p, rr.pending)
+		rr.pending = rr.pending[n:]
+		return n, nil
 	}
-	emit := rr.buf
-	if !rr.eof && rr.keep > 0 {
-		if k := min(rr.keep, len(emit)); k > 0 {
-			emit = emit[:len(emit)-k]
+	if len(p) == 0 {
+		return 0, nil
+	}
+	for {
+		// Redact every secret fully contained in the buffer, then
+		// hold back the last keep bytes of the result: a secret
+		// spanning into future data keeps its raw head inside that
+		// tail, stays whole in buf, and is redacted once the rest
+		// arrives (or flushed verbatim at EOF).
+		redacted := rr.buf
+		for _, s := range rr.secrets {
+			if len(s) > 0 {
+				redacted = bytes.ReplaceAll(redacted, []byte(s), []byte("[redacted]"))
+			}
 		}
-	}
-	if len(emit) == 0 {
-		return 0, io.EOF
-	}
-	for _, s := range rr.secrets {
-		if len(s) > 0 {
-			emit = bytes.ReplaceAll(emit, []byte(s), []byte("[redacted]"))
+		cut := len(redacted)
+		if !rr.eof && rr.keep > 0 {
+			cut -= min(rr.keep, cut)
 		}
+		if cut == 0 {
+			if rr.eof {
+				return 0, io.EOF
+			}
+			n, err := rr.r.Read(rr.chunk)
+			if n > 0 {
+				rr.buf = append(rr.buf, rr.chunk[:n]...)
+			}
+			if err == io.EOF {
+				rr.eof = true
+			} else if err != nil {
+				return 0, err
+			}
+			continue
+		}
+		n := copy(p, redacted[:cut])
+		rr.pending = redacted[n:cut]
+		rr.buf = append([]byte(nil), redacted[cut:]...)
+		return n, nil
 	}
-	n := copy(p, emit)
-	rr.buf = append(rr.buf[:0], emit[n:]...)
-	return n, nil
 }

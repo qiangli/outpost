@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 )
 
 // fakeGitFiller stands in for the `git credential fill` exec so the git
@@ -410,6 +411,89 @@ func TestGitAppDoesNotTruncateGzipUpstream(t *testing.T) {
 	if cl := resp.Header.Get("Content-Length"); cl != "" {
 		t.Errorf("client Content-Length = %q, want none: redaction can change lengths, so the body must stream unframed", cl)
 	}
+}
+
+// stagedReader serves its chunks as separate Read calls: each chunk
+// arrives with a nil error and io.EOF only follows on a later call —
+// the shape Go's http client produces for a small response body, where
+// the payload and the EOF never share a Read.
+type stagedReader struct {
+	chunks [][]byte
+}
+
+func (s *stagedReader) Read(p []byte) (int, error) {
+	if len(s.chunks) == 0 {
+		return 0, io.EOF
+	}
+	chunk := s.chunks[0]
+	n := copy(p, chunk)
+	if n < len(chunk) {
+		s.chunks[0] = chunk[n:]
+	} else {
+		s.chunks = s.chunks[1:]
+	}
+	return n, nil
+}
+
+// TestSecretRedactingReaderKeepsTailWhenEOFArrivesSeparately pins the
+// live S487.4 clone failure: GitHub's v2 info/refs body (191 bytes)
+// arrives in one source Read with a nil error and io.EOF on the NEXT
+// call. The redacting reader holds back the last maxLen-1 bytes while
+// more data may still come (a secret could span into it); dropping
+// that tail on the floor truncated the body to 116 bytes (191-75) and
+// broke the clone. The held-back tail must survive and be emitted once
+// EOF (or more data) arrives.
+func TestSecretRedactingReaderKeepsTailWhenEOFArrivesSeparately(t *testing.T) {
+	// Distinct alphabets so filler bytes can never contain a secret.
+	newSecret := func(c byte, n int) string { return strings.Repeat(string(c), n) }
+
+	t.Run("191-byte body with separate EOF comes out whole", func(t *testing.T) {
+		body := make([]byte, 191)
+		for i := range body {
+			body[i] = byte('0' + i%10)
+		}
+		// Longest secret 76 bytes -> keep 75, the live arithmetic
+		// (191 emitted minus 116 returned = 75).
+		secrets := []string{newSecret('S', 76), newSecret('K', 40)}
+		src := &stagedReader{chunks: [][]byte{body}}
+		got, err := io.ReadAll(newSecretRedactingReader(src, secrets...))
+		if err != nil {
+			t.Fatalf("read all: %v", err)
+		}
+		if !bytes.Equal(got, body) {
+			t.Fatalf("read %d bytes, want the full 191-byte body byte-for-byte (got %q)", len(got), got[:min(32, len(got))])
+		}
+	})
+
+	t.Run("secret split across two source reads comes out redacted", func(t *testing.T) {
+		secret := newSecret('S', 76)
+		filler, tail := newSecret('y', 40), newSecret('z', 30)
+		src := &stagedReader{chunks: [][]byte{
+			[]byte(filler + secret[:60]), // 100 bytes: fills past keep, secret head inside the held-back tail
+			[]byte(secret[60:] + tail),
+		}}
+		got, err := io.ReadAll(newSecretRedactingReader(src, secret))
+		if err != nil {
+			t.Fatalf("read all: %v", err)
+		}
+		if want := filler + "[redacted]" + tail; string(got) != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("one-byte source reads redact two secrets", func(t *testing.T) {
+		s1, s2 := newSecret('S', 76), newSecret('T', 76)
+		head, mid, tail := newSecret('y', 100), newSecret('z', 100), newSecret('w', 50)
+		body := head + s1 + mid + s2 + tail
+		src := iotest.OneByteReader(strings.NewReader(body))
+		got, err := io.ReadAll(newSecretRedactingReader(src, s1, s2))
+		if err != nil {
+			t.Fatalf("read all: %v", err)
+		}
+		if want := head + "[redacted]" + mid + "[redacted]" + tail; string(got) != want {
+			t.Fatalf("body mismatch:\n got  %q\n want %q", got, want)
+		}
+	})
 }
 
 // TestGitAppForwardsGitProtocolHeader pins protocol v2 negotiation:
