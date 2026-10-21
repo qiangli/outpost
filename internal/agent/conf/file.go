@@ -1118,6 +1118,22 @@ type AppConfig struct {
 	// cookie scope, its own RequireLogin and LANOnlyPaths.
 	IndexPath string `json:"index_path,omitempty"`
 
+	// Allow is the per-scheme allowlist, shared by two app kinds:
+	//
+	//   - scheme "git": repo allowlist. Entries are "owner/repo"
+	//     (exact match) or "owner/*" (every repo under owner). An
+	//     empty list refuses every request.
+	//
+	//   - scheme "egress": destination allowlist. Each entry is a
+	//     host ("example.com", "127.0.0.1"), a wildcard
+	//     ("*.example.com", subdomains only), each with an optional
+	//     ":port" suffix. An entry without a port permits only ports
+	//     80 and 443. Empty means default-deny (every destination
+	//     refused).
+	//
+	// Ignored by every other scheme.
+	Allow []string `json:"allow,omitempty"`
+
 	// TrustCloudIdentity opts this app into the trusted-header SSO
 	// contract: when set, outpost forwards the cloudbox-vouched caller
 	// identity to the upstream as Remote-User / Remote-Email /
@@ -1160,14 +1176,6 @@ type AppConfig struct {
 	// agent.json files. NewFromJSON migrates "guest" → RequireLogin
 	// false; "user"/"admin"/empty → true.
 	Role string `json:"role,omitempty"`
-
-	// Allow is the destination allowlist for scheme "egress" apps.
-	// Each entry is a host ("example.com", "127.0.0.1"), a wildcard
-	// ("*.example.com", subdomains only), each with an optional
-	// ":port" suffix. An entry without a port permits only ports 80
-	// and 443. Empty means default-deny (every destination refused).
-	// Ignored by every other scheme.
-	Allow []string `json:"allow,omitempty"`
 }
 
 // IsSocket reports whether ac targets a local socket (unix or npipe)
@@ -1285,6 +1293,23 @@ func AppTargetFromURL(raw string) (scheme, host string, port int, socket string,
 			port = 80
 		}
 		return scheme, host, port, "", nil
+	case "git+https":
+		// git app kind: host of the https git upstream (clone/fetch
+		// proxying with the host credential — see internal/agent).
+		host = u.Hostname()
+		if host == "" {
+			return "", "", 0, "", fmt.Errorf("url %q is missing host", raw)
+		}
+		if p := u.Port(); p != "" {
+			n, cerr := strconv.Atoi(p)
+			if cerr != nil || n < 1 || n > 65535 {
+				return "", "", 0, "", fmt.Errorf("url %q has invalid port", raw)
+			}
+			port = n
+		} else {
+			port = 443
+		}
+		return "git", host, port, "", nil
 	case "tcp":
 		host = u.Hostname()
 		if host == "" {
@@ -1317,8 +1342,45 @@ func AppTargetFromURL(raw string) (scheme, host string, port int, socket string,
 		}
 		return scheme, "", 0, sock, nil
 	default:
-		return "", "", 0, "", fmt.Errorf("url %q: scheme must be one of http|https|tcp|unix|npipe|egress", raw)
+		return "", "", 0, "", fmt.Errorf("url %q: scheme must be one of http|https|tcp|unix|npipe|egress|git+https", raw)
 	}
+}
+
+// NormalizeGitAllow validates and canonicalizes a git app's allowlist
+// (see AppConfig.Allow). Each entry must be "owner/repo" or "owner/*";
+// empty entries are dropped, anything else is an error. Entries are
+// lowercased — matching at request time is case-insensitive.
+func NormalizeGitAllow(entries []string) ([]string, error) {
+	var out []string
+	for _, e := range entries {
+		e = strings.ToLower(strings.TrimSpace(e))
+		if e == "" {
+			continue
+		}
+		owner, repo, found := strings.Cut(e, "/")
+		if !found || !isGitOwnerRepoName(owner) || (repo != "*" && !isGitOwnerRepoName(repo)) {
+			return nil, fmt.Errorf("allow entry %q must be owner/repo or owner/*", e)
+		}
+		out = append(out, owner+"/"+repo)
+	}
+	return out, nil
+}
+
+// isGitOwnerRepoName accepts the [-.A-Za-z0-9_] shape code hosts use
+// for owner and repo names, rejecting empty and dot-only names.
+func isGitOwnerRepoName(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '-', c == '_', c == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // ValidRole reports whether s is a recognized clearance level.

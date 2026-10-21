@@ -78,10 +78,14 @@ func ValidateApp(ac *conf.AppConfig) error {
 		ac.Scheme = "http"
 	}
 	switch ac.Scheme {
-	case "http", "https", "tcp":
+	case "http", "https", "tcp", "git":
 		ac.Host = strings.TrimSpace(ac.Host)
 		if ac.Host == "" {
 			ac.Host = "127.0.0.1"
+		}
+		if ac.Scheme == "git" && ac.Port == 0 {
+			// git+https upstreams live on 443 unless told otherwise.
+			ac.Port = 443
 		}
 		if ac.Port < 1 || ac.Port > 65535 {
 			return badRequest("port %d is out of range", ac.Port)
@@ -112,7 +116,7 @@ func ValidateApp(ac *conf.AppConfig) error {
 		}
 		ac.Allow = kept
 	default:
-		return badRequest("scheme must be one of http|https|tcp|unix|npipe|egress")
+		return badRequest("scheme must be one of http|https|tcp|unix|npipe|egress|git")
 	}
 	// Path-prefix fields: canonicalize so /admin, admin, and /admin/
 	// all become "/admin". Empty input stays empty.
@@ -131,6 +135,16 @@ func ValidateApp(ac *conf.AppConfig) error {
 		cleaned = append(cleaned, normalizePathPrefix(p))
 	}
 	ac.LANOnlyPaths = cleaned
+	// Git allowlist: shape-check + canonicalize whenever present. The
+	// Allow field is shared with the egress kind, which validates its
+	// own entries inside the switch above.
+	if ac.Scheme == "git" && len(ac.Allow) > 0 {
+		normalized, err := conf.NormalizeGitAllow(ac.Allow)
+		if err != nil {
+			return badRequest("%s", err.Error())
+		}
+		ac.Allow = normalized
+	}
 	// Legacy Role field — LoadFile already migrated it into RequireLogin.
 	ac.Role = ""
 	return nil
