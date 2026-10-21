@@ -334,12 +334,19 @@ func (g *Gossip) absorb(body gossipLocalState, remote net.Addr) {
 	now := time.Now()
 	from := body.From.PeerID
 	if from != "" && from != g.cfg.SelfPeerID {
-		addr := body.From.Addr
-		if addr == "" {
-			addr = remote.String()
-		}
-		host, portStr, _ := net.SplitHostPort(addr)
+		host, portStr, _ := net.SplitHostPort(body.From.Addr)
 		port, _ := strconv.Atoi(portStr)
+		if port <= 0 || port > 65535 {
+			port = DefaultGossipBindPort
+		}
+		// A listener bound to all interfaces advertises 0.0.0.0 or ::,
+		// neither of which is a usable peer address. Keep the advertised
+		// listener port and use the address of this connection instead.
+		if host == "" || (net.ParseIP(host) != nil && net.ParseIP(host).IsUnspecified()) {
+			if remoteHost, _, err := net.SplitHostPort(remote.String()); err == nil {
+				host = remoteHost
+			}
+		}
 		g.mu.Lock()
 		m := g.members[from]
 		if m == nil {

@@ -2,10 +2,35 @@ package discovery
 
 import (
 	"context"
+	"net"
 	"slices"
 	"testing"
 	"time"
 )
+
+func TestGossipMemberUsesRemoteHostForWildcardAdvertise(t *testing.T) {
+	for _, tc := range []struct {
+		advertise string
+		remote    net.Addr
+		wantHost  string
+	}{
+		{"0.0.0.0:7946", &net.TCPAddr{IP: net.ParseIP("192.0.2.8"), Port: 53000}, "192.0.2.8"},
+		{"[::]:7946", &net.TCPAddr{IP: net.ParseIP("2001:db8::8"), Port: 53000}, "2001:db8::8"},
+	} {
+		g, err := NewGossip(GossipConfig{SelfPeerID: "self", Cache: NewCache(0)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := gossipLocalState{}
+		body.From.PeerID = "peer"
+		body.From.Addr = tc.advertise
+		g.absorb(body, tc.remote)
+		members := g.Members()
+		if len(members) != 1 || members[0].Addr != tc.wantHost || members[0].Port != 7946 {
+			t.Errorf("advertise %s: members = %+v, want host %s port 7946", tc.advertise, members, tc.wantHost)
+		}
+	}
+}
 
 // TestGossipPushPullExchange pins the core gossip behavior: two
 // outposts on loopback exchange cache state over the gossip listener,
@@ -24,16 +49,16 @@ func TestGossipPushPullExchange(t *testing.T) {
 	// A knows fresh peer X and long-stale peer Y.
 	cacheA := NewCache(0)
 	cacheA.Upsert(Peer{
-		ID:   idX,
-		Endpoints: []Endpoint{{Kind: EndpointLANSSH, Host: "192.0.2.10", Port: 2222}},
-		Sources:   []Source{SourceMDNS},
-		Trust:     TrustCloudboxCert, // must be downgraded to Unverified by the receiver
+		ID:         idX,
+		Endpoints:  []Endpoint{{Kind: EndpointLANSSH, Host: "192.0.2.10", Port: 2222}},
+		Sources:    []Source{SourceMDNS},
+		Trust:      TrustCloudboxCert, // must be downgraded to Unverified by the receiver
 		LastSeenAt: time.Now(),
 	})
 	cacheA.Upsert(Peer{
-		ID:   idY,
-		Sources:   []Source{SourceMDNS},
-		Trust:     TrustTOFU,
+		ID:         idY,
+		Sources:    []Source{SourceMDNS},
+		Trust:      TrustTOFU,
 		LastSeenAt: time.Now().Add(-2 * gossipBroadcastTTL), // stale: must not propagate
 	})
 
@@ -54,12 +79,12 @@ func TestGossipPushPullExchange(t *testing.T) {
 	// B starts empty and bootstraps to A's listener.
 	cacheB := NewCache(0)
 	gB, err := NewGossip(GossipConfig{
-		SelfPeerID:        idB,
-		SelfAgentName:     "gossip-b",
-		Cache:             cacheB,
-		BindAddr:          "127.0.0.1:0",
-		PushPullInterval:  200 * time.Millisecond,
-		Bootstrap:         func() []string { return []string{addrA} },
+		SelfPeerID:       idB,
+		SelfAgentName:    "gossip-b",
+		Cache:            cacheB,
+		BindAddr:         "127.0.0.1:0",
+		PushPullInterval: 200 * time.Millisecond,
+		Bootstrap:        func() []string { return []string{addrA} },
 	})
 	if err != nil {
 		t.Fatalf("NewGossip(B): %v", err)
