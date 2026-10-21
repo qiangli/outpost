@@ -215,6 +215,7 @@ require (
 	github.com/prometheus/procfs v0.20.1 // indirect
 	github.com/qiangli/coreutils v0.0.0-20261019154849-42845e33d023 // indirect
 	github.com/qiangli/gfy v0.0.0-20261013004914-30d38f086034 // indirect
+	github.com/qiangli/yamux v0.2.0 // indirect
 	github.com/qiangli/yoke/pkg/provider v0.0.0-00010101000000-000000000000 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.1 // indirect
@@ -327,3 +328,5 @@ replace modernc.org/sqlite => github.com/qiangli/sqlite v1.50.2-0.20261018085128
 replace github.com/qiangli/yoke/pkg/provider => github.com/qiangli/yoke/pkg/provider v0.0.0-20261020170337-1673f1b7fc8a
 
 replace github.com/go-git/go-billy/v5 => github.com/qiangli/yoke/external/go-billy v0.0.0-20261021004834-b008dcc14dfa
+
+replace github.com/libp2p/go-yamux/v5 => github.com/qiangli/yamux/v5 v5.0.0

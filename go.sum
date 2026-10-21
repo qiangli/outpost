@@ -619,6 +619,10 @@ github.com/qiangli/sqlite v1.50.2-0.20261018085128-5fb52bf328cb h1:LLfdQXY/uXHpJ
 github.com/qiangli/sqlite v1.50.2-0.20261018085128-5fb52bf328cb/go.mod h1:tcNzv5p84E0skkmJn038y+hWJbLQXQqEnQfeh5r2JLM=
 github.com/qiangli/yamux v0.1.0 h1:nmfx1HPvOMR3x6ZkctdBuk98fmUHSp2DOxnbYA7gGR0=
 github.com/qiangli/yamux v0.1.0/go.mod h1:vEKjIFDLV3jWXYQ7cRDlw0agqWiTiTYzINNBKqqGar8=
+github.com/qiangli/yamux v0.2.0 h1:ThxZ2uExDFnoSL/iX076ov5xs0y8YiURG18CwuEaQkc=
+github.com/qiangli/yamux v0.2.0/go.mod h1:vEKjIFDLV3jWXYQ7cRDlw0agqWiTiTYzINNBKqqGar8=
+github.com/qiangli/yamux/v5 v5.0.0 h1:c0Jbq9IkVOO0kD2n8cTlHHIRqKtyy5Gy08RR3uEoyUE=
+github.com/qiangli/yamux/v5 v5.0.0/go.mod h1:YmWeys9yLj7O+j3afOEuWqgda3tbg7NOLsLmBtvD//o=
 github.com/qiangli/yoke v0.0.0-20261020213217-d416105391d3 h1:bTK8/d3ZAJRDrr9TCV+JHFL7WrUdw60QO4ic0Nkgmx0=
 github.com/qiangli/yoke v0.0.0-20261020213217-d416105391d3/go.mod h1:Vm8wA8dXjMuEUuXF4YHEToDJWIHqqJkxhF4MdVAHe8U=
 github.com/qiangli/yoke/external/go-billy v0.0.0-20261021004834-b008dcc14dfa h1:tvU9VJSqqtYJ/uc/IOLNMPQ5n4uZiC5nJp+x7lOI7xs=
