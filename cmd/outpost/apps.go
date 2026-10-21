@@ -349,12 +349,12 @@ func appsAddCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&url, "url", "", "Target URL (alternative to --scheme/--host/--port/--socket)")
-	cmd.Flags().StringVar(&target, "target", "", "Target URL (alias for --url; e.g. egress://)")
-	cmd.Flags().StringVar(&scheme, "scheme", "", "http | https | tcp | unix | npipe | egress")
+	cmd.Flags().StringVar(&target, "target", "", "Target URL (alias for --url; e.g. egress:// or git+https://example.com for git apps)")
+	cmd.Flags().StringVar(&scheme, "scheme", "", "http | https | tcp | unix | npipe | egress | git")
 	cmd.Flags().StringVar(&host, "host", "", "Target host (default 127.0.0.1 for TCP schemes; ignored for egress)")
 	cmd.Flags().IntVar(&port, "port", 0, "Target port (required for TCP schemes; ignored for egress)")
 	cmd.Flags().StringVar(&socket, "socket", "", "Socket path (required for unix / npipe)")
-	cmd.Flags().StringSliceVar(&allow, "allow", nil, "Egress allowlist entry host | *.domain [:port] (repeatable or comma-separated; empty refuses all)")
+	cmd.Flags().StringSliceVar(&allow, "allow", nil, "Allowlist: egress destination host | *.domain [:port]; git repo owner/repo or owner/* (repeatable or comma-separated; empty refuses all)")
 	cmd.Flags().StringVar(&icon, "icon", "", "URL to an icon image shown next to the tile in cloudbox")
 	cmd.Flags().StringVar(&indexPath, "index-path", "", "Landing sub-path the cloudbox SPA prepends")
 	cmd.Flags().StringSliceVar(&lanOnly, "lan-only-path", nil, "Path prefix 404'd on cloud requests (repeatable)")

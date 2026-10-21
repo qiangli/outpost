@@ -123,6 +123,15 @@ type AppRegistry struct {
 	// but the upstream is the per-request ?dst=host:port gated by
 	// this list (empty = refuse everything).
 	egress map[string][]string
+	// git holds git-scheme apps: /app/<name>/ is a restricted git
+	// smart-HTTP reverse proxy (clone/fetch only, allowlist-gated,
+	// host-credential-injected) rather than the generic proxy. Disjoint
+	// from `proxy`, `tcp` and `egress` like they are from each other.
+	git map[string]*gitApp
+	// gitCredentialFill obtains the host git credential at request time
+	// for git-scheme apps (default: `git credential fill`). Injectable
+	// so tests can fake it without touching a credential store.
+	gitCredentialFill gitCredentialFillFunc
 }
 
 // appIntercept binds a path-prefix to a handler that pre-empts the
@@ -181,6 +190,8 @@ func NewAppRegistry() *AppRegistry {
 		proxyWrap:          map[string]func(http.Handler) http.Handler{},
 		tcp:                map[string]string{},
 		egress:             map[string][]string{},
+		git:                map[string]*gitApp{},
+		gitCredentialFill:  gitCredentialFill,
 	}
 }
 
@@ -523,11 +534,12 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 	} else {
 		delete(r.ssoSecrets, name)
 	}
-	// Mode swap: an HTTP register wins over any prior tcp/egress
-	// entry with the same name. (Re-registers in the other direction
-	// do the inverse in registerTCP/registerEgress.)
+	// Mode swap: an HTTP register wins over any prior tcp/egress/git
+	// entry with the same name. (Re-registers in the other directions
+	// do the inverse in registerTCP/registerEgress/registerGit.)
 	delete(r.tcp, name)
 	delete(r.egress, name)
+	delete(r.git, name)
 	r.mu.Unlock()
 	return nil
 }
@@ -649,6 +661,7 @@ func (r *AppRegistry) Unregister(name string) {
 	delete(r.proxyWrap, name)
 	delete(r.tcp, name)
 	delete(r.egress, name)
+	delete(r.git, name)
 	r.mu.Unlock()
 }
 
@@ -705,6 +718,16 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 		// docker/ollama) ignores the Host header.
 		u := &url.URL{Scheme: "http", Host: "socket"}
 		err = r.register(ac.Name, u, meta, socketTransport(scheme, sock))
+	case "git":
+		host := strings.TrimSpace(ac.Host)
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		if ac.Port <= 0 || ac.Port > 65535 {
+			return fmt.Errorf("app %q: port %d is out of range", ac.Name, ac.Port)
+		}
+		u := &url.URL{Scheme: "https", Host: net.JoinHostPort(host, strconv.Itoa(ac.Port))}
+		err = r.registerGit(ac.Name, u, ac.Allow, meta)
 	case "tcp":
 		host := strings.TrimSpace(ac.Host)
 		if host == "" {
@@ -717,7 +740,7 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 	case "egress":
 		err = r.registerEgress(ac.Name, ac.Allow, meta)
 	default:
-		return fmt.Errorf("app %q: scheme must be one of http|https|tcp|unix|npipe|egress (got %q)", ac.Name, ac.Scheme)
+		return fmt.Errorf("app %q: scheme must be one of http|https|tcp|unix|npipe|egress|git (got %q)", ac.Name, ac.Scheme)
 	}
 	if err != nil {
 		return err
@@ -744,6 +767,7 @@ func (r *AppRegistry) registerTCP(name, addr string, meta AppMeta) error {
 	delete(r.apps, name)
 	delete(r.proxy, name)
 	delete(r.egress, name)
+	delete(r.git, name)
 	r.tcp[name] = addr
 	r.requireLogin[name] = meta.RequireLogin
 	r.elevationRequired[name] = meta.ElevationRequired
@@ -770,6 +794,7 @@ func (r *AppRegistry) registerEgress(name string, allow []string, meta AppMeta) 
 	delete(r.apps, name)
 	delete(r.proxy, name)
 	delete(r.tcp, name)
+	delete(r.git, name)
 	r.egress[name] = append([]string(nil), allow...)
 	r.requireLogin[name] = meta.RequireLogin
 	r.elevationRequired[name] = meta.ElevationRequired
@@ -848,6 +873,8 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	rp := r.proxy[name]
 	tcpAddr := r.tcp[name]
 	egressAllow, isEgress := r.egress[name]
+	git := r.git[name]
+	gitFill := r.gitCredentialFill
 	requireLogin := r.requireLogin[name]
 	lanOnly := r.lanOnly[name]
 	intercepts := r.intercepts[name]
@@ -887,6 +914,10 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	}
 	if isEgress {
 		serveEgressBridge(c, name, egressAllow)
+		return
+	}
+	if git != nil {
+		git.serve(c, name, rest, gitFill)
 		return
 	}
 	if tcpAddr != "" {
