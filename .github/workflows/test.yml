@@ -42,6 +42,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Shipped dependency license gate
+        run: ./scripts/verify-license-gate.sh
+
       # SSH shell/exec sessions execute the paired bashy binary (Sprint 386
       # S8: internal/agent/shell resolves it via sibling → $OUTPOST_BASHY_BIN
       # → PATH → well-known dirs, and a shell request never downloads one).

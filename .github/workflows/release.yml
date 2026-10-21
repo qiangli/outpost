@@ -29,7 +29,18 @@ permissions:
   contents: write # for actions/create-release
 
 jobs:
+  license-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Shipped dependency license gate
+        run: ./scripts/verify-license-gate.sh
+
   build:
+    needs: license-gate
     name: build ${{ matrix.os }}/${{ matrix.arch }}
     runs-on: ubuntu-latest
     strategy:
