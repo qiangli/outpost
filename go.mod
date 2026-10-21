@@ -16,7 +16,6 @@ require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/hashicorp/mdns v1.0.6
-	github.com/hashicorp/memberlist v0.5.4
 	github.com/libp2p/go-libp2p v0.48.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/multiformats/go-multiaddr v0.16.0
@@ -63,7 +62,6 @@ require (
 	github.com/ProtonMail/go-crypto v1.4.0 // indirect
 	github.com/STARRY-S/zip v0.2.3 // indirect
 	github.com/andybalholm/brotli v1.2.1 // indirect
-	github.com/armon/go-metrics v0.4.1 // indirect
 	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5 // indirect
 	github.com/asticode/go-astikit v0.59.0 // indirect
 	github.com/asticode/go-astisub v0.40.0 // indirect
@@ -121,7 +119,6 @@ require (
 	github.com/golang/geo v0.0.0-20260612074446-f1a45663b0f3 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/golang/snappy v1.0.0 // indirect
-	github.com/google/btree v1.1.3 // indirect
 	github.com/google/gnostic-models v0.7.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
@@ -129,13 +126,6 @@ require (
 	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
-	github.com/hashicorp/errwrap v1.1.0 // indirect
-	github.com/hashicorp/go-immutable-radix v1.0.0 // indirect
-	github.com/hashicorp/go-metrics v0.5.4 // indirect
-	github.com/hashicorp/go-msgpack/v2 v2.1.5 // indirect
-	github.com/hashicorp/go-multierror v1.1.1 // indirect
-	github.com/hashicorp/go-sockaddr v1.0.7 // indirect
-	github.com/hashicorp/golang-lru v0.5.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/hashicorp/yamux v0.1.1 // indirect
 	github.com/huin/goupnp v1.3.0 // indirect
@@ -234,7 +224,6 @@ require (
 	github.com/richardlehane/msoleps v1.0.6 // indirect
 	github.com/rjeczalik/notify v0.9.3 // indirect
 	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06 // indirect
-	github.com/sean-/seed v0.0.0-20170313163322-e2103e2c3529 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/sergi/go-diff v1.4.0 // indirect
