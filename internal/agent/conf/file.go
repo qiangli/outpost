@@ -996,6 +996,10 @@ func (oc OutboundConfig) BuiltinSSH() bool {
 //     WebSocket upgrade and byte-bridges WS↔TCP. Reached from a remote
 //     outpost via a tcp-scheme outbound (see OutboundConfig). Used for
 //     ssh, postgres, mysql, redis and other non-HTTP services.
+//   - "egress": destination allowlist in Allow. No fixed target —
+//     Host/Port/Socket are ignored. The /app/<name>/ route accepts a
+//     WebSocket upgrade with ?dst=host:port and bridges WS↔TCP only
+//     when the destination matches Allow (empty Allow refuses all).
 //
 // BackupConfig is the operator-declared "what folders to watch and
 // how often" for the off-host backup scheduler. One cron entry fires
@@ -1156,6 +1160,14 @@ type AppConfig struct {
 	// agent.json files. NewFromJSON migrates "guest" → RequireLogin
 	// false; "user"/"admin"/empty → true.
 	Role string `json:"role,omitempty"`
+
+	// Allow is the destination allowlist for scheme "egress" apps.
+	// Each entry is a host ("example.com", "127.0.0.1"), a wildcard
+	// ("*.example.com", subdomains only), each with an optional
+	// ":port" suffix. An entry without a port permits only ports 80
+	// and 443. Empty means default-deny (every destination refused).
+	// Ignored by every other scheme.
+	Allow []string `json:"allow,omitempty"`
 }
 
 // IsSocket reports whether ac targets a local socket (unix or npipe)
@@ -1169,6 +1181,71 @@ func (ac AppConfig) IsSocket() bool {
 // the agent exposes via /app/<name>/ as a WebSocket-to-TCP bridge.
 func (ac AppConfig) IsTCP() bool {
 	return strings.EqualFold(strings.TrimSpace(ac.Scheme), "tcp")
+}
+
+// IsEgress reports whether ac is an egress app: the /app/<name>/
+// route accepts a WebSocket upgrade and bridges it to a ?dst=host:port
+// destination, but only when the destination matches ac.Allow.
+func (ac AppConfig) IsEgress() bool {
+	return strings.EqualFold(strings.TrimSpace(ac.Scheme), "egress")
+}
+
+// SplitEgressAllowEntry parses one egress allowlist entry of the form
+// "host", "*.domain", "host:port" or "*.domain:port" into its lowercase
+// host pattern and port. hasPort is false when the entry carries no
+// ":port" suffix (the caller then permits only ports 80 and 443). ok is
+// false when the entry is malformed (empty host, misplaced wildcard,
+// bad port). Bracketed IPv6 ("[::1]", "[::1]:443") is accepted; a bare
+// IPv6 literal without brackets is rejected as ambiguous.
+func SplitEgressAllowEntry(entry string) (host string, port int, hasPort bool, ok bool) {
+	rest := strings.TrimSpace(entry)
+	if rest == "" {
+		return "", 0, false, false
+	}
+	var hostPart, portPart string
+	switch {
+	case strings.HasPrefix(rest, "["):
+		end := strings.LastIndexByte(rest, ']')
+		if end < 0 {
+			return "", 0, false, false
+		}
+		hostPart = rest[1:end]
+		tail := rest[end+1:]
+		if tail == "" {
+			// Bare "[::1]" — no port.
+		} else if strings.HasPrefix(tail, ":") {
+			portPart, hasPort = tail[1:], true
+		} else {
+			return "", 0, false, false
+		}
+	case strings.Count(rest, ":") > 1:
+		return "", 0, false, false
+	case strings.LastIndexByte(rest, ':') >= 0:
+		i := strings.LastIndexByte(rest, ':')
+		hostPart, portPart, hasPort = rest[:i], rest[i+1:], true
+	default:
+		hostPart = rest
+	}
+	if hasPort {
+		n, err := strconv.Atoi(strings.TrimSpace(portPart))
+		if err != nil || n < 1 || n > 65535 {
+			return "", 0, false, false
+		}
+		port = n
+	}
+	host = strings.ToLower(strings.TrimSpace(hostPart))
+	host = strings.TrimSuffix(host, ".")
+	if host == "" || strings.ContainsAny(host, " \t/") {
+		return "", 0, false, false
+	}
+	if strings.Contains(host, "*") {
+		// The only legal wildcard is a leading "*." with a
+		// non-empty remainder ("*.example.com").
+		if !strings.HasPrefix(host, "*.") || len(host) <= 2 || strings.Contains(host[2:], "*") {
+			return "", 0, false, false
+		}
+	}
+	return host, port, hasPort, true
 }
 
 // AppTargetFromURL parses a single URL string ("http://localhost:8080",
@@ -1222,6 +1299,11 @@ func AppTargetFromURL(raw string) (scheme, host string, port int, socket string,
 			return "", "", 0, "", fmt.Errorf("url %q has invalid port", raw)
 		}
 		return scheme, host, n, "", nil
+	case "egress":
+		// `egress://` carries no target — the allowlist in
+		// AppConfig.Allow is the whole declaration. Any host
+		// segment is ignored.
+		return "egress", "", 0, "", nil
 	case "unix", "npipe":
 		// `unix:///path` → u.Path = "/path"; `unix:/path` → also "/path".
 		// `unix://host/path` is technically valid but we treat the host
@@ -1235,7 +1317,7 @@ func AppTargetFromURL(raw string) (scheme, host string, port int, socket string,
 		}
 		return scheme, "", 0, sock, nil
 	default:
-		return "", "", 0, "", fmt.Errorf("url %q: scheme must be one of http|https|tcp|unix|npipe", raw)
+		return "", "", 0, "", fmt.Errorf("url %q: scheme must be one of http|https|tcp|unix|npipe|egress", raw)
 	}
 }
 

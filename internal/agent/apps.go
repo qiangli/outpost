@@ -117,6 +117,12 @@ type AppRegistry struct {
 	// they get a dedicated WS↔TCP bridge handler rather than the
 	// ReverseProxy path.
 	tcp map[string]string
+	// egress holds the destination allowlist for egress-scheme apps.
+	// Its key set is disjoint from both `proxy` and `tcp` — like TCP
+	// apps, egress apps accept a WebSocket upgrade on /app/<name>/,
+	// but the upstream is the per-request ?dst=host:port gated by
+	// this list (empty = refuse everything).
+	egress map[string][]string
 }
 
 // appIntercept binds a path-prefix to a handler that pre-empts the
@@ -174,6 +180,7 @@ func NewAppRegistry() *AppRegistry {
 		intercepts:         map[string][]appIntercept{},
 		proxyWrap:          map[string]func(http.Handler) http.Handler{},
 		tcp:                map[string]string{},
+		egress:             map[string][]string{},
 	}
 }
 
@@ -516,23 +523,27 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 	} else {
 		delete(r.ssoSecrets, name)
 	}
-	// Mode swap: an HTTP register wins over any prior tcp entry with the
-	// same name. (Re-registers in the other direction do the inverse in
-	// registerTCP.)
+	// Mode swap: an HTTP register wins over any prior tcp/egress
+	// entry with the same name. (Re-registers in the other direction
+	// do the inverse in registerTCP/registerEgress.)
 	delete(r.tcp, name)
+	delete(r.egress, name)
 	r.mu.Unlock()
 	return nil
 }
 
-// Names returns registered app names (HTTP and TCP combined).
+// Names returns registered app names (HTTP, TCP and egress combined).
 func (r *AppRegistry) Names() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]string, 0, len(r.apps)+len(r.tcp))
+	out := make([]string, 0, len(r.apps)+len(r.tcp)+len(r.egress))
 	for k := range r.apps {
 		out = append(out, k)
 	}
 	for k := range r.tcp {
+		out = append(out, k)
+	}
+	for k := range r.egress {
 		out = append(out, k)
 	}
 	return out
@@ -573,6 +584,16 @@ func (r *AppRegistry) Entries() []AppEntry {
 			Capabilities:      r.capabilities[name],
 		})
 	}
+	for name := range r.egress {
+		out = append(out, AppEntry{
+			Name:              name,
+			Scheme:            "egress",
+			RequireLogin:      r.requireLogin[name],
+			ElevationRequired: r.elevationRequired[name],
+			IndexPath:         r.indexPath[name],
+			Capabilities:      r.capabilities[name],
+		})
+	}
 	return out
 }
 
@@ -592,6 +613,25 @@ func (r *AppRegistry) LookupTCP(name string) string {
 	return r.tcp[name]
 }
 
+// LookupEgress returns the registered egress allowlist (or nil when
+// name is not an egress-mode app). The empty allowlist is a valid
+// registered state meaning default-deny — use IsEgress to tell
+// "registered" apart from "unknown".
+func (r *AppRegistry) LookupEgress(name string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return append([]string(nil), r.egress[name]...)
+}
+
+// IsEgress reports whether name is registered as an egress-mode app
+// (even with an empty allowlist).
+func (r *AppRegistry) IsEgress(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.egress[name]
+	return ok
+}
+
 // Unregister removes an app entry. No-op if the name is not registered.
 func (r *AppRegistry) Unregister(name string) {
 	r.mu.Lock()
@@ -608,6 +648,7 @@ func (r *AppRegistry) Unregister(name string) {
 	delete(r.intercepts, name)
 	delete(r.proxyWrap, name)
 	delete(r.tcp, name)
+	delete(r.egress, name)
 	r.mu.Unlock()
 }
 
@@ -673,8 +714,10 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 			return fmt.Errorf("app %q: port %d is out of range", ac.Name, ac.Port)
 		}
 		err = r.registerTCP(ac.Name, net.JoinHostPort(host, strconv.Itoa(ac.Port)), meta)
+	case "egress":
+		err = r.registerEgress(ac.Name, ac.Allow, meta)
 	default:
-		return fmt.Errorf("app %q: scheme must be one of http|https|tcp|unix|npipe (got %q)", ac.Name, ac.Scheme)
+		return fmt.Errorf("app %q: scheme must be one of http|https|tcp|unix|npipe|egress (got %q)", ac.Name, ac.Scheme)
 	}
 	if err != nil {
 		return err
@@ -697,9 +740,10 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 // mode swap on the same name keeps the operator's declarations intact.
 func (r *AppRegistry) registerTCP(name, addr string, meta AppMeta) error {
 	r.mu.Lock()
-	// Same name can't be both HTTP- and TCP-mode at once.
+	// Same name can't be in two modes at once.
 	delete(r.apps, name)
 	delete(r.proxy, name)
+	delete(r.egress, name)
 	r.tcp[name] = addr
 	r.requireLogin[name] = meta.RequireLogin
 	r.elevationRequired[name] = meta.ElevationRequired
@@ -709,6 +753,32 @@ func (r *AppRegistry) registerTCP(name, addr string, meta AppMeta) error {
 	// TCP apps don't speak HTTP, so trust-cloud-identity has nothing to
 	// stamp — but we keep the map entry in sync with the others so a
 	// later HTTP-mode swap on the same name reads the right value.
+	r.trustCloudIdentity[name] = meta.TrustCloudIdentity
+	r.mu.Unlock()
+	return nil
+}
+
+// registerEgress records name → allowlist for an egress-scheme app.
+// The /app/<name>/ handler accepts a WebSocket upgrade and byte-bridges
+// to the per-request ?dst=host:port, but only when the destination
+// matches the allowlist (see serveEgressBridge). An empty allowlist is
+// a valid registered state meaning default-deny. Disjoint from the HTTP
+// register and registerTCP: a name is in exactly one mode at a time.
+func (r *AppRegistry) registerEgress(name string, allow []string, meta AppMeta) error {
+	r.mu.Lock()
+	// Same name can't be in two modes at once.
+	delete(r.apps, name)
+	delete(r.proxy, name)
+	delete(r.tcp, name)
+	r.egress[name] = append([]string(nil), allow...)
+	r.requireLogin[name] = meta.RequireLogin
+	r.elevationRequired[name] = meta.ElevationRequired
+	r.lanOnly[name] = append([]string(nil), meta.LANOnlyPaths...)
+	r.indexPath[name] = meta.IndexPath
+	r.capabilities[name] = meta.Capabilities
+	// Egress apps don't speak HTTP either, so trust-cloud-identity has
+	// nothing to stamp — kept in sync for the same mode-swap reason
+	// as registerTCP.
 	r.trustCloudIdentity[name] = meta.TrustCloudIdentity
 	r.mu.Unlock()
 	return nil
@@ -726,7 +796,9 @@ func (r *AppRegistry) SetCapabilities(name string, caps *AppCapabilities) {
 	defer r.mu.Unlock()
 	if _, http := r.apps[name]; !http {
 		if _, tcp := r.tcp[name]; !tcp {
-			return
+			if _, egress := r.egress[name]; !egress {
+				return
+			}
 		}
 	}
 	r.capabilities[name] = caps
@@ -767,11 +839,15 @@ func (r *AppRegistry) handler() gin.HandlerFunc {
 //
 // For TCP-mode apps (ssh, postgres, …) the same route accepts a
 // WebSocket upgrade and byte-bridges to the registered host:port. The
-// `rest` argument is ignored — TCP has no notion of a sub-path.
+// `rest` argument is ignored — TCP has no notion of a sub-path. For
+// egress-mode apps the route likewise accepts a WebSocket upgrade, but
+// the upstream is the per-request ?dst=host:port gated by the app's
+// allowlist (see serveEgressBridge).
 func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	r.mu.RLock()
 	rp := r.proxy[name]
 	tcpAddr := r.tcp[name]
+	egressAllow, isEgress := r.egress[name]
 	requireLogin := r.requireLogin[name]
 	lanOnly := r.lanOnly[name]
 	intercepts := r.intercepts[name]
@@ -807,6 +883,10 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	// auth posture as the proxy itself.
 	if h := matchIntercept(intercepts, rest); h != nil {
 		h.ServeHTTP(c.Writer, c.Request)
+		return
+	}
+	if isEgress {
+		serveEgressBridge(c, name, egressAllow)
 		return
 	}
 	if tcpAddr != "" {
@@ -899,4 +979,155 @@ func serveTCPBridge(c *gin.Context, name, addr string) {
 		_, _ = io.Copy(upstream, wsConn)
 	}()
 	_, _ = io.Copy(wsConn, upstream)
+}
+
+// egressAllowLoopbackForTest is a test-only hook: production egress
+// always refuses loopback destinations (see egressIPForbidden), but the
+// allowlisted-dial test needs a loopback echo server as its permitted
+// upstream. Never set outside tests.
+var egressAllowLoopbackForTest bool
+
+// serveEgressBridge accepts the inbound WebSocket, reads the destination
+// from the ?dst=host:port query, and byte-splices it onto a freshly
+// dialed TCP conn — but ONLY when the destination matches the app's
+// allowlist and survives the forbidden-IP screen. Anything else is
+// refused with a policy-violation close and a refusal log that carries
+// no destination or credential detail.
+//
+// DNS-rebinding TOCTOU: hostnames are resolved once, every resolved IP
+// is screened, and the dial goes to the screened IP literal — never a
+// second lookup of the hostname.
+func serveEgressBridge(c *gin.Context, name string, allow []string) {
+	ws, err := websocket.Accept(c.Writer, c.Request, &websocket.AcceptOptions{
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		slog.Warn("egress ws accept", "app", name, "err", err)
+		return
+	}
+	defer ws.Close(websocket.StatusInternalError, "closing")
+
+	refuse := func(reason string) {
+		slog.Warn("egress refused", "app", name, "reason", reason)
+		_ = ws.Close(websocket.StatusPolicyViolation, "forbidden")
+	}
+
+	dst := strings.TrimSpace(c.Query("dst"))
+	host, portStr, err := net.SplitHostPort(dst)
+	if err != nil {
+		refuse("bad-dst")
+		return
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(portStr))
+	if err != nil || port < 1 || port > 65535 {
+		refuse("bad-dst")
+		return
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		refuse("bad-dst")
+		return
+	}
+	if !egressAllowedByList(host, port, allow) {
+		refuse("not-allowlisted")
+		return
+	}
+
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	defer cancel()
+
+	ipLiteral, ok := egressResolveAndCheck(ctx, host)
+	if !ok {
+		refuse("forbidden-ip")
+		return
+	}
+
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+	upstream, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(ipLiteral, strconv.Itoa(port)))
+	if err != nil {
+		slog.Warn("egress dial", "app", name, "err", err)
+		_ = ws.Close(websocket.StatusBadGateway, "dial upstream failed")
+		return
+	}
+	defer upstream.Close()
+
+	wsConn := websocket.NetConn(ctx, ws, websocket.MessageBinary)
+	defer wsConn.Close()
+
+	go func() {
+		defer cancel()
+		_, _ = io.Copy(upstream, wsConn)
+	}()
+	_, _ = io.Copy(wsConn, upstream)
+}
+
+// egressAllowedByList reports whether host:port matches one allowlist
+// entry: exact host (case-insensitive) or a "*.domain" wildcard covering
+// subdomains only. An entry without ":port" permits only ports 80 and
+// 443. Malformed entries never match.
+func egressAllowedByList(host string, port int, allow []string) bool {
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	for _, entry := range allow {
+		pattern, entryPort, hasPort, ok := conf.SplitEgressAllowEntry(entry)
+		if !ok {
+			continue
+		}
+		if hasPort {
+			if port != entryPort {
+				continue
+			}
+		} else if port != 80 && port != 443 {
+			continue
+		}
+		if strings.HasPrefix(pattern, "*.") {
+			// pattern[1:] is ".domain" — the leading dot
+			// anchors the match to true subdomains, so
+			// "*.example.com" never matches "example.com".
+			if strings.HasSuffix(host, pattern[1:]) {
+				return true
+			}
+			continue
+		}
+		if host == pattern {
+			return true
+		}
+	}
+	return false
+}
+
+// egressResolveAndCheck resolves host once and returns a dialable IP
+// literal for the first resolved address that passes the forbidden-IP
+// screen. IP-literal hosts skip DNS entirely. Every other outcome —
+// lookup failure, empty answer, or all addresses forbidden — refuses.
+func egressResolveAndCheck(ctx context.Context, host string) (string, bool) {
+	if ip := net.ParseIP(strings.TrimSuffix(strings.TrimSpace(host), ".")); ip != nil {
+		if egressIPForbidden(ip) {
+			return "", false
+		}
+		return ip.String(), true
+	}
+	lctx, lcancel := context.WithTimeout(ctx, 5*time.Second)
+	defer lcancel()
+	ips, err := net.DefaultResolver.LookupIP(lctx, "ip", host)
+	if err != nil || len(ips) == 0 {
+		return "", false
+	}
+	for _, ip := range ips {
+		if !egressIPForbidden(ip) {
+			return ip.String(), true
+		}
+	}
+	return "", false
+}
+
+// egressIPForbidden is the always-on destination screen: loopback,
+// link-local (including 169.254.169.254) and unspecified addresses are
+// refused even when the allowlist names them. There is no opt-out in
+// production; the test hook only relaxes loopback for the registry's
+// own loopback echo-server tests.
+func egressIPForbidden(ip net.IP) bool {
+	if ip.IsLoopback() {
+		return !egressAllowLoopbackForTest
+	}
+	return ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
 }

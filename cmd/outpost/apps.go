@@ -149,9 +149,16 @@ the same data the SPA renders for that host's tiles.`,
 				if len(a.LANOnlyPaths) > 0 {
 					flags = append(flags, "lan-only="+strings.Join(a.LANOnlyPaths, ","))
 				}
+				if len(a.Allow) > 0 {
+					flags = append(flags, "allow="+strings.Join(a.Allow, ","))
+				}
 				target := a.Socket
 				if target == "" {
-					target = fmt.Sprintf("%s:%d", a.Host, a.Port)
+					if a.Scheme == "egress" {
+						target = "egress://"
+					} else {
+						target = fmt.Sprintf("%s:%d", a.Host, a.Port)
+					}
 				}
 				fmt.Printf("%-20s  %-8s  %-7t  %-30s  %s\n",
 					a.Name, a.Scheme, a.Enabled, target, strings.Join(flags, " "))
@@ -301,10 +308,11 @@ func fetchRemoteHostApps(ctx context.Context, server string, port int, protocol,
 
 func appsAddCmd() *cobra.Command {
 	var (
-		url, scheme, host, socket, indexPath, icon          string
+		url, target, scheme, host, socket, indexPath, icon  string
 		port                                                int
 		requireLogin, trustCloudIdentity, elevationRequired bool
 		lanOnly                                             []string
+		allow                                               []string
 		disabled                                            bool
 		offline                                             bool
 		jsonOut                                             bool
@@ -314,6 +322,10 @@ func appsAddCmd() *cobra.Command {
 		Short: "Add or update a custom app",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			u := url
+			if u == "" {
+				u = target
+			}
 			ac := conf.AppConfig{
 				Name:               args[0],
 				Icon:               icon,
@@ -321,6 +333,7 @@ func appsAddCmd() *cobra.Command {
 				Host:               host,
 				Port:               port,
 				Socket:             socket,
+				Allow:              allow,
 				IndexPath:          indexPath,
 				LANOnlyPaths:       lanOnly,
 				RequireLogin:       requireLogin,
@@ -328,7 +341,7 @@ func appsAddCmd() *cobra.Command {
 				TrustCloudIdentity: trustCloudIdentity,
 				Enabled:            !disabled,
 			}
-			params := admincore.AppUpsertParams{AppConfig: ac, URL: url}
+			params := admincore.AppUpsertParams{AppConfig: ac, URL: u}
 			if offline {
 				return runAppUpsertOffline(params, jsonOut)
 			}
@@ -336,10 +349,12 @@ func appsAddCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&url, "url", "", "Target URL (alternative to --scheme/--host/--port/--socket)")
-	cmd.Flags().StringVar(&scheme, "scheme", "", "http | https | tcp | unix | npipe")
-	cmd.Flags().StringVar(&host, "host", "", "Target host (default 127.0.0.1 for TCP schemes)")
-	cmd.Flags().IntVar(&port, "port", 0, "Target port (required for TCP schemes)")
+	cmd.Flags().StringVar(&target, "target", "", "Target URL (alias for --url; e.g. egress://)")
+	cmd.Flags().StringVar(&scheme, "scheme", "", "http | https | tcp | unix | npipe | egress")
+	cmd.Flags().StringVar(&host, "host", "", "Target host (default 127.0.0.1 for TCP schemes; ignored for egress)")
+	cmd.Flags().IntVar(&port, "port", 0, "Target port (required for TCP schemes; ignored for egress)")
 	cmd.Flags().StringVar(&socket, "socket", "", "Socket path (required for unix / npipe)")
+	cmd.Flags().StringSliceVar(&allow, "allow", nil, "Egress allowlist entry host | *.domain [:port] (repeatable or comma-separated; empty refuses all)")
 	cmd.Flags().StringVar(&icon, "icon", "", "URL to an icon image shown next to the tile in cloudbox")
 	cmd.Flags().StringVar(&indexPath, "index-path", "", "Landing sub-path the cloudbox SPA prepends")
 	cmd.Flags().StringSliceVar(&lanOnly, "lan-only-path", nil, "Path prefix 404'd on cloud requests (repeatable)")
@@ -388,7 +403,11 @@ func printAppUpsertResult(ac conf.AppConfig, jsonOut bool) error {
 	}
 	target := ac.Socket
 	if target == "" {
-		target = fmt.Sprintf("%s:%d", ac.Host, ac.Port)
+		if ac.Scheme == "egress" {
+			target = "egress://"
+		} else {
+			target = fmt.Sprintf("%s:%d", ac.Host, ac.Port)
+		}
 	}
 	fmt.Printf("Saved app %q (%s://%s) enabled=%t\n", ac.Name, ac.Scheme, target, ac.Enabled)
 	return nil

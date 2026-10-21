@@ -94,8 +94,25 @@ func ValidateApp(ac *conf.AppConfig) error {
 		}
 		ac.Host = ""
 		ac.Port = 0
+	case "egress":
+		// No fixed target — the allowlist is the declaration.
+		// Blank entries are dropped; the rest must parse.
+		ac.Host = ""
+		ac.Port = 0
+		ac.Socket = ""
+		kept := ac.Allow[:0]
+		for _, e := range ac.Allow {
+			if strings.TrimSpace(e) == "" {
+				continue
+			}
+			if _, _, _, ok := conf.SplitEgressAllowEntry(e); !ok {
+				return badRequest("allow entry %q must be host, *.domain, with optional :port", e)
+			}
+			kept = append(kept, strings.TrimSpace(e))
+		}
+		ac.Allow = kept
 	default:
-		return badRequest("scheme must be one of http|https|tcp|unix|npipe")
+		return badRequest("scheme must be one of http|https|tcp|unix|npipe|egress")
 	}
 	// Path-prefix fields: canonicalize so /admin, admin, and /admin/
 	// all become "/admin". Empty input stays empty.
