@@ -2,8 +2,10 @@ package agent
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -326,4 +328,122 @@ func TestGitAppNeverLeaksCredential(t *testing.T) {
 	})
 
 	assertClean(t, "logs", logBuf.String())
+}
+
+// gitTestPktLines builds a pkt-line stream of at least total bytes:
+// 4-hex-digit length prefixes each followed by a distinguishable
+// payload, so a truncated stream is never byte-equal to the original.
+func gitTestPktLines(total int) []byte {
+	var b bytes.Buffer
+	for i := 0; b.Len() < total; i++ {
+		payload := []byte(fmt.Sprintf("line %04d %s\n", i, strings.Repeat("x", 48)))
+		fmt.Fprintf(&b, "%04x", len(payload)+4)
+		b.Write(payload)
+	}
+	return b.Bytes()
+}
+
+// TestGitAppDoesNotTruncateGzipUpstream pins the live S487.4 clone
+// failure: the outbound request must negotiate Accept-Encoding:
+// identity so the upstream's bytes reach the caller unmodified. When
+// the outbound request carries no Accept-Encoding, Go's http.Transport
+// silently advertises gzip and transparently decompresses — while the
+// response framing still reflects the compressed transfer — and a
+// clone through the relay dies with "fatal: expected flush after
+// capabilities" on a body cut mid-pkt-line. The upstream here gzips
+// ONLY when the request allows gzip, so the test stays red until the
+// app asks for identity. The caller mimics the relay's Go client (it
+// sends Accept-Encoding: gzip itself) to prove the app answers with
+// plain bytes, never labels them Content-Encoding: gzip, and streams
+// them without a Content-Length the redacting reader may invalidate.
+func TestGitAppDoesNotTruncateGzipUpstream(t *testing.T) {
+	want := gitTestPktLines(4096)
+	var mu sync.Mutex
+	sawEncoding := ""
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ae := r.Header.Get("Accept-Encoding")
+		mu.Lock()
+		sawEncoding = ae
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
+		if !strings.Contains(ae, "gzip") {
+			_, _ = w.Write(want)
+			return
+		}
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		_, _ = zw.Write(want)
+		_ = zw.Close()
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write(buf.Bytes())
+	}))
+	t.Cleanup(upstream.Close)
+
+	_, front, _ := newGitTestEnv(t, upstream.URL, []string{"octocat/hello"}, "u", "p")
+
+	req, _ := http.NewRequest("GET", front.URL+"/app/code/octocat/hello.git/info/refs?service=git-upload-pack", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("info/refs: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read info/refs body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("info/refs status = %d, want 200", resp.StatusCode)
+	}
+	if !bytes.Equal(body, want) {
+		t.Errorf("client received %d bytes, want the full identical %d-byte pkt-line stream (head %q)", len(body), len(want), body[:min(32, len(body))])
+	}
+	mu.Lock()
+	ae := sawEncoding
+	mu.Unlock()
+	if ae != "identity" {
+		t.Errorf("upstream Accept-Encoding = %q, want %q: without it the transport gunzips under compressed-length framing and truncates the stream", ae, "identity")
+	}
+	if ce := resp.Header.Get("Content-Encoding"); ce != "" {
+		t.Errorf("client Content-Encoding = %q, want none: the body is not gzip", ce)
+	}
+	if cl := resp.Header.Get("Content-Length"); cl != "" {
+		t.Errorf("client Content-Length = %q, want none: redaction can change lengths, so the body must stream unframed", cl)
+	}
+}
+
+// TestGitAppForwardsGitProtocolHeader pins protocol v2 negotiation:
+// the caller's Git-Protocol header must reach the upstream verbatim.
+// Without it a v2 client gets a v0 advertisement and the capability
+// exchange fails ("make sure you have the correct access rights").
+func TestGitAppForwardsGitProtocolHeader(t *testing.T) {
+	var mu sync.Mutex
+	sawProto := ""
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		sawProto = r.Header.Get("Git-Protocol")
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
+		_, _ = io.WriteString(w, "001e# service=git-upload-pack")
+	}))
+	t.Cleanup(upstream.Close)
+
+	_, front, _ := newGitTestEnv(t, upstream.URL, []string{"octocat/hello"}, "u", "p")
+
+	req, _ := http.NewRequest("GET", front.URL+"/app/code/octocat/hello.git/info/refs?service=git-upload-pack", nil)
+	req.Header.Set("Git-Protocol", "version=2")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("info/refs: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("info/refs status = %d, want 200", resp.StatusCode)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if sawProto != "version=2" {
+		t.Errorf("upstream Git-Protocol = %q, want %q forwarded from the client request", sawProto, "version=2")
+	}
 }

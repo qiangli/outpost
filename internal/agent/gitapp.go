@@ -112,10 +112,14 @@ var gitUpstreamClient = &http.Client{}
 // gitResponseHeaders is the allow-list of response headers copied back
 // to the caller. Everything else (auth-ish headers, cookies, ...) is
 // dropped so a hostile upstream can't smuggle data — let alone the
-// credential it was sent — back through the proxy.
+// credential it was sent — back through the proxy. Content-Length and
+// Content-Encoding are deliberately excluded: the body is streamed
+// through the redacting reader (which can change its length) after the
+// bytes were negotiated uncompressed (see serve), so any upstream
+// length or encoding label would mis-frame the stream and truncate the
+// clone mid-pkt-line.
 var gitResponseHeaders = []string{
 	"Content-Type",
-	"Content-Encoding",
 	"Cache-Control",
 	"Pragma",
 	"Expires",
@@ -161,6 +165,12 @@ func (g *gitApp) serve(c *gin.Context, name, rest string, fill gitCredentialFill
 			req.Header.Set(h, v)
 		}
 	}
+	// Pass bytes through unmodified: without this the http.Transport
+	// advertises gzip and transparently decompresses, while any length
+	// framing copied from the upstream still describes the compressed
+	// transfer — the stream the caller reads is cut short and the clone
+	// dies mid-pkt-line. identity keeps both body and headers truthful.
+	req.Header.Set("Accept-Encoding", "identity")
 	if c.Request.Method == http.MethodPost && c.Request.ContentLength > 0 {
 		req.ContentLength = c.Request.ContentLength
 	}
@@ -189,6 +199,12 @@ func (g *gitApp) serve(c *gin.Context, name, rest string, fill gitCredentialFill
 	if loc := resp.Header.Get("Location"); loc != "" && !containsGitSecret(loc, user, pass) {
 		h.Set("Location", loc)
 	}
+	// Never frame the caller's response with an upstream length or
+	// encoding: the body is streamed uncompressed through the redacting
+	// reader, which may change it — a stale Content-Length would have
+	// the caller (or a relay between us) cut the stream early.
+	h.Del("Content-Length")
+	h.Del("Content-Encoding")
 	if resp.StatusCode >= 400 {
 		// Error bodies are discarded wholesale: a hostile upstream
 		// could otherwise echo the Authorization back through us.
