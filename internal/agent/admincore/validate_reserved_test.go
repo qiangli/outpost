@@ -28,3 +28,25 @@ func TestValidateApp_ReservedNameU(t *testing.T) {
 		}
 	}
 }
+
+// The top-level name "v2" is reserved for the cloudbox registry origin (/v2/*)
+// and must be refused like the other cloudbox-side reservations, in any
+// letter case; near-misses stay usable.
+func TestValidateApp_ReservedNameV2(t *testing.T) {
+	for _, name := range []string{"v2", "V2", " v2 "} {
+		ac := conf.AppConfig{Name: name, Port: 8080}
+		err := ValidateApp(&ac)
+		if err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Errorf("ValidateApp(%q): want reserved-name error, got %v", name, err)
+		}
+	}
+	if !isReserved("v2") {
+		t.Error(`isReserved("v2") = false, want true`)
+	}
+	for _, name := range []string{"v22", "v2app", "v3"} {
+		ac := conf.AppConfig{Name: name, Port: 8080}
+		if err := ValidateApp(&ac); err != nil {
+			t.Errorf("ValidateApp(%q): unexpected error %v", name, err)
+		}
+	}
+}

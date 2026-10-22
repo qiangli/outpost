@@ -43,6 +43,7 @@ var reservedNames = map[string]struct{}{
 	"matrix":      {},
 	"cloud":       {},
 	"v1":          {},
+	"v2":          {}, // cloudbox registry origin (/v2/*)
 	"health":      {},
 	"version":     {},
 	"metrics":     {},
