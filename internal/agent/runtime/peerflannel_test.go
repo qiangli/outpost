@@ -232,3 +232,34 @@ func TestPeerFlannelLogIsNotTheFallbackWarning(t *testing.T) {
 		}
 	}
 }
+
+// S490.8: the overlay branch (outpost-cni, bridge cbox0) had no SNAT, so
+// pods could reach cluster IPs but nothing outside the cluster (the
+// Karmada installer could not resolve github.com on a satellite plane),
+// and route_localnet was armed on cbr0, a bridge that mode never creates.
+func TestEntrypointOverlayPodEgressAndBridge(t *testing.T) {
+	script := embeddedEntrypoint(t)
+
+	if !strings.Contains(script, "elif [ -n \"${OUTPOST_POD_CIDR}\" ]; then\n    POD_BRIDGE=\"cbox0\"") {
+		t.Error(`overlay mode does not arm the outpost-cni bridge "cbox0"`)
+	}
+	if !strings.Contains(script, `"bridge_name": "cbox0"`) {
+		t.Fatal(`10-outpost.conflist no longer names bridge "cbox0"; update POD_BRIDGE with it`)
+	}
+	for _, want := range []string{
+		`if [ "${OUTPOST_POD_NETWORK_MODE}" != "peer-flannel" ] && [ -n "${OUTPOST_POD_CIDR}" ]; then`,
+		`add chain ip outpost postrouting { type nat hook postrouting priority 100; policy accept; }`,
+		`add rule ip outpost postrouting ip saddr ${OUTPOST_POD_CIDR} ip daddr != 10.42.0.0/16 masquerade`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("entrypoint lacks overlay pod egress: %s", want)
+		}
+	}
+	// The rules must land inside the atomic nft transaction for table
+	// ip outpost, after the apiserver DNAT rules.
+	dnat := strings.Index(script, `add rule ip outpost output ip daddr ${APISERVER_SVC_IP}`)
+	egress := strings.Index(script, "${POD_EGRESS_RULES}\nEOF")
+	if dnat < 0 || egress < dnat {
+		t.Error("${POD_EGRESS_RULES} is not applied in the outpost nft transaction")
+	}
+}

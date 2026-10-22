@@ -511,15 +511,28 @@ APISERVER_SVC_PORT="${APISERVER_SVC_PORT:-443}"
 log "installing apiserver service DNAT: ${APISERVER_SVC_IP}:${APISERVER_SVC_PORT} -> 127.0.0.1:${OUTPOST_API_PORT}"
 # route_localnet arming for the CNI bridge is mode-aware: peer-flannel's
 # stock k3s flannel creates a bridge named "cni0" (flannel's own default,
-# unrelated to any name this entrypoint picks); every other mode —
-# cloudbox-managed overlay and the single-node fallback — uses the bridge
-# this entrypoint itself writes into the conflist above, "cbr0". Arming
+# unrelated to any name this entrypoint picks); the cloudbox-managed
+# overlay uses the outpost-cni bridge written into 10-outpost.conflist
+# above, "cbox0"; the single-node fallback uses "cbr0". Arming
 # the wrong name is a silent DNAT miss: pod → bridge → here never gets
 # route_localnet, so the apiserver DNAT above never matches forwarded
 # packets.
 POD_BRIDGE="cbr0"
 if [ "${OUTPOST_POD_NETWORK_MODE}" = "peer-flannel" ]; then
     POD_BRIDGE="cni0"
+elif [ -n "${OUTPOST_POD_CIDR}" ]; then
+    POD_BRIDGE="cbox0"
+fi
+# Pod egress for the overlay branch: outpost-cni (unlike the fallback
+# bridge's ipMasq and peer-flannel) installs no SNAT, so pods reached
+# cluster IPs but nothing outside the cluster — the Karmada installer
+# could not resolve github.com on a satellite plane (S490.8). Masquerade
+# pod traffic leaving the 10.42.0.0/16 pod supernet; pod-to-pod overlay
+# traffic keeps its source address.
+POD_EGRESS_RULES=""
+if [ "${OUTPOST_POD_NETWORK_MODE}" != "peer-flannel" ] && [ -n "${OUTPOST_POD_CIDR}" ]; then
+    POD_EGRESS_RULES="add chain ip outpost postrouting { type nat hook postrouting priority 100; policy accept; }
+add rule ip outpost postrouting ip saddr ${OUTPOST_POD_CIDR} ip daddr != 10.42.0.0/16 masquerade"
 fi
 echo 1 > /proc/sys/net/ipv4/conf/all/route_localnet
 for iface in lo eth0 default "${POD_BRIDGE}"; do
@@ -536,6 +549,7 @@ add chain ip outpost prerouting { type nat hook prerouting priority -110; policy
 add chain ip outpost output { type nat hook output priority -110; policy accept; }
 add rule ip outpost prerouting ip daddr ${APISERVER_SVC_IP} tcp dport ${APISERVER_SVC_PORT} dnat to 127.0.0.1:${OUTPOST_API_PORT}
 add rule ip outpost output ip daddr ${APISERVER_SVC_IP} tcp dport ${APISERVER_SVC_PORT} dnat to 127.0.0.1:${OUTPOST_API_PORT}
+${POD_EGRESS_RULES}
 EOF
 # Arm ${POD_BRIDGE}.route_localnet=1 once the CNI bridge appears (kubelet
 # creates it lazily on first pod).
