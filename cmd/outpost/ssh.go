@@ -27,9 +27,11 @@ import (
 )
 
 func sshProxyCmd() *cobra.Command {
-	return &cobra.Command{
+	var modeFlag string
+	var directPortFlag int
+	cmd := &cobra.Command{
 		Use:   "ssh-proxy <host>",
-		Short: "Bridge stdin/stdout to wss://<cloudbox>/matrix/h/<host>/ssh (use as an SSH ProxyCommand)",
+		Short: "Bridge stdin/stdout to <host>'s sshd directly when reachable, else via the cloudbox relay (use as an SSH ProxyCommand)",
 		Long: `ssh-proxy is invoked by your local ssh client through ~/.ssh/config:
 
     Host myhome
@@ -39,15 +41,251 @@ func sshProxyCmd() *cobra.Command {
 It reads the local outpost's saved config, opens a WebSocket to
 cloudbox's /matrix/h/<host>/ssh endpoint with the persisted bearer
 token, and pipes stdin <-> WebSocket <-> stdout. The remote outpost
-answers the SSH protocol on the other side.`,
+answers the SSH protocol on the other side.
+
+Direct-first: before touching the relay, ssh-proxy tries a plain
+TCP dial to the host's LAN endpoint(s) — the name as given plus its
+mDNS "<host>.local" form, on ports 22 then 2222 — with a short
+connect timeout. When one connects, stdin/stdout are piped straight
+through, so the user's own keys and HostKeyAlias keep working with
+no outpost/cloudbox involvement. The relay (and any elevation
+prompt, which only ever happens at /dev/tty) runs solely as the
+fallback when no direct path connects.
+
+$OUTPOST_SSH_PROXY_MODE / --mode selects the policy: auto
+(default), direct (never use the relay), or relay (never try
+direct). $OUTPOST_SSH_DIRECT_PORT / --direct-port pins a single
+LAN sshd port instead of probing the defaults.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSSHProxy(cmd.Context(), args[0])
+			return runSSHProxy(cmd.Context(), args[0], sshProxyOptions{mode: modeFlag, directPort: directPortFlag})
 		},
+	}
+	cmd.Flags().StringVar(&modeFlag, "mode", "", "Direct-vs-relay policy: auto (default), direct, or relay. Overrides $OUTPOST_SSH_PROXY_MODE.")
+	cmd.Flags().IntVar(&directPortFlag, "direct-port", 0, "Single LAN sshd port to try for the direct path (default: try 22 then 2222). Overrides $OUTPOST_SSH_DIRECT_PORT.")
+	return cmd
+}
+
+// sshProxyOptions carries the direct-vs-relay escape hatches. The
+// zero value is the default policy: auto with probed ports.
+type sshProxyOptions struct {
+	mode       string
+	directPort int
+}
+
+// sshProxyDirectTimeout bounds each direct-TCP candidate dial. All
+// candidates dial concurrently, so it also bounds the whole direct
+// attempt: the relay fallback starts at most ~2 s after a LAN miss.
+const sshProxyDirectTimeout = 2 * time.Second
+
+// sshProxyDefaultDirectPorts are the LAN sshd ports probed when no
+// explicit port is configured: the system sshd first (the user's
+// own key auth lives here), then the outpost sshd default.
+var sshProxyDefaultDirectPorts = []int{22, 2222}
+
+// sshProxyMode normalizes the CLI flag / env escape hatch to one of
+// "auto", "direct", or "relay". Unknown values fall back to auto.
+func sshProxyMode(flagVal string) string {
+	m := strings.ToLower(strings.TrimSpace(flagVal))
+	if m == "" {
+		m = strings.ToLower(strings.TrimSpace(os.Getenv("OUTPOST_SSH_PROXY_MODE")))
+	}
+	switch m {
+	case "direct", "relay":
+		return m
+	default:
+		return "auto"
 	}
 }
 
-func runSSHProxy(ctx context.Context, host string) error {
+// sshProxyDirectPort resolves the single-port override: the CLI flag
+// wins, then $OUTPOST_SSH_DIRECT_PORT, else 0 (probe the defaults).
+func sshProxyDirectPort(flagVal int) int {
+	if flagVal > 0 && flagVal <= 65535 {
+		return flagVal
+	}
+	if v := strings.TrimSpace(os.Getenv("OUTPOST_SSH_DIRECT_PORT")); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 && p <= 65535 {
+			return p
+		}
+	}
+	return 0
+}
+
+// sshProxyCandidates lists the direct-TCP endpoints for host, in
+// preference order: the name as given (LAN DNS / literal IP), then
+// its mDNS "<host>.local" form, on each port. An explicit port pins
+// a single port; otherwise the default ports apply. A host that
+// already carries a host:port, an IP literal (no .local form), or a
+// .local name (not duplicated) yields the obvious smaller set.
+func sshProxyCandidates(host string, port int) []string {
+	h := strings.TrimSpace(host)
+	if h == "" {
+		return nil
+	}
+	if hh, pp, err := net.SplitHostPort(h); err == nil && hh != "" && pp != "" {
+		return []string{h}
+	}
+	ports := []int{port}
+	if port <= 0 {
+		ports = sshProxyDefaultDirectPorts
+	}
+	names := []string{h}
+	if net.ParseIP(h) == nil && !strings.HasSuffix(strings.ToLower(h), ".local") {
+		names = append(names, h+".local")
+	}
+	var out []string
+	seen := map[string]struct{}{}
+	for _, p := range ports {
+		if p <= 0 || p > 65535 {
+			continue
+		}
+		for _, n := range names {
+			addr := net.JoinHostPort(n, strconv.Itoa(p))
+			if _, dup := seen[addr]; !dup {
+				seen[addr] = struct{}{}
+				out = append(out, addr)
+			}
+		}
+	}
+	return out
+}
+
+// dialSSHProxyDirect dials every candidate concurrently and returns
+// the first TCP connection that succeeds — plain TCP pass-through,
+// so the ssh client keeps owning the handshake, key auth, and
+// HostKeyAlias verification. When every candidate fails it returns
+// an error naming each attempt, so the caller can fold it into the
+// relay failure as one message naming both paths.
+func dialSSHProxyDirect(ctx context.Context, candidates []string, timeout time.Duration) (net.Conn, error) {
+	if len(candidates) == 0 {
+		return nil, errors.New("no direct candidates")
+	}
+	if timeout <= 0 {
+		timeout = sshProxyDirectTimeout
+	}
+	type result struct {
+		conn net.Conn
+		addr string
+		err  error
+	}
+	resCh := make(chan result, len(candidates))
+	dialer := &net.Dialer{Timeout: timeout}
+	for _, addr := range candidates {
+		go func(a string) {
+			c, e := dialer.DialContext(ctx, "tcp", a)
+			resCh <- result{conn: c, addr: a, err: e}
+		}(addr)
+	}
+	var fails []string
+	for i := 0; i < len(candidates); i++ {
+		r := <-resCh
+		if r.err == nil && r.conn != nil {
+			// First success wins; late winners are closed by a
+			// background drain so concurrent dials never leak a
+			// socket (the buffered channel never blocks them).
+			if remaining := len(candidates) - i - 1; remaining > 0 {
+				go func() {
+					for j := 0; j < remaining; j++ {
+						if late := <-resCh; late.conn != nil {
+							_ = late.conn.Close()
+						}
+					}
+				}()
+			}
+			return r.conn, nil
+		}
+		if r.err != nil {
+			fails = append(fails, r.addr+": "+r.err.Error())
+		} else {
+			fails = append(fails, r.addr+": closed before use")
+		}
+	}
+	return nil, errors.New(strings.Join(fails, "; "))
+}
+
+// pipeSSHProxyTCP pipes stdio straight to a direct-LAN TCP
+// connection: the local ssh client owns the session, so this is a
+// dumb byte pipe. It mirrors pipeSSHProxy's asymmetry — the sshd
+// side ending the stream ends the session, while stdin EOF alone
+// only stops the upload direction.
+func pipeSSHProxyTCP(ctx context.Context, conn net.Conn, stdin io.Reader, stdout io.Writer) error {
+	errOut := make(chan error, 1)
+	go func() {
+		_, e := io.Copy(stdout, conn)
+		errOut <- e
+	}()
+	go func() {
+		_, _ = io.Copy(conn, stdin)
+	}()
+
+	select {
+	case <-ctx.Done():
+		_ = conn.Close()
+		return ctx.Err()
+	case e := <-errOut:
+		_ = conn.Close()
+		if e != nil && !errors.Is(e, io.EOF) {
+			return e
+		}
+		return nil
+	}
+}
+
+// Seams the focused ssh-proxy tests stub: the direct-TCP leg and
+// the whole relay leg. Production code uses the real functions.
+var (
+	sshProxyDialDirect = dialSSHProxyDirect
+	sshProxyRunRelay   = runSSHProxyRelay
+)
+
+func runSSHProxy(ctx context.Context, host string, opts sshProxyOptions) error {
+	return runSSHProxyWithIO(ctx, host, opts, os.Stdin, os.Stdout)
+}
+
+// runSSHProxyWithIO is the direct-first ssh-proxy core: try the LAN
+// TCP path, fall back to the cloudbox relay, and — when headless —
+// fail fast with one error naming both attempts instead of ever
+// prompting for a password. stdin/stdout are parameters (not
+// os.Stdin/os.Stdout directly) so tests can drive the byte flow.
+func runSSHProxyWithIO(ctx context.Context, host string, opts sshProxyOptions, stdin io.Reader, stdout io.Writer) error {
+	mode := sshProxyMode(opts.mode)
+	port := sshProxyDirectPort(opts.directPort)
+	var (
+		tried     []string
+		directErr error
+	)
+	if mode == "auto" || mode == "direct" {
+		tried = sshProxyCandidates(host, port)
+		if conn, derr := sshProxyDialDirect(ctx, tried, sshProxyDirectTimeout); derr == nil {
+			fmt.Fprintf(os.Stderr, "outpost: ssh-proxy %s: direct LAN path via %s\n", host, conn.RemoteAddr())
+			return pipeSSHProxyTCP(ctx, conn, stdin, stdout)
+		} else {
+			directErr = derr
+		}
+		if mode == "direct" {
+			return fmt.Errorf("ssh-proxy %s: direct LAN path failed (tried %s): %v (relay disabled by mode=direct)", host, strings.Join(tried, ", "), directErr)
+		}
+	}
+	rerr := sshProxyRunRelay(ctx, host, stdin, stdout)
+	if rerr == nil {
+		return nil
+	}
+	// Headless safety: the relay leg only ever prompts at /dev/tty
+	// (dialSSHWS refuses without one), so reaching here headless
+	// already means "no prompt happened" — fold the direct misses
+	// in so the operator sees both paths in one message.
+	if directErr != nil {
+		return fmt.Errorf("ssh-proxy %s: no direct LAN path (tried %s: %v); relay failed: %w", host, strings.Join(tried, ", "), directErr, rerr)
+	}
+	return rerr
+}
+
+// runSSHProxyRelay is the pre-direct-first ssh-proxy behavior,
+// unchanged: bridge stdio to cloudbox's /matrix/h/<host>/ssh
+// endpoint over WSS. Elevation prompts (if any) happen at /dev/tty
+// via dialSSHWS — never on the stdin pipe, which carries SSH bytes.
+func runSSHProxyRelay(ctx context.Context, host string, stdin io.Reader, stdout io.Writer) error {
 	cfgPath, err := conf.DefaultConfigPath()
 	if err != nil {
 		return fmt.Errorf("locate config: %w", err)
@@ -93,7 +331,7 @@ func runSSHProxy(ctx context.Context, host string) error {
 	netConn := websocket.NetConn(ctx, conn, websocket.MessageBinary)
 	defer netConn.Close()
 
-	return pipeSSHProxy(ctx, conn, netConn, os.Stdin, os.Stdout)
+	return pipeSSHProxy(ctx, conn, netConn, stdin, stdout)
 }
 
 // pipeSSHProxy wires a duplex byte stream between the local SSH client
