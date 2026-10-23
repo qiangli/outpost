@@ -40,7 +40,7 @@ func localDaemonPresence() (bool, string, error) {
 		if err != nil || pid <= 0 {
 			return false, addr, fmt.Errorf("invalid daemon PID file %s", pidPath)
 		}
-		if processAlive(pid) {
+		if daemonPidLive(pid) {
 			return true, addr, nil
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {

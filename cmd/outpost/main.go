@@ -3545,7 +3545,7 @@ func runningDaemonPID() (int, bool) {
 		return 0, false
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pid <= 0 || !processAlive(pid) {
+	if err != nil || pid <= 0 || !daemonPidLive(pid) {
 		return 0, false
 	}
 	return pid, true
@@ -3738,6 +3738,17 @@ func pidFilePath() (string, error) {
 	return filepath.Join(dir, "outpost.pid"), nil
 }
 
+// daemonPidLive reports whether the daemon pidfile's pid is a live OUTPOST
+// process. Liveness alone is not enough: after a reboot the recorded pid
+// can be recycled by an unrelated process (observed on Windows: svchost),
+// and treating that as a running daemon made every start refuse with
+// "already running" forever while the supervisor looped, and would have
+// made `outpost stop` signal the wrong process. Same rule the supervisor
+// pidfile already uses (pidIsOutpost).
+func daemonPidLive(pid int) bool {
+	return processAlive(pid) && pidIsOutpost(pid)
+}
+
 // claimPidFile writes the current process's pid to the pidfile. If a
 // pidfile already exists and points at a live process, return an error
 // (refuses to start a second instance). Stale pidfiles from a previous
@@ -3748,7 +3759,7 @@ func claimPidFile() error {
 		return err
 	}
 	if data, err := os.ReadFile(p); err == nil {
-		if oldPid, perr := strconv.Atoi(strings.TrimSpace(string(data))); perr == nil && oldPid > 0 && processAlive(oldPid) {
+		if oldPid, perr := strconv.Atoi(strings.TrimSpace(string(data))); perr == nil && oldPid > 0 && daemonPidLive(oldPid) {
 			return fmt.Errorf("outpost is already running (pid %d). Stop it first with: outpost stop", oldPid)
 		}
 	}
@@ -3787,7 +3798,10 @@ func stopCmd() *cobra.Command {
 				_ = os.Remove(p)
 				return fmt.Errorf("malformed pid file (removed): %w", err)
 			}
-			if !processAlive(pid) {
+			if !daemonPidLive(pid) {
+				// Dead, or a recycled PID now owned by another program:
+				// never signal it — after a reboot it can be a system
+				// process (observed: svchost on Windows).
 				_ = os.Remove(p)
 				fmt.Println("Stale pid file removed — outpost was not running.")
 				return nil
