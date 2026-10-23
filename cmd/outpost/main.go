@@ -48,6 +48,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/peerimage"
 	"github.com/qiangli/outpost/internal/agent/peerplane"
 	"github.com/qiangli/outpost/internal/agent/portal"
+	"github.com/qiangli/outpost/internal/agent/postinstall"
 	"github.com/qiangli/outpost/internal/agent/recipebuilder"
 	"github.com/qiangli/outpost/internal/agent/repair"
 	"github.com/qiangli/outpost/internal/agent/runtime"
@@ -115,7 +116,7 @@ func main() {
 		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), servicesCmd(), unpairCmd(), restartCmd(), mcpCmd(), tokenCmd(),
 		remoteCmd(), meshCmd(), mirrorCmd(), shardCmd(), bundleCmd(), appstoreCmd(),
 		docsCmd(), gitCmd(), shellCmd(), versionCmd(), upgradeCmd(), rollbackCmd(), buildCmd(), bashyCmd(),
-		supervisordCmd(), serviceCmd(), doctorCmd(),
+		supervisordCmd(), serviceCmd(), doctorCmd(), verifyCmd(),
 		// peerimage: peer image distribution verbs (recipes, not blobs).
 		peerImageCmd(),
 	)
@@ -169,6 +170,13 @@ func startCmd() *cobra.Command {
 					removePidFile()
 				}
 			}()
+
+			evidenceDir, _ := conf.ResolveCacheDir()
+			evidenceUser, evidenceHome := postInstallIdentity()
+			rebootObserver, evidenceErr := postinstall.Resume(cmd.Context(), evidenceDir, runtimeOS, evidenceUser, evidenceHome, os.Getppid(), postinstall.Exec)
+			if evidenceErr != nil {
+				slog.Warn("post-install reboot evidence", "err", evidenceErr)
+			}
 
 			cfg, err := conf.Load()
 			if err != nil {
@@ -1560,6 +1568,11 @@ func startCmd() *cobra.Command {
 						BuildCommit:       agent.ReadBuildInfo().Short(),
 						BuildVersion:      agent.ReadBuildInfo().Short(),
 						SelfcheckStatusFn: scheck.LastStatus,
+						OnAcknowledged: func(ctx context.Context) {
+							if err := rebootObserver.Acknowledge(ctx); err != nil {
+								slog.Warn("post-install server acknowledgement", "err", err)
+							}
+						},
 					})
 					g.Go(func() error {
 						if err := hb.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {

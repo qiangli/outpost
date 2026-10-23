@@ -53,6 +53,9 @@ type Config struct {
 	// SelfcheckStatusFn returns "ok", "warn", or "fail". Optional.
 	SelfcheckStatusFn func() string
 
+	// OnAcknowledged runs after the paired server accepts a heartbeat (HTTP 200).
+	OnAcknowledged func(context.Context)
+
 	// Interval is the gap between successful heartbeats. Default 5m.
 	Interval time.Duration
 
@@ -167,6 +170,9 @@ func (w *Worker) postOne(ctx context.Context) error {
 	respBody, _ := io.ReadAll(resp.Body)
 	switch resp.StatusCode {
 	case http.StatusOK:
+		if w.cfg.OnAcknowledged != nil {
+			w.cfg.OnAcknowledged(ctx)
+		}
 		return nil
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return errAuthRevoked

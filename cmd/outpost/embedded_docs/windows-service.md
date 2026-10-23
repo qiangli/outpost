@@ -7,6 +7,11 @@ start at boot **with no interactive login**, running as a chosen OS user. macOS
 non-obvious enough that they cost real time to discover. Read this before
 setting up a Windows host.
 
+Use `outpost service install` from the target account's elevated PowerShell
+for the default registration and no-sleep policy. Use `--keep-sleep` to preserve
+power settings. See [Boot service and verification](service.md) for the
+`outpost verify --post-install [--reboot]` evidence workflow.
+
 ## The goal
 
 A Task Scheduler entry that:
@@ -60,6 +65,7 @@ powercfg /change standby-timeout-ac 0
 powercfg /change standby-timeout-dc 0
 powercfg /change hibernate-timeout-ac 0
 powercfg /change hibernate-timeout-dc 0
+powercfg /hibernate off
 ```
 
 ## The reliable recipe

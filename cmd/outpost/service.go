@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/xml"
 	"fmt"
 	"net"
 	"os"
-	"runtime"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/qiangli/outpost/internal/agent/postinstall"
 	"github.com/spf13/cobra"
 )
 
@@ -21,17 +24,9 @@ import (
 //     three platforms — systemd system unit `User=`, launchd LaunchDaemon
 //     `UserName`, Windows Task Scheduler `-AtStartup -LogonType S4U -RunLevel
 //     Limited`.
-//   - USER (`--user`): the no-admin fallback — per-login-session registration
-//     (systemd --user / launchd LaunchAgent / Task Scheduler `-AtLogOn`). Starts
-//     when the user logs in, NOT at boot. For hosts where admin isn't available.
-//
-// macOS is the exception: USER is the default there and SYSTEM needs `--system`.
-// A LaunchDaemon runs in the system session, where the user's login Keychain is
-// locked, so every agent CLI that keeps its credential in the Keychain (Claude
-// Code's OAuth login) answers "Not logged in" the moment outpost — or the bashy
-// console it supervises — launches it. That is the home host's whole job, so a
-// boot-time daemon that cannot run the fleet is the wrong default on a Mac;
-// starting at login (or with auto-login, at boot) is what actually works.
+//   - USER (`--user`): Linux enables linger for boot persistence; macOS and
+//     Windows register a session service requiring login. Power policy still
+//     requires admin rights unless --keep-sleep is specified.
 //
 // The per-platform install/uninstall/status live in service_{darwin,linux,
 // windows}.go; the pure render helpers below are shared + unit-tested.
@@ -92,7 +87,11 @@ func serviceCmd() *cobra.Command {
 }
 
 func serviceInstallCmd() *cobra.Command {
-	var dryRun, userMode, systemMode, force bool
+	return newServiceInstallCmd(postinstall.Exec, installService)
+}
+
+func newServiceInstallCmd(run postinstall.Runner, install func(installOpts) error) *cobra.Command {
+	var dryRun, userMode, systemMode, force, keepSleep bool
 	var runAs string
 	cmd := &cobra.Command{
 		Use:   "install",
@@ -103,38 +102,38 @@ Default (system service): starts at BOOT with no login required, running as the
 regular (non-elevated) target user. Requires admin at install time — re-run with
 sudo (macOS/Linux) or from an elevated prompt (Windows).
 
---user: no-admin fallback. Registers under your login session; starts when you
-log in, not at boot.
+--user: registers a per-user service. Linux enables linger; macOS and Windows
+require a login. --keep-sleep avoids the privileged power step.
 
-macOS: the per-user LaunchAgent is the DEFAULT. A system LaunchDaemon runs where
-the login Keychain is locked, so agent CLIs that keep their credential there
-(Claude Code) cannot authenticate from it or from the bashy console it
-supervises. --system registers the boot-time daemon anyway.
+Sleep is disabled by default on AC and battery power. --keep-sleep preserves
+existing power policy. Power changes require administrator rights and failures
+are returned with the exact command to run.
+
+macOS uses a LaunchDaemon by default. Login Keychain credentials are unavailable
+before login; configure unattended credentials for agents that need them.
+The explicit --user fallback uses a LaunchAgent and requires login.
+Linux --user enables linger so the user unit starts at boot without login.
 
 If an outpost daemon is already running, install takes over a prior registration
 made by this binary; if a daemon survives under a launcher it can't manage (a
 manual ` + "`outpost start`" + `, an ` + "`outpost run`" + ` job, etc.) it refuses rather than
 create two managers fighting over the pidfile — pass --force to override.`,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if userMode && systemMode {
 				return fmt.Errorf("--user and --system are mutually exclusive")
 			}
-			system := !userMode
-			if runtime.GOOS == "darwin" && !systemMode {
-				// See the package comment: a LaunchDaemon cannot reach the
-				// login Keychain, and Keychain-backed agent CLIs are what this
-				// host exists to run.
-				system = false
-				if !userMode {
-					fmt.Println("macOS: registering a per-user LaunchAgent (starts at login; the login Keychain is only unlocked there, and Claude Code keeps its credential in it). Pass --system for a boot-time daemon that cannot run Keychain-backed agents.")
+			if !keepSleep {
+				if err := postinstall.ApplyPower(cmd.Context(), runtimeOS, run, dryRun, cmd.OutOrStdout()); err != nil {
+					return err
 				}
 			}
-			return installService(installOpts{System: system, DryRun: dryRun, Force: force, RunAs: runAs})
+			return install(installOpts{System: !userMode, DryRun: dryRun, Force: force, RunAs: runAs})
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the service definition + the commands that would run, without applying")
-	cmd.Flags().BoolVar(&userMode, "user", false, "Per-user mode (no admin): start at login instead of boot. Default is a system service that starts at boot (except macOS, see --system).")
-	cmd.Flags().BoolVar(&systemMode, "system", false, "macOS: register a boot-time LaunchDaemon anyway — agent CLIs whose credential lives in the login Keychain (Claude Code) cannot authenticate from it")
+	cmd.Flags().BoolVar(&userMode, "user", false, "Per-user service: Linux enables linger; macOS/Windows start at login. Power policy still needs admin unless --keep-sleep.")
+	cmd.Flags().BoolVar(&systemMode, "system", false, "Register a boot service (default on every OS)")
+	cmd.Flags().BoolVar(&keepSleep, "keep-sleep", false, "Preserve existing sleep settings")
 	cmd.Flags().BoolVar(&force, "force", false, "Install even if a daemon under a launcher this command can't manage is still running")
 	cmd.Flags().StringVar(&runAs, "run-as", "", "OS user the system service runs as (default: the invoking non-root user)")
 	return cmd
@@ -204,18 +203,23 @@ func daemonRunning() bool {
 // `outpost run` launchd/systemd job, …) would race the supervisor for outpost's
 // singleton pidfile and crash-loop it. So before bootstrapping:
 //
-//  1. if no daemon is running, there's nothing to reconcile;
-//  2. otherwise remove THIS binary's other-mode registration — if it was the
-//     manager, that stops the daemon and frees the port;
+//  1. remove THIS binary's registrations, including dormant login services that
+//     would otherwise start a second supervisor at the next login;
+//  2. if a managed daemon was running, allow its shutdown to free the port;
 //  3. if a daemon still survives, it's under a launcher we can't safely
 //     identify/disable — refuse with guidance (or proceed under --force).
 func preflightTakeover(opts installOpts) error {
-	if !daemonRunning() {
+	return reconcileServiceRegistration(opts, daemonRunning, removeManagedRegistrations, time.Sleep)
+}
+
+func reconcileServiceRegistration(opts installOpts, running func() bool, remove func(installOpts), wait func(time.Duration)) error {
+	wasRunning := running()
+	remove(opts) // also remove dormant prior registrations
+	if !wasRunning {
 		return nil
 	}
-	removeManagedRegistrations(opts) // best-effort, quiet — stops a daemon WE manage
-	time.Sleep(1500 * time.Millisecond)
-	if !daemonRunning() {
+	wait(1500 * time.Millisecond)
+	if !running() {
 		fmt.Println("note: replaced a prior outpost registration that this command manages")
 		return nil
 	}
@@ -257,7 +261,7 @@ func renderLaunchAgentPlist(self, home string) string {
     </dict>
 </dict>
 </plist>
-`, launchdLabel, self, home, servicePATH)
+`, launchdLabel, plistString(self), plistString(home), servicePATH)
 }
 
 // renderSystemdUserUnit is the Linux systemd --user unit (per-user, no admin)
@@ -277,7 +281,7 @@ RestartSec=10
 
 [Install]
 WantedBy=default.target
-`, servicePATH, self)
+`, servicePATH, systemdExecPath(self))
 }
 
 // renderWindowsLogonTask is the per-user Task Scheduler registration (no admin):
@@ -290,11 +294,11 @@ WantedBy=default.target
 // TASK_LOGON_INTERACTIVE_TOKEN — run only while the user is logged on.
 func renderWindowsLogonTask(self, userID string) string {
 	return fmt.Sprintf(
-		"$a = New-ScheduledTaskAction -Execute '%s' -Argument 'supervisord'; "+
+		"$ErrorActionPreference = 'Stop'; $a = New-ScheduledTaskAction -Execute '%s' -Argument 'supervisord'; "+
 			"$t = New-ScheduledTaskTrigger -AtLogOn -User '%s'; "+
 			"$p = New-ScheduledTaskPrincipal -UserId '%s' -LogonType Interactive -RunLevel Limited; "+
 			"Register-ScheduledTask -TaskName '%s' -Action $a -Trigger $t -Principal $p -Force",
-		self, userID, userID, windowsTask)
+		psString(self), psString(userID), psString(userID), windowsTask)
 }
 
 // ---- system (admin) renders — start at BOOT, run as the target user -------
@@ -327,7 +331,7 @@ func renderLaunchDaemonPlist(self, user, home string) string {
     </dict>
 </dict>
 </plist>
-`, launchdLabel, self, user, home, home, servicePATH)
+`, launchdLabel, plistString(self), plistString(user), plistString(home), plistString(home), servicePATH)
 }
 
 // servicePATH is the PATH given to the supervised daemon. launchd hands a
@@ -363,7 +367,7 @@ RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
-`, user, servicePATH, self)
+`, user, servicePATH, systemdExecPath(self))
 }
 
 // renderWindowsStartupTask is the system Task Scheduler registration (admin):
@@ -380,11 +384,34 @@ WantedBy=multi-user.target
 //     task-level restart backstop complementing the supervisord's own restart.
 func renderWindowsStartupTask(self, userID string) string {
 	return fmt.Sprintf(
-		"$a = New-ScheduledTaskAction -Execute '%s' -Argument 'supervisord'; "+
+		"$ErrorActionPreference = 'Stop'; $a = New-ScheduledTaskAction -Execute '%s' -Argument 'supervisord'; "+
 			"$t = New-ScheduledTaskTrigger -AtStartup; "+
 			"$p = New-ScheduledTaskPrincipal -UserId '%s' -LogonType S4U -RunLevel Limited; "+
 			"$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "+
 			"-ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1); "+
 			"Register-ScheduledTask -TaskName '%s' -Action $a -Trigger $t -Principal $p -Settings $s -Force",
-		self, userID, windowsTask)
+		psString(self), psString(userID), windowsTask)
+}
+
+func plistString(s string) string {
+	var b strings.Builder
+	_ = xml.EscapeText(&b, []byte(s))
+	return b.String()
+}
+func psString(s string) string { return strings.ReplaceAll(s, "'", "''") }
+
+func systemdExecPath(s string) string {
+	s = strings.ReplaceAll(strings.ReplaceAll(s, "%", "%%"), "$", "$$")
+	if strings.ContainsAny(s, " \t\n\r\\\"") {
+		return strconv.Quote(s)
+	}
+	return s
+}
+func serviceElevatedRetry(self, runAs string) string {
+	c := postinstall.Command{self, "service", "install", "--run-as", runAs, "--keep-sleep"}
+	line := postinstall.ShellCommand(runtimeOS, c)
+	if runtimeOS != "windows" {
+		return "sudo " + line
+	}
+	return line
 }

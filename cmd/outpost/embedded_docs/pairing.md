@@ -106,7 +106,7 @@ must also ensure is that the **daemon relaunches on boot**. Install the
 boot service once:
 
 ```bash
-outpost service install      # registers `outpost supervisord` with
+outpost service install      # requires admin; disables sleep; registers `outpost supervisord` with
                              # launchd / systemd / Task Scheduler
 ```
 
@@ -161,3 +161,6 @@ reads it. A few mutate subcommands also accept `--offline` to edit
 - **Lost both the access token and the tunnel** — re-pair out-of-band
   with the recovery code:
   `outpost register --recovery-code <CODE> --name <host>`.
+
+For boot-service defaults, the `--keep-sleep` opt-out, and
+`outpost verify --post-install [--reboot]`, see [service verification](service.md).
