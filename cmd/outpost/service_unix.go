@@ -17,6 +17,11 @@ func resolveRunAsUnix(runAs string) (name, home string, err error) {
 	if name == "" {
 		name = os.Getenv("SUDO_USER")
 	}
+	if name == "" && os.Geteuid() != 0 {
+		if u, e := user.Current(); e == nil {
+			name = u.Username
+		}
+	}
 	if name == "" || name == "root" {
 		return "", "", fmt.Errorf("cannot determine the regular user to run as — pass --run-as <user> (running the daemon as root is refused)")
 	}

@@ -21,8 +21,8 @@ func doctorCmd() *cobra.Command {
 		Use:   "doctor",
 		Short: "Diagnose boot-readiness: daemon up, build, boot service registered + will-run, host awake",
 		Long: `Boot-readiness diagnostic. Reports whether the daemon is up, the build, whether
-the boot service/task is registered and will actually fire at boot, and (on
-Windows) whether the host is kept awake. Cross-platform.`,
+the boot service/task is registered and will actually fire at boot, and whether sleep is disabled on every platform. Readback failures never
+report disabled sleep or a boot-enabled service.`,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			runDoctor()
 			return nil

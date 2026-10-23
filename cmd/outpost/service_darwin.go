@@ -71,7 +71,7 @@ func installLaunchDaemon(self string, opts installOpts) error {
 		return nil
 	}
 	if os.Geteuid() != 0 {
-		return fmt.Errorf("system service install needs root — re-run with sudo:\n  sudo %s service install --run-as %s\n(or use --user for a no-admin per-login install)", self, runUser)
+		return fmt.Errorf("system service install needs root — run:\n  %s", serviceElevatedRetry(self, runUser))
 	}
 	if err := preflightTakeover(opts); err != nil {
 		return err
@@ -80,7 +80,12 @@ func installLaunchDaemon(self string, opts installOpts) error {
 		return fmt.Errorf("write LaunchDaemon plist %s: %w", path, err)
 	}
 	// root:wheel ownership is what launchd requires for a system daemon.
-	_ = os.Chown(path, 0, 0)
+	if err := os.Chown(path, 0, 0); err != nil {
+		return fmt.Errorf("set LaunchDaemon ownership: %w", err)
+	}
+	if err := exec.Command("launchctl", "enable", "system/"+launchdLabel).Run(); err != nil {
+		return fmt.Errorf("enable LaunchDaemon: %w", err)
+	}
 	_ = exec.Command("launchctl", "bootout", "system/"+launchdLabel).Run()
 	if err := exec.Command("launchctl", "bootstrap", "system", path).Run(); err != nil {
 		return fmt.Errorf("launchctl bootstrap system failed (plist at %s — load manually: sudo launchctl bootstrap system %s): %w", path, path, err)
@@ -108,26 +113,6 @@ func uninstallService(opts installOpts) error {
 	}
 	fmt.Printf("unregistered launchd daemon %s\n", launchdLabel)
 	return nil
-}
-
-// serviceDoctor reports the launchd boot-service state for `outpost doctor`.
-func serviceDoctor() []doctorCheck {
-	if exec.Command("launchctl", "print", "system/"+launchdLabel).Run() == nil {
-		// Loaded, and that is the problem to report: a system daemon has no
-		// access to the user's login Keychain, so Claude Code (and any other
-		// agent CLI that keeps its credential there) answers "Not logged in"
-		// when outpost or the bashy console launches it. Seen live as every
-		// sprint-manager DM from the Apps console failing within a second.
-		return []doctorCheck{{"boot-service", "warn", "launchd SYSTEM daemon " + launchdLabel + " loaded — starts at boot, but the login Keychain is locked in that session, so Keychain-backed agent CLIs (Claude Code) cannot authenticate from it; migrate with `sudo launchctl bootout system/" + launchdLabel + " && sudo rm " + launchDaemonPath() + "` then `outpost service install`"}}
-	}
-	if _, err := os.Stat(launchDaemonPath()); err == nil {
-		return []doctorCheck{{"boot-service", "warn", "system plist present but not loaded: " + launchDaemonPath() + " — `sudo launchctl bootstrap system " + launchDaemonPath() + "`"}}
-	}
-	uid := strconv.Itoa(os.Getuid())
-	if exec.Command("launchctl", "print", "gui/"+uid+"/"+launchdLabel).Run() == nil {
-		return []doctorCheck{{"boot-service", "ok", "launchd LaunchAgent " + launchdLabel + " loaded — starts at login, in the session whose Keychain the agent CLIs need (enable auto-login for boot persistence)"}}
-	}
-	return []doctorCheck{{"boot-service", "warn", "no launchd registration — `outpost service install`"}}
 }
 
 // removeManagedRegistrations tears down BOTH launchd registrations this binary
