@@ -163,7 +163,7 @@ else
       "bridge": "cbr0",
       "isDefaultGateway": true,
       "forceAddress": true,
-      "ipMasq": true,
+      "ipMasq": false,
       "hairpinMode": true,
       "ipam": {
         "type": "host-local",
@@ -529,10 +529,18 @@ fi
 # could not resolve github.com on a satellite plane (S490.8). Masquerade
 # pod traffic leaving the 10.42.0.0/16 pod supernet; pod-to-pod overlay
 # traffic keeps its source address.
+# The single-node fallback needs the same rule: the bridge plugin's
+# ipMasq shells out to iptables, which this image does not ship, so every
+# pod sandbox failed ("failed to locate iptables") on planes without the
+# overlay, e.g. satellite workers. Its conflist sets ipMasq false.
 POD_EGRESS_RULES=""
-if [ "${OUTPOST_POD_NETWORK_MODE}" != "peer-flannel" ] && [ -n "${OUTPOST_POD_CIDR}" ]; then
+POD_EGRESS_CIDR=""
+if [ "${OUTPOST_POD_NETWORK_MODE}" != "peer-flannel" ]; then
+    POD_EGRESS_CIDR="${OUTPOST_POD_CIDR:-${CNI_LOCAL_POD_CIDR:-10.42.255.0/24}}"
+fi
+if [ -n "${POD_EGRESS_CIDR}" ]; then
     POD_EGRESS_RULES="add chain ip outpost postrouting { type nat hook postrouting priority 100; policy accept; }
-add rule ip outpost postrouting ip saddr ${OUTPOST_POD_CIDR} ip daddr != 10.42.0.0/16 masquerade"
+add rule ip outpost postrouting ip saddr ${POD_EGRESS_CIDR} ip daddr != 10.42.0.0/16 masquerade"
 fi
 echo 1 > /proc/sys/net/ipv4/conf/all/route_localnet
 for iface in lo eth0 default "${POD_BRIDGE}"; do

@@ -247,9 +247,9 @@ func TestEntrypointOverlayPodEgressAndBridge(t *testing.T) {
 		t.Fatal(`10-outpost.conflist no longer names bridge "cbox0"; update POD_BRIDGE with it`)
 	}
 	for _, want := range []string{
-		`if [ "${OUTPOST_POD_NETWORK_MODE}" != "peer-flannel" ] && [ -n "${OUTPOST_POD_CIDR}" ]; then`,
+		`POD_EGRESS_CIDR="${OUTPOST_POD_CIDR:-${CNI_LOCAL_POD_CIDR:-10.42.255.0/24}}"`,
 		`add chain ip outpost postrouting { type nat hook postrouting priority 100; policy accept; }`,
-		`add rule ip outpost postrouting ip saddr ${OUTPOST_POD_CIDR} ip daddr != 10.42.0.0/16 masquerade`,
+		`add rule ip outpost postrouting ip saddr ${POD_EGRESS_CIDR} ip daddr != 10.42.0.0/16 masquerade`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("entrypoint lacks overlay pod egress: %s", want)
@@ -261,5 +261,18 @@ func TestEntrypointOverlayPodEgressAndBridge(t *testing.T) {
 	egress := strings.Index(script, "${POD_EGRESS_RULES}\nEOF")
 	if dnat < 0 || egress < dnat {
 		t.Error("${POD_EGRESS_RULES} is not applied in the outpost nft transaction")
+	}
+}
+
+// The image ships no iptables, so the single-node fallback bridge must not
+// ask the bridge plugin to masquerade (it shells out to iptables and every
+// sandbox failed on satellite workers); the nft rule covers its CIDR.
+func TestEntrypointFallbackBridgeNeedsNoIptables(t *testing.T) {
+	script := embeddedEntrypoint(t)
+	if strings.Contains(script, `"ipMasq": true`) {
+		t.Error(`a conflist still sets "ipMasq": true, which needs iptables absent from this image`)
+	}
+	if !strings.Contains(script, `"ipMasq": false`) {
+		t.Error(`the fallback bridge conflist does not set "ipMasq": false`)
 	}
 }
