@@ -1,10 +1,10 @@
 // `outpost sshd` — standalone LAN SSH server on port 2222.
 //
 // A drop-in (user-space) replacement for the system sshd, serving the
-// same in-process SSH server the daemon mounts at /ssh and on
-// FileConfig.SSHListenAddr — interactive shell, exec, SFTP (scp),
-// port-forwarding — but as a foreground one-shot command that needs
-// NO daemon, NO pairing, and NO cloudbox/internet connectivity.
+// same in-process SSH server the daemon mounts at /ssh and the sshd
+// unit serves on its declared port — interactive shell, exec, SFTP
+// (scp), port-forwarding — but as a foreground one-shot command that
+// needs NO daemon, NO pairing, and NO cloudbox/internet connectivity.
 //
 // Use cases:
 //   - A machine without sshd enabled (default macOS, most Windows
@@ -69,9 +69,12 @@ func sshdCmd() *cobra.Command {
 Serves outpost's in-process SSH server (shell, exec, SFTP/scp, port
 forwarding) on a plain TCP port, in the foreground, until Ctrl-C.
 Works on a completely unconfigured machine: no daemon, no pairing,
-no internet. Authentication accepts either the OS password or an
-install-time public key from ~/.ssh/authorized_keys (or --authorized-keys).
-The username must always be the OS user running this command.
+no internet. Authentication accepts either the OS password or a public
+key from an authorized_keys file (~/.ssh/authorized_keys by default;
+--authorized-keys overrides; on a running daemon the sshd unit instead
+defaults to its managed store, <config-dir>/sshd_authorized_keys, run
+'outpost ssh authorize add' there). The username must always be the OS
+user running this command.
 
 From another machine on the LAN:
 
@@ -92,8 +95,9 @@ default; --no-mdns to disable) lets 'outpost scan' and
 name instead of IP.
 
 This command runs the listener in-process and exits with it; for an
-always-on LAN listener managed by the daemon, set ssh_listen_addr
-('outpost config set --ssh-listen-addr 0.0.0.0:2222') instead.`,
+always-on LAN listener managed by the daemon, enable the outpost.sshd
+service unit ('outpost builtins set --service sshd=on') instead — same
+server, same host key, supervised across logout and reboot.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -104,7 +108,7 @@ always-on LAN listener managed by the daemon, set ssh_listen_addr
 		"TCP listen address (host:port or :port). Binds all interfaces by default — this server exists to be reached over the LAN.")
 	cmd.Flags().BoolVar(&noMDNS, "no-mdns", false,
 		"Skip the mDNS (_outpost._tcp) advertisement; the server is then reachable by address only.")
-	cmd.Flags().StringVar(&authorizedKeys, "authorized-keys", "", "authorized_keys file for LAN public-key authentication (default: ~/.ssh/authorized_keys)")
+	cmd.Flags().StringVar(&authorizedKeys, "authorized-keys", "", "authorized_keys file for LAN public-key authentication (default: ~/.ssh/authorized_keys; the outpost.sshd unit instead defaults to <config-dir>/sshd_authorized_keys)")
 	return cmd
 }
 
@@ -146,6 +150,10 @@ func runSSHDWithAuthorizedKeys(ctx context.Context, addr string, mdnsOn bool, au
 		return fmt.Errorf("ssh host key: %w", err)
 	}
 
+	// Empty stays empty: the server falls back to ~/.ssh/authorized_keys
+	// of the invoking user (the historical bootstrap default). The
+	// daemon's sshd unit instead defaults to its managed store
+	// (<config-dir>/sshd_authorized_keys) — see capability_sshd.go.
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("sshd: listen %s: %w", addr, err)

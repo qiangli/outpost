@@ -70,8 +70,8 @@ type SSHTarget struct {
 
 	// Direct, when true, dials the target via a plain TCP connection
 	// to Host:Port (defaulting to port 22 when Port is zero), bypassing
-	// the cloudbox WS path. The remote outpost must have its
-	// SSHListenAddr bound to a LAN address (FileConfig.SSHListenAddr).
+	// the cloudbox WS path. The remote outpost must serve LAN SSH there
+	// (`outpost sshd`, or the daemon's outpost.sshd unit).
 	//
 	// Trust on a Direct target is TOFU on the SSH host-key fingerprint
 	// (Wave 3A.1) — same as the cloudbox-WS path. Wave 3A.2 lifts to

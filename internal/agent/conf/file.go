@@ -345,22 +345,14 @@ type FileConfig struct {
 	// posture (mDNS broadcasts hostname + fingerprint on the LAN).
 	DiscoveryEnabled *bool `json:"discovery_enabled,omitempty"`
 
-	// SSHListenAddr is the optional LAN TCP bind for the in-process SSH
-	// server (e.g. "0.0.0.0:2222"). Empty disables the LAN listener;
-	// the matrix tunnel /ssh endpoint stays the only path until the
-	// operator explicitly opts into LAN exposure. The same handleSSHConn
-	// services WS and LAN paths; PasswordCallback authentication
-	// applies on LAN-direct (no cloudbox vouching available).
-	SSHListenAddr string `json:"ssh_listen_addr,omitempty"`
-
 	// SSHWSListenAddr is the optional LAN WebSocket-mounted SSH
 	// listener (e.g. "0.0.0.0:2223"). Same /ssh handler as the
 	// loopback bind — clients open a WSS upgrade with
 	// `Authorization: Bearer <peer-ticket>` and the receiver
 	// verifies the ticket locally against CloudboxTicketPubkey.
 	// Enables passwordless LAN-direct `outpost ssh` without putting
-	// cloudbox on the data plane. Distinct from SSHListenAddr
-	// (plain-TCP PAM-gated) so an operator can run both transports
+	// cloudbox on the data plane. Distinct from the plain-TCP sshd
+	// unit (outpost.sshd) so an operator can run both transports
 	// during migration without port-conflict. Empty disables.
 	SSHWSListenAddr string `json:"ssh_ws_listen_addr,omitempty"`
 

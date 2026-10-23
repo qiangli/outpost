@@ -111,7 +111,8 @@ podman system connection add outpost ssh://$USER@outpost.local
 
 `podman --connection=ssh://...` requires a reachable SSH endpoint on
 the outpost host — either the host's OS sshd, or outpost's LAN SSH
-listener (`outpost config set --ssh-listen-addr 0.0.0.0:2222`). The
+server (`outpost sshd`, or the daemon's outpost.sshd unit — enabled by
+default on port 2222). The
 in-process `/ssh` built-in is reachable only through the matrix tunnel,
 not directly from the LAN, so a host-side SSH endpoint is what makes
 this work end-to-end.

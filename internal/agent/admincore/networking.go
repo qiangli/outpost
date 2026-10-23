@@ -30,8 +30,6 @@ type NetworkingParams struct {
 
 	// DiscoveryEnabled flips the mDNS + HTTP discovery master switch.
 	DiscoveryEnabled *bool `json:"discovery_enabled,omitempty"`
-	// SSHListenAddr binds the LAN-direct SSH listener. Empty disables.
-	SSHListenAddr *string `json:"ssh_listen_addr,omitempty"`
 	// DiscoveryHTTPListenAddr binds the /api/v1/discover/* listener.
 	DiscoveryHTTPListenAddr *string `json:"discovery_http_listen_addr,omitempty"`
 	// PeerTrustPolicy is one of "same-owner" / "same-cloudbox" /
@@ -96,10 +94,6 @@ func (s *Server) SetNetworking(p NetworkingParams) (NetworkingResult, error) {
 			fc.DiscoveryEnabled = &v
 			changed = true
 		}
-	}
-	if p.SSHListenAddr != nil && strings.TrimSpace(*p.SSHListenAddr) != fc.SSHListenAddr {
-		fc.SSHListenAddr = strings.TrimSpace(*p.SSHListenAddr)
-		changed = true
 	}
 	if p.DiscoveryHTTPListenAddr != nil && strings.TrimSpace(*p.DiscoveryHTTPListenAddr) != fc.DiscoveryHTTPListenAddr {
 		fc.DiscoveryHTTPListenAddr = strings.TrimSpace(*p.DiscoveryHTTPListenAddr)

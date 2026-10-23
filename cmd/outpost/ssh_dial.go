@@ -49,7 +49,7 @@ func dialSSHTargetChain(ctx context.Context, name, jumpOverride string) (*sshcli
 
 	// Config + bearer are only REQUIRED when the outer leg rides the
 	// cloudbox WS path. A Direct outer leg (plain TCP to an `outpost
-	// sshd` / ssh_listen_addr listener) must work on a machine that
+	// sshd` listener — standalone or the sshd unit) must work on a machine that
 	// has never been paired and has no internet — that's the whole
 	// point of the LAN-direct mode. Load best-effort and validate in
 	// the WS branch below.

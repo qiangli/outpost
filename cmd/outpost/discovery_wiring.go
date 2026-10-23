@@ -1,6 +1,10 @@
-// Daemon-side wiring for the LAN-direct SSH listener and the LAN peer
-// discovery surfaces. Kept in a separate file so `outpost start`'s
+// Daemon-side wiring for the LAN peer discovery surfaces and the
+// WS-mounted SSH listeners. Kept in a separate file so `outpost start`'s
 // already-long main flow doesn't grow another ~150 LOC inline.
+//
+// The plain-TCP LAN sshd is NOT wired here: it is the `outpost.sshd`
+// service unit (cmd/outpost/capability_sshd.go), driven by the service
+// reconciler from its declaration.
 //
 // Both helpers are no-ops when the relevant FileConfig field is
 // empty/off — opt-in by design (privacy + reduced attack surface
@@ -41,58 +45,6 @@ func registerDiscoveryCommands(root *cobra.Command) {
 		repairCmd(),
 		peersCmd(),
 	)
-}
-
-// startLANSSHListener binds the optional LAN-direct SSH listener when
-// fc.SSHListenAddr is set. Reuses the same handler chain the matrix
-// tunnel /ssh endpoint uses (via agent.ServeLANSSH) so behavior stays
-// in lockstep — the only difference is the cloudboxVouched gate is
-// always false on LAN-direct.
-func startLANSSHListener(
-	gctx context.Context,
-	g *errgroup.Group,
-	fc *conf.FileConfig,
-	cfg *conf.Config,
-	sshHostKey ssh.Signer,
-	peers *peerhosts.Registry,
-	apps *agent.AppRegistry,
-) {
-	addr := strings.TrimSpace(fc.SSHListenAddr)
-	if addr == "" || !fc.SSHOn() || sshHostKey == nil {
-		return
-	}
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		slog.Warn("lan ssh: listen failed", "addr", addr, "err", err)
-		return
-	}
-	slog.Info("lan ssh: listening", "addr", ln.Addr().String())
-
-	lanDeps := agent.Deps{
-		Apps:                  apps,
-		Auth:                  hostauth.DefaultAuthenticator(),
-		AuthURL:               cfg.AuthURL,
-		SSHAllowLocalForward:  fc.SSHAllowLocalForwardOn(),
-		SSHAllowRemoteForward: fc.SSHAllowRemoteForwardOn(),
-		SSHAllowAgentForward:  fc.SSHAllowAgentForwardOn(),
-		SFTPEnabled:           fc.SFTPOn(),
-		SSHHostKey:            sshHostKey,
-		PeerHosts:             peers,
-		SSHForwardSockets:     fc.SSHForwardSockets,
-		CloudboxBase:          cloudboxHTTPBase(fc),
-		CloudboxProtocol:      cfg.Protocol,
-		AccessToken:           fc.AccessToken,
-		SelfName:              cfg.AgentName,
-	}
-	g.Go(func() error {
-		if err := agent.ServeLANSSH(gctx, ln, lanDeps); err != nil &&
-			!errors.Is(err, context.Canceled) &&
-			!errors.Is(err, net.ErrClosed) {
-			slog.Warn("lan ssh: listener exited", "err", err)
-			return err
-		}
-		return nil
-	})
 }
 
 // startLANSSHWSListener binds the optional WS-mounted SSH listener
@@ -291,9 +243,10 @@ func startDiscovery(
 	// without re-parsing. Bind-to-all addresses (0.0.0.0, ::) fall
 	// back to the assigned hostname so `<host>.local` resolution
 	// carries the dial forward.
-	if h, p := splitListenSpec(fc.SSHListenAddr, assignedHostname); p > 0 {
-		self.Endpoints = append(self.Endpoints, discovery.Endpoint{Kind: discovery.EndpointLANSSH, Host: h, Port: p})
-	}
+	//
+	// The plain-TCP lan-ssh endpoint is advertised by the sshd unit
+	// itself (it does not require discovery_enabled); only the WS and
+	// HTTP endpoints are published here.
 	if h, p := splitListenSpec(fc.SSHWSListenAddr, assignedHostname); p > 0 {
 		self.Endpoints = append(self.Endpoints, discovery.Endpoint{Kind: discovery.EndpointLANSSHWS, Host: h, Port: p})
 	}
@@ -434,7 +387,6 @@ func startDiscovery(
 			CloudboxBase:           cloudboxHTTPBase(fc),
 			Version:                version,
 			Paired:                 fc.AccessToken != "",
-			SSHListenAddr:          fc.SSHListenAddr,
 			SSHWSListenAddr:        fc.SSHWSListenAddr,
 			HTTPDiscoverListenAddr: fc.DiscoveryHTTPListenAddr,
 		})
@@ -455,10 +407,11 @@ func startDiscovery(
 }
 
 // pickAdvertisedPort returns the port to publish in the mDNS SRV
-// record. Preference: SSH-listen, then HTTP-discover. Returns 0
-// when neither listener is bound (no advertising in that case).
+// record: the WS listener, else the HTTP-discover listener. Returns 0
+// when neither is bound (no advertising in that case). The plain-TCP
+// lan-ssh port is advertised by the sshd unit itself.
 func pickAdvertisedPort(fc *conf.FileConfig) int {
-	if p := portFromListenSpec(fc.SSHListenAddr); p > 0 {
+	if p := portFromListenSpec(fc.SSHWSListenAddr); p > 0 {
 		return p
 	}
 	if p := portFromListenSpec(fc.DiscoveryHTTPListenAddr); p > 0 {

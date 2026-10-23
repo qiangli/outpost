@@ -34,13 +34,13 @@ piping or diffing against a local hash is one shell line.
 Reuses the same LAN-direct + cloudbox-fallback dial path as
 'outpost ssh' / 'outpost scp'; passwordless after the first
 'outpost connect'. Pass -P <port> to dial a LAN 'outpost sshd' /
-ssh_listen_addr directly (OS-password auth, no cloudbox).`,
+sshd unit directly (OS-password auth, no cloudbox).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runShasum(cmd.Context(), args[0], port)
 		},
 	}
-	cmd.Flags().IntVarP(&port, "port", "P", 0, "Dial the host directly on this TCP port (LAN 'outpost sshd' / ssh_listen_addr; OS-password auth, no cloudbox)")
+	cmd.Flags().IntVarP(&port, "port", "P", 0, "Dial the host directly on this TCP port (LAN 'outpost sshd' / sshd unit; OS-password auth, no cloudbox)")
 	return cmd
 }
 

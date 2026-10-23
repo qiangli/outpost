@@ -139,14 +139,16 @@ passthrough (`outpost.podman`), the filtered container sandbox
 (`outpost.sandbox`), the Ollama proxy (`outpost.ollama`) and its pool
 participation (`outpost.ollama-pool`), the considerate warm plane
 (`outpost.warm`), the model-sharding plane (`outpost.shard`), the same-LAN
-direct-inference listener (`outpost.lan-inference`), and the observability
-and ycode surfaces (`outpost.otel`, `outpost.ycode`). Switch one with
+direct-inference listener (`outpost.lan-inference`), the observability
+and ycode surfaces (`outpost.otel`, `outpost.ycode`), and the LAN sshd
+(`outpost.sshd`). Switch one with
 `builtins set --service NAME=on|off`, configure it with
 `--service-set NAME.settings.KEY=VALUE`, and read its state from
 `outpost services`. Their `agent.json` keys — `files_*`, `podman_enabled`,
 `sandbox_*`, `ollama_enabled`, `ollama_pool_enabled`, `warm_serving_enabled`,
-`warm_budget_frac`, `lan_inference_*`, `otel_*`, `ycode_*` and the whole
-`shard` block — are **removed outright, with no compatibility reader**: a
+`warm_budget_frac`, `lan_inference_*`, `otel_*`, `ycode_*`, `ssh_listen_addr`
+and the whole `shard` block — are **removed outright, with no compatibility
+reader**: a
 stale config carrying them parses cleanly and forgets them, so a host
 cannot keep a second invisible copy of a port, a budget or a posture that
 nothing honours. See "In-process capabilities" below for each unit's
@@ -313,7 +315,7 @@ is `settings` on its declaration.
 The bar for being a capability rather than a process unit is narrow:
 activation must need something only this process can do. Zot, SeaweedFS,
 Kopia and the Headlamp forward do not clear it — a command, a port and a
-data dir is exactly what `provider: process` expresses. These eleven do,
+data dir is exactly what `provider: process` expresses. These twelve do,
 each for a stated reason:
 
 | Capability | What it publishes | Why it is in-process | `settings` |
@@ -329,6 +331,7 @@ each for a stated reason:
 | `outpost.otel` | apps `otel-prometheus`, `otel-logs`, `otel-alerts`, `otel-traces`, `otel-dashboard` | the proxy URL and its bearer come from ycode's own manifest, and each surface needs a bearer-injecting proxy wrap | `pool` (allow cloudbox to federate queries / fan out alert rules; default on) |
 | `outpost.ycode` | apps `ycode`, `ycode-canvas`, `ycode-classic` | same manifest-detected proxy and bearer injection | `share` (which surfaces to publish: a list, `all`, or empty = the catalog's default-on set), `require_login` (cloudbox OS-password elevation; default off) |
 | `outpost.actrunner` | nothing — it dials OUT to the forge | see below | see the table below |
+| `outpost.sshd` | a LAN-bound listener on its declared port (see below) | the listener socket is accepted by this process; there is no command to supervise | `port` fallback when `ports` names none (default 2222 — the port normally comes from `ports`), `authorized_keys` (override for the `<config-dir>/sshd_authorized_keys` default), `mdns` (advertise the lan-ssh endpoint; default on) |
 
 Every one of them **refuses activation with the reason** when its backend
 is missing — an undetected podman socket, a stopped Ollama, an unreachable
@@ -389,10 +392,55 @@ An enabled unit that can resolve neither an instance nor a token is
 block logged "skipping" and returned, which left an enabled service looking
 fine while nothing ran.
 
+#### `outpost.sshd` in detail
+
+The LAN sshd is the user-space replacement for OpenSSH on outpost hosts:
+the same in-process SSH server (shell, exec, SFTP/scp, port forwarding)
+on a plain TCP port bound to all interfaces, with the same persistent
+host key as every other outpost SSH surface. The unit is **enabled by
+default** (declared port 2222) and is started, stopped and
+health-checked by the service reconciler, so it survives logout and
+reboot with the daemon; `outpost sshd` stays as the foreground bootstrap
+for unpaired machines.
+
+Authentication accepts the OS password (as before) **and** public keys
+from `<config-dir>/sshd_authorized_keys` (OpenSSH format; keys
+authenticate the daemon OS account only). Manage it without hand-editing
+dotfiles — changes take effect immediately, no restart:
+
+```bash
+ssh-keygen -y -f ~/.ssh/id_ed25519 | outpost ssh authorize add -
+outpost ssh authorize ls                    # fingerprints only
+outpost ssh authorize rm SHA256:...
+```
+
+A stock OpenSSH client then works BatchMode-style with no password:
+
+```bash
+ssh -i key -p 2222 user@host CMD
+```
+
+On Windows the unit installs its own inbound allow rule (`outpost
+sshd`, scoped to the outpost program: Private+Domain always, plus Public
+restricted to the local subnet while the active profile is Public),
+removed on unit disable. Without admin rights the rule cannot be
+installed and the unit reports **degraded** with the exact reason instead
+of silently being unreachable. When active, the unit advertises its
+lan-ssh endpoint over mDNS by default, so `outpost scan` and `outpost
+ssh <name>` find it without `discovery_enabled`.
+
+```bash
+outpost builtins set --service sshd=on \
+  --service-set sshd.ports.0.port=2222
+outpost builtins set --service-set sshd.settings.authorized_keys=/srv/keys/team_keys
+outpost services                     # sshd active on lan:2222
+```
+
 #### Contract notes for the unit seeds
 
 The declarations themselves live in fleet's embedded seeds (yoke), not here —
-outpost ships no unit YAML. Two things in that contract are outpost's half:
+outpost ships no unit YAML, with one exception (`outpost.sshd`, below).
+Two things in that contract are outpost's half:
 
 1. **Capability ids.** The daemon registers exactly these, and a seed must
    name one of them in `capability:` or it binds to nothing and reports
@@ -401,7 +449,13 @@ outpost ships no unit YAML. Two things in that contract are outpost's half:
    `outpost.files`, `outpost.podman`, `outpost.sandbox`, `outpost.ollama`,
    `outpost.ollama-pool`, `outpost.warm`, `outpost.shard`,
    `outpost.lan-inference`, `outpost.otel`, `outpost.ycode`,
-   `outpost.actrunner`.
+   `outpost.actrunner`, `outpost.sshd`.
+
+   (`outpost.sshd` is the exception to "the declarations live in yoke":
+   its seed cannot come from the embedded baseline, so outpost ensures
+   the declaration itself in the host-local ring — enabled by default on
+   port 2222, missing-only, never touching an operator's disable or
+   custom port.)
 
    The id is the contract; the unit **name** is the operator's, so nothing
    in outpost keys off it. `outpost services` lists each unit's capability

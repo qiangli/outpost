@@ -27,6 +27,8 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/qiangli/yoke/pkg/service"
+
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/adminui"
@@ -51,6 +53,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/runtime"
 	"github.com/qiangli/outpost/internal/agent/selfcheck"
 	"github.com/qiangli/outpost/internal/agent/shard"
+	"github.com/qiangli/outpost/internal/agent/svcunit"
 	"github.com/qiangli/outpost/internal/agent/sysinfo"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
 	"github.com/qiangli/outpost/internal/agent/userkube"
@@ -414,6 +417,15 @@ func startCmd() *cobra.Command {
 			if _, err := migrateLegacyServices(cfgPath, fc, svcStore); err != nil {
 				slog.Warn("legacy service migration", "err", err)
 			}
+			// The LAN sshd unit is declared here (host-local ring) because
+			// its seed cannot live in yoke: enabled by default, declared
+			// port 2222. Missing-only — an operator's disable or custom
+			// port is never touched.
+			ensureSSHDUnit(svcStore)
+			// The capability hosts the unit with the objects known so
+			// far; the peer registry (built below, once pairing is known)
+			// is attached before the reconciler starts.
+			caps.SSHD = newSSHDCapability(fc, cfg, nil, apps)
 			shardWanted := capabilityEnabled(svcStore, capShard)
 
 			// Peer-plane locality service (opt-in, OFF by default). Created
@@ -1093,23 +1105,37 @@ func startCmd() *cobra.Command {
 				})
 			}
 
-			// O4 managed-service sshd: honor an explicit ssh_listen_addr
-			// even before first pairing. The branch below returns early
-			// (no tunnel, no listeners), which is correct by default —
-			// but an operator who explicitly opted into LAN SSH would
-			// otherwise get a silently dead setting until pairing. The
-			// peer extras stay off: peers is nil until paired, so the
-			// server keeps the loopback-only direct-tcpip posture (same
-			// as the unpaired standalone `outpost sshd`).
-			if cfg.AgentName == "" && strings.TrimSpace(fc.SSHListenAddr) != "" && fc.SSHOn() {
-				firstRunKey, kerr := agent.LoadOrCreateHostKey()
-				if kerr != nil {
-					return fmt.Errorf("ssh host key: %w", kerr)
+			// LAN sshd before first pairing: the sshd unit serves even on
+			// an unpaired host (a fresh install is reachable over the
+			// LAN while awaiting pairing), driven through the unit — not
+			// ad-hoc wiring — with the reconciler taking over after
+			// pairing. The peer extras stay off: peers is nil until
+			// paired, so the server keeps the loopback-only
+			// direct-tcpip posture (same as the unpaired standalone
+			// `outpost sshd`).
+			if cfg.AgentName == "" {
+				if u, ok := svcStore.Unit("sshd"); ok && u.Enabled && caps.SSHD != nil {
+					aerr := caps.SSHD.Activate(gctx, service.ConfigOf(u, service.Runtime{}))
+					if caps.SSHD.boundPort() <= 0 {
+						slog.Warn("first-run sshd: unit failed to serve (continuing without LAN ssh)", "err", aerr)
+					} else {
+						if aerr != nil {
+							slog.Warn("first-run sshd: serving degraded", "err", aerr)
+						}
+						g.Go(func() error {
+							<-gctx.Done()
+							return caps.SSHD.Deactivate(context.Background())
+						})
+					}
 				}
-				startLANSSHListener(gctx, g, fc, cfg, firstRunKey, nil, apps)
 			}
 
 			if cfg.AgentName == "" {
+				// Unit declarations are readable/writable before pairing
+				// (the sshd unit is managed this way on a host that never
+				// pairs). No reconciler runs here, so writes apply on the
+				// next (re)start rather than live.
+				core.SetServices(&serviceControl{Store: svcStore, cli: svcunit.ExecRunner(bashyResolver.Path)})
 				fmt.Fprintln(os.Stderr, "Not yet configured — open the Admin UI to pair this host with the portal.")
 				slog.Info("outpost: awaiting first-run pairing through admin UI")
 				if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
@@ -1153,7 +1179,7 @@ func startCmd() *cobra.Command {
 			// persists across re-pairings so clients' known_hosts entries
 			// stay valid.
 			var sshHostKey ssh.Signer
-			if fc.SSHOn() || fc.DiscoveryOn() {
+			if fc.SSHOn() || fc.DiscoveryOn() || capabilityEnabled(svcStore, capSSHD) {
 				k, kerr := agent.LoadOrCreateHostKey()
 				if kerr != nil {
 					return fmt.Errorf("ssh host key: %w", kerr)
@@ -1340,9 +1366,9 @@ func startCmd() *cobra.Command {
 				return tunnel.Run(gctx)
 			})
 
-			// Wave 3A: optional LAN-direct SSH listener + LAN peer
-			// discovery. Both off by default; see discovery_wiring.go.
-			startLANSSHListener(gctx, g, fc, cfg, sshHostKey, peers, apps)
+			// LAN sshd is a service unit now (outpost.sshd): the reconciler
+			// drives its listener from the declaration. The WS-mounted
+			// listener below stays config-keyed.
 			startLANSSHWSListener(gctx, g, fc, cfg, sshHostKey, peers, apps)
 			// Same SSH server, published to authenticated mesh peers over a
 			// loopback bind. This is what lets `outpost ssh`/`scp` take the
@@ -1408,6 +1434,10 @@ func startCmd() *cobra.Command {
 			// mesh names, withdrawn when the unit stops being active) and
 			// the capabilities whose implementation is inside this process.
 			//
+			// Attach the peer registry to the sshd unit now that pairing is
+			// known (it was built peer-less for the first-run branch
+			// above, which returns before reaching here).
+			caps.SSHD = newSSHDCapability(fc, cfg, peers, apps)
 			// Started HERE, after every capability above is constructed:
 			// the reconciler is what activates them, so a capability built
 			// later would never be registered and its unit would report
@@ -3400,6 +3430,9 @@ func doRecover(ctx context.Context, serverURL, recoveryCode, name, title, authUR
 	if err := conf.SaveFile(path, merged); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
+	// LAN sshd is on by default: a recovered host serves it (missing-only;
+	// never touches an operator's disable or custom port).
+	ensureSSHDUnit(serviceStore())
 	fmt.Printf("Recovered as %q. Config saved to %s\n", merged.AgentName, path)
 	return nil
 }
@@ -3432,6 +3465,9 @@ func doExchange(ctx context.Context, serverURL, code, name, title, authURL, out 
 	if err := conf.SaveFile(path, merged); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
+	// LAN sshd is on by default: a freshly paired host serves it
+	// (missing-only; never touches an operator's disable or custom port).
+	ensureSSHDUnit(serviceStore())
 	fmt.Printf("Registered as %q. Config saved to %s\n", merged.AgentName, path)
 	return nil
 }

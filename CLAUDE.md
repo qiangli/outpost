@@ -300,7 +300,7 @@ Two halves — a server inside the outpost agent and client-side CLI helpers:
 - **`outpost connect <host>` (`cmd/outpost/connect.go`)**: CLI mirror of the Periscope "Connect" button. Resolves the host's cloudbox view first (`/api/v1/ssh/hosts`: reported `os_user` + `shared` flag); for a host *shared with* this account it skips the password prompt entirely (cloudbox mints the sharee cookie from the HostShare row and never reads the password), otherwise prompts for the OS password and resolves the username (CLI flag → reported `os_user` → local `$USER`). POSTs to `<server>/matrix/h/<host>/elev/ssh` with the local outpost's bearer `access_token`, and caches the returned `matrix_elev` cookie at `~/.cache/outpost/sessions/<host>.cookie`. Reads the cookie off `resp.Cookies()` directly rather than via cookiejar — cloudbox scopes the cookie's Path to the data URL (`/matrix/h/<host>/ssh`), which is a sibling of the POST URL (`/matrix/h/<host>/elev/ssh`), so the jar would (correctly) drop it. Subsequent `ssh-proxy` runs ride on that cookie until idle (1 h) / absolute (8 h) expiry. `--stdin` reads the password from stdin for non-interactive agentic callers. `--keep-alive` holds the process open and pings `/matrix/h/<host>/elev/ssh/ping` every 30 min to slide the idle TTL (cloudbox refreshes Set-Cookie past the halfway mark; we capture the refreshed value via `resp.Cookies()` and atomically rewrite the cache file). The process exits non-zero on 401/403 so a supervisor wrapper can re-elevate with a fresh password; SIGTERM/SIGINT exits cleanly. Use for long-running agentic flows that would otherwise hit `EAUTHREQUIRED` mid-run.
 - **`outpost ssh-proxy <host>` (`cmd/outpost/ssh.go`)**: meant as a `ProxyCommand` in `~/.ssh/config`. Opens a WebSocket to `<cloudbox>/matrix/h/<host>/ssh` with the persisted bearer token, attaches the cached `matrix_elev` cookie if present, and pipes stdin↔WS↔stdout. Local `ssh` does the SSH protocol on top.
 - **`outpost ssh-config`**: emits `~/.ssh/config` stanzas for hosts visible to this account (uses the same persisted bearer token).
-- **`outpost sshd` (`cmd/outpost/sshd.go`)**: standalone foreground LAN SSH server — the same in-process server (`agent.ServeLANSSH`, same persistent host key, shell + exec + SFTP + forwarding), bound to a plain TCP port (default `:2222`, all interfaces) with **no daemon, no pairing, and no cloudbox** required. Drop-in user-space sshd for machines without one (default macOS / Windows) and for bootstrap ("target machine has only the outpost binary; drive setup from a laptop over the LAN"). Auth is always the OS-password gate (no vouching paths exist on this listener). Advertises over mDNS by default (`--no-mdns` opts out) so sibling machines find it by name. Paired extras (peer direct-tcpip allowlist, cloudbox-tunneled `ssh -J` hops) light up opportunistically when an `agent.json` with an `access_token` is present. Distinct from the daemon-managed `ssh_listen_addr` listener, which is the always-on variant of the same thing.
+- **`outpost sshd` (`cmd/outpost/sshd.go`)**: standalone foreground LAN SSH server — the same in-process server (`agent.ServeLANSSH`, same persistent host key, shell + exec + SFTP + forwarding), bound to a plain TCP port (default `:2222`, all interfaces) with **no daemon, no pairing, and no cloudbox** required. Drop-in user-space sshd for machines without one (default macOS / Windows) and for bootstrap ("target machine has only the outpost binary; drive setup from a laptop over the LAN"). Auth is the OS-password gate plus public keys from `--authorized-keys` (default `~/.ssh/authorized_keys`; no vouching paths exist on this listener). Advertises over mDNS by default (`--no-mdns` opts out) so sibling machines find it by name. Paired extras (peer direct-tcpip allowlist, cloudbox-tunneled `ssh -J` hops) light up opportunistically when an `agent.json` with an `access_token` is present. The always-on daemon-managed variant of the same thing is the `outpost.sshd` service unit (next bullet but one): same server, same host key, supervised across logout and reboot, key auth from its managed store (`<config-dir>/sshd_authorized_keys`, `outpost ssh authorize add|rm|ls`).
 - **Client-side no-cloudbox fallback (`dialOutpostHost` / `dialSSHTargetChain`)**: the `outpost ssh` / `scp` / `shasum` / `ssh sftp` client family never *requires* cloudbox. An explicit port (`outpost ssh user@host:2222`, `scp -P 2222`, `shasum -P 2222`) forces a plain TCP dial; so does a `.local` host name or an IP literal (`isLANAddressLiteral` — RFC 6762 names and IPs can never be cloudbox host names, so the cloudbox detour would only burn a round-trip + password prompt before falling back anyway); an unpaired machine automatically takes the LAN path (mDNS lan-ssh endpoint lookup, else `host:2222`); a paired machine falls back to the same LAN path when the whole cloudbox-assisted flow fails (internet down). LAN-direct auth is the remote OS password via `sshclient.Config.Auth` (TTY prompt, or `$OUTPOST_SSH_PASSWORD` for non-interactive callers), host key pinned TOFU into the same known_hosts. Saved `--direct` targets likewise no longer demand pairing.
 
 ### Outbound mounts (`internal/agent/outbound.go`)
@@ -622,7 +622,7 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   the unit's restart policy (it used to log once and give up until the next
   daemon restart), and the port exists in **one** place.
 - **The retained in-process surfaces are service units too (Sprint 418 S18
-  child).** Eleven subsystems keep their implementation inside the daemon
+  child).** Twelve subsystems keep their implementation inside the daemon
   but take their declaration, settings, enablement, status and exposure
   from the SAME machinery as a seeded built-in or a third-party YAML:
   `outpost.files` (the embedded File Browser; `settings.{scope,allow_write}`),
@@ -634,22 +634,33 @@ peer-to-peer direct, relay only as fallback. Design + rationale:
   (`settings.{role,peers,node_bytes,server_bin,worker_bin}`),
   `outpost.lan-inference` (a LAN listener on its **declared** port),
   `outpost.otel` (`settings.pool`), `outpost.ycode`
-  (`settings.{share,require_login}`) and `outpost.actrunner` (next bullet).
+  (`settings.{share,require_login}`), `outpost.actrunner` (next bullet),
+  and `outpost.sshd` (the LAN sshd: a listener on its **declared** port,
+  default 2222; `settings.{port,authorized_keys,mdns}`).
   One file each: `cmd/outpost/capability_*.go`, registered in
   `outpostCapabilities()`.
 
   They are capabilities rather than process units because activation needs
   something only this process can do — a compiled-in handler, a detected
   and platform-dependent socket, a manifest-read bearer, this process's
-  libp2p forwarder, a load sensor shared with cluster placement. What the
+  libp2p forwarder, a load sensor shared with cluster placement, a socket
+  this process must accept on. What the
   declaration owns is everything decidable.
+
+  The sshd unit is the one declared outside yoke's embedded seeds:
+  outpost ensures it in the host-local ring (enabled by default,
+  missing-only), because a seed it cannot ship cannot be default-on.
+  It also serves before first pairing (the first-run branch drives the
+  capability directly until the reconciler takes over), installs its own
+  Windows firewall rule (degraded with the reason when it cannot), and
+  advertises its lan-ssh endpoint over mDNS without `discovery_enabled`.
 
   **Retired outright, no compatibility reader:** `agent.json`'s `files_*`
   (except the daemon-internal `files_signing_key`), `podman_enabled`,
   `sandbox_*`, `ollama_enabled`, `ollama_pool_enabled`,
   `warm_serving_enabled`, `warm_budget_frac` (`warm_desired` stays — it is
   runtime state `/admin/warm` drives), `lan_inference_*`, `otel_*`,
-  `ycode_*` and the whole `shard` block; `conf.ShardConfig`,
+  `ycode_*`, `ssh_listen_addr` and the whole `shard` block; `conf.ShardConfig`,
   `FilesOn`/`PodmanOn`/`SandboxOn`/`OllamaOn`/`OllamaPoolOn`/
   `WarmServingOn`/`WarmBudgetFracOrDefault`/`LANInferenceOn`/
   `LANInferencePortOrDefault`/`OtelOn`/`OtelPoolOn`/`YcodeOn`/

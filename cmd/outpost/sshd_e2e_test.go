@@ -22,7 +22,7 @@ import (
 // TestSSHDirectE2E drives the full LAN-direct drop-in pair end to end,
 // in-process: the `outpost sshd` server half (agent.ServeLANSSH — same
 // code path as the standalone `outpost sshd` command and the daemon's
-// ssh_listen_addr listener) against the `outpost ssh` client half
+// sshd unit) against the `outpost ssh` client half
 // (dialDirectSSH — the path taken by `outpost ssh user@host:2222`).
 //
 // This is the agentic-bootstrap scenario the feature exists for: an
