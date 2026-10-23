@@ -81,6 +81,7 @@ Surface:
   outpost ssh connect <name> [--jump <alias>]
   outpost ssh tunnel <name> [--jump <alias>] -L <local>:<remote-host>:<remote-port>
   outpost ssh sftp <name> [--jump <alias>] (get|put|ls) ...
+  outpost ssh authorize add <pubkey|-> | rm <fingerprint> | ls
   outpost ssh [user@]<host>[:port] [cmd args...]  # ad-hoc; LAN-direct if reachable
 
 Ad-hoc shorthand:
@@ -94,8 +95,9 @@ Ad-hoc shorthand:
 No cloudbox needed (LAN / bootstrap):
   An explicit port ('outpost ssh user@192.168.1.5:2222') dials plain
   TCP to that address — the server side is 'outpost sshd' (default
-  port 2222) or a daemon with ssh_listen_addr. Auth is the remote
-  OS password (TTY prompt, or $OUTPOST_SSH_PASSWORD for agents).
+  port 2222) or a daemon with the sshd unit. Auth is the remote
+  OS password (TTY prompt, or $OUTPOST_SSH_PASSWORD for agents), or
+  a key from 'outpost ssh authorize add'.
   An unpaired machine takes this LAN path automatically: mDNS lookup
   of the name's advertised lan-ssh endpoint, else host:2222. A
   paired machine also falls back to it when the cloudbox flow fails
@@ -141,6 +143,7 @@ Hop/jump:
 		sshConnectCmd(),
 		sshTunnelCmd(),
 		sshSFTPCmd(),
+		sshAuthorizeCmd(),
 	)
 	return cmd
 }
@@ -234,7 +237,8 @@ LAN-direct targets (--direct set).
 
 --direct makes the target a LAN-direct dial: cloudbox is bypassed and
 we open a plain TCP connection to <host>:<port> (defaults to 22). The
-remote outpost must have its SSHListenAddr bound to a LAN address.
+remote outpost must serve LAN SSH there ('outpost sshd', or the
+daemon's outpost.sshd unit).
 TOFU on the SSH host-key fingerprint applies (Wave 3A.2 lifts to
 cloudbox-CA-signed certs).
 
@@ -268,7 +272,7 @@ func runSSHAdd(ctx context.Context, name, host, user, description, via string, p
 		}
 		ep := discovered.FirstEndpoint(discovery.EndpointLANSSH)
 		if ep.Host == "" || ep.Port == 0 {
-			return fmt.Errorf("peer %q has no lan-ssh endpoint advertised; add SSHListenAddr on that outpost", fromPeer)
+			return fmt.Errorf("peer %q has no lan-ssh endpoint advertised; enable the sshd unit on that outpost", fromPeer)
 		}
 		if host == "" {
 			host = ep.Host

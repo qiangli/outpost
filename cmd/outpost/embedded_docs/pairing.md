@@ -116,13 +116,14 @@ host where this is installed, a reboot brings the tunnel back with no
 login required, and the host returns to `online` on its own.
 
 The standalone `outpost sshd` on :2222 used for bootstrapping is **not**
-part of the boot service — it is intentionally ephemeral. If you want a
-durable LAN-direct SSH as well, set the daemon's `ssh_listen_addr`
-instead (it lives inside `outpost start`, so the boot service covers it):
+part of the boot service — it is intentionally ephemeral. Durable
+LAN-direct SSH is the daemon's outpost.sshd service unit instead
+(enabled by default on port 2222 — it lives inside `outpost start`, so
+the boot service covers it across logout and reboot):
 
 ```bash
-outpost config set --ssh-listen-addr :2222
-outpost restart  # listener binds take effect at (re)start
+outpost services  # sshd active on lan:2222
+outpost builtins set --service sshd=off  # if you ever want it off
 ```
 
 ## Platform notes

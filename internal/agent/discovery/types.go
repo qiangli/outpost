@@ -59,10 +59,10 @@ func (p PeerID) IsValid() bool {
 type EndpointKind string
 
 const (
-	// EndpointLANSSH is the outpost's optional LAN TCP SSH listener
-	// (FileConfig.SSHListenAddr). Reachable directly from peers on
-	// the same broadcast domain. PAM-gated (no cloudbox-vouching on
-	// LAN-direct) — the legacy plain-TCP path before peer-tickets.
+	// EndpointLANSSH is the outpost's LAN TCP SSH listener (the
+	// outpost.sshd unit, or a standalone `outpost sshd`). Reachable
+	// directly from peers on the same broadcast domain. OS-password or
+	// authorized-key gated (no cloudbox-vouching on LAN-direct).
 	EndpointLANSSH EndpointKind = "lan-ssh"
 
 	// EndpointLANSSHWS is the outpost's optional LAN WebSocket-mounted

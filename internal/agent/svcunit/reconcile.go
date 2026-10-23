@@ -368,7 +368,11 @@ func (r *Reconciler) applyInternal(ctx context.Context, u fleet.Service, desired
 			// reporting. A changed reason, or a recovery followed by a new
 			// failure, is logged again.
 			if r.noteActivateFailure(u.Name, err) {
-				r.log.Warn("internal service: activate failed", "unit", u.Name, "capability", u.Capability, "err", err)
+				if isDegraded(err) {
+					r.log.Warn("internal service: degraded", "unit", u.Name, "capability", u.Capability, "err", err)
+				} else {
+					r.log.Warn("internal service: activate failed", "unit", u.Name, "capability", u.Capability, "err", err)
+				}
 			}
 		} else {
 			r.noteActivateFailure(u.Name, nil)
@@ -394,27 +398,45 @@ func (r *Reconciler) applyInternal(ctx context.Context, u fleet.Service, desired
 		// Health says it stopped serving, this pass is the only thing that
 		// can notice. Cycle it: Activate either brings it back or refuses
 		// with a reason, and the unit stops reporting active either way.
+		//
+		// A DegradedError is the exception: the capability serves with a
+		// known limitation (a firewall rule it could not install), and a
+		// restart cannot fix that — cycling would flap a working
+		// listener every pass. Report degraded with the reason instead.
 		if err := prov.Health(ctx, u.Name); err != nil {
-			if r.noteActivateFailure(u.Name, err) {
-				r.log.Warn("internal service: unhealthy; cycling", "unit", u.Name, "capability", u.Capability, "err", err)
+			if isDegraded(err) {
+				applyErr = err
+				if r.noteActivateFailure(u.Name, err) {
+					r.log.Warn("internal service: degraded", "unit", u.Name, "capability", u.Capability, "err", err)
+				}
+			} else {
+				if r.noteActivateFailure(u.Name, err) {
+					r.log.Warn("internal service: unhealthy; cycling", "unit", u.Name, "capability", u.Capability, "err", err)
+				}
+				if derr := prov.Deactivate(ctx, u.Name); derr != nil {
+					r.log.Warn("internal service: cycle deactivate failed", "unit", u.Name, "err", derr)
+				}
+				if aerr := prov.Activate(ctx, u, rt); aerr != nil {
+					applyErr = aerr
+					r.log.Warn("internal service: cycle activate failed", "unit", u.Name, "err", aerr)
+				}
+				r.rememberApplied(u)
 			}
-			if derr := prov.Deactivate(ctx, u.Name); derr != nil {
-				r.log.Warn("internal service: cycle deactivate failed", "unit", u.Name, "err", derr)
-			}
-			if aerr := prov.Activate(ctx, u, rt); aerr != nil {
-				applyErr = aerr
-				r.log.Warn("internal service: cycle activate failed", "unit", u.Name, "err", aerr)
-			}
-			r.rememberApplied(u)
 		}
 	}
 	st := prov.Status(u.Name)
 	st.Unit, st.Provider, st.Enabled = u.Name, fleet.ServiceProviderInternal, u.Enabled
 	// A capability that refused (or is not registered here at all) never
 	// reached the provider's own bookkeeping; say why instead of reporting a
-	// bare inactive.
-	if applyErr != nil && st.State != service.Active {
-		st.State, st.Reason = service.Failed, applyErr.Error()
+	// bare inactive. A DegradedError maps to degraded even when the provider
+	// still says active (a serving capability reporting a limitation through
+	// Health) — degraded stays published, failed is withdrawn.
+	if applyErr != nil {
+		if isDegraded(applyErr) {
+			st.State, st.Reason, st.Health = service.Degraded, applyErr.Error(), applyErr.Error()
+		} else if st.State != service.Active {
+			st.State, st.Reason = service.Failed, applyErr.Error()
+		}
 	}
 	if st.State == service.Active {
 		st.Health = "ok"

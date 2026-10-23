@@ -74,7 +74,6 @@ func configShowCmd() *cobra.Command {
 				discOnOff = "on"
 			}
 			fmt.Printf("  %-26s  %s\n", "discovery_enabled", discOnOff)
-			row("ssh_listen_addr", view.SSHListenAddr, "(off — matrix tunnel only)")
 			row("discovery_http_listen_addr", view.DiscoveryHTTPListenAddr, "(off)")
 			fmt.Printf("  %-26s  %s\n", "peer_trust_policy", view.PeerTrustPolicy)
 			if view.AssignedHostname != "" {
@@ -96,10 +95,9 @@ func configSetCmd() *cobra.Command {
 		adminUsers                    string
 		clearAdminUsers               bool
 
-		// Wave 3A discovery + LAN-direct knobs.
+		// Wave 3A discovery knobs (the LAN sshd is a service unit now).
 		discoveryOn             bool
 		discoveryOff            bool
-		sshListenAddr           string
 		discoveryHTTPListenAddr string
 		peerTrustPolicy         string
 
@@ -160,7 +158,7 @@ Examples:
 				params.AdminUsers = &users
 				set = true
 			}
-			// Wave 3A discovery + LAN-direct knobs.
+			// Wave 3A discovery knobs.
 			if discoveryOn && discoveryOff {
 				return fmt.Errorf("--discovery=on and --no-discovery are mutually exclusive")
 			}
@@ -171,14 +169,6 @@ Examples:
 			} else if discoveryOff {
 				v := false
 				params.DiscoveryEnabled = &v
-				set = true
-			}
-			if cmd.Flags().Changed("ssh-listen-addr") {
-				v := sshListenAddr
-				if v == "<clear>" {
-					v = ""
-				}
-				params.SSHListenAddr = &v
 				set = true
 			}
 			if cmd.Flags().Changed("discovery-http-listen-addr") {
@@ -253,13 +243,6 @@ Examples:
 				payload["discovery_enabled"] = *params.DiscoveryEnabled
 				payload["set_discovery_enabled"] = true
 			}
-			if params.SSHListenAddr != nil {
-				v := *params.SSHListenAddr
-				if v == "" {
-					v = "<clear>"
-				}
-				payload["ssh_listen_addr"] = v
-			}
 			if params.DiscoveryHTTPListenAddr != nil {
 				v := *params.DiscoveryHTTPListenAddr
 				if v == "" {
@@ -307,10 +290,9 @@ Examples:
 	cmd.Flags().StringVar(&adminAddr, "admin-addr", "", "Bind for the admin UI + MCP listener (default 127.0.0.1:17777)")
 	cmd.Flags().StringVar(&adminUsers, "admin-users", "", "Comma-separated email allowlist for the OS-auth admin role")
 	cmd.Flags().BoolVar(&clearAdminUsers, "clear-admin-users", false, "Revert to the legacy 'anyone with OS password is admin' mode")
-	// Wave 3A discovery + LAN-direct.
+	// Wave 3A discovery (the LAN sshd is the outpost.sshd service unit now).
 	cmd.Flags().BoolVar(&discoveryOn, "discovery", false, "Turn LAN peer discovery on (mDNS + HTTP /discover)")
 	cmd.Flags().BoolVar(&discoveryOff, "no-discovery", false, "Turn LAN peer discovery off")
-	cmd.Flags().StringVar(&sshListenAddr, "ssh-listen-addr", "", "LAN TCP bind for the in-process SSH server (e.g. 0.0.0.0:2222). Pass '<clear>' to disable.")
 	cmd.Flags().StringVar(&discoveryHTTPListenAddr, "discovery-http-listen-addr", "", "LAN bind for /api/v1/discover/* (e.g. 0.0.0.0:17778). Pass '<clear>' to disable.")
 	cmd.Flags().StringVar(&peerTrustPolicy, "peer-trust-policy", "", "Peer trust policy: same-owner | same-cloudbox | tofu-allow")
 	// Intra-home distributed-inference (cluster) backend.

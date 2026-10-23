@@ -42,11 +42,12 @@ func TestOutpostCapabilitiesCoverEveryRetainedSurface(t *testing.T) {
 		LANInference: &lanInferenceCapability{},
 		Otel:         &otelCapability{Apps: apps},
 		Ycode:        &ycodeCapability{Apps: apps},
+		SSHD:         &sshdCapability{},
 	})
 	for _, id := range []string{
 		capFiles, capPodman, capSandbox, capOllama, capOllamaPool,
 		capWarm, capShard, capLANInference, capOtel, capYcode,
-		capActrunner,
+		capActrunner, capSSHD,
 	} {
 		if _, ok := caps[id]; !ok {
 			t.Errorf("capability %q is not registered", id)

@@ -32,6 +32,7 @@ func (s *Server) registerTools() {
 	s.registerLifecycleTools()
 	s.registerUpgradeTools()
 	s.registerSSHTools()
+	s.registerSSHAuthorizeTools()
 	s.registerGossipTools()
 	s.registerMeshTools()
 	s.registerMirrorTools()

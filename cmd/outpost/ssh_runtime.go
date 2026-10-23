@@ -64,8 +64,8 @@ func runSSHHost(ctx context.Context, arg string, cmdArgs []string) error {
 // Dial policy — cloudbox makes things smarter but is never required:
 //
 //  1. Explicit port → plain TCP dial to host:port (the `outpost sshd`
-//     / ssh_listen_addr case). Password auth, TOFU host key. No
-//     cloudbox involvement at all.
+//     case — standalone or the sshd unit). Password auth, TOFU host
+//     key. No cloudbox involvement at all.
 //  2. Unpaired (or no bearer) → LAN-only: mDNS lookup of the name's
 //     advertised lan-ssh endpoint, else a direct dial to
 //     host:2222. Password auth.
@@ -103,7 +103,7 @@ func dialOutpostHost(ctx context.Context, host, user string, port int) (*sshclie
 	if fc == nil || fc.ServerAddr == "" || bearer == "" {
 		// No cloudbox pairing — LAN-direct is the only path. This is
 		// the bootstrap scenario: the target runs `outpost sshd` (or a
-		// daemon with ssh_listen_addr) and this machine has nothing
+		// daemon with the sshd unit) and this machine has nothing
 		// but the binary.
 		return dialLANFallback(ctx, host, user, nil)
 	}
@@ -462,7 +462,7 @@ func dialCloudboxTunnel(
 
 // dialLANFallback is the no-cloudbox path: reach the host over the
 // LAN with the OS-password gate doing the auth (the server side is
-// `outpost sshd` or a daemon with ssh_listen_addr). Candidate
+// `outpost sshd` or a daemon with the sshd unit). Candidate
 // endpoint resolution, in order:
 //
 //  1. mDNS: a peer advertising a plain-TCP `lan-ssh` endpoint under

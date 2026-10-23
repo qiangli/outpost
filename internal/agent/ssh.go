@@ -387,9 +387,9 @@ func ServeLANListener(ctx context.Context, ln net.Listener, deps sshHandlerDeps)
 
 // ServeLANSSH is the cmd/outpost-callable wrapper that builds the
 // internal sshHandlerDeps from the public Deps shape and calls
-// ServeLANListener. Lets the daemon main loop attach a LAN-direct SSH
-// listener (FileConfig.SSHListenAddr) without main.go having to know
-// the internal handler-deps fields.
+// ServeLANListener. Lets the sshd unit and the standalone `outpost sshd`
+// attach a LAN-direct SSH listener without knowing the internal
+// handler-deps fields.
 //
 // Always passes cloudboxVouched=false (inside ServeLANListener): the
 // LAN TCP path has no upstream vouching, so the OS-password gate

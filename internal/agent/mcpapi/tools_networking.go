@@ -29,8 +29,7 @@ type networkingIn struct {
 	// network bind fields. Pass an explicit "<clear>" to revert a
 	// string field; the bool needs SetDiscoveryEnabled=true to apply.
 	SetDiscoveryEnabled     bool   `json:"set_discovery_enabled,omitempty" jsonschema:"Set true to apply discovery_enabled."`
-	DiscoveryEnabled        bool   `json:"discovery_enabled,omitempty" jsonschema:"Master gate for mDNS + HTTP /discover. Requires set_discovery_enabled=true."`
-	SSHListenAddr           string `json:"ssh_listen_addr,omitempty" jsonschema:"LAN TCP bind for the in-process SSH server (e.g. 0.0.0.0:2222). Empty = leave unchanged; '<clear>' = disable."`
+	DiscoveryEnabled        bool   `json:"discovery_enabled,omitempty" jsonschema:"Master gate for mDNS + HTTP /discover. Requires set_discovery_enabled=true. (The LAN sshd is a service unit now — outpost.sshd — not a networking bind.)"`
 	DiscoveryHTTPListenAddr string `json:"discovery_http_listen_addr,omitempty" jsonschema:"LAN bind for /api/v1/discover/* (e.g. 0.0.0.0:17778). Empty = leave unchanged; '<clear>' = disable."`
 	PeerTrustPolicy         string `json:"peer_trust_policy,omitempty" jsonschema:"One of same-owner / same-cloudbox / tofu-allow. Empty = leave unchanged; '<clear>' = revert to same-owner default."`
 
@@ -91,13 +90,6 @@ func (s *Server) registerNetworkingTools() {
 		if in.SetDiscoveryEnabled {
 			v := in.DiscoveryEnabled
 			params.DiscoveryEnabled = &v
-		}
-		if in.SSHListenAddr != "" {
-			v := in.SSHListenAddr
-			if v == clearSentinel {
-				v = ""
-			}
-			params.SSHListenAddr = &v
 		}
 		if in.DiscoveryHTTPListenAddr != "" {
 			v := in.DiscoveryHTTPListenAddr

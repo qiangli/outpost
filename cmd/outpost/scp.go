@@ -75,7 +75,7 @@ direct. Falls back to the cloudbox-tunneled path otherwise.
 Passwordless after the first 'outpost connect'.
 
 Cloudbox is optional: against a host running 'outpost sshd' (or a
-daemon with ssh_listen_addr), pass -P <port> to dial plain TCP on
+daemon with the sshd unit), pass -P <port> to dial plain TCP on
 the LAN — OS-password auth, no pairing or internet needed. An
 unpaired machine also falls back to this LAN path automatically
 (default port 2222).
@@ -104,7 +104,7 @@ Out of scope for v1 (use system scp or run the copy in two steps):
 	}
 	cmd.Flags().BoolVar(&safe, "safe", false, "Stage to <dst>.new and posix-rename — amfid-safe binary delivery (upload only)")
 	cmd.Flags().BoolVar(&keepPrevious, "keep-previous", false, "Posix-rename existing <dst> to <dst>.previous before the swap; implies --safe")
-	cmd.Flags().IntVarP(&port, "port", "P", 0, "Dial the host directly on this TCP port (LAN 'outpost sshd' / ssh_listen_addr; OS-password auth, no cloudbox)")
+	cmd.Flags().IntVarP(&port, "port", "P", 0, "Dial the host directly on this TCP port (LAN 'outpost sshd' / sshd unit; OS-password auth, no cloudbox)")
 	return cmd
 }
 

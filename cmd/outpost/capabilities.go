@@ -20,6 +20,7 @@ const (
 	capOtel         = "outpost.otel"
 	capYcode        = "outpost.ycode"
 	capActrunner    = "outpost.actrunner"
+	capSSHD         = "outpost.sshd"
 )
 
 // capabilityDeps is the set of in-process capabilities the daemon
@@ -44,6 +45,7 @@ type capabilityDeps struct {
 	LANInference *lanInferenceCapability
 	Otel         *otelCapability
 	Ycode        *ycodeCapability
+	SSHD         *sshdCapability
 }
 
 // outpostCapabilities is the set of in-process capabilities this daemon
@@ -83,6 +85,8 @@ type capabilityDeps struct {
 //     manifest, and each surface needs a bearer-injecting proxy wrap.
 //   - actrunner    — a provisioning handshake with no declarable hook; see
 //     capability_actrunner.go.
+//   - sshd         — the LAN TCP listener is a socket this process must
+//     accept on; see capability_sshd.go.
 func outpostCapabilities(deps capabilityDeps) map[string]service.Capability {
 	caps := map[string]service.Capability{}
 	add := func(id string, c service.Capability, ok bool) {
@@ -100,6 +104,7 @@ func outpostCapabilities(deps capabilityDeps) map[string]service.Capability {
 	add(capLANInference, deps.LANInference, deps.LANInference != nil)
 	add(capOtel, deps.Otel, deps.Otel != nil)
 	add(capYcode, deps.Ycode, deps.Ycode != nil)
+	add(capSSHD, deps.SSHD, deps.SSHD != nil)
 
 	ci := &actrunnerCapability{
 		Forge:      deps.Forge,
