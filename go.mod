@@ -20,7 +20,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/pkg/sftp v1.13.10
-	github.com/qiangli/yoke v0.0.0-20261021020216-636e2fd289e9
+	github.com/qiangli/yoke v0.0.0-20261024023325-63180e3f234e
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.53.0
 	github.com/spf13/cobra v1.10.2
@@ -60,7 +60,6 @@ require (
 	github.com/Azure/go-ntlmssp v0.1.0 // indirect
 	github.com/Masterminds/semver/v3 v3.5.0 // indirect
 	github.com/ProtonMail/go-crypto v1.4.0 // indirect
-	github.com/STARRY-S/zip v0.2.3 // indirect
 	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5 // indirect
 	github.com/asticode/go-astikit v0.59.0 // indirect
@@ -68,9 +67,6 @@ require (
 	github.com/asticode/go-astits v1.15.0 // indirect
 	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/bodgit/plumbing v1.3.0 // indirect
-	github.com/bodgit/sevenzip v1.6.4 // indirect
-	github.com/bodgit/windows v1.0.1 // indirect
 	github.com/bytedance/gopkg v0.1.4 // indirect
 	github.com/bytedance/sonic v1.15.1 // indirect
 	github.com/bytedance/sonic/loader v0.5.1 // indirect
@@ -79,7 +75,6 @@ require (
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/cloudwego/base64x v0.1.7 // indirect
 	github.com/coreos/go-oidc/v3 v3.14.1 // indirect
-	github.com/cyphar/filepath-securejoin v0.6.1 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
@@ -126,7 +121,6 @@ require (
 	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
-	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/hashicorp/yamux v0.1.1 // indirect
 	github.com/huin/goupnp v1.3.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
@@ -142,7 +136,6 @@ require (
 	github.com/kevinburke/ssh_config v1.5.0 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
-	github.com/klauspost/pgzip v1.2.6 // indirect
 	github.com/klauspost/reedsolomon v1.12.0 // indirect
 	github.com/koron/go-ssdp v0.0.6 // indirect
 	github.com/kr/fs v0.1.0 // indirect
@@ -161,12 +154,9 @@ require (
 	github.com/maruel/natural v1.3.0 // indirect
 	github.com/marusama/semaphore/v2 v2.5.0 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
-	github.com/mholt/archives v0.1.5 // indirect
 	github.com/miekg/dns v1.1.68 // indirect
-	github.com/mikelolasagasti/xz v1.0.1 // indirect
 	github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b // indirect
 	github.com/mikioh/tcpopt v0.0.0-20190314235656-172688c1accc // indirect
-	github.com/minio/minlz v1.1.1 // indirect
 	github.com/minio/sha256-simd v1.0.1 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
@@ -182,7 +172,6 @@ require (
 	github.com/multiformats/go-varint v0.0.7 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/nguyenthenguyen/docx v0.0.0-20230621112118-9c8e795a11db // indirect
-	github.com/nwaples/rardecode/v2 v2.2.3 // indirect
 	github.com/odvcencio/gotreesitter v0.16.0 // indirect
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58 // indirect
 	github.com/pelletier/go-toml/v2 v2.3.1 // indirect
@@ -213,10 +202,10 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
-	github.com/qiangli/coreutils v0.0.0-20261019154849-42845e33d023 // indirect
+	github.com/qiangli/coreutils v0.0.0-20261024023341-aa6a9332b52f // indirect
 	github.com/qiangli/gfy v0.0.0-20261013004914-30d38f086034 // indirect
 	github.com/qiangli/yamux v0.2.0 // indirect
-	github.com/qiangli/yoke/pkg/provider v0.0.0-00010101000000-000000000000 // indirect
+	github.com/qiangli/yoke/pkg/provider v0.0.0-20261024023325-63180e3f234e // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.1 // indirect
 	github.com/quic-go/webtransport-go v0.10.0 // indirect
@@ -231,11 +220,9 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.5 // indirect
 	github.com/skeema/knownhosts v1.3.2 // indirect
 	github.com/songgao/water v0.0.0-20200317203138-2b4b6d7c09d8 // indirect
-	github.com/sorairolake/lzip-go v0.3.8 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
-	github.com/stangelandcl/ppmd v0.1.1 // indirect
 	github.com/templexxx/cpu v0.1.1 // indirect
 	github.com/templexxx/xorsimd v0.4.3 // indirect
 	github.com/tiendc/go-deepcopy v1.7.2 // indirect
@@ -268,7 +255,6 @@ require (
 	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	go4.org v0.0.0-20260112195520-a5071408f32f // indirect
 	golang.org/x/arch v0.27.0 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/image v0.42.0 // indirect
@@ -309,9 +295,9 @@ replace github.com/hashicorp/yamux => github.com/qiangli/yamux v0.1.0
 // Dependency replaces are not transitive: coreutils' embedded awk needs the
 // fork (it imports goawk/regex, which upstream v1.31.0 does not contain), and
 // coreutils' own replace does not reach this module. Same pin bashy carries.
-replace github.com/benhoyt/goawk => github.com/qiangli/coreutils/third_party/goawk v0.0.0-20261013004930-226a73d9a214
+replace github.com/benhoyt/goawk => github.com/qiangli/coreutils/third_party/goawk v0.0.0-20261024023341-aa6a9332b52f
 
-replace github.com/odvcencio/gotreesitter => github.com/qiangli/gotreesitter v0.0.0-20261011020812-226bfcd2c541
+replace github.com/odvcencio/gotreesitter => github.com/qiangli/gotreesitter v0.0.0-20261013004852-f03173f827ed
 
 replace github.com/ergochat/readline => github.com/qiangli/readline v0.1.4-0.20260919214158-38ad08e83676
 
@@ -319,13 +305,13 @@ replace github.com/ollama/ollama => github.com/qiangli/ollama v0.0.0-20261010173
 
 replace go.podman.io/podman/v6 => github.com/qiangli/podman/v6 v6.0.0-20261009064533-4a9784029284
 
-replace github.com/qiangli/yoke/pkg/llmgw => github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261014085036-9d08a1bef6be
+replace github.com/qiangli/yoke/pkg/llmgw => github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261024023325-63180e3f234e
 
-replace github.com/qiangli/yoke/pkg/oci => github.com/qiangli/yoke/pkg/oci v0.0.0-20261014085036-9d08a1bef6be
+replace github.com/qiangli/yoke/pkg/oci => github.com/qiangli/yoke/pkg/oci v0.0.0-20261024023325-63180e3f234e
 
 replace modernc.org/sqlite => github.com/qiangli/sqlite v1.50.2-0.20261018085128-5fb52bf328cb
 
-replace github.com/qiangli/yoke/pkg/provider => github.com/qiangli/yoke/pkg/provider v0.0.0-20261021020216-636e2fd289e9
+replace github.com/qiangli/yoke/pkg/provider => github.com/qiangli/yoke/pkg/provider v0.0.0-20261024023325-63180e3f234e
 
 replace github.com/go-git/go-billy/v5 => github.com/qiangli/yoke/external/go-billy v0.0.0-20261021004834-b008dcc14dfa
 
