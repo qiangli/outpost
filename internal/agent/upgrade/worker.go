@@ -263,6 +263,24 @@ func (w *Worker) Apply(ctx context.Context, env Envelope) Result {
 		return Result{Status: StatusMinFrom, Detail: fmt.Sprintf("daemon at %s, envelope requires from %s", st.CurrentCommit, env.MinFrom), ReleaseID: env.ReleaseID}
 	}
 
+	// Non-default config guard: a daemon started with a config dir
+	// different from the default (e.g. via XDG_CONFIG_HOME) that shares
+	// its binary with another instance must not self-upgrade — the swap
+	// would replace the other instance's binary out from under it. The
+	// guard compares the RESOLVED config dir (what the daemon actually
+	// uses) with the DEFAULT config dir (the one used with no override,
+	// typically $HOME/.config/matrix). Only a non-default dir AND a
+	// binary outside that dir is considered shared. Force does not
+	// bypass this, same precedent as never/dirty.
+	if isNonDefaultConfig() && isSharedBinary(st.BinaryPath) {
+		w.mu.Unlock()
+		return Result{
+			Status:    StatusDisabled,
+			Detail:    "non-default config dir with shared binary — refusing to self-upgrade a binary shared with another instance; run from a private binary copy or unset XDG_CONFIG_HOME to allow upgrades",
+			ReleaseID: env.ReleaseID,
+		}
+	}
+
 	// Manual mode: persist the envelope and return without staging.
 	// Force=true bypasses the manual gate (used by `outpost upgrade
 	// apply` + cloudbox's "Apply" UI button), in which case we fall
@@ -540,4 +558,61 @@ func (w *Worker) appendLedger(e LedgerEntry) error {
 		return err
 	}
 	return nil
+}
+
+func defaultConfigDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config", "matrix"), nil
+}
+
+func resolvedConfigDir() (string, error) {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "matrix"), nil
+	}
+	return defaultConfigDir()
+}
+
+func isNonDefaultConfig() bool {
+	def, err1 := defaultConfigDir()
+	res, err2 := resolvedConfigDir()
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return !strings.EqualFold(filepath.Clean(def), filepath.Clean(res))
+	}
+	return filepath.Clean(def) != filepath.Clean(res)
+}
+
+func isSharedBinary(binaryPath string) bool {
+	if binaryPath == "" {
+		return false
+	}
+	res, err := resolvedConfigDir()
+	if err != nil || res == "" {
+		return false
+	}
+	absBin, err1 := filepath.Abs(binaryPath)
+	absCfg, err2 := filepath.Abs(res)
+	if err1 != nil || err2 != nil {
+		return true
+	}
+	rel, err := filepath.Rel(absCfg, absBin)
+	if err != nil {
+		return true
+	}
+	if rel == "." {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return true
+	}
+	// Also catch ".." without separator on any platform (paranoia).
+	if strings.HasPrefix(rel, "..") {
+		return true
+	}
+	return false
 }

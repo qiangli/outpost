@@ -55,7 +55,16 @@ func BuildEnvWith(overrides map[string]string) []string {
 		}
 		overrides = merged
 	}
+	// Strip the supervisor marker so a child outpost started from this
+	// shell does not inherit OUTPOST_SUPERVISED=1 and exit on its first
+	// fleet upgrade (execSelfStart supervisor path with no supervisor).
+	for k := range overrides {
+		if envKeyEqual(k, envSupervised, runtime.GOOS) {
+			delete(overrides, k)
+		}
+	}
 	env := os.Environ()
+	env = stripSupervised(env)
 
 	// Locate (or stub in) the PATH= entry. There's one in 99% of cases;
 	// the 1% where launchd doesn't propagate one is precisely the kind
@@ -201,6 +210,19 @@ func winPathJoin(base string, parts ...string) string {
 			continue
 		}
 		out += `\` + p
+	}
+	return out
+}
+
+const envSupervised = "OUTPOST_SUPERVISED"
+
+func stripSupervised(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if k, _, ok := strings.Cut(kv, "="); ok && envKeyEqual(k, envSupervised, runtime.GOOS) {
+			continue
+		}
+		out = append(out, kv)
 	}
 	return out
 }

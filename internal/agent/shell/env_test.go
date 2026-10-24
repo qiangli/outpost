@@ -212,3 +212,69 @@ func TestBuildEnvWithForwardsExplicitShellHistory(t *testing.T) {
 		t.Fatalf("HISTFILE=%q", got)
 	}
 }
+
+func TestBuildEnv_StripsSupervisedFromInheritedEnv(t *testing.T) {
+	t.Setenv("OUTPOST_SUPERVISED", "1")
+	t.Setenv("PATH", "/usr/bin")
+	// Keep an unrelated var to confirm selective stripping.
+	t.Setenv("OUTPOST_FOO", "keep-me")
+	env := BuildEnv()
+	if got := envValue(env, "OUTPOST_SUPERVISED", runtime.GOOS); got != "" {
+		t.Fatalf("OUTPOST_SUPERVISED leaked into shell env: %q", got)
+	}
+	if got := envValue(env, "OUTPOST_FOO", runtime.GOOS); got != "keep-me" {
+		t.Fatalf("other vars must be kept, OUTPOST_FOO=%q", got)
+	}
+}
+
+func TestBuildEnvWith_StripsSupervisedFromOverrides(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin")
+	t.Setenv("OUTPOST_SUPERVISED", "1")
+	env := BuildEnvWith(map[string]string{
+		"OUTPOST_SUPERVISED": "1",
+		"KEEP_ME":            "yes",
+		"TERM":               "xterm-256color",
+	})
+	if got := envValue(env, "OUTPOST_SUPERVISED", runtime.GOOS); got != "" {
+		t.Fatalf("OUTPOST_SUPERVISED from overrides leaked: %q", got)
+	}
+	if got := envValue(env, "KEEP_ME", runtime.GOOS); got != "yes" {
+		t.Fatalf("KEEP_ME=%q, want yes", got)
+	}
+	if got := envValue(env, "TERM", runtime.GOOS); got != "xterm-256color" {
+		t.Fatalf("TERM=%q, want xterm-256color", got)
+	}
+}
+
+func TestBuildEnvWith_StripsSupervisedKeepsOtherVars(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin")
+	t.Setenv("KEEP_ENV", "keep-env")
+	t.Setenv("OUTPOST_SUPERVISED", "1")
+	env := BuildEnvWith(map[string]string{
+		"NEW_VAR":            "new",
+		"OUTPOST_SUPERVISED": "1",
+	})
+	if got := envValue(env, "OUTPOST_SUPERVISED", runtime.GOOS); got != "" {
+		t.Fatalf("OUTPOST_SUPERVISED leaked: %q", got)
+	}
+	if got := envValue(env, "KEEP_ENV", runtime.GOOS); got != "keep-env" {
+		t.Fatalf("KEEP_ENV lost: %q", got)
+	}
+	if got := envValue(env, "NEW_VAR", runtime.GOOS); got != "new" {
+		t.Fatalf("NEW_VAR=%q, want new", got)
+	}
+}
+
+func TestStripSupervised_Isolated(t *testing.T) {
+	// Direct unit test of helper with synthetic env, no os.Environ dependency.
+	env := []string{"A=1", "OUTPOST_SUPERVISED=1", "B=2", "OUTPOST_SUPERVISED=1"}
+	got := stripSupervised(env)
+	for _, kv := range got {
+		if k, _, _ := strings.Cut(kv, "="); k == "OUTPOST_SUPERVISED" {
+			t.Fatalf("stripSupervised left %q in %v", kv, got)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 entries after strip, got %v", got)
+	}
+}

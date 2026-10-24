@@ -680,3 +680,154 @@ func TestNewWorker_RollbackClearsReplaySeed(t *testing.T) {
 		t.Fatalf("expected pending_manual, got %v (%s)", r.Status, r.Detail)
 	}
 }
+
+func TestWorker_GuardSharedBinary(t *testing.T) {
+	// Table test for the non-default config guard. Each case isolates
+	// HOME and XDG_CONFIG_HOME in temp dirs (no real paths, no self-exec)
+	// and drives Worker.Apply through the guard. Allowed cases fall
+	// through to manual-pending (hermetic), refused cases hit
+	// StatusDisabled with a clear Detail.
+	home := t.TempDir()
+	scratch := filepath.Join(t.TempDir(), "scratch-xdg")
+	if err := os.MkdirAll(scratch, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	defaultXDG := filepath.Join(home, ".config")
+
+	cases := []struct {
+		name      string
+		xdg       string // "" means unset
+		binary    string // will be made absolute via filepath.Abs or is already absolute
+		wantAllow bool
+	}{
+		{
+			name:      "XDG unset -> allowed",
+			xdg:       "",
+			binary:    filepath.Join(t.TempDir(), "outpost"),
+			wantAllow: true,
+		},
+		{
+			name:      "XDG set to default dir -> allowed",
+			xdg:       defaultXDG,
+			binary:    filepath.Join(t.TempDir(), "outpost"),
+			wantAllow: true,
+		},
+		{
+			name:      "scratch dir + binary outside -> refused",
+			xdg:       scratch,
+			binary:    filepath.Join(t.TempDir(), "outpost"),
+			wantAllow: false,
+		},
+		{
+			name:      "scratch dir + binary inside -> allowed",
+			xdg:       scratch,
+			binary:    filepath.Join(scratch, "matrix", "outpost"),
+			wantAllow: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", home)
+			if tc.xdg == "" {
+				t.Setenv("XDG_CONFIG_HOME", "")
+				// Ensure the env is truly unset for os.Getenv checks.
+				if err := os.Unsetenv("XDG_CONFIG_HOME"); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				t.Setenv("XDG_CONFIG_HOME", tc.xdg)
+				if err := os.MkdirAll(filepath.Join(tc.xdg, "matrix"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Also isolate UserHomeDir's fallback by unsetting AppData on Windows.
+			h := newHarness(t)
+			// Point binary to the synthetic case path.
+			h.setState(func(s *StateSnapshot) {
+				s.BinaryPath = tc.binary
+				s.UpdateMode = "auto"
+			})
+			env := Envelope{
+				ReleaseID: "r-guard-" + strings.ReplaceAll(tc.name, " ", "-"),
+				URL:       "https://example.com/x",
+				SHA256:    "deadbeef",
+				Commit:    "def5678",
+			}
+			r := h.worker.Apply(context.Background(), env)
+			if tc.wantAllow {
+				if r.Status == StatusDisabled && strings.Contains(r.Detail, "shared binary") {
+					t.Fatalf("expected allowed but got disabled: %s", r.Detail)
+				}
+				// Allowed cases fall through to Accepted (inFlight) — drain.
+				if r.Status == StatusAccepted {
+					waitForInFlight(t, h.worker, false, time.Second)
+				}
+			} else {
+				if r.Status != StatusDisabled {
+					t.Fatalf("expected disabled for shared binary, got %v: %s", r.Status, r.Detail)
+				}
+				if !strings.Contains(r.Detail, "shared binary") && !strings.Contains(r.Detail, "non-default") {
+					t.Fatalf("detail should mention shared binary / non-default config: %q", r.Detail)
+				}
+			}
+		})
+	}
+}
+
+func TestWorker_GuardAllowsWhenBinaryInsideDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	_ = os.Unsetenv("XDG_CONFIG_HOME")
+	defaultDir := filepath.Join(home, ".config", "matrix")
+	binaryInsideDefault := filepath.Join(defaultDir, "outpost")
+
+	h := newHarness(t)
+	h.setState(func(s *StateSnapshot) { s.BinaryPath = binaryInsideDefault })
+	env := Envelope{ReleaseID: "r-guard-inside-default", URL: "https://example.com/x", SHA256: "deadbeef", Commit: "def5678"}
+	r := h.worker.Apply(context.Background(), env)
+	if r.Status == StatusDisabled && strings.Contains(r.Detail, "shared binary") {
+		t.Fatalf("binary inside default config should be allowed, got disabled: %s", r.Detail)
+	}
+	if r.Status == StatusAccepted {
+		waitForInFlight(t, h.worker, false, time.Second)
+	}
+}
+
+func TestGuard_IsNonDefaultConfig_Isolated(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	_ = os.Unsetenv("XDG_CONFIG_HOME")
+	if isNonDefaultConfig() {
+		t.Fatal("XDG unset should be default (not non-default)")
+	}
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	if isNonDefaultConfig() {
+		t.Fatalf("XDG set to default dir should still be default")
+	}
+	scratch := filepath.Join(t.TempDir(), "scratch")
+	t.Setenv("XDG_CONFIG_HOME", scratch)
+	if !isNonDefaultConfig() {
+		t.Fatal("scratch XDG should be non-default")
+	}
+}
+
+func TestGuard_IsSharedBinary_Isolated(t *testing.T) {
+	home := t.TempDir()
+	scratch := filepath.Join(t.TempDir(), "scratch-xdg")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", scratch)
+	_ = os.MkdirAll(filepath.Join(scratch, "matrix"), 0o700)
+	inside := filepath.Join(scratch, "matrix", "outpost")
+	outside := filepath.Join(t.TempDir(), "outpost")
+	if isSharedBinary(inside) {
+		t.Fatalf("binary inside config dir %q should not be shared", inside)
+	}
+	if !isSharedBinary(outside) {
+		t.Fatalf("binary outside config dir %q should be shared", outside)
+	}
+	if isSharedBinary("") {
+		t.Fatal("empty binary path should not be shared")
+	}
+}
