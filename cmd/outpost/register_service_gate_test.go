@@ -183,5 +183,5 @@ func TestConfIsDefaultHelpers(t *testing.T) {
 	if !conf.IsDefaultConfigDir(cleaned) {
 		t.Fatalf("IsDefaultConfigDir with trailing slash %q false, want true", cleaned)
 	}
-	_ = os.MkdirAll  // keep import used
+	_ = os.MkdirAll // keep import used
 }
