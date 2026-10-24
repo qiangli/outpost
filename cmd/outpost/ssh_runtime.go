@@ -33,6 +33,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/discovery"
@@ -170,14 +171,20 @@ func dialPairedHost(ctx context.Context, fc *conf.FileConfig, bearer, host, user
 	// best-effort: any failure (no peer found, no sshws endpoint,
 	// no pubkey configured, peer-ticket exchange fails) falls back
 	// to the cloudbox-tunneled path so the command always works.
+	// Each rung's network legs carry their own budget (see the
+	// ssh*Timeout vars) so a blackholed endpoint fails into the next
+	// rung instead of hanging the dial.
+	var lanErr, meshErr error
 	if client, cleanup, err := dialLANDirect(ctx, fc, bearer, host, user, cookie); err == nil {
 		return client, cleanup, nil
-	} else if !errors.Is(err, errLANNotAvailable) {
+	} else if lanErr = err; !errors.Is(err, errLANNotAvailable) {
 		// Log non-trivial LAN-direct failures (e.g. peer-ticket
 		// exchange returned 5xx) so the operator can see what
 		// happened, but still fall through to the tunneled path.
 		slog.Info("ssh: LAN-direct attempt failed, falling back to cloudbox tunnel",
 			"host", host, "err", err)
+	} else {
+		lanErr = errLANNotAvailable
 	}
 
 	// Mesh-direct. The LAN rung above depends on mDNS, which is silent
@@ -189,11 +196,34 @@ func dialPairedHost(ctx context.Context, fc *conf.FileConfig, bearer, host, user
 	// through to the tunnel, so this rung can only add reachability.
 	if client, cleanup, err := dialMeshDirect(ctx, fc, bearer, host, user, cookie); err == nil {
 		return client, cleanup, nil
-	} else if !errors.Is(err, errMeshNotAvailable) {
+	} else if meshErr = err; !errors.Is(err, errMeshNotAvailable) {
 		slog.Info("ssh: mesh-direct attempt failed, falling back to cloudbox tunnel",
 			"host", host, "err", err)
+	} else {
+		meshErr = errMeshNotAvailable
 	}
-	return dialCloudboxTunnel(ctx, fc, bearer, host, user, cookie)
+
+	if client, cleanup, err := dialCloudboxTunnel(ctx, fc, bearer, host, user, cookie); err == nil {
+		return client, cleanup, nil
+	} else {
+		// Every rung failed: report all three outcomes (not just the
+		// tunnel's) so a hang-turned-timeout names the rung that
+		// stalled instead of surfacing as a bare "timeout". When the
+		// LAN rung got far enough to see the peer, its advertised
+		// build version separates version skew from a dead host.
+		peerVer := ""
+		if !errors.Is(lanErr, errLANNotAvailable) {
+			peerVer = lanAdvertisedVersion(ctx, host)
+		}
+		return nil, func() {}, &sshNoPathError{
+			Host:          host,
+			ClientVersion: agent.ReadBuildInfo().Short(),
+			PeerVersion:   peerVer,
+			LAN:           lanErr,
+			Mesh:          meshErr,
+			Tunnel:        err,
+		}
+	}
 }
 
 // errLANNotAvailable signals that LAN-direct simply doesn't apply
@@ -206,6 +236,82 @@ var errLANNotAvailable = errors.New("lan-direct not available")
 // direct link to this host, peer not publishing the ssh service). Silent
 // fallback, same contract as errLANNotAvailable.
 var errMeshNotAvailable = errors.New("mesh-direct not available")
+
+// Per-rung network budgets for the paired dial path. The WS dial and the
+// SSH handshake already default to 30s inside sshclient; these vars make
+// the bound explicit per rung so a blackholed rung falls through fast
+// instead of burning both full defaults in silence. LAN and mesh legs
+// are low-latency by construction (same broadcast domain / loopback
+// forward), so they get tighter budgets than the internet-relayed
+// tunnel, whose defaults are preserved. Tests shrink these to prove a
+// hanging rung falls through instead of hanging forever.
+var (
+	sshLANDialTimeout         = 10 * time.Second
+	sshLANHandshakeTimeout    = 15 * time.Second
+	sshMeshDialTimeout        = 10 * time.Second
+	sshMeshHandshakeTimeout   = 15 * time.Second
+	sshTunnelDialTimeout      = 30 * time.Second
+	sshTunnelHandshakeTimeout = 30 * time.Second
+)
+
+// lanPeerLookup resolves the mDNS peer matching host. A package var (same
+// pattern as meshToolRunner) so transport-selection tests can inject a
+// loopback peer instead of sending real multicast.
+var lanPeerLookup = func(ctx context.Context, host string) (*discovery.Peer, error) {
+	browseCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	peers, _ := discovery.Browse(browseCtx, discovery.BrowseOptions{Timeout: 3 * time.Second})
+	if peer := findMatchingPeer(peers, host); peer != nil {
+		return peer, nil
+	}
+	return nil, errLANNotAvailable
+}
+
+// lanAdvertisedVersion returns the mDNS-advertised build version for host,
+// or "" when the peer isn't visible. Failure-path only: lets the terminal
+// dial error tell version skew apart from a dead host.
+func lanAdvertisedVersion(ctx context.Context, host string) string {
+	peer, err := lanPeerLookup(ctx, host)
+	if err != nil || peer == nil {
+		return ""
+	}
+	return strings.TrimSpace(peer.Version)
+}
+
+// sshNoPathError is the terminal error when every paired dial rung failed.
+// It names each rung's outcome so the operator can see whether the host
+// was unreachable everywhere (down / offline) or reachable-but-stalled on
+// one rung (a blackholed endpoint — or a client/host version skew that
+// left this client speaking a stale wire).
+type sshNoPathError struct {
+	Host          string
+	ClientVersion string
+	PeerVersion   string // mDNS-advertised host version, "" when unknown
+	LAN           error
+	Mesh          error
+	Tunnel        error
+}
+
+// Unwrap exposes the rung errors to errors.Is/As so a structured tunnel
+// failure (e.g. host-offline) stays matchable through the wrapper.
+func (e *sshNoPathError) Unwrap() []error {
+	return []error{e.LAN, e.Mesh, e.Tunnel}
+}
+
+func (e *sshNoPathError) Error() string {
+	msg := fmt.Sprintf("ssh %s: no path worked (lan-direct: %v; mesh-direct: %v; tunnel: %v)",
+		e.Host, e.LAN, e.Mesh, e.Tunnel)
+	switch {
+	case e.PeerVersion != "" && e.ClientVersion != "" && e.PeerVersion != e.ClientVersion:
+		msg += fmt.Sprintf(". version skew: this client is %s but the host advertised %s — upgrade the older side and retry",
+			e.ClientVersion, e.PeerVersion)
+	case e.PeerVersion != "":
+		msg += fmt.Sprintf(". this client is %s, host advertised %s", e.ClientVersion, e.PeerVersion)
+	case e.ClientVersion != "":
+		msg += fmt.Sprintf(". this client is %s; if the host just upgraded, update this client and retry", e.ClientVersion)
+	}
+	return msg
+}
 
 // meshToolRunner is replaceable by focused transport-selection tests. Keeping
 // the MCP boundary here lets those tests prove that an unpublished peer does
@@ -305,9 +411,10 @@ func dialMeshDirect(
 	}
 
 	wsConn, werr := sshclient.DialWS(ctx, sshclient.DialOptions{
-		WSURL:      "ws://" + fwd.Addr + "/ssh",
-		PeerTicket: ticket,
-		Host:       host,
+		WSURL:       "ws://" + fwd.Addr + "/ssh",
+		PeerTicket:  ticket,
+		Host:        host,
+		DialTimeout: sshMeshDialTimeout,
 	})
 	if werr != nil {
 		closeForward()
@@ -319,10 +426,11 @@ func dialMeshDirect(
 	// rung uses for a peer that advertised none. The transport itself is
 	// already authenticated by libp2p peer identity.
 	cli, err := sshclient.Dial(ctx, sshclient.Config{
-		Transport:       sshclient.AsNetConn(ctx, wsConn),
-		HostAlias:       sshclient.HostAliasForHost(host),
-		User:            user,
-		HostKeyCallback: makeFingerprintCheckingCallback(host, ""),
+		Transport:        sshclient.AsNetConn(ctx, wsConn),
+		HostAlias:        sshclient.HostAliasForHost(host),
+		User:             user,
+		HostKeyCallback:  makeFingerprintCheckingCallback(host, ""),
+		HandshakeTimeout: sshMeshHandshakeTimeout,
 	})
 	if err != nil {
 		closeForward()
@@ -352,12 +460,9 @@ func dialLANDirect(
 		return nil, nil, errLANNotAvailable
 	}
 
-	browseCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	peers, _ := discovery.Browse(browseCtx, discovery.BrowseOptions{Timeout: 3 * time.Second})
-	cancel()
-	peer := findMatchingPeer(peers, host)
-	if peer == nil {
-		return nil, nil, errLANNotAvailable
+	peer, lerr := lanPeerLookup(ctx, host)
+	if lerr != nil {
+		return nil, nil, lerr
 	}
 	ep := peer.FirstEndpoint(discovery.EndpointLANSSHWS)
 	if ep.Host == "" || ep.Port == 0 {
@@ -371,9 +476,10 @@ func dialLANDirect(
 
 	wsURL := fmt.Sprintf("ws://%s/ssh", ep.HostPort())
 	wsConn, werr := sshclient.DialWS(ctx, sshclient.DialOptions{
-		WSURL:      wsURL,
-		PeerTicket: ticket,
-		Host:       host,
+		WSURL:       wsURL,
+		PeerTicket:  ticket,
+		Host:        host,
+		DialTimeout: sshLANDialTimeout,
 	})
 	if werr != nil {
 		return nil, nil, fmt.Errorf("lan-direct dial %s: %w", ep.HostPort(), werr)
@@ -388,10 +494,11 @@ func dialLANDirect(
 	hostKeyCB := makeFingerprintCheckingCallback(host, advFP)
 
 	cli, err := sshclient.Dial(ctx, sshclient.Config{
-		Transport:       sshclient.AsNetConn(ctx, wsConn),
-		HostAlias:       sshclient.HostAliasForHost(host),
-		User:            user,
-		HostKeyCallback: hostKeyCB,
+		Transport:        sshclient.AsNetConn(ctx, wsConn),
+		HostAlias:        sshclient.HostAliasForHost(host),
+		User:             user,
+		HostKeyCallback:  hostKeyCB,
+		HandshakeTimeout: sshLANHandshakeTimeout,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("ssh handshake to %s (lan-direct): %w", host, err)
@@ -419,10 +526,11 @@ func dialCloudboxTunnel(
 		return nil, nil, err
 	}
 	wsConn, werr := sshclient.DialWS(ctx, sshclient.DialOptions{
-		WSURL:  wsURL,
-		Bearer: bearer,
-		Cookie: cookie,
-		Host:   host,
+		WSURL:       wsURL,
+		Bearer:      bearer,
+		Cookie:      cookie,
+		Host:        host,
+		DialTimeout: sshTunnelDialTimeout,
 		OnElevate: func(c context.Context, h string) (string, error) {
 			if !haveTTY() {
 				return "", errors.New("no TTY for password prompt")
@@ -447,10 +555,11 @@ func dialCloudboxTunnel(
 		return nil, nil, err
 	}
 	cli, err := sshclient.Dial(ctx, sshclient.Config{
-		Transport:       sshclient.AsNetConn(ctx, wsConn),
-		HostAlias:       sshclient.HostAliasForHost(host),
-		User:            user,
-		HostKeyCallback: hostKeyCB,
+		Transport:        sshclient.AsNetConn(ctx, wsConn),
+		HostAlias:        sshclient.HostAliasForHost(host),
+		User:             user,
+		HostKeyCallback:  hostKeyCB,
+		HandshakeTimeout: sshTunnelHandshakeTimeout,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("ssh handshake to %s: %w", host, err)

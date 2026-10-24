@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/agent/discovery"
 )
 
 // splitAdHocHostPort feeds the `outpost ssh user@host[:port]` direct-
@@ -182,5 +185,231 @@ func TestSSHPasswordCallbackEnvRejectionNeverPrompts(t *testing.T) {
 		if _, err := cb(); err == nil || !strings.Contains(err.Error(), "OUTPOST_SSH_PASSWORD was rejected") {
 			t.Fatalf("retry %d err = %v; want env rejection", i, err)
 		}
+	}
+}
+
+// stubLANPeerLookup replaces the mDNS lookup seam for the test.
+func stubLANPeerLookup(t *testing.T, peer *discovery.Peer, err error) {
+	t.Helper()
+	old := lanPeerLookup
+	lanPeerLookup = func(context.Context, string) (*discovery.Peer, error) {
+		return peer, err
+	}
+	t.Cleanup(func() { lanPeerLookup = old })
+}
+
+// blackholeListener accepts loopback TCP connections and holds them open
+// without sending a byte — the shape of a dead endpoint that would hang
+// an unbounded dial forever.
+func blackholeListener(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("blackhole listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				// Hold until the test closes the listener; never
+				// reply so the dialer must hit its own budget.
+				time.Sleep(30 * time.Second)
+				_ = c.Close()
+			}()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// shrinkRungTimeouts cuts every paired-rung network budget for the test.
+func shrinkRungTimeouts(t *testing.T, d time.Duration) {
+	t.Helper()
+	oldLAN, oldLANHS := sshLANDialTimeout, sshLANHandshakeTimeout
+	oldMesh, oldMeshHS := sshMeshDialTimeout, sshMeshHandshakeTimeout
+	oldTun, oldTunHS := sshTunnelDialTimeout, sshTunnelHandshakeTimeout
+	sshLANDialTimeout, sshLANHandshakeTimeout = d, d
+	sshMeshDialTimeout, sshMeshHandshakeTimeout = d, d
+	sshTunnelDialTimeout, sshTunnelHandshakeTimeout = d, d
+	t.Cleanup(func() {
+		sshLANDialTimeout, sshLANHandshakeTimeout = oldLAN, oldLANHS
+		sshMeshDialTimeout, sshMeshHandshakeTimeout = oldMesh, oldMeshHS
+		sshTunnelDialTimeout, sshTunnelHandshakeTimeout = oldTun, oldTunHS
+	})
+}
+
+// isolatedHome points HOME/XDG dirs at scratch space so dial tests never
+// touch the operator's real paired config or known_hosts.
+func isolatedHome(t *testing.T) {
+	t.Helper()
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("XDG_CACHE_HOME", tmp)
+}
+
+func ticketStubServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ticket":"test-ticket"}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// A blackholed LAN endpoint must fail inside the rung budget so the dial
+// falls through to the next rung instead of hanging the command.
+func TestDialLANDirectBlackholeFallsThroughWithinBudget(t *testing.T) {
+	isolatedHome(t)
+	shrinkRungTimeouts(t, time.Second)
+	addr := blackholeListener(t)
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split blackhole addr: %v", err)
+	}
+	port, _ := strconv.Atoi(portStr)
+	stubLANPeerLookup(t, &discovery.Peer{
+		AgentName: "target",
+		ID:        "test-fingerprint",
+		Endpoints: []discovery.Endpoint{
+			{Kind: discovery.EndpointLANSSHWS, Host: host, Port: port},
+		},
+	}, nil)
+	fc := meshTestConfig(t, ticketStubServer(t).URL)
+
+	start := time.Now()
+	_, _, err = dialLANDirect(context.Background(), fc, "bearer", "target", "user", "cookie")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("dialLANDirect to blackhole succeeded, want error")
+	}
+	if errors.Is(err, errLANNotAvailable) {
+		t.Fatalf("dialLANDirect error = %v, want an attempted-dial error", err)
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("dialLANDirect blackhole took %v, want fall-through inside the rung budget", elapsed)
+	}
+}
+
+// Same contract for the mesh rung: a dead forward must fail fast.
+func TestDialMeshDirectBlackholeFallsThroughWithinBudget(t *testing.T) {
+	isolatedHome(t)
+	shrinkRungTimeouts(t, time.Second)
+	fwdAddr := blackholeListener(t)
+	stubMeshToolRunner(t, func(_ context.Context, name string, _ any, out any) error {
+		switch name {
+		case "outpost_mesh_link":
+			meshToolResult(t, out, map[string]any{"link": admincore.MeshHostLinkView{
+				Found: true, Direct: true, PeerID: "peer-target",
+			}})
+		case "outpost_mesh_resolve":
+			meshToolResult(t, out, map[string]any{"peers": []admincore.MeshResolvedPeer{
+				{Host: "target", PeerID: "peer-target"},
+			}})
+		case "outpost_mesh_listen":
+			meshToolResult(t, out, map[string]any{"addr": fwdAddr})
+		case "outpost_mesh_close_listen":
+		default:
+			t.Fatalf("unexpected mesh tool call %q", name)
+		}
+		return nil
+	})
+	fc := meshTestConfig(t, ticketStubServer(t).URL)
+
+	start := time.Now()
+	_, _, err := dialMeshDirect(context.Background(), fc, "bearer", "target", "user", "cookie")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("dialMeshDirect to blackhole succeeded, want error")
+	}
+	if errors.Is(err, errMeshNotAvailable) {
+		t.Fatalf("dialMeshDirect error = %v, want an attempted-dial error", err)
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("dialMeshDirect blackhole took %v, want fall-through inside the rung budget", elapsed)
+	}
+}
+
+// And the tunnel rung: a relay that accepts but never answers must fail
+// inside its budget too.
+func TestDialCloudboxTunnelBlackholeFallsThroughWithinBudget(t *testing.T) {
+	isolatedHome(t)
+	shrinkRungTimeouts(t, time.Second)
+	addr := blackholeListener(t)
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split blackhole addr: %v", err)
+	}
+	port, _ := strconv.Atoi(portStr)
+	fc := &conf.FileConfig{ServerAddr: host, ServerPort: port, Protocol: "ws"}
+
+	start := time.Now()
+	_, _, err = dialCloudboxTunnel(context.Background(), fc, "bearer", "target", "user", "cookie")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("dialCloudboxTunnel to blackhole succeeded, want error")
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("dialCloudboxTunnel blackhole took %v, want fall-through inside the rung budget", elapsed)
+	}
+}
+
+// The terminal error must name every rung and call out version skew
+// instead of surfacing a bare timeout.
+func TestSSHNoPathErrorMentionsRungsAndSkew(t *testing.T) {
+	err := &sshNoPathError{
+		Host:          "somehost",
+		ClientVersion: "v1.0.0",
+		PeerVersion:   "v0.32.0",
+		LAN:           errLANNotAvailable,
+		Mesh:          errMeshNotAvailable,
+		Tunnel:        errors.New("dial: timeout"),
+	}
+	msg := err.Error()
+	for _, want := range []string{"lan-direct", "mesh-direct", "tunnel", "v1.0.0", "v0.32.0", "version skew"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("terminal error %q missing %q", msg, want)
+		}
+	}
+
+	same := &sshNoPathError{
+		Host:          "somehost",
+		ClientVersion: "v1.0.0",
+		PeerVersion:   "v1.0.0",
+		LAN:           errLANNotAvailable,
+		Mesh:          errMeshNotAvailable,
+		Tunnel:        errors.New("dial: timeout"),
+	}
+	if got := same.Error(); strings.Contains(got, "version skew") {
+		t.Errorf("matching versions must not claim skew: %q", got)
+	}
+
+	unknown := &sshNoPathError{
+		Host:   "somehost",
+		LAN:    errLANNotAvailable,
+		Mesh:   errMeshNotAvailable,
+		Tunnel: errors.New("dial: timeout"),
+	}
+	for _, want := range []string{"lan-direct", "mesh-direct", "tunnel"} {
+		if !strings.Contains(unknown.Error(), want) {
+			t.Errorf("versionless error %q missing %q", unknown.Error(), want)
+		}
+	}
+}
+
+// lanAdvertisedVersion surfaces the peer's build for the skew check, and
+// stays silent when the peer isn't visible.
+func TestLANAdvertisedVersion(t *testing.T) {
+	stubLANPeerLookup(t, &discovery.Peer{AgentName: "target", Version: "v1.0.0-rc.12"}, nil)
+	if got := lanAdvertisedVersion(context.Background(), "target"); got != "v1.0.0-rc.12" {
+		t.Fatalf("lanAdvertisedVersion = %q, want %q", got, "v1.0.0-rc.12")
+	}
+	stubLANPeerLookup(t, nil, errLANNotAvailable)
+	if got := lanAdvertisedVersion(context.Background(), "target"); got != "" {
+		t.Fatalf("lanAdvertisedVersion with no peer = %q, want empty", got)
 	}
 }
