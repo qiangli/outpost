@@ -53,6 +53,7 @@ var reservedNames = map[string]struct{}{
 	"favicon.ico": {},
 	".well-known": {},
 	"u":           {}, // public post viewer namespace (/u/<uid>/<path>)
+	"superadmin":  {}, // master operator login (/superadmin/login, S498.1)
 }
 
 func isReserved(name string) bool {
