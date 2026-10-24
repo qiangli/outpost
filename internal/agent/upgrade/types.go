@@ -113,6 +113,7 @@ const (
 	StatusMinFrom       Status = "min_from"       // current commit is older than envelope.min_from
 	StatusPendingManual Status = "pending_manual" // envelope persisted; operator must apply via UI/CLI
 	StatusQuarantined   Status = "quarantined"    // release was auto-reverted on this host; refuse re-apply
+	StatusDowngrade     Status = "downgrade"      // candidate is not strictly newer than the running build; deliberate rollback only via `outpost rollback`
 )
 
 // HTTPStatus maps an Apply outcome to the wire HTTP status. 202
@@ -135,6 +136,8 @@ func (s Status) HTTPStatus() int {
 	case StatusMinFrom:
 		return 412
 	case StatusQuarantined:
+		return 409
+	case StatusDowngrade:
 		return 409
 	}
 	return 500

@@ -271,15 +271,6 @@ type FileConfig struct {
 	// UpdateModeName() — do not consult this field directly.
 	AutoUpgrade *bool `json:"auto_upgrade,omitempty"`
 
-	// AutoRollbackEnabled arms the auto-rollback watchdog's DESTRUCTIVE
-	// revert: when a self-upgrade's new binary fails to confirm healthy
-	// (never stays up long enough), the supervisor swaps <binary>.previous
-	// back. Default OFF (nil/false): the watchdog still observes and logs
-	// "would auto-rollback …", but does not revert until an operator opts
-	// in. Read via AutoRollbackOn(). Read by the supervisor process (which
-	// owns the revert), not just the daemon.
-	AutoRollbackEnabled *bool `json:"auto_rollback_enabled,omitempty"`
-
 	// AdminSessionKey is the HMAC secret used to sign admin-UI session
 	// cookies. Persisting it across restarts is what keeps the admin user
 	// logged in when a built-in toggle re-execs the binary. Base64-encoded
@@ -1424,13 +1415,7 @@ func ValidRole(s string) bool {
 
 // ShellOn reports whether the built-in /shell route should be mounted.
 // Missing field (old configs) defaults to true.
-// AutoRollbackOn reports whether the auto-rollback watchdog may perform the
-// destructive revert. Default OFF (observe-only) — unlike most toggles it
-// must be explicitly opted into.
-func (fc *FileConfig) AutoRollbackOn() bool {
-	return fc != nil && fc.AutoRollbackEnabled != nil && *fc.AutoRollbackEnabled
-}
-
+//
 // ShellOn and the other host-access built-ins keep a runtime default of
 // ON (nil => on) so EXISTING hosts are never silently disabled by an
 // upgrade. The safer opt-in posture is applied only to NEWLY paired hosts,

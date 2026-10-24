@@ -80,7 +80,14 @@ Examples:
 
 The candidate binary is verified by exec'ing "<candidate> version --json"
 before the swap. Same-commit upgrades are a no-op unless --force is passed.
---direct honors $GITHUB_TOKEN / $GIT_TOKEN to lift the GitHub API rate limit.`,
+--direct honors $GITHUB_TOKEN / $GIT_TOKEN to lift the GitHub API rate limit.
+
+Never-downgrade: on every source mode the candidate must be strictly newer
+than the running build (semver + prerelease-base + build-time ordering);
+an older candidate is refused, naming both versions. --force only excuses
+a same-commit reinstall and never allows a downgrade. A deliberate
+downgrade stays possible only through "outpost rollback", which restores
+the retained <binary>.previous.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			sources := 0
 			for _, set := range []bool{fromURL != "", localPath != "", direct} {
@@ -114,16 +121,20 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.
 				direct = true
 			}
 
-			// --direct: resolve the latest GitHub release for this
-			// platform into a download URL + sha256, then fall through to
-			// the same staging/probe/swap path --from uses.
+			// --direct: resolve the newest GitHub release strictly newer
+			// than the running build for this platform into a download
+			// URL + sha256, then fall through to the same staging/probe/
+			// swap path --from uses. GitHub's "latest" pointer is never
+			// used: it ignores prereleases and once resolved an older
+			// stable over a newer rc, bricking the host.
 			if direct {
 				platform := before.Build.OS + "_" + before.Build.Arch
-				fmt.Printf("resolving: latest %s release for %s\n", repoOrDefault(repo), platform)
+				fmt.Printf("resolving: newest release newer than %s for %s from %s\n", before.Build.Version, platform, repoOrDefault(repo))
 				env, rerr := upgrade.GitHubSource{
 					Repo:     repo,
 					Platform: platform,
 					Token:    githubUpgradeToken(),
+					Current:  before.Build,
 				}.Resolve(ctx)
 				if rerr != nil {
 					return fmt.Errorf("resolve latest release: %w", rerr)
@@ -182,6 +193,15 @@ before the swap. Same-commit upgrades are a no-op unless --force is passed.
 				return fmt.Errorf("verify candidate: %w", err)
 			}
 			fmt.Printf("candidate: %s (%s)\n", newBuild.Short(), newBuild.GoVersion)
+
+			// Never-downgrade guard (every source mode): the probed
+			// candidate must be strictly newer than the running build.
+			// --force below only excuses a same-commit reinstall and
+			// never allows a downgrade; deliberate rollback stays
+			// available only through `outpost rollback`.
+			if decline, reason := upgrade.ShouldDeclineCandidate(before.Build, newBuild.Version, newBuild.VCSTime); decline {
+				return fmt.Errorf("%s", reason)
+			}
 
 			if newBuild.Commit != "" && newBuild.Commit == before.Build.Commit && !force && len(companions) == 0 {
 				return fmt.Errorf("candidate is the same commit as the running daemon (%s) — pass --force to upgrade anyway", before.Build.Short())

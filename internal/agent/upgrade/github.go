@@ -13,6 +13,10 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"golang.org/x/mod/semver"
+
+	"github.com/qiangli/outpost/internal/agent"
 )
 
 // DefaultRepo is the GitHub repository the direct-from-GitHub upgrade
@@ -70,16 +74,28 @@ type GitHubSource struct {
 	// single interactive upgrade makes.
 	Token string
 
+	// Current is the running build. When Current.Version is valid
+	// semver, Resolve ignores GitHub's "latest" pointer (which skips
+	// prereleases — the 2026-10-24 downgrade incident: "latest" v0.32.0
+	// resolved over a newer rc.10-dev) and instead picks the NEWEST release by
+	// published date among releases strictly newer than the running
+	// build. Empty (unknown version) keeps the legacy "latest"
+	// behavior. The CLI always sets this from the daemon's status.
+	Current agent.BuildInfo
+
 	// apiBase overrides the api.github.com origin in tests. Empty →
 	// githubAPIBase. Unexported on purpose: production callers never set
 	// it.
 	apiBase string
 }
 
-// ghRelease is the slice of the GitHub "latest release" response we use.
+// ghRelease is the slice of the GitHub release response we use, for
+// both the "latest" endpoint and the releases list.
 type ghRelease struct {
-	TagName string `json:"tag_name"`
-	Assets  []struct {
+	TagName     string `json:"tag_name"`
+	PublishedAt string `json:"published_at"`
+	Draft       bool   `json:"draft"`
+	Assets      []struct {
 		Name               string `json:"name"`
 		BrowserDownloadURL string `json:"browser_download_url"`
 	} `json:"assets"`
@@ -110,7 +126,7 @@ func (g GitHubSource) Resolve(ctx context.Context) (Envelope, error) {
 		repo = DefaultRepo
 	}
 
-	rel, err := g.fetchLatest(ctx, repo)
+	rel, err := g.pickRelease(ctx, repo, goos, goarch)
 	if err != nil {
 		return Envelope{}, err
 	}
@@ -120,14 +136,9 @@ func (g GitHubSource) Resolve(ctx context.Context) (Envelope, error) {
 
 	// Asset naming mirrors bashy's release workflow. The raw executable keeps
 	// the base version when candidate bytes move from -dev to stable.
-	baseTag := strings.TrimSuffix(rel.TagName, "-dev")
-	binName := fmt.Sprintf("outpost-%s-%s-%s", baseTag, goos, goarch)
-	if goos == "windows" {
-		binName += ".exe"
-	}
-	shaName := binName + ".sha256"
+	binName, shaName, legacySHA := releaseAssetNames(rel.TagName, goos, goarch)
 	if rel.assetURL(shaName) == "" {
-		shaName = fmt.Sprintf("outpost-%s-%s-%s.sha256", baseTag, goos, goarch) // legacy Windows sidecar
+		shaName = legacySHA // legacy Windows sidecar
 	}
 
 	binURL := rel.assetURL(binName)
@@ -161,11 +172,85 @@ func (g GitHubSource) Resolve(ctx context.Context) (Envelope, error) {
 		URL:       binURL,
 		SHA256:    sum,
 		Commit:    commit,
+		// The release's published date feeds the never-downgrade
+		// guard downstream as the candidate build time.
+		BuildTime: rel.PublishedAt,
 	}
 	if err := env.Validate(); err != nil {
 		return Envelope{}, err
 	}
 	return env, nil
+}
+
+// releaseAssetNames derives this platform's binary + sha256 sidecar names
+// for a release tag. The third return is the legacy Windows sidecar name
+// (without .exe), used as a fallback when the primary sidecar is absent.
+func releaseAssetNames(tag, goos, goarch string) (bin, sha, legacySHA string) {
+	baseTag := strings.TrimSuffix(tag, "-dev")
+	bin = fmt.Sprintf("outpost-%s-%s-%s", baseTag, goos, goarch)
+	if goos == "windows" {
+		bin += ".exe"
+	}
+	sha = bin + ".sha256"
+	legacySHA = fmt.Sprintf("outpost-%s-%s-%s.sha256", baseTag, goos, goarch)
+	return bin, sha, legacySHA
+}
+
+// hasAssets reports whether the release carries this platform's binary +
+// sha256 sidecar (including the legacy Windows sidecar name).
+func (r ghRelease) hasAssets(goos, goarch string) bool {
+	bin, sha, legacy := releaseAssetNames(r.TagName, goos, goarch)
+	if r.assetURL(bin) == "" {
+		return false
+	}
+	return r.assetURL(sha) != "" || r.assetURL(legacy) != ""
+}
+
+// pickRelease chooses which release to upgrade to. With a known current
+// version it lists releases and takes the NEWEST by published date among
+// releases strictly newer than the running build — GitHub's "latest"
+// pointer is never consulted because it ignores prereleases (the
+// 2026-10-24 downgrade incident: "latest" v0.32.0 resolved over a newer rc.10-dev).
+// Without a known current version it keeps the legacy "latest" behavior.
+func (g GitHubSource) pickRelease(ctx context.Context, repo, goos, goarch string) (ghRelease, error) {
+	if !semver.IsValid(g.Current.Version) {
+		return g.fetchLatest(ctx, repo)
+	}
+	rels, err := g.fetchReleases(ctx, repo)
+	if err != nil {
+		return ghRelease{}, err
+	}
+	var best *ghRelease
+	var bestTime time.Time
+	newestOverall := ""
+	var newestTime time.Time
+	for i := range rels {
+		rel := &rels[i]
+		if rel.Draft || strings.TrimSpace(rel.TagName) == "" {
+			continue
+		}
+		ts, terr := parseBuildTime(rel.PublishedAt)
+		if terr != nil {
+			continue // without a date there is no "newest" to prove
+		}
+		if newestOverall == "" || ts.After(newestTime) {
+			newestOverall, newestTime = rel.TagName, ts
+		}
+		if decline, _ := shouldDeclinePulledTarget(g.Current, Envelope{ReleaseID: rel.TagName, BuildTime: rel.PublishedAt}); decline {
+			continue
+		}
+		if !rel.hasAssets(goos, goarch) {
+			continue // newest first, but only releases published for this platform count
+		}
+		if best == nil || ts.After(bestTime) {
+			best, bestTime = rel, ts
+		}
+	}
+	if best == nil {
+		return ghRelease{}, fmt.Errorf("no published release is newer than running %s (newest published: %s) — deliberate rollback only via `outpost rollback`",
+			g.Current.Version, newestOverall)
+	}
+	return *best, nil
 }
 
 // resolveOutpostPin names the outpost commit a bashy product tag ships. The
@@ -246,6 +331,16 @@ func (g GitHubSource) fetchLatest(ctx context.Context, repo string) (ghRelease, 
 		return ghRelease{}, err
 	}
 	return rel, nil
+}
+
+// fetchReleases lists published releases (newest first from the API) for
+// the newest-pick in pickRelease.
+func (g GitHubSource) fetchReleases(ctx context.Context, repo string) ([]ghRelease, error) {
+	var rels []ghRelease
+	if err := g.getJSON(ctx, g.base()+"/repos/"+repo+"/releases?per_page=100", &rels); err != nil {
+		return nil, err
+	}
+	return rels, nil
 }
 
 // resolveTagCommit dereferences a tag ref to its commit sha (7-char),

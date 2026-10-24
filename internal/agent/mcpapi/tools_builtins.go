@@ -32,7 +32,6 @@ type builtinsIn struct {
 	ClusterAgent    *bool                        `json:"cluster_agent,omitempty" jsonschema:"Run one real k3s-agent Node on this host."`
 	ClusterVirtual  []string                     `json:"cluster_virtual,omitempty" jsonschema:"Complete set of virtual-kubelet backends to run concurrently: vk-podman, vk-native, vk-ollama."`
 	UpdateMode      *string                      `json:"update_mode,omitempty" jsonschema:"Per-host policy for cloudbox-pushed self-upgrades — one of 'auto' (default; stage+swap+restart on push), 'manual' (persist envelope, operator applies), 'never' (refuse)"`
-	AutoRollback    *bool                        `json:"auto_rollback,omitempty" jsonschema:"Arm the auto-rollback watchdog's destructive revert: when a self-upgrade's new binary fails to confirm healthy, the supervisor reverts to the previous binary. Default off (observe-only — logs 'would auto-rollback')."`
 	Mesh            *bool                        `json:"mesh,omitempty" jsonschema:"Toggle the libp2p mesh data plane (the peer node carrying authenticated, NAT-traversing peer↔peer streams — transport under shard-RPC, peer-backup, the resource fabric). Requires a paired access token."`
 	MeshPort        *int                         `json:"mesh_port,omitempty" jsonschema:"TCP+QUIC listen port for the mesh host (0 = ephemeral; a stable port helps NAT/hole-punch)"`
 	Services        map[string]bool              `json:"services,omitempty" jsonschema:"Desired state of service units, by unit name: {\"meet\":true,\"loom\":false}. This is the one way to turn a service on or off — the same write 'bashy service enable|disable' performs — and it applies LIVE: the monitor reconciles the process and outpost republishes the unit's declared app/mesh exposure without an outpost restart. Units are declared YAML (list them with 'bashy service list'), so a third-party daemon is toggled here with no outpost change."`
@@ -66,7 +65,6 @@ func (s *Server) registerBuiltinsTools() {
 			ClusterAgent:          in.ClusterAgent,
 			ClusterVirtual:        in.ClusterVirtual,
 			UpdateMode:            in.UpdateMode,
-			AutoRollback:          in.AutoRollback,
 			Mesh:                  in.Mesh,
 			MeshPort:              in.MeshPort,
 			Services:              in.Services,

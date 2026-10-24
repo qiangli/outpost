@@ -221,6 +221,35 @@ func shouldDeclinePulledTarget(cur agent.BuildInfo, target Envelope) (bool, stri
 	return false, ""
 }
 
+// ShouldDeclineCandidate is the shared never-downgrade guard for the
+// operator-driven paths: the CLI (`--from` / `--local` / `--direct`,
+// checked after probing the candidate) and the cloudbox push
+// (Worker.Apply). It wraps shouldDeclinePulledTarget — same semver +
+// prerelease-base + build/commit-time ordering — but is lenient about
+// versions it cannot order: when either side is not valid semver there
+// is no proven downgrade, so it allows the candidate (probe, sha256,
+// and platform checks still apply downstream).
+//
+// Force never bypasses this: `--force` / Force=true keeps its current
+// meaning (reinstall the same commit) and does NOT allow downgrades. A
+// deliberate downgrade stays possible only through the rollback path
+// (Worker.Rollback, i.e. `outpost rollback`), which restores the
+// retained `<binary>.previous` instead of applying an older release.
+//
+// The returned reason names both versions and the rollback command, so
+// it is suitable as a user-facing refusal message verbatim.
+func ShouldDeclineCandidate(cur agent.BuildInfo, releaseID, buildTime string) (bool, string) {
+	if !semver.IsValid(releaseID) || !semver.IsValid(cur.Version) {
+		return false, ""
+	}
+	decline, reason := shouldDeclinePulledTarget(cur, Envelope{ReleaseID: releaseID, BuildTime: buildTime})
+	if !decline {
+		return false, ""
+	}
+	return true, fmt.Sprintf("refusing to replace running %s with candidate %s (%s) — deliberate rollback only via `outpost rollback`",
+		cur.Version, releaseID, reason)
+}
+
 func stripDevSuffix(v string) string {
 	if idx := strings.Index(v, "-dev"); idx != -1 {
 		return v[:idx]

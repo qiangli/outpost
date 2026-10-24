@@ -103,6 +103,22 @@ func TestRenderSystemdUserUnit(t *testing.T) {
 	assertAbsent(t, "systemd --user unit", got, "User=") // per-user: no User=
 }
 
+// TestWindowsBootStartsSupervisorWithWatchdog pins the story link: the
+// Task Scheduler S4U boot registration must start `outpost supervisord`
+// (the supervisor that owns the auto-rollback watchdog's PreStart hook),
+// never the daemon directly — otherwise a bricked daemon after an upgrade
+// would never be reverted on a host that only boots via this task.
+func TestWindowsBootStartsSupervisorWithWatchdog(t *testing.T) {
+	got := renderWindowsStartupTask(`C:\outpost.exe`, `EXAMPLE\Dev`)
+	assertContains(t, "windows S4U boot task", got,
+		`-Execute 'C:\outpost.exe'`,
+		"-Argument 'supervisord'",
+		"-AtStartup",
+		"-LogonType S4U",
+	)
+	assertAbsent(t, "windows S4U boot task", got, "-AtLogOn", "'start'")
+}
+
 func TestRenderWindowsLogonTask(t *testing.T) {
 	got := renderWindowsLogonTask(`C:\outpost.exe`, `EXAMPLE\Dev`)
 	assertContains(t, "windows logon task", got,

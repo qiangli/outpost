@@ -37,6 +37,15 @@ type StateSnapshot struct {
 	// same-commit and min_from guards. Short or full sha both work;
 	// Apply normalizes both sides to 7 chars before comparing.
 	CurrentCommit string
+	// CurrentVersion is the running daemon's semver tag (e.g.
+	// "v1.0.0-rc.10-dev"), wired from agent.ReadBuildInfo().Version,
+	// plus CurrentVCSTime from its VCSTime. Together they feed the
+	// never-downgrade guard in Apply: a pushed candidate that is not
+	// strictly newer than the running build is refused. Empty (a
+	// dev/untagged build) disables the guard — versions that cannot
+	// be ordered are not refused.
+	CurrentVersion string
+	CurrentVCSTime string
 	// CurrentDirty reports whether the running binary was built from a
 	// working tree with uncommitted changes — i.e. a local developer
 	// build carrying code that exists nowhere else. Wire it from
@@ -252,6 +261,19 @@ func (w *Worker) Apply(ctx context.Context, env Envelope) Result {
 	if st.CurrentCommit != "" && shortCommit(env.Commit) == shortCommit(st.CurrentCommit) && len(env.Companions) == 0 && !IsPairedReleaseURL(env.URL) {
 		w.mu.Unlock()
 		return Result{Status: StatusSameCommit, Detail: "daemon is already at " + env.Commit, ReleaseID: env.ReleaseID, Commit: env.Commit}
+	}
+	// Never-downgrade guard: the push path must never move a host to
+	// a build older than what it runs — the 2026-10-24 downgrade incident was
+	// GitHub "latest" resolving over a newer rc, swapping, and never
+	// coming back. Force=true does NOT bypass this: it keeps its
+	// current meaning (reinstall the same commit, handled above) and
+	// never allows a downgrade. A deliberate downgrade stays possible
+	// only through Worker.Rollback (`outpost rollback`), which
+	// restores the retained <binary>.previous instead of applying an
+	// older release.
+	if decline, reason := ShouldDeclineCandidate(agent.BuildInfo{Version: st.CurrentVersion, VCSTime: st.CurrentVCSTime}, env.ReleaseID, env.BuildTime); decline {
+		w.mu.Unlock()
+		return Result{Status: StatusDowngrade, Detail: reason, ReleaseID: env.ReleaseID, Commit: env.Commit}
 	}
 	if env.MinFrom != "" && st.CurrentCommit != "" && shortCommit(env.MinFrom) != shortCommit(st.CurrentCommit) {
 		// MinFrom is conservative: only the exact match is acceptable.

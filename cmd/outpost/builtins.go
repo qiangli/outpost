@@ -100,7 +100,7 @@ func builtinsSetCmd() *cobra.Command {
 		shell, desktop, clipboard, ssh, sshLocalFwd, sshRemoteFwd, sshAgentFwd, sftp, cluster string
 		clusterAgent                                                                          string
 		clusterVirtual                                                                        []string
-		updateMode, autoUpgradeLegacy, autoRollback                                           string
+		updateMode, autoUpgradeLegacy                                                         string
 		mesh                                                                                  string
 		meshPort                                                                              int
 		services                                                                              []string
@@ -187,9 +187,6 @@ switch it with --service and configure it with --service-set:
 					params.UpdateMode = &m
 				}
 			}
-			if params.AutoRollback, err = parseToggle("auto-rollback", autoRollback); err != nil {
-				return err
-			}
 			if params.Mesh, err = parseToggle("mesh", mesh); err != nil {
 				return err
 			}
@@ -246,7 +243,6 @@ switch it with --service and configure it with --service-set:
 	cmd.Flags().StringVar(&updateMode, "update", "", "auto|manual|never — policy for cloudbox-pushed self-upgrades")
 	cmd.Flags().StringVar(&autoUpgradeLegacy, "auto-upgrade", "", "deprecated alias for --update (on→auto, off→never)")
 	_ = cmd.Flags().MarkDeprecated("auto-upgrade", "use --update=auto|manual|never")
-	cmd.Flags().StringVar(&autoRollback, "auto-rollback", "", "on|off — arm the auto-rollback watchdog's destructive revert (default off / observe-only)")
 	cmd.Flags().StringSliceVar(&sshForwardSockets, "ssh-forward-socket", nil, "Allow this unix-socket path for SSH direct-streamlocal forwarding (repeatable; replaces the entire list)")
 	cmd.Flags().BoolVar(&clearSSHForwardSockets, "clear-ssh-forward-sockets", false, "Reset ssh-forward-sockets to the auto-detect default set")
 	cmd.Flags().StringVar(&mesh, "mesh", "", "on|off - libp2p mesh data plane (peer-to-peer transport under shard-RPC/peer-backup; needs pairing)")

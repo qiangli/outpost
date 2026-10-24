@@ -44,12 +44,15 @@ func newLocalUpgrade(cfgPath string, fc *conf.FileConfig, restart func()) (*upgr
 			if cur == nil {
 				cur = fc
 			}
+			bi := agent.ReadBuildInfo()
 			return upgrade.StateSnapshot{
-				UpdateMode:    cur.UpdateModeName(),
-				CurrentCommit: agent.ReadBuildInfo().ShortCommit(),
-				CurrentDirty:  agent.ReadBuildInfo().Dirty,
-				BinaryPath:    exe,
-				PendingPath:   pendingPath,
+				UpdateMode:     cur.UpdateModeName(),
+				CurrentCommit:  bi.ShortCommit(),
+				CurrentVersion: bi.Version,
+				CurrentVCSTime: bi.VCSTime,
+				CurrentDirty:   bi.Dirty,
+				BinaryPath:     exe,
+				PendingPath:    pendingPath,
 			}
 		},
 		Restart:        restart,

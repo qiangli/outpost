@@ -43,9 +43,6 @@ type BuiltinsParams struct {
 	// unchanged"; non-nil with an invalid value is rejected by
 	// SetBuiltins with a 400-class APIError.
 	UpdateMode *string `json:"update_mode,omitempty"`
-	// AutoRollback arms the auto-rollback watchdog's DESTRUCTIVE revert
-	// (default off / observe-only). nil = leave unchanged.
-	AutoRollback *bool `json:"auto_rollback,omitempty"`
 	// Mesh toggles the libp2p mesh data plane (the peer node carrying
 	// authenticated, NAT-traversing peer↔peer streams). MeshPort sets its
 	// TCP+QUIC listen port (0 = ephemeral). nil = leave unchanged.
@@ -205,9 +202,6 @@ func (s *Server) SetBuiltins(ctx context.Context, p BuiltinsParams) (BuiltinsRes
 		// Clear the legacy bool so it doesn't shadow the new field
 		// on the next round-trip through UpdateModeName.
 		fc.AutoUpgrade = nil
-	}
-	if p.AutoRollback != nil {
-		fc.AutoRollbackEnabled = p.AutoRollback
 	}
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		return BuiltinsResult{}, internalErr("%s", err.Error())

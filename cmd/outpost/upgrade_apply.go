@@ -62,6 +62,8 @@ host's update_mode is "never".`,
 				return nil
 			case "min_from":
 				return fmt.Errorf("min_from precondition failed: %s", out.Detail)
+			case "downgrade":
+				return fmt.Errorf("refused: %s", out.Detail)
 			}
 			fmt.Printf("apply: release=%s commit=%s status=%s\n", out.ReleaseID, out.Commit, out.Status)
 			fmt.Println("upgrade scheduled — poll `outpost status` until configured returns.")

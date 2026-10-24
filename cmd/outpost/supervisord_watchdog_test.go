@@ -60,32 +60,35 @@ func armMarker(t *testing.T, dir string, prevBytes []byte) (binary, confirmPath 
 	return binary, confirmPath
 }
 
-func TestWatchdogObserveModeNeverReverts(t *testing.T) {
+func TestWatchdogAlwaysRevertsUnconfirmed(t *testing.T) {
 	dir := t.TempDir()
 	binary, confirmPath := armMarker(t, dir, fakeProbeBinary(t, `{"commit":"deadbee1234","go_version":"go1.25"}`, 0))
 	ledger := upgrade.NewLedger(filepath.Join(dir, "upgrade.log"))
 	q := upgrade.NewQuarantine(upgrade.QuarantinePath(dir))
 
-	hook := newWatchdogHook(confirmPath, ledger, q, func() bool { return false }) // observe
+	// No flag, no opt-in: the watchdog ALWAYS reverts a just-upgraded
+	// binary that never confirms healthy.
+	hook := newWatchdogHook(confirmPath, ledger, q)
 
 	old := upgrade.MaxUnconfirmedBoots
 	upgrade.MaxUnconfirmedBoots = 1
 	t.Cleanup(func() { upgrade.MaxUnconfirmedBoots = old })
 
-	// Even past the crash-loop threshold, observe mode must not revert.
-	for i := 0; i < 3; i++ {
-		if err := hook(); err != nil {
-			t.Fatalf("hook: %v", err)
-		}
+	if err := hook(); err != nil {
+		t.Fatalf("hook: %v", err)
 	}
-	if got, _ := os.ReadFile(binary); string(got) != "NEW BAD BINARY" {
-		t.Fatal("observe mode must NOT swap the binary")
+	if got, _ := os.ReadFile(binary); string(got) == "NEW BAD BINARY" {
+		t.Fatal("watchdog must revert an unconfirmed binary with no flag set")
 	}
-	if q.Has("rel-bad") {
-		t.Fatal("observe mode must NOT quarantine")
+	if !q.Has("rel-bad") {
+		t.Fatal("revert must quarantine the bad release")
 	}
-	if pc, _ := upgrade.ReadPendingConfirm(confirmPath); pc == nil || pc.BootCount < 3 {
-		t.Fatalf("observe mode should keep the marker and count boots, got %+v", pc)
+	if pc, _ := upgrade.ReadPendingConfirm(confirmPath); pc != nil {
+		t.Fatal("marker should be cleared after a successful revert")
+	}
+	entries, _ := ledger.Tail(10)
+	if len(entries) == 0 || entries[len(entries)-1].Step != "auto_rollback" {
+		t.Fatalf("expected auto_rollback ledger entry, got %+v", entries)
 	}
 }
 
@@ -100,7 +103,7 @@ func TestWatchdogArmedRevertsOnCrashLoop(t *testing.T) {
 	upgrade.MaxUnconfirmedBoots = 1 // one unconfirmed boot = crash loop
 	t.Cleanup(func() { upgrade.MaxUnconfirmedBoots = old })
 
-	hook := newWatchdogHook(confirmPath, ledger, q, func() bool { return true }) // armed
+	hook := newWatchdogHook(confirmPath, ledger, q)
 	if err := hook(); err != nil {
 		t.Fatalf("hook: %v", err)
 	}
@@ -131,7 +134,7 @@ func TestWatchdogArmedKeepsBinaryWhenPreviousCorrupt(t *testing.T) {
 	upgrade.MaxUnconfirmedBoots = 1
 	t.Cleanup(func() { upgrade.MaxUnconfirmedBoots = old })
 
-	hook := newWatchdogHook(confirmPath, ledger, q, func() bool { return true })
+	hook := newWatchdogHook(confirmPath, ledger, q)
 	if err := hook(); err != nil {
 		t.Fatalf("hook: %v", err)
 	}
@@ -155,9 +158,28 @@ func TestWatchdogNoMarkerIsNoop(t *testing.T) {
 	dir := t.TempDir()
 	hook := newWatchdogHook(upgrade.PendingConfirmPath(dir),
 		upgrade.NewLedger(filepath.Join(dir, "upgrade.log")),
-		upgrade.NewQuarantine(upgrade.QuarantinePath(dir)),
-		func() bool { return true })
+		upgrade.NewQuarantine(upgrade.QuarantinePath(dir)))
 	if err := hook(); err != nil {
 		t.Fatalf("no-marker hook should be a clean no-op, got %v", err)
+	}
+}
+
+// TestSupervisordWiresWatchdogPreStart pins the second half of the boot
+// chain: superviseOnce must attach the auto-rollback watchdog to the
+// daemon program before the supervisor runs it, on every platform
+// (including a Windows host booted via the S4U task, which execs
+// `outpost supervisord` and nothing else).
+func TestSupervisordWiresWatchdogPreStart(t *testing.T) {
+	dir := t.TempDir()
+	programs := supervisordPrograms("/opt/outpost", "/opt/bashy", "", "")
+	attachWatchdog(programs, dir)
+	if len(programs) != 2 {
+		t.Fatalf("supervisordPrograms returned %d programs, want 2", len(programs))
+	}
+	if programs[0].PreStart == nil {
+		t.Fatal("daemon program has no watchdog PreStart — an unconfirmed upgrade would never revert")
+	}
+	if programs[1].PreStart != nil {
+		t.Fatal("bashy monitor program must not carry the outpost watchdog hook")
 	}
 }

@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
 )
 
@@ -23,21 +22,20 @@ import (
 // absolute confirm deadline passed), revert <binary>.previous over the live
 // binary and quarantine the release so the puller doesn't re-pull it.
 //
-// Gated by FileConfig.AutoRollbackOn() (default OFF). When off, the watchdog
-// still OBSERVES: it logs "WOULD auto-rollback …" so an operator can validate
-// the signal on a canary before arming the destructive revert fleet-wide.
+// ALWAYS ON: there is no opt-out. A just-upgraded build that does not
+// confirm healthy is reverted, period — the 2026-10-24 downgrade incident
+// (a downgrade swapped in with no rollback armed) must never strand a host again.
 func watchdogPreStart(cacheDir string) func() error {
 	return newWatchdogHook(
 		upgrade.PendingConfirmPath(cacheDir),
 		upgrade.NewLedger(filepath.Join(cacheDir, "upgrade.log")),
 		upgrade.NewQuarantine(upgrade.QuarantinePath(cacheDir)),
-		autoRollbackEnabled,
 	)
 }
 
-// newWatchdogHook is the testable core: paths + an enabled predicate are
-// injected so tests can drive it against a temp dir without the real config.
-func newWatchdogHook(confirmPath string, ledger *upgrade.Ledger, quarantine *upgrade.Quarantine, enabled func() bool) func() error {
+// newWatchdogHook is the testable core: paths are injected so tests can
+// drive it against a temp dir without the real config.
+func newWatchdogHook(confirmPath string, ledger *upgrade.Ledger, quarantine *upgrade.Quarantine) func() error {
 	return func() error {
 		if exe, err := os.Executable(); err == nil {
 			if real, err := filepath.EvalSymlinks(exe); err == nil {
@@ -74,18 +72,9 @@ func newWatchdogHook(confirmPath string, ledger *upgrade.Ledger, quarantine *upg
 		reason := fmt.Sprintf("new binary %s never confirmed healthy (boot_count=%d, deadline_passed=%t)",
 			pc.ToSHA, pc.BootCount, pastDeadline)
 
-		// Default-OFF: observe only. Keep the marker (so we keep logging the
-		// signal each boot) and launch the current binary unchanged.
-		if !enabled() {
-			slog.Warn("watchdog: WOULD auto-rollback (observe mode; set auto_rollback_enabled=true to arm)",
-				"release", pc.ReleaseID, "reason", reason, "prev", pc.PrevPath)
-			_ = upgrade.WritePendingConfirm(confirmPath, *pc)
-			return nil
-		}
-
-		// Armed: revert <binary>.previous over the live binary. Purely local —
-		// no cloudbox round-trip (cloudbox may be down because of the very
-		// storm this guards against).
+		// Always on: revert <binary>.previous over the live binary.
+		// Purely local — no cloudbox round-trip (cloudbox may be down
+		// because of the very storm this guards against).
 		if _, err := upgrade.RevertToPrevious(pc.BinaryPath, pc.PrevPath, ledger, upgrade.LedgerEntry{
 			Step:      "auto_rollback",
 			ReleaseID: pc.ReleaseID,
@@ -121,19 +110,4 @@ func newWatchdogHook(confirmPath string, ledger *upgrade.Ledger, quarantine *upg
 			"release", pc.ReleaseID, "reason", reason)
 		return nil
 	}
-}
-
-// autoRollbackEnabled reads the live FileConfig for the destructive-revert
-// opt-in. Read fresh each call so an operator flip takes effect on the next
-// respawn without restarting the supervisor.
-func autoRollbackEnabled() bool {
-	cfgPath, err := conf.DefaultConfigPath()
-	if err != nil {
-		return false
-	}
-	fc, err := conf.LoadFile(cfgPath)
-	if err != nil || fc == nil {
-		return false
-	}
-	return fc.AutoRollbackOn()
 }

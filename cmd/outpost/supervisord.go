@@ -110,6 +110,19 @@ func runSupervisord(ctx context.Context) error {
 	}, reexecInit)
 }
 
+// attachWatchdog arms the auto-rollback watchdog on the daemon program:
+// before each (re)launch, the supervisor reverts a just-upgraded binary
+// that failed to confirm healthy. Always on, no flag. No-op without a
+// pending upgrade. Extracted so tests can prove the boot chain
+// (Task Scheduler S4U → `outpost supervisord` → here) always carries
+// the hook — on every platform.
+func attachWatchdog(programs []*supervisor.Program, cacheDir string) {
+	if len(programs) == 0 {
+		return
+	}
+	programs[0].PreStart = watchdogPreStart(cacheDir)
+}
+
 // superviseOnce resolves the children and supervises them until ctx ends or
 // one of their binaries is replaced (swapped=true).
 func superviseOnce(ctx context.Context, self string) (bool, error) {
@@ -133,11 +146,8 @@ func superviseOnce(ctx context.Context, self string) (bool, error) {
 		bashyLogPath = filepath.Join(dir, "bashy-supervisord.log")
 	}
 	programs := supervisordPrograms(self, bashy, logPath, bashyLogPath)
-	// Auto-rollback watchdog: before each (re)launch, revert a just-upgraded
-	// binary that failed to confirm healthy. No-op without a pending upgrade;
-	// the destructive revert is gated by auto_rollback_enabled (default off).
 	if dir, derr := conf.DefaultCacheDir(); derr == nil {
-		programs[0].PreStart = watchdogPreStart(dir)
+		attachWatchdog(programs, dir)
 	}
 
 	slog.Info("supervisord: starting", "binary", self, "daemon_log", logPath,

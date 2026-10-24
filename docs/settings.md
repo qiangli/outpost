@@ -114,7 +114,7 @@ tool, or wipe `agent.json` by hand.
 | Digital Ocean support (cloud venue) | `cloud_do_enabled` | `builtins set --cloud-do` | Inbound > Cloud | `outpost_set_builtins` | Restart |
 | Digital Ocean API token | `cloud_do_token` | `builtins set --cloud-do-token` | Inbound > Cloud | `outpost_set_builtins` | Restart |
 | Cloudbox-pushed self-upgrade | `update_mode` | `builtins set --update=auto\|manual\|never` | Inbound > Built-ins | `outpost_set_builtins` | Live |
-| Auto-rollback watchdog (destructive revert) | `auto_rollback_enabled` | `builtins set --auto-rollback=on\|off` | Inbound > Built-ins | `outpost_set_builtins` | Live |
+| Auto-rollback watchdog (always on, no flag) | — (no config key; the supervisor always reverts an unconfirmed upgrade) | — | Inbound > Built-ins | — | Always |
 
 All built-in route toggles default to ON when the JSON key is absent (old
 configs) so an upgrade doesn't silently disable features. The remaining
@@ -737,8 +737,9 @@ Rollback: `outpost rollback` swaps `<binary>.previous` back over the
 live binary and restarts. After rollback the previous file is gone —
 re-upgrade if you want to climb forward again.
 
-Auto-rollback watchdog (`auto_rollback_enabled`, default **off**): after
-a self-upgrade swap, the daemon leaves a confirmation marker
+Auto-rollback watchdog (always on, no flag or config key): after
+a self-upgrade swap — whether pushed from cloudbox or driven by
+`outpost upgrade` — the daemon leaves a confirmation marker
 (`upgrade-pending-confirm.json`). The new binary "confirms healthy" by
 simply **staying up** for a dwell period — a purely local signal that
 needs no cloudbox round-trip, so a good binary that boots during a WAN
@@ -747,10 +748,7 @@ new binary crash-loops (never stays up long enough), the supervisor —
 the always-up parent that survives a crash-loop — reverts
 `<binary>.previous` on the next respawn and **quarantines** the bad
 `release_id` so the pull-trigger doesn't re-apply it (clear with `outpost
-upgrade unquarantine`). The destructive revert is gated by
-`auto_rollback_enabled`: when **off** (the default), the watchdog only
-*observes* — it logs `watchdog: WOULD auto-rollback …` so you can
-validate the signal on a canary before arming it fleet-wide. A revert is
+upgrade unquarantine`). A revert is
 refused (binary left in place) if `<binary>.previous` itself fails to
 probe, so a double-brick never makes things worse. Ledger steps:
 `confirm_ok`, `auto_rollback`, `auto_rollback_failed`.
