@@ -173,13 +173,14 @@ func PairingServerChanged(prev, next string) bool {
 	return prev != "" && prev != next
 }
 
-// DropClusterJoinOnServerChange is the re-pair half of S482: when the
-// pairing server changes, a PLAIN server-plane member drops its cached join
-// (the same fields `outpost cluster clear` wipes) so the next boot fetches a
-// fresh one from the new server instead of dialing the previous server's
-// apiserver forever. The operator's opt-in (cluster.enabled) and runtime
-// selection are kept — the host asked to be a cluster node, and the pairing
-// is what moved.
+// DropClusterJoinOnServerChange is the re-pair half of S482, hardened by
+// S498.4: when the pairing server changes, a PLAIN server-plane member
+// LEAVES the cluster — the cached join is dropped (the same fields `outpost
+// cluster clear` wipes) AND cluster mode is disabled, so the host lands as
+// an orphan instead of silently joining the new server's cluster on the next
+// boot. The runtime selection and node name are kept; the owner rejoins
+// explicitly with `outpost cluster join`, whose boot reattach re-fetches
+// fresh membership from the new server.
 //
 // It leaves two kinds of host alone, whatever the server did:
 //   - a peer-plane member (JoinsPeerPlane): its credentials belong to the
@@ -187,8 +188,9 @@ func PairingServerChanged(prev, next string) bool {
 //   - a control-plane host (ControlPlaneOn): it mints its own.
 //
 // A same-server re-pair (a replacement instance at the same address) keeps
-// the join. Reports whether anything was dropped and logs one line (no
-// secrets) when it was. Callers hold whatever lock guards fc.
+// the join: the host never left, so there is nothing to orphan. Reports
+// whether anything changed and logs one line (no secrets) when it did.
+// Callers hold whatever lock guards fc.
 func DropClusterJoinOnServerChange(fc *conf.FileConfig, prevBase, nextBase string) bool {
 	if fc == nil || fc.Cluster == nil || !PairingServerChanged(prevBase, nextBase) {
 		return false
@@ -197,10 +199,22 @@ func DropClusterJoinOnServerChange(fc *conf.FileConfig, prevBase, nextBase strin
 	if cc.JoinsPeerPlane() || cc.ControlPlaneOn() {
 		return false
 	}
-	if !ClearCachedClusterJoin(cc) {
+	cleared := ClearCachedClusterJoin(cc)
+	// S498.4: dropping the credentials is not enough — an enabled host
+	// would re-fetch them from the NEW server on the next boot reattach
+	// and auto-join its cluster (a third-party host re-paired to another
+	// owner's satellite once silently joined its cluster). Disable cluster
+	// mode so the host stays an orphan until an explicit join.
+	disabled := false
+	if fc.ClusterOn() {
+		off := false
+		cc.Enabled = &off
+		disabled = true
+	}
+	if !cleared && !disabled {
 		return false
 	}
-	slog.Info("pairing moved to a different server; dropped the cached cluster join (re-issued on next boot)",
+	slog.Info("pairing moved to a different server; left the cluster (orphan until an explicit join)",
 		"previous", prevBase, "next", nextBase)
 	return true
 }

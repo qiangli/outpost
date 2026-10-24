@@ -113,10 +113,11 @@ func TestReconcileClusterMembershipOnReattach(t *testing.T) {
 		check       func(t *testing.T, cc *conf.ClusterConfig)
 	}{
 		{
-			// Unchanged behavior: a plain cloudbox member takes the whole
+			// An explicitly joined cloudbox member takes the whole
 			// refresh, overlay trio included.
 			name: "cloudbox member takes the refresh",
 			cluster: &conf.ClusterConfig{
+				Enabled:    boolPtr(true),
 				NodeToken:  "K10old::node:old",
 				STCPSecret: "old-secret",
 				// F16: host-authoritative, never sent by cloudbox — the boot
@@ -135,6 +136,26 @@ func TestReconcileClusterMembershipOnReattach(t *testing.T) {
 				}
 				if cc.ControlPlaneKubeconfig != "/persisted/kubeconfig.yaml" {
 					t.Errorf("control_plane_kubeconfig clobbered by reattach: %q", cc.ControlPlaneKubeconfig)
+				}
+			},
+		},
+		{
+			// S498.4: cluster mode off (orphan after a move/re-pair, or
+			// never joined) takes no refresh — collecting it is what
+			// silently re-joined a moved host to the new server's cluster.
+			name: "cluster mode off takes no refresh",
+			cluster: &conf.ClusterConfig{
+				Enabled:    boolPtr(false),
+				NodeToken:  "K10old::node:old",
+				STCPSecret: "old-secret",
+			},
+			wantChanged: false,
+			check: func(t *testing.T, cc *conf.ClusterConfig) {
+				if cc.NodeToken != "K10old::node:old" || cc.STCPSecret != "old-secret" {
+					t.Errorf("orphan's block mutated: %+v", cc)
+				}
+				if cc.OverlayLoginServer != "" {
+					t.Errorf("overlay leaked onto an orphan: %+v", cc)
 				}
 			},
 		},

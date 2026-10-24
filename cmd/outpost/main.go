@@ -111,7 +111,7 @@ func main() {
 		startCmd(), registerCmd(), stopCmd(),
 		sshProxyCmd(), sshConfigCmd(), sshTreeCmd(), sshdCmd(), scpCmd(), shasumCmd(), reachCmd(), connectCmd(),
 		outboundCmd(), jobsCmd(), fgCmd(), bgCmd(), killCmd(), runCmd(),
-		clusterCmd(), departCmd(), poolCmd(), kubectlCmd(),
+		clusterCmd(), departCmd(), poolCmd(), kubectlCmd(), moveCmd(),
 		// MCP-client CLI parity (Phase 1.5):
 		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), servicesCmd(), unpairCmd(), restartCmd(), mcpCmd(), tokenCmd(),
 		remoteCmd(), meshCmd(), mirrorCmd(), shardCmd(), bundleCmd(), appstoreCmd(),
@@ -3106,6 +3106,19 @@ func reconcileClusterMembershipOnReattach(fc, refreshed *conf.FileConfig) bool {
 			"captured_cloud_stcp_secret", captured)
 		return cleared || captured
 	}
+	// S498.4: a plain server-plane host that is not a cluster member — an
+	// orphan after a move/re-pair, or one that never joined — never
+	// auto-collects cluster membership from the boot reattach. Collecting it
+	// is what let a third-party host re-paired to another owner's satellite
+	// silently join its cluster. An explicit `outpost cluster join` flips
+	// cluster mode on first, so the ensuing boot reattach still re-fetches
+	// fresh credentials exactly as before. Control-plane hosts mint their
+	// own credentials and are exempt.
+	if !fc.ClusterOn() && !fc.Cluster.ControlPlaneOn() {
+		slog.Debug("reattach: cluster mode off; skipping cluster membership refresh (explicit join re-fetches)",
+			"name", fc.AgentName)
+		return false
+	}
 	return applyCloudboxClusterMembership(fc, refreshed)
 }
 
@@ -3511,17 +3524,23 @@ func mergePairing(path string, exchanged *conf.FileConfig) *conf.FileConfig {
 	merged.AccessToken = exchanged.AccessToken
 	merged.ClientOnly = exchanged.ClientOnly
 
-	// S482: a re-pair (register / recover) onto a DIFFERENT server drops the
-	// previous server's cached cluster join — api_url / token / ca and the
-	// rest of the membership `outpost cluster clear` wipes — for a plain
-	// server-plane member. Nothing below overlays the join triple (the
-	// server issues it on the next boot's fetch, not at exchange), so without
-	// this the host kept dialing the old server's apiserver until the
-	// operator ran clear + join by hand. Same-server re-pairs keep the join;
-	// peer-plane members and control-plane hosts keep their own credentials.
-	// It runs BEFORE the membership overlay so the new server's node token /
-	// secret / ports / overlay land on a clean block.
-	admincore.DropClusterJoinOnServerChange(merged, prevBase, cloudboxHTTPBase(merged))
+	// S482, hardened by S498.4: a re-pair (register / recover / move) onto a
+	// DIFFERENT server leaves the cluster for a plain server-plane member —
+	// the previous server's cached join is dropped (api_url / token / ca and
+	// the rest of the membership `outpost cluster clear` wipes) AND cluster
+	// mode is disabled, so the host lands as an orphan instead of silently
+	// joining the new server's cluster. Nothing below overlays the join
+	// triple (the server issues it on the next boot's fetch, not at
+	// exchange), so without this the host kept dialing the old server's
+	// apiserver until the operator ran clear + join by hand — and with only
+	// the drop but no disable, the next boot re-fetched a fresh join from
+	// the NEW server and auto-joined it (a third-party host re-paired to
+	// another owner's satellite silently joined its cluster). Same-server
+	// re-pairs keep the join; peer-plane members and control-plane hosts keep
+	// their own credentials. It runs BEFORE the membership overlay so that,
+	// when the host was NOT orphaned, the new server's node token / secret /
+	// ports / overlay land on a clean block.
+	orphanedByRePair := admincore.DropClusterJoinOnServerChange(merged, prevBase, cloudboxHTTPBase(merged))
 
 	// Cloudbox issues fresh cluster-join credentials at every pairing (node
 	// token / STCP secret / ports / overlay + observability endpoints). Carry
@@ -3537,7 +3556,10 @@ func mergePairing(path string, exchanged *conf.FileConfig) *conf.FileConfig {
 	// tunnel/api addrs. So start from the ON-DISK block instead and overlay ONLY
 	// the fields cloudbox owns: every host field — including any added later —
 	// is preserved by DEFAULT rather than by remembering to extend a list.
-	if exchanged.Cluster != nil {
+	// S498.4: a host orphaned by this re-pair takes NO membership from the
+	// new server — an orphan holds no join, and the next explicit
+	// `outpost cluster join` re-fetches fresh credentials on its boot.
+	if exchanged.Cluster != nil && !orphanedByRePair {
 		if merged.Cluster == nil {
 			// Fresh host: nothing on disk to preserve, take cloudbox's block.
 			merged.Cluster = exchanged.Cluster

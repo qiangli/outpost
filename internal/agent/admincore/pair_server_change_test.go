@@ -10,11 +10,11 @@ import (
 	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
-// S482 — admincore.Pair mirrors cmd/outpost's mergePairing: a re-pair onto a
-// DIFFERENT server drops the previous server's cached cluster join for a
-// plain server-plane member, a same-server re-pair keeps it, and a peer-plane
-// member keeps its own credentials. See cmd/outpost's
-// TestMergePairingServerChange* twins.
+// S482, hardened by S498.4 — admincore.Pair mirrors cmd/outpost's
+// mergePairing: a re-pair onto a DIFFERENT server orphans a plain
+// server-plane member (join dropped, cluster mode disabled), a same-server
+// re-pair keeps the join, and a peer-plane member keeps its own
+// credentials. See cmd/outpost's TestMergePairingServerChange* twins.
 
 // fakeExchange serves POST /api/register/exchange answering with a pairing
 // against serverAddr. The exchange URL itself is the httptest listener; the
@@ -79,6 +79,9 @@ func pairAgainst(t *testing.T, s *Server, srv *httptest.Server) *conf.FileConfig
 	return fc
 }
 
+// S498.4: like its cmd/outpost twin, a re-pair onto a different server
+// lands a plain server-plane member as an orphan — join dropped AND cluster
+// mode disabled, so no boot silently joins the new server's cluster.
 func TestPairServerChangeDropsCachedClusterJoin(t *testing.T) {
 	s := newTestServer(t)
 	seedJoinedTo(t, s, "old.example.com", nil)
@@ -88,7 +91,10 @@ func TestPairServerChangeDropsCachedClusterJoin(t *testing.T) {
 		t.Errorf("cached join survived a re-pair to a different server: api_url=%q token=%q ca=%d bytes",
 			cc.APIURL, cc.Token, len(cc.CA))
 	}
-	if !fc.ClusterOn() || !cc.Runtimes.Agent || cc.NodeName != "worker-node" {
+	if fc.ClusterOn() {
+		t.Errorf("re-pair to a different server left cluster mode on (auto-join): %+v", cc)
+	}
+	if !cc.Runtimes.Agent || cc.NodeName != "worker-node" {
 		t.Errorf("host-owned cluster fields clobbered: %+v", cc)
 	}
 	if fc.ServerAddr != "new.example.com" || fc.AccessToken != "access-token" {

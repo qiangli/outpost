@@ -11,9 +11,16 @@ import (
 // starts from the on-disk block and overlays only server-owned membership
 // fields, and none of those is the join triple. The host then kept dialing
 // the old server's apiserver until the operator ran `outpost cluster clear`
-// + `outpost cluster join`. These three tests pin the policy:
+// + `outpost cluster join`.
 //
-//   - server changed, plain server-plane member → cached join dropped
+// S498.4 hardened the policy: dropping the join is not enough, because the
+// next boot re-fetched a fresh one from the NEW server and the host silently
+// auto-joined its cluster (a third-party host re-paired to another owner's
+// satellite silently joined its cluster). A re-pair onto a different server
+// now lands the host as an ORPHAN — join dropped AND cluster mode disabled,
+// with no new-server membership applied. These tests pin the policy:
+//
+//   - server changed, plain server-plane member → orphan (no auto-join)
 //   - same server (replacement instance at the same address) → join kept
 //   - peer-plane member → its own credentials are never touched
 
@@ -42,6 +49,11 @@ func exchangedFrom(server string) *conf.FileConfig {
 	return ex
 }
 
+// S498.4: a re-pair onto a different server lands a plain server-plane
+// member as an ORPHAN — the cached join is dropped, cluster mode is
+// disabled, and the new server's membership is NOT applied, so no boot
+// can silently join the new server's cluster. Only an explicit
+// `outpost cluster join` rejoins.
 func TestMergePairingServerChangeDropsCachedClusterJoin(t *testing.T) {
 	path := writeConfig(t, onDiskJoinedTo("old.example.com"))
 	merged := mergePairing(path, exchangedFrom("new.example.com"))
@@ -53,15 +65,20 @@ func TestMergePairingServerChangeDropsCachedClusterJoin(t *testing.T) {
 		t.Errorf("cached join survived a re-pair to a different server: api_url=%q token=%q ca=%d bytes",
 			cc.APIURL, cc.Token, len(cc.CA))
 	}
-	// Host-authoritative fields stay: the operator's opt-in and runtime
-	// selection are not the old server's to lose. The next boot re-fetches the
-	// join from the new server exactly as a first join does.
-	if !merged.ClusterOn() || !cc.Runtimes.Agent || cc.NodeName != "worker-node" {
-		t.Errorf("host-owned cluster fields clobbered: %+v", cc)
+	// Orphan: cluster mode disabled, and no membership from the new server
+	// was applied — nothing here can join a cluster without an explicit join.
+	if merged.ClusterOn() {
+		t.Errorf("re-pair to a different server left cluster mode on (auto-join): %+v", cc)
 	}
-	// The new server's membership refresh still applies on top.
-	if cc.NodeToken != "K10cloud::node:new" || cc.STCPSecret != "cloud-secret" {
-		t.Errorf("new server's membership not applied: %+v", cc)
+	if cc.NodeToken != "" || cc.STCPSecret != "" || cc.K8sAPIPort != 0 ||
+		cc.OverlayLoginServer != "" || cc.OverlayAuthKey != "" || cc.OverlayPodCIDR != "" {
+		t.Errorf("new server's membership was issued to an orphaned host: %+v", cc)
+	}
+	// Host-authoritative non-membership fields stay: the runtime selection
+	// and node name are not the old server's to lose, so an explicit rejoin
+	// comes back as the same kind of node.
+	if !cc.Runtimes.Agent || cc.NodeName != "worker-node" {
+		t.Errorf("host-owned cluster fields clobbered: %+v", cc)
 	}
 	if merged.ServerAddr != "new.example.com" {
 		t.Errorf("pairing not applied: %+v", merged)

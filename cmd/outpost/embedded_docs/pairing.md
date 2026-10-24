@@ -147,6 +147,31 @@ merged config and exits. The next `outpost start` (or the boot service)
 reads it. A few mutate subcommands also accept `--offline` to edit
 `agent.json` directly without going through the daemon.
 
+## Moving a host to another server
+
+To hand a host to a different server (satellite transfer, host side) —
+the new server's owner issues an invite (their consent), and running the
+command on the host is the current owner's consent:
+
+```bash
+outpost move --to <new-server-URL> --code <CODE> [--name <host>]
+```
+
+It runs, in order:
+
+1. **Leave the current cluster** if the host is in one (the existing
+   `outpost cluster leave` path).
+2. **Re-pair** to the new server with its invite — the same exchange
+   `outpost register` runs, service restart included.
+3. **Best-effort delete** this host's own record on the old server with
+   the old token. Host credentials cannot delete records on current
+   servers, so this usually reports that the old record is left for
+   **host prune** — which catches anything left.
+
+The host lands as an **orphan**: a re-pair never re-issues the cached
+cluster join, so the new server's owner adds it to a cluster explicitly
+with `outpost cluster join` when wanted.
+
 ## Troubleshooting
 
 - **`unknown host` from `outpost connect`** — the host is not paired (or
