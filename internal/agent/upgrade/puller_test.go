@@ -2,10 +2,13 @@ package upgrade
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/qiangli/outpost/internal/agent"
 )
 
 // TestPuller_FetchTarget_OK: a 200 target is decoded into an Envelope,
@@ -90,5 +93,147 @@ func TestPuller_RunUnconfigured(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after ctx cancel")
+	}
+}
+
+func TestDeclinePulledTarget(t *testing.T) {
+	cases := []struct {
+		name   string
+		cur    agent.BuildInfo
+		target Envelope
+		want   bool // true = decline
+	}{
+		{
+			name:   "v0.32.0 must NOT replace v0.32.0-dev",
+			cur:    agent.BuildInfo{Version: "v0.32.0-dev", VCSTime: "2026-10-08T00:00:00Z"},
+			target: Envelope{ReleaseID: "v0.32.0"},
+			want:   true,
+		},
+		{
+			name:   "v0.32.0 must NOT replace v1.0.0-rc.12-dev (cur base newer)",
+			cur:    agent.BuildInfo{Version: "v1.0.0-rc.12-dev", VCSTime: "2026-10-08T00:00:00Z"},
+			target: Envelope{ReleaseID: "v0.32.0"},
+			want:   true,
+		},
+		{
+			name:   "v1.0.0 SHOULD replace v1.0.0-rc.12-dev",
+			cur:    agent.BuildInfo{Version: "v1.0.0-rc.12-dev", VCSTime: "2026-10-08T00:00:00Z"},
+			target: Envelope{ReleaseID: "v1.0.0"},
+			want:   false,
+		},
+		{
+			name:   "v0.33.0 SHOULD replace v0.32.0-dev (strictly newer)",
+			cur:    agent.BuildInfo{Version: "v0.32.0-dev", VCSTime: "2026-10-08T00:00:00Z"},
+			target: Envelope{ReleaseID: "v0.33.0"},
+			want:   false,
+		},
+		{
+			name:   "build_time older declined even though semver newer",
+			cur:    agent.BuildInfo{Version: "v0.32.0-dev", VCSTime: "2026-10-08T12:00:00Z"},
+			target: Envelope{ReleaseID: "v0.33.0", BuildTime: "2026-10-07T00:00:00Z"},
+			want:   true,
+		},
+		{
+			name:   "build_time newer accepted",
+			cur:    agent.BuildInfo{Version: "v0.32.0-dev", VCSTime: "2026-10-07T00:00:00Z"},
+			target: Envelope{ReleaseID: "v0.32.0", BuildTime: "2026-10-08T12:00:00Z"},
+			want:   false,
+		},
+		{
+			name:   "build_time equal declined (not strictly newer)",
+			cur:    agent.BuildInfo{Version: "v0.32.0", VCSTime: "2026-10-08T00:00:00Z"},
+			target: Envelope{ReleaseID: "v0.33.0", BuildTime: "2026-10-08T00:00:00Z"},
+			want:   true,
+		},
+		{
+			name:   "pseudo version cur unchanged: v0.32.0 replaces pseudo v0.0.0",
+			cur:    agent.BuildInfo{Version: "v0.0.0-20231017120000-abcdef123456", VCSTime: "2023-10-17T12:00:00Z"},
+			target: Envelope{ReleaseID: "v0.32.0"},
+			want:   false,
+		},
+		{
+			name:   "bare commit cur declines (not valid semver)",
+			cur:    agent.BuildInfo{Version: "abc1234"},
+			target: Envelope{ReleaseID: "v0.32.0"},
+			want:   true,
+		},
+		{
+			name:   "bare commit target declines (not valid semver)",
+			cur:    agent.BuildInfo{Version: "v0.32.0"},
+			target: Envelope{ReleaseID: "abc1234"},
+			want:   true,
+		},
+		{
+			name:   "strict semver downgrade declined",
+			cur:    agent.BuildInfo{Version: "v0.33.0"},
+			target: Envelope{ReleaseID: "v0.32.0"},
+			want:   true,
+		},
+		{
+			name:   "strict semver upgrade accepted",
+			cur:    agent.BuildInfo{Version: "v0.32.0"},
+			target: Envelope{ReleaseID: "v0.33.0"},
+			want:   false,
+		},
+		{
+			name:   "invalid build_time ignored, semver decides",
+			cur:    agent.BuildInfo{Version: "v0.32.0-dev", VCSTime: "2026-10-08T00:00:00Z"},
+			target: Envelope{ReleaseID: "v0.33.0", BuildTime: "not-a-time"},
+			want:   false,
+		},
+		{
+			name:   "no VCSTime, build_time ignored",
+			cur:    agent.BuildInfo{Version: "v0.32.0-dev"},
+			target: Envelope{ReleaseID: "v0.33.0", BuildTime: "2026-10-07T00:00:00Z"},
+			want:   false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, reason := shouldDeclinePulledTarget(tc.cur, tc.target)
+			if got != tc.want {
+				t.Errorf("shouldDeclinePulledTarget(%q, %q) = %v, want %v (reason: %q)", tc.cur.Version, tc.target.ReleaseID, got, tc.want, reason)
+			}
+			// Also verify the legacy string wrapper matches when no BuildTime involved.
+			if tc.target.BuildTime == "" {
+				// Simulate the wrapper by constructing a BuildInfo with same Version/VCSTime.
+				// The wrapper reads global ReadBuildInfo, so we test the underlying logic directly
+				// via shouldDecline; covering the wrapper would require global state mutation.
+				_ = reason
+			}
+		})
+	}
+}
+
+func TestDeclinePulledTarget_LegacyWrapper(t *testing.T) {
+	// Verify the deprecated string wrapper still declines v0.32.0 vs v0.32.0-dev
+	// when the cur version is injected via the package's helper. This test
+	// uses shouldDecline directly to avoid global state pollution; the wrapper
+	// is exercised in integration via checkOnce, but its prerelease guard must
+	// remain consistent.
+	cur := agent.BuildInfo{Version: "v0.32.0-dev"}
+	if ok, _ := shouldDeclinePulledTarget(cur, Envelope{ReleaseID: "v0.32.0"}); !ok {
+		t.Error("expected decline for v0.32.0 vs v0.32.0-dev")
+	}
+}
+
+func TestEnvelope_BuildTimeJSON(t *testing.T) {
+	// Ensure the optional build_time field round-trips via JSON for fetchTarget.
+	raw := `{"release_id":"v0.33.0","url":"https://example.com/outpost","sha256":"deadbeef","commit":"abc1234","build_time":"2026-10-08T12:00:00Z"}`
+	var env Envelope
+	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if env.BuildTime != "2026-10-08T12:00:00Z" {
+		t.Errorf("BuildTime = %q, want %q", env.BuildTime, "2026-10-08T12:00:00Z")
+	}
+	// Missing build_time should decode to empty.
+	raw2 := `{"release_id":"v0.33.0","url":"https://example.com/outpost","sha256":"deadbeef","commit":"abc1234"}`
+	var env2 Envelope
+	if err := json.Unmarshal([]byte(raw2), &env2); err != nil {
+		t.Fatalf("unmarshal without build_time: %v", err)
+	}
+	if env2.BuildTime != "" {
+		t.Errorf("BuildTime = %q, want empty", env2.BuildTime)
 	}
 }

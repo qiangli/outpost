@@ -58,6 +58,13 @@ type Envelope struct {
 	// mode still refuses Force=true; the operator must flip the
 	// mode first.
 	Force bool `json:"force,omitempty"`
+
+	// BuildTime is the RFC3339 timestamp of the target artifact's
+	// build (vcs.time). Optional; when present the puller declines
+	// a target whose time is not strictly newer than the running
+	// binary's VCSTime, preventing a semver-newer but time-older
+	// build from replacing a newer development build.
+	BuildTime string `json:"build_time,omitempty"`
 }
 
 // Validate enforces non-empty required fields. Schema-level validity

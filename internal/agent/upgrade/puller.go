@@ -126,9 +126,9 @@ func (p PullerConfig) checkOnce(ctx context.Context) {
 	// undoing the fix minutes after each manual upgrade. (The operator-driven
 	// PUSH path can still force a deliberate rollback; only this automatic pull
 	// is guarded.)
-	if declinePulledTarget(env.ReleaseID) {
+	if ok, reason := shouldDeclinePulledTarget(agent.ReadBuildInfo(), env); ok {
 		slog.Info("upgrade puller: declining fleet target — not strictly newer (no auto-downgrade)",
-			"current", agent.ReadBuildInfo().Version, "target", env.ReleaseID)
+			"current", agent.ReadBuildInfo().Version, "target", env.ReleaseID, "reason", reason)
 		return
 	}
 	res := p.Worker.Apply(ctx, env)
@@ -155,15 +155,88 @@ func (p PullerConfig) checkOnce(ctx context.Context) {
 // Only a strictly-newer, validly-tagged target is applied. This is the robust
 // guard: even a stale or wrong cloudbox target can no longer walk a host
 // backward via the silent pull.
+//
+// Deprecated: use shouldDeclinePulledTarget with full BuildInfo + Envelope for
+// time-aware checks. This wrapper is retained for backward compatibility and
+// delegates to shouldDeclinePulledTarget with an empty BuildTime.
 func declinePulledTarget(target string) bool {
-	if !semver.IsValid(target) {
-		return true
+	ok, _ := shouldDeclinePulledTarget(agent.ReadBuildInfo(), Envelope{ReleaseID: target})
+	return ok
+}
+
+// shouldDeclinePulledTarget reports whether the automatic pull must DECLINE
+// the offered envelope because it is not strictly NEWER than the running
+// binary. It considers three guards:
+//
+//  1. Semver validity and ordering: both versions must be valid semver and
+//     target must be strictly greater than current via semver.Compare.
+//
+//  2. Prerelease base guard: if the current build is a prerelease (-dev/-rc)
+//     whose stripped base version is >= the target's stripped base version,
+//     the target is declined even when semver.Compare says it is newer.
+//     Stripping means removing a trailing "-dev" suffix (e.g. v0.32.0-dev →
+//     v0.32.0, v1.0.0-rc.12-dev → v1.0.0-rc.12). This prevents a dev build
+//     that is newer than the release (by build time) from being downgraded
+//     to the older release code.
+//
+//  3. Build-time guard: when the envelope carries an optional `build_time`
+//     (RFC3339) and the current binary has a VCSTime, decline if the target
+//     time is not strictly after the current time. This is the authoritative
+//     wall-clock ordering that semver alone cannot provide.
+//
+// It returns (decline, reason). A non-empty reason is suitable for logging.
+func shouldDeclinePulledTarget(cur agent.BuildInfo, target Envelope) (bool, string) {
+	if !semver.IsValid(target.ReleaseID) {
+		return true, "target not valid semver"
 	}
-	cur := agent.ReadBuildInfo().Version
-	if !semver.IsValid(cur) {
-		return true
+	if !semver.IsValid(cur.Version) {
+		return true, "current version not valid semver"
 	}
-	return semver.Compare(target, cur) <= 0
+	// 3. Build-time guard (authoritative when both times present).
+	targetNewerByTime := false
+	if target.BuildTime != "" && cur.VCSTime != "" {
+		tTarget, err1 := parseBuildTime(target.BuildTime)
+		tCur, err2 := parseBuildTime(cur.VCSTime)
+		if err1 == nil && err2 == nil {
+			if !tTarget.After(tCur) {
+				return true, "target build_time not newer than current vcs_time"
+			}
+			targetNewerByTime = true
+		}
+	}
+	// 2. Prerelease base guard — skipped when time proves target is newer.
+	if !targetNewerByTime && semver.Prerelease(cur.Version) != "" {
+		curBase := stripDevSuffix(cur.Version)
+		targetBase := stripDevSuffix(target.ReleaseID)
+		if semver.IsValid(curBase) && semver.IsValid(targetBase) {
+			if semver.Compare(curBase, targetBase) >= 0 {
+				return true, "current prerelease base >= target base"
+			}
+		}
+	}
+	// 1. Semver ordering.
+	if semver.Compare(target.ReleaseID, cur.Version) <= 0 {
+		return true, "target semver not strictly newer than current"
+	}
+	return false, ""
+}
+
+func stripDevSuffix(v string) string {
+	if idx := strings.Index(v, "-dev"); idx != -1 {
+		return v[:idx]
+	}
+	return v
+}
+
+func parseBuildTime(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	// Fallback: Go's vcs.time sometimes lacks timezone? Try without.
+	return time.Parse("2006-01-02T15:04:05Z07:00", s)
 }
 
 // fetchTarget GETs the fleet target for this host's platform. Returns
