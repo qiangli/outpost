@@ -6,6 +6,9 @@ seq: 1904
 status: todo
 priority: p2
 created: 2026-10-23T20:17:51.077147Z
+sprint: 497
+sprint_id: 16af0380-7ec7-5d41-a9c6-50e1b03cdf11
+sprint_title: 'Fix the 2026-10-23 findings: satellite login/superadmin security, web console multi-satellite UX, fleet downgrade trap, Windows agent bugs, weave/sprint tooling, outpost headless/version skew'
 ---
 
 Found 2026-10-23 on a Linux host: an outpost started from a shell spawned by the supervised main outpost inherited OUTPOST_SUPERVISED=1. When its upgrade puller accepted the fleet target, execSelfStart did os.Exit(0) ('supervised - exiting for the supervisor to respawn') and the instance was gone. Workaround: unset OUTPOST_SUPERVISED and run from a private binary copy. Expected: OUTPOST_SUPERVISED is stripped from shell/exec sessions served by the daemon (or the supervisor passes a token that a child cannot inherit), and a non-default config dir never self-upgrades a binary shared with another instance.
