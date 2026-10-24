@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/postinstall"
 	"github.com/spf13/cobra"
 )
@@ -68,8 +69,47 @@ func (platformUserServiceManager) Uninstall() error {
 
 var pairingServiceManager userServiceManager = platformUserServiceManager{}
 
+// resolvePairingConfigPath returns the config path a pairing writes to,
+// honoring --out when set, otherwise the default location (which itself
+// respects XDG_CONFIG_HOME). Centralizes the path that the service gate
+// must inspect.
+func resolvePairingConfigPath(out string) string {
+	if out != "" {
+		return out
+	}
+	if p, err := conf.DefaultConfigPath(); err == nil {
+		return p
+	}
+	return ""
+}
+
 func activatePairedService(daemonWasRunning, noService bool) error {
 	if daemonWasRunning || noService {
+		return nil
+	}
+	// Compatibility shim: callers that don't pass a config path fall
+	// through to the default-location gate.
+	return activatePairedServiceForPath("", daemonWasRunning, noService, false)
+}
+
+// activatePairedServiceForPath is the service gate for pairing. It
+// installs or touches the host service (launchd/systemd/Task Scheduler)
+// only when the resolved config dir is the default one (HOME/.config/
+// matrix), or when the explicit --service flag is passed. A scratch
+// XDG_CONFIG_HOME or a non-default --out path otherwise leaves the
+// host service untouched and tells the operator how to run the daemon
+// for that config.
+func activatePairedServiceForPath(configPath string, daemonWasRunning, noService, serviceFlag bool) error {
+	if daemonWasRunning || noService {
+		return nil
+	}
+	if configPath == "" {
+		configPath = resolvePairingConfigPath("")
+	}
+	if !conf.ShouldTouchHostService(configPath, serviceFlag) {
+		fmt.Printf("Service not installed: config at %s is outside the default config dir. The host's service (%s / %s / %s) was left untouched.\n", configPath, launchdLabel, systemdUnit, windowsTask)
+		fmt.Println("Run the outpost for this config with: outpost start")
+		fmt.Println("To install the host service for this config, re-run with --service.")
 		return nil
 	}
 	return pairingServiceManager.Install()

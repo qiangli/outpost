@@ -51,6 +51,63 @@ func DefaultConfigDir() (string, error) {
 	return filepath.Join(home, ".config", "matrix"), nil
 }
 
+// DefaultConfigDirWithoutEnv returns the default config directory
+// without honoring XDG_CONFIG_HOME — i.e. $HOME/.config/matrix on
+// every platform. Used to decide whether a pairing should touch the
+// host's OS service (launchd/systemd/Task Scheduler), which is a
+// singleton per-host resource that must not be rewritten by a scratch
+// or second pairing.
+func DefaultConfigDirWithoutEnv() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config", "matrix"), nil
+}
+
+// IsDefaultConfigDir reports whether dir is the default config
+// directory (cleaned, absolute-agnostic string compare). A non-default
+// directory (XDG_CONFIG_HOME override or --out elsewhere) indicates a
+// scratch or secondary pairing that must not touch the host service.
+func IsDefaultConfigDir(dir string) bool {
+	def, err := DefaultConfigDirWithoutEnv()
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(dir) == filepath.Clean(def)
+}
+
+// IsDefaultConfigPath reports whether path's parent directory is the
+// default config directory. Convenience wrapper for pairing's
+// "should we install the host service?" gate.
+func IsDefaultConfigPath(path string) bool {
+	if path == "" {
+		return false
+	}
+	return IsDefaultConfigDir(filepath.Dir(path))
+}
+
+// ShouldTouchHostService reports whether a pairing that wrote config at
+// configPath should install or touch the host's OS service. True when
+// the resolved config dir is the default one, or when the explicit
+// --service flag is passed. Factored here so both pairing (register/
+// move) and the upgrade worker's "non-default never self-upgrades a
+// shared binary" guard share one comparison.
+func ShouldTouchHostService(configPath string, serviceFlag bool) bool {
+	if serviceFlag {
+		return true
+	}
+	// Empty path means "resolve the default" — caller should have
+	// resolved it, but treat it as default for safety.
+	if configPath == "" {
+		if p, err := DefaultConfigPath(); err == nil {
+			return IsDefaultConfigPath(p)
+		}
+		return false
+	}
+	return IsDefaultConfigPath(configPath)
+}
+
 // DefaultCacheDir returns the canonical outpost cache directory
 // (pidfile, log, session/outbound cookies, jobs, cluster token).
 func DefaultCacheDir() (string, error) {

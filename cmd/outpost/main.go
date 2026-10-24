@@ -3257,6 +3257,7 @@ func registerCmd() *cobra.Command {
 		title        string
 		clientOnly   bool
 		noService    bool
+		withService  bool
 		ring         string
 	)
 	cmd := &cobra.Command{
@@ -3272,6 +3273,9 @@ portal and --name defaults to this machine's hostname (.local/.lan
 suffix stripped), so a fresh paste from the cloudbox "Generate invite
 code" dialog usually only needs --code.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if noService && withService {
+				return errors.New("--service and --no-service are mutually exclusive")
+			}
 			// Recovery branch (Layer-4 defense): when --recovery-code
 			// is set, skip the invite-redemption Exchange path entirely
 			// and call /api/register/recover instead. The recovery
@@ -3286,7 +3290,19 @@ code" dialog usually only needs --code.`,
 				if name == "" {
 					return errors.New("--recovery-code requires --name (couldn't auto-detect hostname)")
 				}
-				return doRecover(cmd.Context(), serverURL, recoveryCode, name, title, authURL, out, clientOnly)
+				if err := doRecover(cmd.Context(), serverURL, recoveryCode, name, title, authURL, out, clientOnly); err != nil {
+					return err
+				}
+				if handled, _ := restartRunningDaemon(cmd.Context()); handled {
+					return nil
+				}
+				if clientOnly {
+					fmt.Println()
+					fmt.Println("Client-only outpost paired. Use `outpost connect <host>` /")
+					fmt.Println("`outpost ssh-proxy <host>` from your shell — nothing to start.")
+					return nil
+				}
+				return activatePairedServiceForPath(resolvePairingConfigPath(out), false, noService, withService)
 			}
 
 			// Scripted mode kicks in the moment --code is set on the CLI:
@@ -3359,7 +3375,7 @@ code" dialog usually only needs --code.`,
 				fmt.Println("`outpost ssh-proxy <host>` from your shell — nothing to start.")
 				return nil
 			}
-			return activatePairedService(false, noService)
+			return activatePairedServiceForPath(resolvePairingConfigPath(out), false, noService, withService)
 		},
 	}
 	cmd.Flags().StringVar(&serverURL, "server", "", "Portal URL (default https://ai.dhnt.io)")
@@ -3374,6 +3390,7 @@ code" dialog usually only needs --code.`,
 		"Human-readable subtitle shown in the portal (e.g. \"Family streaming box\"). Required when --auth-url is set; optional otherwise (falls back to the OS user / hostname).")
 	cmd.Flags().BoolP("yes", "y", false, "Deprecated: registration starts the per-user service without prompting")
 	cmd.Flags().BoolVar(&noService, "no-service", false, "Pair without installing or starting the per-user outpost service")
+	cmd.Flags().BoolVar(&withService, "service", false, "Install or update the host service even when using a non-default config dir (XDG_CONFIG_HOME override or --out)")
 	cmd.Flags().BoolVar(&clientOnly, "client-only", false,
 		"Pair this machine as a credential-only outpost — outbound SSH via `outpost ssh-proxy` only, no inbound listeners, no matrix tunnel. The host row shows up in cloudbox with a 'client' badge so the operator can see it; it cannot be a share target.")
 	cmd.Flags().StringVar(&ring, "ring", "",
