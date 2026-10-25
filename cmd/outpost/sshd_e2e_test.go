@@ -34,8 +34,10 @@ func TestSSHDirectE2E(t *testing.T) {
 	// Confine known_hosts / config to the test dir on every platform
 	// UserConfigDir consults.
 	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "config"))
 	t.Setenv("AppData", filepath.Join(tmp, "appdata"))
+	t.Setenv("SSH_AUTH_SOCK", "")
 	t.Setenv("OUTPOST_SSH_PASSWORD", "secret")
 
 	currentUser, err := hostauth.CurrentUser()

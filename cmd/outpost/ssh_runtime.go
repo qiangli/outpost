@@ -28,10 +28,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	sshagent "golang.org/x/crypto/ssh/agent"
 
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/admincore"
@@ -65,11 +67,11 @@ func runSSHHost(ctx context.Context, arg string, cmdArgs []string) error {
 // Dial policy — cloudbox makes things smarter but is never required:
 //
 //  1. Explicit port → plain TCP dial to host:port (the `outpost sshd`
-//     case — standalone or the sshd unit). Password auth, TOFU host
+//     case — standalone or the sshd unit). Key/password auth, TOFU host
 //     key. No cloudbox involvement at all.
 //  2. Unpaired (or no bearer) → LAN-only: mDNS lookup of the name's
 //     advertised lan-ssh endpoint, else a direct dial to
-//     host:2222. Password auth.
+//     host:2222. Key/password auth.
 //  3. Paired → the existing smart flow (cookie elevate → peer-ticket
 //     LAN-direct → cloudbox tunnel), and when that whole flow fails
 //     (e.g. internet down), the same LAN fallback as (2) before
@@ -115,7 +117,7 @@ func dialOutpostHost(ctx context.Context, host, user string, port int) (*sshclie
 	}
 	// The whole cloudbox-assisted flow failed — cloudbox unreachable,
 	// pairing revoked, host not visible, … Before surfacing that, try
-	// the LAN password path: the machine may be sitting right next to
+	// the LAN key/password path: the machine may be sitting right next to
 	// us running `outpost sshd`.
 	if cli2, cleanup2, derr := dialLANFallback(ctx, host, user, err); derr == nil {
 		return cli2, cleanup2, nil
@@ -570,7 +572,7 @@ func dialCloudboxTunnel(
 }
 
 // dialLANFallback is the no-cloudbox path: reach the host over the
-// LAN with the OS-password gate doing the auth (the server side is
+// LAN with key authentication or the OS-password gate (the server side is
 // `outpost sshd` or a daemon with the sshd unit). Candidate
 // endpoint resolution, in order:
 //
@@ -580,8 +582,8 @@ func dialCloudboxTunnel(
 //     LAN DNS) on the default `outpost sshd` port 2222.
 //
 // `cause` is the upstream cloudbox-flow error when this runs as a
-// fallback (logged so the operator sees why we're suddenly prompting
-// for a password); nil when LAN is the primary path (unpaired).
+// fallback (logged so the operator sees why we're dialing directly);
+// nil when LAN is the primary path (unpaired).
 func dialLANFallback(ctx context.Context, host, user string, cause error) (*sshclient.Client, func(), error) {
 	if user == "" {
 		user = strings.TrimSpace(os.Getenv("USER"))
@@ -590,7 +592,7 @@ func dialLANFallback(ctx context.Context, host, user string, cause error) (*sshc
 		return nil, func() {}, errors.New("could not determine OS username; specify user@host")
 	}
 	if cause != nil {
-		slog.Info("ssh: cloudbox-assisted dial failed; trying LAN-direct password path",
+		slog.Info("ssh: cloudbox-assisted dial failed; trying LAN-direct key/password path",
 			"host", host, "err", cause)
 	}
 
@@ -626,8 +628,8 @@ func isLANAddressLiteral(host string) bool {
 const sshdDefaultPort = 2222
 
 // dialDirectSSH opens a plain TCP connection to host:port and runs
-// the SSH handshake with password auth (OS-password gate on the
-// server side) and TOFU host-key pinning. This is the client half of
+// the SSH handshake with key auth, then password auth, and TOFU
+// host-key pinning. This is the client half of
 // `outpost sshd` — zero cloudbox involvement.
 func dialDirectSSH(ctx context.Context, host string, port int, user string) (*sshclient.Client, func(), error) {
 	if user == "" {
@@ -651,12 +653,14 @@ func dialDirectSSH(ctx context.Context, host string, port int, user string) (*ss
 		_ = conn.Close()
 		return nil, func() {}, err
 	}
+	auth, closeAgent := sshDirectAuth(user, addr)
+	defer closeAgent()
 	cli, err := sshclient.Dial(ctx, sshclient.Config{
 		Transport:       conn,
 		HostAlias:       sshclient.HostAliasForHost(host),
 		User:            user,
 		HostKeyCallback: hostKeyCB,
-		Auth:            sshPasswordAuth(user, addr),
+		Auth:            auth,
 	})
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("ssh handshake to %s (lan-direct): %w", addr, err)
@@ -664,6 +668,37 @@ func dialDirectSSH(ctx context.Context, host string, port int, user string) (*ss
 	recordReachabilityEdge(conf.SSHTarget{Name: host, Host: host, Port: port, Direct: true}, time.Now())
 	cleanup := func() { _ = cli.Close() }
 	return cli, cleanup, nil
+}
+
+// sshDirectAuth uses the configured SSH agent, or the conventional unencrypted
+// identity files when no agent is configured. Keep the agent connection alive
+// through the handshake: its signers delegate signing back to the agent.
+// Missing, encrypted, or unreadable keys quietly leave password auth available.
+func sshDirectAuth(user, target string) ([]ssh.AuthMethod, func()) {
+	var signers []ssh.Signer
+	cleanup := func() {}
+	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
+		if conn, err := net.DialTimeout("unix", sock, time.Second); err == nil {
+			cleanup = func() { _ = conn.Close() }
+			_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
+			signers, _ = sshagent.NewClient(conn).Signers()
+		}
+	} else if home, err := os.UserHomeDir(); err == nil {
+		for _, name := range []string{"id_ed25519", "id_ecdsa", "id_rsa"} {
+			key, err := os.ReadFile(filepath.Join(home, ".ssh", name))
+			if err != nil {
+				continue
+			}
+			if signer, err := ssh.ParsePrivateKey(key); err == nil {
+				signers = append(signers, signer)
+			}
+		}
+	}
+	var auth []ssh.AuthMethod
+	if len(signers) > 0 {
+		auth = append(auth, ssh.PublicKeys(signers...))
+	}
+	return append(auth, sshPasswordAuth(user, target)...), cleanup
 }
 
 // sshPasswordAuth builds the client-side auth methods for LAN-direct
