@@ -1,78 +1,40 @@
 # Installing outpost
 
-Outpost ships as a single self-contained binary (`outpost`). There are three supported install paths — pick the one that matches your environment.
+Install bashy to get bashy and outpost together. The canonical install commands,
+Homebrew and Scoop channels, Linux package and tarball options, and current
+unsigned-binary guidance are in the [outpost README](../README.md#install).
 
-| Path | Audience | Auto-update | Linux OS-password auth |
-|------|----------|-------------|------------------------|
-| `install.sh` (curl-pipe) | macOS / Linux, anyone | cloudbox push | yes (pure-Go unix_chkpwd/shadow, no CGO) |
-| `install.ps1` (PowerShell) | Windows | cloudbox push | n/a |
-| `go install` | developers on any OS | manual rebuild | yes (no CGO needed) |
+The macOS/Linux script installer downloads the matching bashy release archive,
+verifies it against `checksums.txt`, and runs `bashy self install`. The Windows
+PowerShell installer follows the same checksum-verified flow for the Windows
+zip. Both installers can register outpost as a per-user service/task.
 
-The pre-built binary releases live on [GitHub Releases](https://github.com/qiangli/outpost/releases). Every release ships six artifacts (`darwin/linux/windows × arm64/amd64`) plus a matching `.sha256` sidecar per artifact.
+Environment overrides supported by the compatibility scripts:
 
-## macOS and Linux: `install.sh`
+| Variable | Effect |
+|----------|--------|
+| `INSTALL_DIR` | Install directory. |
+| `BASHY_VERSION` or `OUTPOST_VERSION` | Pin a release tag. |
+| `NO_SERVICE` | When set, skip service/task installation. |
+| `REPO` | Use an alternate bashy repository. |
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/qiangli/outpost/main/scripts/install.sh | sh
-```
+To install without registering a service, use `NO_SERVICE=1` with the Unix
+script or `$env:NO_SERVICE = '1'` before the PowerShell command. Linux headless
+hosts may need `loginctl enable-linger` for the user service to run after logout.
 
-What it does:
-
-1. Detects your OS and architecture.
-2. Resolves the latest release tag (no GitHub API call — follows the `/releases/latest` redirect).
-3. Downloads the matching binary and its `.sha256` sidecar.
-4. Verifies the sha256.
-5. Installs to `$HOME/.local/bin/outpost` and writes a small marker file (`.outpost-installed-via`) so future package-manager installs and the cloudbox-pushed self-upgrade behave consistently.
-6. Offers to register the daemon to start at login — macOS via `launchctl bootstrap gui/<uid>` (a per-user LaunchAgent at `~/Library/LaunchAgents/io.dhnt.outpost.plist`), Linux via `systemctl --user enable --now outpost.service` (unit at `~/.config/systemd/user/outpost.service`).
-
-Environment overrides:
-
-| Variable | Default | Effect |
-|----------|---------|--------|
-| `INSTALL_DIR` | `$HOME/.local/bin` | Target directory. Set to `/usr/local/bin` (with `sudo -E`) for a system-wide install. |
-| `OUTPOST_VERSION` | latest | Pin a specific tag, e.g. `v0.3.0`. |
-| `NO_SERVICE` | unset | When `1`, skip the launchd / systemd registration step. |
-| `REPO` | `qiangli/outpost` | Alternate fork. |
-
-Why curl-pipe is safe here: `curl` does **not** set the macOS `com.apple.quarantine` extended attribute, so Gatekeeper will not gate the downloaded binary on first run. A browser download of the same file *would* trigger the "cannot verify developer" dialog. On Linux there is no equivalent concern.
-
-**Headless Linux note**: if there is no graphical login on the box, run `sudo loginctl enable-linger $(id -un)` so the user unit keeps running after logout. The script prints this hint at the end of the install when relevant.
-
-## Windows: `install.ps1`
-
-```powershell
-iwr -useb https://raw.githubusercontent.com/qiangli/outpost/main/scripts/install.ps1 | iex
-```
-
-What it does:
-
-1. Detects architecture.
-2. Resolves the latest release tag via `Invoke-WebRequest -Method Head` (which follows redirects).
-3. Downloads the `.exe` and the `.sha256` sidecar.
-4. Verifies via `Get-FileHash`.
-5. Installs to `%LOCALAPPDATA%\outpost\outpost.exe` and adds the directory to the user `PATH`.
-6. Offers to register a Task Scheduler entry that runs `outpost start` at logon (PowerShell `Register-ScheduledTask -TaskName outpost -AtLogOn -RunLevel Limited` — the COM-API path, used because `schtasks /Create /TR "..."` breaks on user paths with spaces). Status / remove via `schtasks /Query /TN outpost` and `schtasks /Delete /TN outpost /F`.
-
-Overrides (set the variable in your shell before piping into `iex`):
-
-| Variable | Default | Effect |
-|----------|---------|--------|
-| `$env:INSTALL_DIR` | `%LOCALAPPDATA%\outpost` | Target directory. Set to `C:\Program Files\outpost` for a system install (admin shell). |
-| `$env:OUTPOST_VERSION` | latest | Pin a specific tag. |
-| `$env:NO_SERVICE` | unset | When `1`, skip Task Scheduler registration. |
-| `$env:REPO` | `qiangli/outpost` | Alternate fork. |
-
-`Invoke-WebRequest` does not tag downloads with the Mark-of-the-Web zone identifier, so SmartScreen will not show the "Windows protected your PC" dialog when the resulting `outpost.exe` runs.
+v1.0 macOS and Windows binaries are not yet code-signed. Script and package
+manager installs do not set browser quarantine/Mark-of-the-Web; a browser
+downloaded archive can prompt at first launch. Windows Smart App Control or
+Defender may still evaluate or block an unsigned executable according to the
+host's security policy. DHNT Inc.-signed builds arrive in v1.0.x.
 
 ### Windows Defender
 
-Outpost opens network sockets and registers a startup task. Both behaviours are common in malware and Defender's heuristic scan may flag the binary on first run — anywhere from a benign notification to outright quarantine, depending on policy.
-
-Mitigation options, in increasing cost:
-
-1. **Whitelist locally.** In *Windows Security → Virus & threat protection → Exclusions*, add `%LOCALAPPDATA%\outpost\outpost.exe`.
-2. **Report a false positive.** Submit the binary at <https://submit.microsoft.com>. Repeat for a few releases — Microsoft's reputation system tracks publisher behaviour, and persistent good-faith submissions clear the flag over time.
-3. **Code-signing certificate.** A standard Authenticode cert (~$75–200/yr) cuts SmartScreen friction for new binaries once you've built reputation; an EV cert (~$300–700/yr) clears SmartScreen immediately. This is on the roadmap once user demand justifies it.
+Smart App Control and Defender can evaluate unsigned executables under the
+machine's security policy. v1.0 macOS and Windows binaries are unsigned;
+DHNT Inc.-signed builds arrive in v1.0.x. If Defender identifies a release
+binary, report it at <https://submit.microsoft.com> and follow the machine
+administrator's policy rather than disabling protection globally.
 
 ## Developers: `go install`
 

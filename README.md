@@ -15,22 +15,63 @@ official binary.
 
 ## Install
 
-**macOS / Linux** — one-line installer (downloads the matching release binary,
-verifies sha256, optionally registers launchd / systemd):
+The install channels fetch the current stable release and verify its archive
+against `checksums.txt`. The script installs bashy and outpost together.
+
+**macOS or Linux (curl):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/qiangli/outpost/main/scripts/install.sh | sh
+curl -fsSL https://dhnt.io/install.sh | sh
 ```
 
-**Windows** — PowerShell installer (`Invoke-WebRequest` avoids Mark-of-the-Web,
-so SmartScreen does not gate first run):
+**Windows (PowerShell):**
 
 ```powershell
-iwr -useb https://raw.githubusercontent.com/qiangli/outpost/main/scripts/install.ps1 | iex
+irm https://dhnt.io/install.ps1 | iex
 ```
 
-Environment overrides (`INSTALL_DIR`, `OUTPOST_VERSION`, `NO_SERVICE`), Linux PAM
-auth, Windows Defender notes, and uninstall: [`docs/install.md`](docs/install.md)
+**macOS (Homebrew):**
+
+```sh
+brew install dhnt/tap/bashy
+```
+
+**Windows (Scoop):**
+
+```powershell
+scoop bucket add dhnt https://github.com/dhnt/scoop-bucket
+scoop install dhnt/bashy
+```
+
+These script, Homebrew, and Scoop installs show no operating-system prompt.
+If PowerShell blocks Scoop's shim, allow current-user scripts once with
+`Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force`.
+
+The v1.0 macOS and Windows binaries are not yet code-signed. A browser-downloaded
+archive prompts at launch: on macOS, right-click the executable and choose
+**Open**, or remove quarantine from it with
+`xattr -d com.apple.quarantine <file>`; on Windows, choose **More info → Run
+anyway**, or unblock the downloaded file with `Unblock-File <file>`. DHNT Inc.
+signed builds arrive in v1.0.x.
+
+Linux archives are `bashy-linux-amd64.tar.gz` and
+`bashy-linux-arm64.tar.gz`; releases also include `.deb`, `.rpm`, and `.apk`
+packages. Download the archive for the machine from the
+[latest bashy release](https://github.com/qiangli/bashy/releases/latest), then
+verify and install it:
+
+```sh
+case "$(uname -m)" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) echo "unsupported architecture" >&2; exit 1 ;; esac
+asset="bashy-linux-$arch.tar.gz"
+curl -fSLO "https://github.com/qiangli/bashy/releases/latest/download/$asset"
+curl -fsSLO https://github.com/qiangli/bashy/releases/latest/download/checksums.txt
+grep "  $asset\$" checksums.txt | sha256sum -c -
+tar -xzf "$asset"
+./bashy self install --dir "$HOME/.local/bin"
+```
+
+Environment overrides (`INSTALL_DIR`, `OUTPOST_VERSION`, `NO_SERVICE`), Linux
+PAM auth, Windows Defender notes, and uninstall: [`docs/install.md`](docs/install.md)
 (`outpost docs install`).
 
 ## Pair with the portal
