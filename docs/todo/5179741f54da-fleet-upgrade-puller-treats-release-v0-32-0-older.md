@@ -6,7 +6,6 @@ seq: 1905
 status: done
 priority: p2
 created: 2026-10-23T20:17:53.190743Z
-weave: 83
 assignee: muse-spark1.2
 sprint: 497
 sprint_id: 16af0380-7ec7-5d41-a9c6-50e1b03cdf11

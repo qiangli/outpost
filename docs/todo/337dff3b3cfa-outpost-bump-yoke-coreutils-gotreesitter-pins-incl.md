@@ -6,7 +6,6 @@ seq: 1908
 status: done
 priority: p1
 created: 2026-10-24T06:07:33.440595Z
-weave: 84
 assignee: genie-glm-5.3
 sprint: 497
 sprint_id: 16af0380-7ec7-5d41-a9c6-50e1b03cdf11
