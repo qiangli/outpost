@@ -15,28 +15,26 @@ type applyPendingOut struct {
 	Commit    string `json:"commit,omitempty"`
 }
 
-// upgradeApplyCmd consumes a manual-mode host's queued envelope. The
-// daemon stored it at <cacheDir>/outpost/upgrade.pending.json when
-// the original /admin/upgrade POST landed; this verb just asks the
-// daemon to re-run the envelope through the worker with Force=true,
-// bypassing the manual gate.
+// upgradeApplyCmd consumes a queued envelope left at
+// <cacheDir>/outpost/upgrade.pending.json (written by hosts running a
+// build that still queued under the removed manual update-mode). This
+// verb asks the daemon to run the envelope through the worker now —
+// same stage / probe / swap / restart flow a push runs on receipt.
 //
 // Cloudbox's "Apply" UI button does the same thing — but from the
-// other direction: it re-POSTs the envelope to /admin/upgrade with
-// Force=true. The two paths converge on the same Worker.Apply call,
-// so the persisted file gets deleted either way on success.
+// other direction: it re-POSTs the envelope to /admin/upgrade. The two
+// paths converge on the same Worker.Apply call, so the persisted file
+// gets deleted either way on success.
 func upgradeApplyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "apply",
-		Short: "Apply the queued cloudbox-pushed upgrade (manual mode only)",
-		Long: `On a host with update_mode=manual, /admin/upgrade pushes from cloudbox
-persist their envelope to <cacheDir>/outpost/upgrade.pending.json
-without applying. This verb runs the queued envelope through the
-worker now — same stage / probe / swap / restart flow an auto-mode
-host runs on receipt.
+		Short: "Apply a queued cloudbox-pushed upgrade left in upgrade.pending.json",
+		Long: `A queued envelope at <cacheDir>/outpost/upgrade.pending.json —
+left behind by a build that still queued under the removed manual
+update-mode — is run through the worker now: the same stage / probe /
+swap / restart flow a push runs on receipt.
 
-Refuses (exits non-zero) when no envelope is queued, or when the
-host's update_mode is "never".`,
+Refuses (exits non-zero) when no envelope is queued.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			session, err := dialMCP(cmd.Context())
 			if err != nil {
@@ -54,7 +52,7 @@ host's update_mode is "never".`,
 			case "no_pending":
 				return fmt.Errorf("no upgrade.pending.json on disk — nothing queued")
 			case "disabled":
-				return fmt.Errorf("update_mode is 'never' — flip it to apply this envelope")
+				return fmt.Errorf("apply refused: %s", out.Detail)
 			case "in_flight":
 				return fmt.Errorf("another upgrade is in flight; wait then retry")
 			case "same_commit":

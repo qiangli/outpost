@@ -96,6 +96,17 @@ func runSupervisord(ctx context.Context) error {
 	}
 	initSelf = self
 
+	// A boot is a fresh intent: the one-shot `outpost stop` marker
+	// expires here. The persistent `outpost disable` marker survives
+	// (the ShouldRun gate keeps honoring it) until `outpost enable`.
+	clearStopIntent()
+
+	// Heal the boot PATH before launching anything: a Task Scheduler
+	// or bare launchd/systemd session hands us almost nothing, and
+	// the children (daemon, bashy monitor, unit processes) inherit
+	// whatever we set here.
+	ensureBootPATH()
+
 	// Translate SIGINT/SIGTERM into a context cancel so the supervisor
 	// gracefully stops the daemon before we exit.
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -114,8 +125,8 @@ func runSupervisord(ctx context.Context) error {
 // before each (re)launch, the supervisor reverts a just-upgraded binary
 // that failed to confirm healthy. Always on, no flag. No-op without a
 // pending upgrade. Extracted so tests can prove the boot chain
-// (Task Scheduler S4U → `outpost supervisord` → here) always carries
-// the hook — on every platform.
+// (OS service → `outpost supervisord` → here) always carries the hook,
+// on every platform.
 func attachWatchdog(programs []*supervisor.Program, cacheDir string) {
 	if len(programs) == 0 {
 		return
@@ -171,6 +182,9 @@ func supervisordPrograms(self, bashy, daemonLogPath, bashyLogPath string) []*sup
 			Args:    []string{"start"},
 			Env:     append(os.Environ(), envSupervised+"=1"),
 			LogPath: daemonLogPath,
+			// Only an explicit stop/disable intent parks the
+			// daemon; a kill -9 or crash restarts with backoff.
+			ShouldRun: daemonShouldRun,
 		},
 		{
 			Name:    "bashy-supervisord",

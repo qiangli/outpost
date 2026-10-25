@@ -15,12 +15,6 @@ import (
 	"github.com/qiangli/outpost/internal/agent/peerticket"
 )
 
-// UpdateModeProvider returns the current host's update_mode for
-// inclusion in the /apps envelope. Threaded as a closure so routes.go
-// doesn't need to import conf or admincore — the live FileConfig
-// value is re-read on each poll, picking up just-flipped settings.
-type UpdateModeProvider func() string
-
 // Deps is what `matrix-agent` (or a future host application) supplies to
 // the agent's local HTTP routes.
 //
@@ -154,14 +148,6 @@ type Deps struct {
 	// Decoupled as a closure so agent doesn't import the repair package.
 	MountRepairRoute func(rg *gin.RouterGroup)
 
-	// UpdateMode is the closure /apps calls to surface the current
-	// host's update policy (auto/manual/never). Reported alongside
-	// version/os/arch so cloudbox's SPA can render the right badge
-	// variant per host (e.g. "Pending — Apply" only for manual).
-	// nil → field omitted from the envelope; cloudbox treats absent
-	// as legacy / "auto".
-	UpdateMode UpdateModeProvider
-
 	// SystemInfo is the closure /apps calls to surface this host's
 	// capability snapshot (cpu count, memory, disk, arch, model).
 	// Cloudbox stores the latest reading on HostEntry and renders
@@ -232,11 +218,6 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 				"ssh":       !deps.SSHDisabled && deps.SSHHostKey != nil,
 				"sftp":      !deps.SSHDisabled && deps.SSHHostKey != nil && deps.SFTPEnabled,
 			},
-		}
-		if deps.UpdateMode != nil {
-			if m := deps.UpdateMode(); m != "" {
-				payload["update_mode"] = m
-			}
 		}
 		// System info — host capability snapshot for the cloudbox
 		// UI + future LB heuristics (preferentially place

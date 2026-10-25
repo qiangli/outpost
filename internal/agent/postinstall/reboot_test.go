@@ -10,6 +10,17 @@ import (
 	"testing"
 )
 
+// goodLocal is the pre-reboot verify's liveness: the CLI applies it via
+// ApplyLocal after Read, so Schedule sees the full six-check PASS.
+func goodLocal() LocalChecks {
+	return LocalChecks{SupervisorRunning: true, DaemonHealthy: true, SSHDListening: true, BootPathSane: true}
+}
+
+func withLocal(r Report) Report {
+	r.ApplyLocal(goodLocal())
+	return r
+}
+
 func loadReport(t *testing.T, dir, name string) Report {
 	t.Helper()
 	b, e := os.ReadFile(filepath.Join(dir, name))
@@ -125,7 +136,7 @@ func TestRebootLifecycleAllOS(t *testing.T) {
 			boot := "first-boot"
 			login := false
 			run := fakeHost(platform, &boot, &login)
-			r := Read(ctx, platform, "fixture", "/fixture", run)
+			r := withLocal(Read(ctx, platform, "fixture", "/fixture", run))
 			if r.Result != "PASS" {
 				t.Fatalf("initial: %+v", r)
 			}
@@ -172,7 +183,7 @@ func TestLoginCannotBeErasedByRestart(t *testing.T) {
 			boot := "before"
 			login := false
 			run := fakeHost(platform, &boot, &login)
-			if e := Schedule(ctx, dir, Read(ctx, platform, "fixture", "/fixture", run), run); e != nil {
+			if e := Schedule(ctx, dir, withLocal(Read(ctx, platform, "fixture", "/fixture", run)), run); e != nil {
 				t.Fatal(e)
 			}
 			boot = "after"
@@ -221,7 +232,7 @@ func TestRebootFailurePaths(t *testing.T) {
 			}
 			return fake(ctx, c)
 		}
-		e := Schedule(ctx, dir, Read(ctx, "linux", "fixture", "/fixture", run), run)
+		e := Schedule(ctx, dir, withLocal(Read(ctx, "linux", "fixture", "/fixture", run)), run)
 		if e == nil || !strings.Contains(e.Error(), "sudo shutdown -r +1") {
 			t.Fatal(e)
 		}
@@ -244,7 +255,7 @@ func TestRebootFailurePaths(t *testing.T) {
 			}
 			return fake(ctx, c)
 		}
-		if e := Schedule(ctx, dir, Read(ctx, "linux", "fixture", "/fixture", run), run); e == nil {
+		if e := Schedule(ctx, dir, withLocal(Read(ctx, "linux", "fixture", "/fixture", run)), run); e == nil {
 			t.Fatal("expected write failure")
 		}
 	})

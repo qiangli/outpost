@@ -100,7 +100,6 @@ func builtinsSetCmd() *cobra.Command {
 		shell, desktop, clipboard, ssh, sshLocalFwd, sshRemoteFwd, sshAgentFwd, sftp, cluster string
 		clusterAgent                                                                          string
 		clusterVirtual                                                                        []string
-		updateMode, autoUpgradeLegacy                                                         string
 		mesh                                                                                  string
 		meshPort                                                                              int
 		services                                                                              []string
@@ -166,27 +165,6 @@ switch it with --service and configure it with --service-set:
 				}
 				params.ClusterVirtual = clusterVirtual
 			}
-			// --update=auto|manual|never is the canonical knob; the
-			// deprecated --auto-upgrade=on|off folds in as auto/never.
-			if updateMode != "" {
-				m := strings.ToLower(strings.TrimSpace(updateMode))
-				if m != "auto" && m != "manual" && m != "never" {
-					return fmt.Errorf("--update must be one of auto / manual / never, got %q", updateMode)
-				}
-				params.UpdateMode = &m
-			} else if autoUpgradeLegacy != "" {
-				b, err := parseToggle("auto-upgrade", autoUpgradeLegacy)
-				if err != nil {
-					return err
-				}
-				if b != nil {
-					m := "never"
-					if *b {
-						m = "auto"
-					}
-					params.UpdateMode = &m
-				}
-			}
 			if params.Mesh, err = parseToggle("mesh", mesh); err != nil {
 				return err
 			}
@@ -240,9 +218,6 @@ switch it with --service and configure it with --service-set:
 	cmd.Flags().StringVar(&cluster, "cluster", "", "on|off — join cloudbox virtual-podman cluster (opt-in: hands a remote control plane the right to schedule work on this host)")
 	cmd.Flags().StringVar(&clusterAgent, "cluster-agent", "", "on|off — run one real k3s-agent Node")
 	cmd.Flags().StringSliceVar(&clusterVirtual, "cluster-virtual", nil, "virtual-kubelet backends to run concurrently: vk-podman,vk-native,vk-ollama (replaces the complete set)")
-	cmd.Flags().StringVar(&updateMode, "update", "", "auto|manual|never — policy for cloudbox-pushed self-upgrades")
-	cmd.Flags().StringVar(&autoUpgradeLegacy, "auto-upgrade", "", "deprecated alias for --update (on→auto, off→never)")
-	_ = cmd.Flags().MarkDeprecated("auto-upgrade", "use --update=auto|manual|never")
 	cmd.Flags().StringSliceVar(&sshForwardSockets, "ssh-forward-socket", nil, "Allow this unix-socket path for SSH direct-streamlocal forwarding (repeatable; replaces the entire list)")
 	cmd.Flags().BoolVar(&clearSSHForwardSockets, "clear-ssh-forward-sockets", false, "Reset ssh-forward-sockets to the auto-detect default set")
 	cmd.Flags().StringVar(&mesh, "mesh", "", "on|off - libp2p mesh data plane (peer-to-peer transport under shard-RPC/peer-backup; needs pairing)")

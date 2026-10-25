@@ -114,7 +114,6 @@ func statusCmd() *cobra.Command {
 			row("sftp", cfg.SFTPEnabled)
 			row("mesh", cfg.MeshEnabled)
 			row("cluster", cfg.Cluster.Enabled)
-			fmt.Printf("  %-22s  %s\n", "update_mode", cfg.UpdateMode)
 			printClusterStatus(os.Stdout, status)
 			// The podman proxy, the container sandbox, the Ollama proxy and
 			// its pool, the warm and shard planes, the LAN inference

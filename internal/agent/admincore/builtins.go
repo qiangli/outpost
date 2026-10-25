@@ -38,11 +38,9 @@ type BuiltinsParams struct {
 	Cluster        *bool    `json:"cluster,omitempty"`
 	ClusterAgent   *bool    `json:"cluster_agent,omitempty"`
 	ClusterVirtual []string `json:"cluster_virtual,omitempty"`
-	// UpdateMode is one of "auto" / "manual" / "never" (see
-	// conf.UpdateMode* constants). Pointer-string so nil = "leave
-	// unchanged"; non-nil with an invalid value is rejected by
-	// SetBuiltins with a 400-class APIError.
-	UpdateMode *string `json:"update_mode,omitempty"`
+	// NOTE: update_mode / auto_rollback were removed. Upgrades always
+	// apply and the auto-rollback watchdog always reverts an
+	// unconfirmed upgrade — there is nothing to toggle.
 	// Mesh toggles the libp2p mesh data plane (the peer node carrying
 	// authenticated, NAT-traversing peer↔peer streams). MeshPort sets its
 	// TCP+QUIC listen port (0 = ephemeral). nil = leave unchanged.
@@ -190,19 +188,6 @@ func (s *Server) SetBuiltins(ctx context.Context, p BuiltinsParams) (BuiltinsRes
 	if fc.ClusterOn() && !fc.Cluster.HasAgentRuntime() && len(fc.Cluster.VirtualRuntimes()) == 0 {
 		return BuiltinsResult{}, badRequest("an enabled cluster requires cluster_agent or at least one cluster_virtual runtime")
 	}
-	// UpdateMode is live-read by the upgrade worker on each
-	// /admin/upgrade POST, so it doesn't need a restart to take
-	// effect. We still save through the same code path because the
-	// same FileConfig file owns the value.
-	if p.UpdateMode != nil {
-		if !conf.ValidUpdateMode(*p.UpdateMode) {
-			return BuiltinsResult{}, badRequest("update_mode must be one of auto / manual / never")
-		}
-		fc.UpdateMode = *p.UpdateMode
-		// Clear the legacy bool so it doesn't shadow the new field
-		// on the next round-trip through UpdateModeName.
-		fc.AutoUpgrade = nil
-	}
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		return BuiltinsResult{}, internalErr("%s", err.Error())
 	}
@@ -212,10 +197,10 @@ func (s *Server) SetBuiltins(ctx context.Context, p BuiltinsParams) (BuiltinsRes
 	// breaks batches of operator toggles), advertise RestartPending so
 	// the SPA can surface a sticky "Restart to apply" banner and let
 	// the operator pull the trigger when their batch is done.
-	// Only a boot-only toggle needs a restart. update_mode is live-read by
-	// the upgrade worker, and service desired state was already applied by
-	// the unit store, the monitor and the exposure reconciler — a call
-	// carrying just those two reports no restart, because none is coming.
+	// Only a boot-only toggle needs a restart. Service desired state
+	// was already applied by the unit store, the monitor and the
+	// exposure reconciler — a call carrying just services reports no
+	// restart, because none is coming.
 	restart := fc.AgentName != "" && touchesBootOnlyConfig(p)
 	return BuiltinsResult{OK: true, RestartPending: restart, ServicesApplied: servicesChanged}, nil
 }
@@ -226,10 +211,9 @@ func (s *Server) SetBuiltins(ctx context.Context, p BuiltinsParams) (BuiltinsRes
 //
 // It is the single predicate the restart decision is made on, so a new
 // toggle cannot be remembered in one of several parallel conditions and
-// forgotten in another. Two kinds of field are deliberately absent from it:
-// update_mode, which the upgrade worker re-reads on every push, and
-// services/service_settings, which are applied live by the unit store, the
-// monitor and the exposure reconciler.
+// forgotten in another. Services/service_settings are deliberately absent
+// from it: they are applied live by the unit store, the monitor and the
+// exposure reconciler.
 func touchesBootOnlyConfig(p BuiltinsParams) bool {
 	return !(p.Shell == nil && p.Desktop == nil && p.Clipboard == nil && p.SSH == nil && p.SSHAllowLocalForward == nil && p.SSHAllowRemoteForward == nil && p.SSHAllowAgentForward == nil && p.SSHForwardSockets == nil && p.SFTP == nil && p.Cluster == nil && p.ClusterAgent == nil && p.ClusterVirtual == nil && p.Mesh == nil && p.MeshPort == nil && p.BashyVersion == nil && p.CloudDOEnabled == nil && p.CloudDOToken == nil)
 }

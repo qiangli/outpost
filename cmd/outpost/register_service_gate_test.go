@@ -117,24 +117,15 @@ func TestActivatePairedServiceForPath_XDGScratchLeftUntouched(t *testing.T) {
 	})
 }
 
-// TestRegisterServiceFlags ensures the cobra flags exist and conflict correctly.
+// TestRegisterServiceFlags ensures the cobra flags exist.
 func TestRegisterServiceFlags(t *testing.T) {
 	cmd := registerCmd()
 	if cmd.Flags().Lookup("service") == nil {
 		t.Fatal("--service flag not registered on registerCmd")
 	}
-	if cmd.Flags().Lookup("no-service") == nil {
-		t.Fatal("--no-service flag missing after --service addition")
+	if cmd.Flags().Lookup("no-service") != nil {
+		t.Fatal("--no-service was removed (one lifecycle, no opt-out)")
 	}
-	// Mutual exclusion: --service and --no-service together should error.
-	cmd.SetArgs([]string{"--code", "dummy", "--server", "https://example.test", "--name", "host", "--service", "--no-service"})
-	// RunE requires code/server/name but should fail before exchange due to mutual exclusion.
-	// We invoke Execute and expect an error containing mutually exclusive.
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected error for --service + --no-service, got nil")
-	}
-	// Don't assert exact wording beyond containing both flags.
 }
 
 // TestConfIsDefaultHelpers covers the factored comparison directly.

@@ -38,9 +38,12 @@ import (
 // binary's commit (30s timeout). --no-restart leaves the on-disk swap
 // in place but doesn't touch the running daemon — useful for staging.
 //
-// Windows: refused for now. os.Rename over a running .exe fails on
-// Windows; the right pattern is rename-old-out-then-new-in, which we
-// can add when there's a real Windows user. Mac/Linux are the targets.
+// Same path on every OS. Windows can't rename over a running .exe, so
+// its swap renames the live binary aside first (see
+// internal/agent/upgrade/swap_windows.go); unix swaps atomically in
+// place. Either way the supervisor picks the new binary up on restart
+// (init re-execs itself on a swap, spawning a detached successor on
+// Windows) and the legacy-init handoff restarts a pre-swap init.
 func upgradeCmd() *cobra.Command {
 	var (
 		fromURL   string
@@ -68,7 +71,7 @@ With no source flag the behavior depends on pairing:
   - UNPAIRED host: defaults to --direct (GitHub is the only authority
     available — there is no fleet to pull from).
   - PAIRED host: refuses, because automatic upgrades for paired hosts
-    are governed by the cloudbox fleet (canary→fleet, update_mode,
+    are governed by the cloudbox fleet (canary→fleet rollout fences,
     min_from). Pass --direct to override and pull from GitHub anyway.
 
 Examples:

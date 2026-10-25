@@ -108,7 +108,7 @@ func main() {
 	root.PersistentFlags().StringVar(&rootDialOpts.Remote, "remote", os.Getenv("OUTPOST_REMOTE"),
 		"Use a cached remote (~/.config/outpost/remotes/<name>.json). Set up with 'outpost remote login <name>'.")
 	root.AddCommand(
-		startCmd(), registerCmd(), stopCmd(),
+		startCmd(), registerCmd(), stopCmd(), disableCmd(), enableCmd(),
 		sshProxyCmd(), sshConfigCmd(), sshTreeCmd(), sshdCmd(), scpCmd(), shasumCmd(), reachCmd(), connectCmd(),
 		outboundCmd(), jobsCmd(), fgCmd(), bgCmd(), killCmd(), runCmd(),
 		clusterCmd(), departCmd(), poolCmd(), kubectlCmd(), moveCmd(),
@@ -155,6 +155,18 @@ func startCmd() *cobra.Command {
 				return fmt.Errorf("resolve cache dir: %w", err)
 			}
 
+			// A persistent `outpost disable` beats an explicit `start`:
+			// the operator asked this host to stay down across boots.
+			if disabledByMarker() {
+				return fmt.Errorf("outpost is disabled — run `outpost enable` to clear the intent and start")
+			}
+			// An explicit `start` overrides the one-shot `stop` intent
+			// (the supervisor clears it at boot; a manual start clears
+			// it here so a stale marker can't park a hand-run daemon).
+			clearStopIntent()
+			// Same PATH healing a supervised boot gets, so a manual
+			// start and a service start run the daemon identically.
+			ensureBootPATH()
 			// Refuse to boot a second instance — the matrix tunnel uses
 			// a fixed remote port, and two outposts fighting for the
 			// same proxy slot is a recipe for confused users. Also
@@ -1271,13 +1283,8 @@ func startCmd() *cobra.Command {
 				MountRepairRoute: func(rg *gin.RouterGroup) {
 					repair.MountRoute(rg, repairExec)
 				},
-				UpdateMode: func() string {
-					cur, _ := conf.LoadFile(cfgPath)
-					if cur == nil {
-						cur = fc
-					}
-					return cur.UpdateModeName()
-				},
+				// NOTE: the update_mode provider was removed with the
+				// update-mode toggle (upgrades always apply).
 				SystemInfo: func() any {
 					dir, _ := conf.DefaultCacheDir()
 					return sysinfo.Collect(dir)
@@ -1460,8 +1467,8 @@ func startCmd() *cobra.Command {
 			// that moment; a host that was asleep or offline reconciles
 			// against the latest release on its next poll after the
 			// tunnel reconnects. Only spun up when paired; the puller
-			// respects update_mode via Worker.Apply, so a "manual" /
-			// "never" host polls but never self-upgrades.
+			// applies through Worker.Apply, so an offline host
+			// self-upgrades on catch-up.
 			if fc.AccessToken != "" {
 				if cbBase := cloudboxHTTPBase(fc); cbBase != "" {
 					bi := agent.ReadBuildInfo()
@@ -3256,7 +3263,6 @@ func registerCmd() *cobra.Command {
 		authURL      string
 		title        string
 		clientOnly   bool
-		noService    bool
 		withService  bool
 		ring         string
 	)
@@ -3273,9 +3279,6 @@ portal and --name defaults to this machine's hostname (.local/.lan
 suffix stripped), so a fresh paste from the cloudbox "Generate invite
 code" dialog usually only needs --code.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if noService && withService {
-				return errors.New("--service and --no-service are mutually exclusive")
-			}
 			// Recovery branch (Layer-4 defense): when --recovery-code
 			// is set, skip the invite-redemption Exchange path entirely
 			// and call /api/register/recover instead. The recovery
@@ -3290,7 +3293,7 @@ code" dialog usually only needs --code.`,
 				if name == "" {
 					return errors.New("--recovery-code requires --name (couldn't auto-detect hostname)")
 				}
-				if err := doRecover(cmd.Context(), serverURL, recoveryCode, name, title, authURL, out, clientOnly); err != nil {
+				if err := doRecover(cmd.Context(), serverURL, recoveryCode, name, title, authURL, out, clientOnly, withService); err != nil {
 					return err
 				}
 				if handled, _ := restartRunningDaemon(cmd.Context()); handled {
@@ -3302,7 +3305,7 @@ code" dialog usually only needs --code.`,
 					fmt.Println("`outpost ssh-proxy <host>` from your shell — nothing to start.")
 					return nil
 				}
-				return activatePairedServiceForPath(resolvePairingConfigPath(out), false, noService, withService)
+				return activatePairedServiceForPath(resolvePairingConfigPath(out), false, false, withService)
 			}
 
 			// Scripted mode kicks in the moment --code is set on the CLI:
@@ -3375,7 +3378,7 @@ code" dialog usually only needs --code.`,
 				fmt.Println("`outpost ssh-proxy <host>` from your shell — nothing to start.")
 				return nil
 			}
-			return activatePairedServiceForPath(resolvePairingConfigPath(out), false, noService, withService)
+			return activatePairedServiceForPath(resolvePairingConfigPath(out), false, false, withService)
 		},
 	}
 	cmd.Flags().StringVar(&serverURL, "server", "", "Portal URL (default https://ai.dhnt.io)")
@@ -3388,8 +3391,6 @@ code" dialog usually only needs --code.`,
 		"Optional application-level auth endpoint. When set, the agent forwards {user,password} to it and trusts the returned role; the host OS is no longer consulted.")
 	cmd.Flags().StringVar(&title, "title", "",
 		"Human-readable subtitle shown in the portal (e.g. \"Family streaming box\"). Required when --auth-url is set; optional otherwise (falls back to the OS user / hostname).")
-	cmd.Flags().BoolP("yes", "y", false, "Deprecated: registration starts the per-user service without prompting")
-	cmd.Flags().BoolVar(&noService, "no-service", false, "Pair without installing or starting the per-user outpost service")
 	cmd.Flags().BoolVar(&withService, "service", false, "Install or update the host service even when using a non-default config dir (XDG_CONFIG_HOME override or --out)")
 	cmd.Flags().BoolVar(&clientOnly, "client-only", false,
 		"Pair this machine as a credential-only outpost — outbound SSH via `outpost ssh-proxy` only, no inbound listeners, no matrix tunnel. The host row shows up in cloudbox with a 'client' badge so the operator can see it; it cannot be a share target.")
@@ -3449,7 +3450,7 @@ func collectInputs(r *bufio.Reader, serverURL, code, name *string) error {
 // Caller side-effect: when successful, the on-disk recovery_code.txt
 // is rotated to the new code cloudbox returned (handled inside
 // portal.Recover so the same stash format applies as Exchange).
-func doRecover(ctx context.Context, serverURL, recoveryCode, name, title, authURL, out string, clientOnly bool) error {
+func doRecover(ctx context.Context, serverURL, recoveryCode, name, title, authURL, out string, clientOnly, forceService bool) error {
 	fc, err := portal.Recover(ctx, portal.RecoverRequest{
 		ServerURL:    serverURL,
 		Name:         name,
@@ -3476,6 +3477,12 @@ func doRecover(ctx context.Context, serverURL, recoveryCode, name, title, authUR
 	// LAN sshd is on by default: a recovered host serves it (missing-only;
 	// never touches an operator's disable or custom port).
 	ensureSSHDUnit(serviceStore())
+	// A recovered host survives reboots like a freshly paired one — but a
+	// scratch (--out) config dir never touches the host service unless
+	// --service opts in.
+	if err := activatePairedServiceForPath(path, false, false, forceService); err != nil {
+		return err
+	}
 	fmt.Printf("Recovered as %q. Config saved to %s\n", merged.AgentName, path)
 	return nil
 }
@@ -3862,74 +3869,87 @@ func removePidFile() {
 	}
 }
 
-// stopCmd implements `outpost stop`. SIGTERMs the recorded pid, polls
-// for up to 5 s, then escalates to SIGKILL.
+// stopCmd implements `outpost stop`. Writes the stop-intent marker FIRST
+// (so the supervisor parks the daemon instead of restarting it), then
+// SIGTERMs the recorded pid, polls for up to 5 s, then escalates to
+// SIGKILL. Only this verb (and `disable`, which reuses it) writes the
+// marker — a kill -9 or crash carries no intent and is restarted.
 func stopCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "stop",
 		Short: "Stop the running outpost daemon (SIGTERM, then SIGKILL after 5s)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			p, err := pidFilePath()
-			if err != nil {
+			if err := writeStopIntent(); err != nil {
 				return err
 			}
-			data, err := os.ReadFile(p)
-			if err != nil {
-				if os.IsNotExist(err) {
-					fmt.Println("No outpost is running.")
-					return nil
-				}
-				return fmt.Errorf("read pid file: %w", err)
-			}
-			pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-			if err != nil {
-				_ = os.Remove(p)
-				return fmt.Errorf("malformed pid file (removed): %w", err)
-			}
-			if !daemonPidLive(pid) {
-				// Dead, or a recycled PID now owned by another program:
-				// never signal it — after a reboot it can be a system
-				// process (observed: svchost on Windows).
-				_ = os.Remove(p)
-				fmt.Println("Stale pid file removed — outpost was not running.")
-				return nil
-			}
-			proc, err := os.FindProcess(pid)
-			if err != nil {
-				return fmt.Errorf("find process %d: %w", pid, err)
-			}
-			if err := requestStop(proc, pid); err != nil {
-				return fmt.Errorf("signal pid %d: %w", pid, err)
-			}
-			// Poll for graceful exit, up to 5 s. We treat EITHER
-			// signal as "stopped cleanly":
-			//   - processAlive returns false (process truly gone)
-			//   - the pidfile disappeared (the daemon's deferred
-			//     removePidFile ran, meaning main returned cleanly
-			//     even if the process hasn't been reaped yet by
-			//     its parent — relevant when outpost runs as a
-			//     child of `go test` or similar, where it lingers
-			//     as a zombie until the parent calls wait).
-			for range 50 {
-				if !processAlive(pid) {
-					_ = os.Remove(p)
-					fmt.Printf("Stopped outpost (pid %d).\n", pid)
-					return nil
-				}
-				if _, err := os.Stat(p); os.IsNotExist(err) {
-					fmt.Printf("Stopped outpost (pid %d).\n", pid)
-					return nil
-				}
-				time.Sleep(100 * time.Millisecond)
-			}
-			// Graceful stop ignored — escalate.
-			_ = forceStop(proc, pid)
-			time.Sleep(200 * time.Millisecond)
-			_ = os.Remove(p)
-			fmt.Printf("Force-killed outpost (pid %d) after SIGTERM timeout.\n", pid)
-			return nil
+			return runStop(cmd)
 		},
 	}
+}
+
+// runStop signals the recorded daemon pid to exit (graceful, then
+// escalated). Shared by `stop` and `disable`; neither writes markers
+// itself — the caller owns the intent.
+func runStop(_ *cobra.Command) error {
+	p, err := pidFilePath()
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("No outpost is running.")
+			return nil
+		}
+		return fmt.Errorf("read pid file: %w", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		_ = os.Remove(p)
+		return fmt.Errorf("malformed pid file (removed): %w", err)
+	}
+	if !daemonPidLive(pid) {
+		// Dead, or a recycled PID now owned by another program:
+		// never signal it — after a reboot it can be a system
+		// process (observed: svchost on Windows).
+		_ = os.Remove(p)
+		fmt.Println("Stale pid file removed — outpost was not running.")
+		return nil
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("find process %d: %w", pid, err)
+	}
+	if err := requestStop(proc, pid); err != nil {
+		return fmt.Errorf("signal pid %d: %w", pid, err)
+	}
+	// Poll for graceful exit, up to 5 s. We treat EITHER
+	// signal as "stopped cleanly":
+	//   - processAlive returns false (process truly gone)
+	//   - the pidfile disappeared (the daemon's deferred
+	//     removePidFile ran, meaning main returned cleanly
+	//     even if the process hasn't been reaped yet by
+	//     its parent — relevant when outpost runs as a
+	//     child of `go test` or similar, where it lingers
+	//     as a zombie until the parent calls wait).
+	for range 50 {
+		if !processAlive(pid) {
+			_ = os.Remove(p)
+			fmt.Printf("Stopped outpost (pid %d).\n", pid)
+			return nil
+		}
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			fmt.Printf("Stopped outpost (pid %d).\n", pid)
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	// Graceful stop ignored — escalate.
+	_ = forceStop(proc, pid)
+	time.Sleep(200 * time.Millisecond)
+	_ = os.Remove(p)
+	fmt.Printf("Force-killed outpost (pid %d) after SIGTERM timeout.\n", pid)
+	return nil
 }
 
 // clusterSourceAdapter bridges a clusterllm.Detector to the ollama

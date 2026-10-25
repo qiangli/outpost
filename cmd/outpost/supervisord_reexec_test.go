@@ -122,7 +122,7 @@ type fakeInit struct {
 	discovery func() (initProbe, bool, string)
 }
 
-func (f *fakeInit) handoff(goos string) initHandoff {
+func (f *fakeInit) handoff() initHandoff {
 	discover := f.discovery
 	if discover == nil {
 		discover = func() (initProbe, bool, string) {
@@ -149,7 +149,6 @@ func (f *fakeInit) handoff(goos string) initHandoff {
 			return nil
 		},
 		spawn:       func() error { f.spawned++; return nil },
-		goos:        goos,
 		exitWait:    20 * time.Millisecond,
 		reclaimWait: 20 * time.Millisecond,
 		poll:        time.Millisecond,
@@ -158,7 +157,7 @@ func (f *fakeInit) handoff(goos string) initHandoff {
 
 func TestInitHandoffRestartsLegacyInit(t *testing.T) {
 	f := &fakeInit{pid: 4242, alive: map[int]bool{4242: true}, outpost: true, exitOnTm: true}
-	out := f.handoff("darwin").run()
+	out := f.handoff().run()
 	if len(f.stopped) != 1 || f.stopped[0] != 4242 || f.spawned != 1 {
 		t.Fatalf("stopped=%v spawned=%d, want [4242],1; out=%v", f.stopped, f.spawned, out)
 	}
@@ -169,7 +168,7 @@ func TestInitHandoffRestartsLegacyInit(t *testing.T) {
 
 func TestInitHandoffDefersToServiceManager(t *testing.T) {
 	f := &fakeInit{pid: 4242, alive: map[int]bool{4242: true}, outpost: true, exitOnTm: true, reclaim: 5151}
-	out := f.handoff("linux").run()
+	out := f.handoff().run()
 	if f.spawned != 0 || !strings.Contains(strings.Join(out, "\n"), "service manager (pid 5151)") {
 		t.Fatalf("spawned=%d out=%v, want the service manager's init kept", f.spawned, out)
 	}
@@ -185,13 +184,8 @@ func TestInitHandoffLeavesOthersAlone(t *testing.T) {
 		"not supervisord": {&fakeInit{pid: 4242, alive: map[int]bool{4242: true}, outpost: true, notSupd: true}, "not an outpost supervisord invocation"},
 		"not running":     {&fakeInit{pid: 4242, alive: map[int]bool{}, outpost: true}, "no running init"},
 		"no pidfile":      {&fakeInit{alive: map[int]bool{}}, "no running init"},
-		"windows":         {&fakeInit{pid: 4242, alive: map[int]bool{4242: true}, outpost: true}, "skipped: pid 4242"},
 	} {
-		goos := "darwin"
-		if name == "windows" {
-			goos = "windows"
-		}
-		out := tc.f.handoff(goos).run()
+		out := tc.f.handoff().run()
 		if len(tc.f.stopped) != 0 || tc.f.spawned != 0 {
 			t.Errorf("%s: stopped=%v spawned=%d, want no action", name, tc.f.stopped, tc.f.spawned)
 		}
@@ -201,9 +195,25 @@ func TestInitHandoffLeavesOthersAlone(t *testing.T) {
 	}
 }
 
+// TestInitHandoffSameOnEveryOS: the legacy-init handoff takes the same
+// stop-and-reclaim path on Windows as on unix — there is no Windows-only
+// "warn and leave it to the operator" branch anymore. Windows stops via
+// TerminateProcess (requestStop) and re-execs by spawning a detached
+// successor, so the handoff logic is identical.
+func TestInitHandoffSameOnEveryOS(t *testing.T) {
+	f := &fakeInit{pid: 4242, alive: map[int]bool{4242: true}, outpost: true, exitOnTm: true}
+	out := f.handoff().run()
+	if len(f.stopped) != 1 || f.stopped[0] != 4242 || f.spawned != 1 {
+		t.Fatalf("stopped=%v spawned=%d, want [4242],1 on every OS; out=%v", f.stopped, f.spawned, out)
+	}
+	if !strings.Contains(strings.Join(out, "\n"), "handed off pid 4242; started a new outpost supervisord") {
+		t.Fatalf("report = %v", out)
+	}
+}
+
 func TestInitHandoffDoesNotSpawnWhenOldInitSurvives(t *testing.T) {
 	f := &fakeInit{pid: 4242, alive: map[int]bool{4242: true}, outpost: true} // ignores the signal
-	out := f.handoff("darwin").run()
+	out := f.handoff().run()
 	if f.spawned != 0 || !strings.Contains(strings.Join(out, "\n"), "did not exit") {
 		t.Fatalf("spawned=%d out=%v, want no second init beside a live one", f.spawned, out)
 	}
@@ -231,18 +241,12 @@ func TestInitHandoffNoPidfileStatusDiscovered(t *testing.T) {
 		t.Fatalf("discovery = %+v found=%v, want pid 26580 from the process table, no reexec marker", probe, found)
 	}
 	f := &fakeInit{pid: 26580, alive: alive, outpost: true, exitOnTm: true, discovery: d.find}
-	out := f.handoff("darwin").run()
+	out := f.handoff().run()
 	if len(f.stopped) != 1 || f.stopped[0] != 26580 || f.spawned != 1 {
 		t.Fatalf("stopped=%v spawned=%d, want [26580],1; out=%v", f.stopped, f.spawned, out)
 	}
 	if !strings.Contains(strings.Join(out, "\n"), "handed off pid 26580") {
 		t.Fatalf("report = %v", out)
-	}
-	// Windows: found the same way, still only warned.
-	alive[26580] = true
-	w := &fakeInit{pid: 26580, alive: alive, outpost: true, discovery: d.find}
-	if out := w.handoff("windows").run(); len(w.stopped) != 0 || len(out) != 1 || !strings.Contains(out[0], "skipped: pid 26580") {
-		t.Fatalf("windows: stopped=%v out=%v, want warn-only", w.stopped, out)
 	}
 }
 

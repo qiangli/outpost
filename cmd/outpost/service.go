@@ -83,12 +83,13 @@ func resolvePairingConfigPath(out string) string {
 	return ""
 }
 
+// activatePairedService installs the per-user service after pairing so
+// the freshly-paired host survives reboots. Skipped when a daemon is
+// already running (a restart picks the new config up instead). There is
+// no operator opt-out: one lifecycle on every host. noService exists only
+// for in-process callers (tests, move) that must not touch the host
+// service; no CLI flag maps to it.
 func activatePairedService(daemonWasRunning, noService bool) error {
-	if daemonWasRunning || noService {
-		return nil
-	}
-	// Compatibility shim: callers that don't pass a config path fall
-	// through to the default-location gate.
 	return activatePairedServiceForPath("", daemonWasRunning, noService, false)
 }
 
@@ -305,7 +306,10 @@ func renderLaunchAgentPlist(self, home string) string {
 }
 
 // renderSystemdUserUnit is the Linux systemd --user unit (per-user, no admin)
-// running `<self> supervisord`.
+// running `<self> supervisord`. Restart=always matches the launchd
+// KeepAlive and the Windows task restart backstop: the OS layer restarts
+// the SUPERVISOR after any exit, and the supervisor's own ShouldRun gate
+// (stop/disable intent) decides whether the daemon comes back.
 func renderSystemdUserUnit(self string) string {
 	return fmt.Sprintf(`[Unit]
 Description=outpost — home-host agent supervisor for ai.dhnt.io
@@ -316,7 +320,7 @@ Wants=network-online.target
 Type=simple
 Environment=PATH=%s
 ExecStart=%s supervisord
-Restart=on-failure
+Restart=always
 RestartSec=10
 
 [Install]
@@ -390,7 +394,8 @@ const servicePATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/
 
 // renderSystemdSystemUnit is the Linux systemd system unit (admin): starts
 // `<self> supervisord` at boot under `User=`, with no login required.
-// multi-user.target is reached at boot before any login.
+// multi-user.target is reached at boot before any login. Restart=always
+// matches the launchd KeepAlive and the Windows task restart backstop.
 func renderSystemdSystemUnit(self, user string) string {
 	return fmt.Sprintf(`[Unit]
 Description=outpost — home-host agent supervisor for ai.dhnt.io
@@ -402,7 +407,7 @@ Type=simple
 User=%s
 Environment=PATH=%s
 ExecStart=%s supervisord
-Restart=on-failure
+Restart=always
 RestartSec=10
 
 [Install]

@@ -12,11 +12,31 @@ Install from an elevated PowerShell on Windows. On macOS and Linux, use
 installing from a root session, supply `--run-as <account>`. Keep the executable
 at its permanent location and pair/configure outpost as the service account.
 
-| OS | Default registration | Power policy applied by default |
-| --- | --- | --- |
-| Windows | Task Scheduler `outpost`, at startup, S4U, limited token | Standby and hibernate timeouts set to zero for AC and DC; hibernation disabled |
-| macOS | `/Library/LaunchDaemons/io.dhnt.outpost.plist`, RunAtLoad and KeepAlive | Sleep and disk sleep zero for every power source; network wake enabled |
-| Linux | System `outpost.service`, enabled for multi-user.target | Persistent masks for sleep, suspend, hibernate and hybrid-sleep targets |
+| OS | Default registration | Restart after any exit | Power policy applied by default |
+| --- | --- | --- | --- |
+| Windows | Task Scheduler `outpost`, at startup, S4U, limited token | Task restart backstop (999 × 1 min) | Standby and hibernate timeouts set to zero for AC and DC; hibernation disabled |
+| macOS | `/Library/LaunchDaemons/io.dhnt.outpost.plist`, RunAtLoad and KeepAlive | `KeepAlive` | Sleep and disk sleep zero for every power source; network wake enabled |
+| Linux | System `outpost.service`, enabled for multi-user.target | `Restart=always` | Persistent masks for sleep, suspend, hibernate and hybrid-sleep targets |
+
+One lifecycle on all three: the OS service starts `outpost supervisord` at
+boot with no login required; the supervisor runs the daemon (`outpost
+start`) and the `bashy supervisord` service monitor and restarts either
+after any exit. `outpost restart` and `outpost upgrade` go through the
+supervisor (the supervised daemon exits and is respawned — it never
+re-execs itself). Only the OS-specific install definitions differ; the
+supervision behavior is identical.
+
+## Stop vs kill, disable vs stop
+
+Only `outpost stop` writes a stop-intent marker. While the marker is
+present the supervisor parks the daemon (no restart); any other exit —
+`kill -9`, a crash, even a clean exit — is restarted with backoff. The
+intent clears at every supervisor boot, so a reboot always brings the
+daemon back.
+
+`outpost disable` writes a persistent marker and stops the daemon: the
+supervisor keeps it down across boots until `outpost enable` clears both
+markers and starts it again (via the supervisor when one is installed).
 
 `--keep-sleep` preserves power policy. `--dry-run` prints the planned definition
 and power commands without applying them. A failed power step returns nonzero
@@ -78,9 +98,16 @@ inspect the raw JSON for the reason. Windows checks both AC/DC indices and the
 hibernate-enabled registry value; macOS checks every `pmset -g custom` power
 source; Linux requires persistent masks (runtime masks do not count).
 
-Ordinary verification writes `post-install.json` in the outpost cache directory
+Ordinary verification runs the same six checks on macOS, Linux and
+Windows: the service is installed + enabled at boot, the supervisor is
+running, the daemon answers healthy, the `outpost.sshd` unit listens on
+its loopback port, sleep/hibernate are off, and the boot-session PATH
+carries the platform's expected prefixes (healed in-process at
+supervisor/daemon boot where the OS service can't pin it — notably
+Windows tasks, which carry no environment). It writes
+`post-install.json` in the outpost cache directory
 (normally `~/.cache/outpost`, or `$XDG_CACHE_HOME/outpost`). It contains
-`result: PASS|FAIL`, sleep/service states, and raw command output and exit codes.
+`result: PASS|FAIL`, each check state, and raw command output and exit codes.
 A failed check returns nonzero. Opting out of sleep changes does not waive the
 sleep verification criterion.
 
@@ -99,7 +126,9 @@ The reboot report remains **FAIL** with phase `awaiting_reboot` or
   supervisor in noninteractive session zero).
 - No login session observed at daemon startup and at server acknowledgement.
 - HTTP 200 from its paired server's authenticated heartbeat endpoint.
-- Power and boot-service policy still passing after reconnection.
+- All post-install checks still passing after reconnection (sleep,
+  service, supervisor, daemon, sshd, boot PATH — the local liveness
+  carries over from the pre-reboot verify).
 
 An observed login or an uncertain session probe remains FAIL, even after logout
 and a daemon restart. Session checks are conservative snapshots, not a historical

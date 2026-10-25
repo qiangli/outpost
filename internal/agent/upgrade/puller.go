@@ -28,11 +28,9 @@ import (
 // the latest release and self-upgrades if behind.
 //
 // It adds no new trust or policy. It reuses Worker.Apply, whose
-// update_mode gate (a "manual"/"never" host no-ops without Force) plus
-// same-commit / replay checks make a poll a cheap no-op whenever the
-// host is already current or has opted out of automatic upgrades. The
-// envelope it builds is advisory (Force=false), exactly like the
-// release-webhook-driven push.
+// same-commit / replay / quarantine checks make a poll a cheap no-op
+// whenever the host is already current. The envelope it builds is
+// advisory (Force=false), exactly like the release-webhook-driven push.
 
 const (
 	defaultPullInterval = 10 * time.Minute

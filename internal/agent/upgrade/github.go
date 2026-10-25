@@ -54,8 +54,8 @@ const (
 //
 // Deliberately NOT wired into an automatic background poller: a paired
 // host's automatic upgrades stay governed by the fleet (so cloudbox
-// keeps controlling canary→fleet rollout, update_mode, and min_from
-// fences), and an unpaired host self-upgrading silently could surprise
+// keeps controlling canary→fleet rollout and min_from fences), and
+// an unpaired host self-upgrading silently could surprise
 // an operator who pinned a build on purpose. Direct resolution is an
 // explicit, interactive action.
 type GitHubSource struct {

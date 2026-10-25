@@ -7,9 +7,9 @@ import (
 )
 
 // handleUpgradeOverview returns the consolidated Update-tab payload —
-// build provenance, source, install/run timestamps, update_mode,
-// pending envelope (if any), recent ledger entries, rollback
-// availability. One round-trip so the SPA tab loads atomically
+// build provenance, source, install/run timestamps, the always-on
+// update policy, pending envelope (if any), recent ledger entries,
+// rollback availability. One round-trip so the SPA tab loads atomically
 // rather than fanning out across multiple endpoints.
 func (s *Server) handleUpgradeOverview(c *gin.Context) {
 	out, err := s.core.UpgradeOverview()

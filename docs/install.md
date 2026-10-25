@@ -98,7 +98,7 @@ rather than local `/etc/shadow` should use `AUTH_URL`-mode authentication.
 
 `go install` builds do not include the `releaseTag` ldflag stamp that GitHub Releases bake in, so `outpost version` will report the commit short-sha rather than `vX.Y.Z`. Use `outpost version --json` for the full provenance.
 
-**Self-upgrade behaviour**: `go install` builds don't write the `.outpost-installed-via` marker file. Whether the cloudbox-pushed upgrade flow runs is controlled by `update_mode` in `agent.json` (see `outpost docs settings`). For development hosts you typically want `update_mode=never`.
+**Self-upgrade behaviour**: `go install` builds don't write the `.outpost-installed-via` marker file, and upgrades always apply (there is no `update_mode` opt-out — see `outpost docs settings`). A dirty working tree still refuses cloudbox-pushed upgrades, so commit before releasing from a dev host.
 
 ## Verifying an install
 

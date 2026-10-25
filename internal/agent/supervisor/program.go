@@ -48,6 +48,15 @@ type Program struct {
 	// advisory, never a gate that could wedge the daemon down.
 	PreStart func() error
 
+	// ShouldRun, when non-nil, gates every launch: while it reports
+	// false the supervisor parks the program — no launch, no backoff
+	// growth — rechecking every MinBackoff. This is how `outpost stop`
+	// parks the daemon without stopping the supervisor (or the bashy
+	// service monitor): only an explicit stop/disable intent parks;
+	// any other exit (kill -9, crash) restarts with backoff. Nil =
+	// always run.
+	ShouldRun func() bool
+
 	// StartSecs: a child that stays up at least this long is a healthy
 	// start and resets the restart backoff. Zero = DefaultStartSecs.
 	StartSecs time.Duration

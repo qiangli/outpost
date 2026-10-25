@@ -287,7 +287,6 @@ type SafeView struct {
 	// YcodeShareSurfaces is the CATALOG this build can publish, for the SPA
 	// to offer when writing the ycode unit's `settings.share` list.
 	YcodeShareSurfaces []YcodeShareSurfaceView `json:"ycode_share_surfaces"`
-	UpdateMode         string                  `json:"update_mode"`
 	LLMPool            LLMPoolStatusView       `json:"llm_pool"`
 	PeerTiers          []PeerTierView          `json:"peer_tiers,omitempty"`
 	Mesh               *MeshStatusView         `json:"mesh,omitempty"`
@@ -374,7 +373,6 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		MeshPort:                fc.MeshPort,
 		Ycode:                   toYcodeView(ycode.Detect()),
 		YcodeShareSurfaces:      ycodeShareSurfacesView(),
-		UpdateMode:              fc.UpdateModeName(),
 		LLMPool:                 s.llmPoolStatusView(fc),
 		PeerTiers:               s.PeerTiers(),
 		Mesh:                    s.MeshStatus(),

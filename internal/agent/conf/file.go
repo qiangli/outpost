@@ -246,30 +246,11 @@ type FileConfig struct {
 	// is supplied. Redacted from SafeView like other secrets.
 	ClusterLLMAPIKey string `json:"cluster_llm_api_key,omitempty"`
 
-	// UpdateMode is the per-host policy for cloudbox-pushed
-	// self-upgrades at POST /admin/upgrade. Three values:
-	//
-	//   - "auto"   — default. Stage + probe + swap + restart on push.
-	//   - "manual" — daemon persists the envelope to
-	//                <cacheDir>/outpost/upgrade.pending.json and
-	//                returns 202 pending_manual. Operator applies via
-	//                `outpost upgrade apply` or cloudbox's UI button
-	//                (which re-POSTs with Force=true to bypass the
-	//                manual gate).
-	//   - "never"  — refuse all cloudbox pushes; daemon returns 403.
-	//
-	// Empty / missing → "auto" (the default for paired hosts; making
-	// it opt-in per host would defeat the "press button, fleet rolls"
-	// promise). Use UpdateModeName() to read — it folds the empty
-	// case and normalizes legacy AutoUpgrade *bool configs.
-	UpdateMode string `json:"update_mode,omitempty"`
-
-	// AutoUpgrade is the legacy boolean. Kept on the struct so old
-	// agent.json files round-trip without losing data; LoadFile maps
-	// it into UpdateMode on read (true → auto, false → never) and
-	// writes clear UpdateMode going forward. New code reads via
-	// UpdateModeName() — do not consult this field directly.
-	AutoUpgrade *bool `json:"auto_upgrade,omitempty"`
+	// NOTE: update_mode / auto_upgrade / auto_rollback_enabled were
+	// removed (one lifecycle: upgrades always apply, the auto-rollback
+	// watchdog always reverts). Old agent.json files may still carry
+	// the keys — encoding/json ignores unknown fields on load, and
+	// saves simply stop writing them.
 
 	// AdminSessionKey is the HMAC secret used to sign admin-UI session
 	// cookies. Persisting it across restarts is what keeps the admin user
@@ -1596,49 +1577,6 @@ func (fc *FileConfig) ClusterNodeName() string {
 		return n
 	}
 	return fc.AgentName
-}
-
-// UpdateModeAuto / UpdateModeManual / UpdateModeNever are the legal
-// values of FileConfig.UpdateMode. Kept as package constants so the
-// validation layers (admincore, MCP arg parsing) share one source of
-// truth.
-const (
-	UpdateModeAuto   = "auto"
-	UpdateModeManual = "manual"
-	UpdateModeNever  = "never"
-)
-
-// UpdateModeName returns the normalized update-mode for this config.
-// Folds the legacy AutoUpgrade *bool (true → auto, false → never)
-// and defaults empty to "auto". Always one of the UpdateMode*
-// constants; never returns "".
-func (fc *FileConfig) UpdateModeName() string {
-	if fc == nil {
-		return UpdateModeAuto
-	}
-	switch fc.UpdateMode {
-	case UpdateModeAuto, UpdateModeManual, UpdateModeNever:
-		return fc.UpdateMode
-	}
-	// Empty / unknown — fold the legacy bool first.
-	if fc.AutoUpgrade != nil {
-		if *fc.AutoUpgrade {
-			return UpdateModeAuto
-		}
-		return UpdateModeNever
-	}
-	return UpdateModeAuto
-}
-
-// ValidUpdateMode reports whether s is a legal value for UpdateMode.
-// Mutators (admincore.SetBuiltins, MCP tool args) use this to reject
-// bad inputs at the boundary.
-func ValidUpdateMode(s string) bool {
-	switch s {
-	case UpdateModeAuto, UpdateModeManual, UpdateModeNever:
-		return true
-	}
-	return false
 }
 
 // PeerPlaneOn reports whether this outpost runs the p2p peer-plane locality

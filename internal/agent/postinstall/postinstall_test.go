@@ -117,14 +117,57 @@ func TestRebootEvidence(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r := Report{Sleep: "disabled", Service: "boot", Raw: map[string]Readback{}}
+			r.ApplyLocal(LocalChecks{SupervisorRunning: true, DaemonHealthy: true, SSHDListening: true, BootPathSane: true})
 			if !tt.service {
 				r.Service = "session"
+				r.Evaluate()
 			}
 			b := RebootEvidence{BootChanged: tt.boot, NoLogin: tt.login, ServiceLaunch: tt.origin, ServerAcknowledged: tt.online}
 			r.Reboot = &b
 			r.Evaluate()
 			if r.Result != tt.want {
 				t.Fatalf("%s", r.Result)
+			}
+		})
+	}
+}
+
+// TestApplyLocalGatesEveryCheck — each of the six post-install checks
+// fails the verdict on its own. Same matrix on macOS, Linux, Windows:
+// the probes differ per platform but the gate doesn't.
+func TestApplyLocalGatesEveryCheck(t *testing.T) {
+	good := LocalChecks{SupervisorRunning: true, DaemonHealthy: true, SSHDListening: true, BootPathSane: true}
+	for _, tt := range []struct {
+		name   string
+		mutate func(*LocalChecks)
+		sleep  string
+		svc    string
+	}{
+		{"all good", func(*LocalChecks) {}, "disabled", "boot"},
+		{"sleep enabled", func(*LocalChecks) {}, "enabled", "boot"},
+		{"service session", func(*LocalChecks) {}, "disabled", "session"},
+		{"supervisor down", func(c *LocalChecks) { c.SupervisorRunning = false }, "disabled", "boot"},
+		{"daemon down", func(c *LocalChecks) { c.DaemonHealthy = false }, "disabled", "boot"},
+		{"sshd closed", func(c *LocalChecks) { c.SSHDListening = false }, "disabled", "boot"},
+		{"boot PATH broken", func(c *LocalChecks) {
+			c.BootPathSane = false
+			c.BootPathDetail = "missing /usr/bin"
+		}, "disabled", "boot"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := good
+			tt.mutate(&c)
+			r := Report{Sleep: tt.sleep, Service: tt.svc, Raw: map[string]Readback{}}
+			r.ApplyLocal(c)
+			want := "FAIL"
+			if tt.name == "all good" {
+				want = "PASS"
+			}
+			if r.Result != want {
+				t.Fatalf("result = %q, want %q (%+v)", r.Result, want, r)
+			}
+			if tt.name == "boot PATH broken" && r.BootPathDetail == "" {
+				t.Fatal("BootPathDetail should carry the evidence")
 			}
 		})
 	}

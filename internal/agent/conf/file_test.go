@@ -11,6 +11,42 @@ import (
 // disk, read it back, and assert every field survives.
 func bp(b bool) *bool { return &b }
 
+// TestRemovedRunModeKeysIgnored — update_mode, auto_upgrade and
+// auto_rollback_enabled were removed (one lifecycle: upgrades always
+// apply, the watchdog always reverts). An agent.json written by an
+// older build still loads, and the next save drops the dead keys
+// instead of round-tripping them.
+func TestRemovedRunModeKeysIgnored(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "agent.json")
+	legacy := `{"agent_name":"host-1","update_mode":"never","auto_upgrade":false,"auto_rollback_enabled":true,"shell_enabled":true}`
+	if err := os.WriteFile(tmp, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fc, err := LoadFile(tmp)
+	if err != nil {
+		t.Fatalf("LoadFile with legacy keys: %v", err)
+	}
+	if fc.AgentName != "host-1" || !fc.ShellOn() {
+		t.Fatalf("live fields drifted: %+v", fc)
+	}
+	if err := SaveFile(tmp, fc); err != nil {
+		t.Fatalf("SaveFile: %v", err)
+	}
+	raw, err := os.ReadFile(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	for _, dead := range []string{"update_mode", "auto_upgrade", "auto_rollback_enabled"} {
+		if _, ok := m[dead]; ok {
+			t.Errorf("saved config still carries removed key %q: %s", dead, raw)
+		}
+	}
+}
+
 func TestFileConfigRoundTrip(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), "agent.json")
 	on := true

@@ -18,7 +18,7 @@ A paired host is reachable two ways, and you want to keep them straight:
 
 ```bash
 # On the machine being paired (or over a LAN ssh to it):
-outpost register --server https://ai.dhnt.io --code <CODE> --name <host> --yes
+outpost register --server https://ai.dhnt.io --code <CODE> --name <host>
 ```
 
 `register` is idempotent against a running daemon: it **merges** the new
@@ -60,12 +60,14 @@ target differs.
 **Locally on the target machine:**
 
 ```bash
-outpost register --server https://ai.dhnt.io --code <CODE> --name <host> --yes
+outpost register --server https://ai.dhnt.io --code <CODE> --name <host>
 ```
 
 `--name` defaults to the machine's hostname (`.local`/`.lan` stripped);
-`--server` defaults to the official portal. `--yes` starts the daemon
-immediately on a fresh host (skips the interactive "Start now?" prompt).
+`--server` defaults to the official portal. Pairing into the default
+config dir installs the per-user service and starts the daemon through
+the supervisor — no extra flag, no prompt. A scratch `--out` config dir
+never touches the host service unless `--service` is passed.
 A **recovery code** is printed and stashed at
 `~/.config/matrix/recovery_code.txt` — save it; it is the only
 out-of-band way to re-pair if both the access token and the tunnel are

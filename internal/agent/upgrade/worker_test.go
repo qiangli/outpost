@@ -48,7 +48,6 @@ func newHarness(t *testing.T) *harness {
 		binary: bin,
 		ledger: NewLedger(filepath.Join(dir, "upgrade.log")),
 		state: StateSnapshot{
-			UpdateMode:    "auto",
 			CurrentCommit: "abc1234",
 			BinaryPath:    bin,
 			PendingPath:   filepath.Join(dir, "upgrade.pending.json"),
@@ -99,73 +98,22 @@ func TestWorker_RejectsInvalid(t *testing.T) {
 	}
 }
 
-func TestWorker_RejectsNever(t *testing.T) {
+// TestWorker_NoModeGateAppliesPush: update-mode (auto/manual/never) is
+// gone — every push is accepted for staging. The bogus URL fails the
+// background stage, but Apply itself must return Accepted, never
+// disabled or pending_manual.
+func TestWorker_NoModeGateAppliesPush(t *testing.T) {
 	h := newHarness(t)
-	h.setState(func(s *StateSnapshot) { s.UpdateMode = "never" })
 	r := h.worker.Apply(context.Background(), Envelope{
-		ReleaseID: "r1",
-		URL:       "https://example.com/x",
+		ReleaseID: "r-nomode",
+		URL:       "https://localhost-no-server.invalid/x",
 		SHA256:    "deadbeef",
 		Commit:    "def5678",
 	})
-	if r.Status != StatusDisabled {
-		t.Fatalf("expected disabled, got %v", r.Status)
+	if r.Status != StatusAccepted {
+		t.Fatalf("expected accepted (no mode gate), got %v: %s", r.Status, r.Detail)
 	}
-	if r.HTTPStatusForTest() != 403 {
-		t.Fatalf("expected 403, got %d", r.HTTPStatusForTest())
-	}
-}
-
-func TestWorker_NeverRefusesEvenWithForce(t *testing.T) {
-	h := newHarness(t)
-	h.setState(func(s *StateSnapshot) { s.UpdateMode = "never" })
-	r := h.worker.Apply(context.Background(), Envelope{
-		ReleaseID: "r1",
-		URL:       "https://example.com/x",
-		SHA256:    "deadbeef",
-		Commit:    "def5678",
-		Force:     true, // operator-blessed but the host opted out
-	})
-	if r.Status != StatusDisabled {
-		t.Fatalf("expected disabled even with force, got %v", r.Status)
-	}
-}
-
-func TestWorker_ManualPersistsAndReturnsPending(t *testing.T) {
-	h := newHarness(t)
-	h.setState(func(s *StateSnapshot) { s.UpdateMode = "manual" })
-	env := Envelope{
-		ReleaseID: "r-manual",
-		URL:       "https://example.com/x",
-		SHA256:    "deadbeef",
-		Commit:    "def5678",
-	}
-	r := h.worker.Apply(context.Background(), env)
-	if r.Status != StatusPendingManual {
-		t.Fatalf("expected pending_manual, got %v: %s", r.Status, r.Detail)
-	}
-	if r.HTTPStatusForTest() != 202 {
-		t.Fatalf("pending_manual should map to 202, got %d", r.HTTPStatusForTest())
-	}
-	// The pending file must exist and decode back to the same envelope.
-	got, err := ReadPending(h.state.PendingPath)
-	if err != nil {
-		t.Fatalf("read pending: %v", err)
-	}
-	if got == nil || got.ReleaseID != "r-manual" || got.Commit != "def5678" {
-		t.Fatalf("pending mismatch: %+v", got)
-	}
-	// Ledger should include the pending_manual step.
-	entries, _ := h.ledger.Tail(0)
-	gotStep := false
-	for _, e := range entries {
-		if e.Step == "pending_manual" && e.ReleaseID == "r-manual" {
-			gotStep = true
-		}
-	}
-	if !gotStep {
-		t.Fatalf("expected pending_manual ledger entry: %+v", entries)
-	}
+	waitForInFlight(t, h.worker, false, time.Second)
 }
 
 func TestWorker_RefusesDirtyBuild(t *testing.T) {
@@ -534,9 +482,7 @@ func (r Result) HTTPStatusForTest() int { return r.Status.HTTPStatus() }
 
 func TestWorker_SameCommitMatchesAcrossShapes(t *testing.T) {
 	h := newHarness(t) // CurrentCommit is the short "abc1234"
-	// Manual mode keeps the test hermetic if the gate misses: the
-	// fall-through lands on pending_manual instead of a network fetch.
-	h.setState(func(s *StateSnapshot) { s.UpdateMode = "manual" })
+	// Same-commit returns before staging, so no network is touched.
 	r := h.worker.Apply(context.Background(), Envelope{
 		ReleaseID: "r1",
 		URL:       "https://example.com/x",
@@ -550,10 +496,12 @@ func TestWorker_SameCommitMatchesAcrossShapes(t *testing.T) {
 
 func TestWorker_MinFromMatchesAcrossShapes(t *testing.T) {
 	h := newHarness(t)
-	h.setState(func(s *StateSnapshot) { s.UpdateMode = "manual" })
+	// A full-sha min_from matching the short current commit must NOT
+	// return min_from. The bogus URL keeps the fall-through hermetic:
+	// Apply returns Accepted and the background stage fails.
 	r := h.worker.Apply(context.Background(), Envelope{
 		ReleaseID: "r1",
-		URL:       "https://example.com/x",
+		URL:       "https://localhost-no-server.invalid/x",
 		SHA256:    "deadbeef",
 		Commit:    "def5678",
 		MinFrom:   "abc1234deadbeefdeadbeefdeadbeefdeadbeef0", // full sha matching current short
@@ -561,9 +509,10 @@ func TestWorker_MinFromMatchesAcrossShapes(t *testing.T) {
 	if r.Status == StatusMinFrom {
 		t.Fatalf("min_from refused despite matching current commit: %s", r.Detail)
 	}
-	if r.Status != StatusPendingManual {
-		t.Fatalf("expected pending_manual fall-through, got %v (%s)", r.Status, r.Detail)
+	if r.Status != StatusAccepted {
+		t.Fatalf("expected accepted fall-through, got %v (%s)", r.Status, r.Detail)
 	}
+	waitForInFlight(t, h.worker, false, time.Second)
 }
 
 func TestSeedLastReleaseID(t *testing.T) {
@@ -657,7 +606,6 @@ func TestNewWorker_RollbackClearsReplaySeed(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	h.setState(func(s *StateSnapshot) { s.UpdateMode = "manual" }) // hermetic fall-through
 	w2, err := NewWorker(Options{
 		State:   func() StateSnapshot { h.stateMu.Lock(); defer h.stateMu.Unlock(); return h.state },
 		Restart: func() {},
@@ -667,17 +615,20 @@ func TestNewWorker_RollbackClearsReplaySeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Same commit as the running build: hermetic (returns before
+	// staging) and, crucially, not a replay — the rollback cleared
+	// the seed so the rolled-back release can be re-applied.
 	r := w2.Apply(context.Background(), Envelope{
 		ReleaseID: "r9",
 		URL:       "https://example.com/x",
 		SHA256:    "deadbeef",
-		Commit:    "def5678",
+		Commit:    "abc1234",
 	})
 	if r.Status == StatusReplay {
 		t.Fatal("rollback should clear the replay seed so the rolled-back release can be re-applied")
 	}
-	if r.Status != StatusPendingManual {
-		t.Fatalf("expected pending_manual, got %v (%s)", r.Status, r.Detail)
+	if r.Status != StatusSameCommit {
+		t.Fatalf("expected same_commit, got %v (%s)", r.Status, r.Detail)
 	}
 }
 
@@ -745,7 +696,6 @@ func TestWorker_GuardSharedBinary(t *testing.T) {
 			// Point binary to the synthetic case path.
 			h.setState(func(s *StateSnapshot) {
 				s.BinaryPath = tc.binary
-				s.UpdateMode = "auto"
 			})
 			env := Envelope{
 				ReleaseID: "r-guard-" + strings.ReplaceAll(tc.name, " ", "-"),

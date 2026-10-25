@@ -49,14 +49,12 @@ type Envelope struct {
 	// release requires migration state from a prior version.
 	MinFrom string `json:"min_from,omitempty"`
 
-	// Force bypasses the daemon's update_mode gate. Set by cloudbox
-	// (or the local `outpost upgrade apply` CLI) when the OPERATOR
-	// has explicitly chosen to apply this envelope right now — a
-	// "manual" host that gets Force=true behaves like an "auto"
-	// host for this one push. Never set by the GH-Action release
-	// webhook (those are advisory, not operator-blessed). "never"
-	// mode still refuses Force=true; the operator must flip the
-	// mode first.
+	// Force marks an operator-blessed apply: set by cloudbox (or the
+	// local `outpost upgrade apply` CLI) when the OPERATOR explicitly
+	// chose to apply this envelope right now. Never set by the
+	// GH-Action release webhook (those are advisory, not
+	// operator-blessed). Retained on the wire for compatibility; the
+	// worker no longer gates on it (there is no update-mode to bypass).
 	Force bool `json:"force,omitempty"`
 
 	// BuildTime is the RFC3339 timestamp of the target artifact's
@@ -109,9 +107,9 @@ const (
 	StatusReplay        Status = "replay"         // same release_id we just handled; idempotent no-op
 	StatusInFlight      Status = "in_flight"      // another upgrade is currently running
 	StatusSameCommit    Status = "same_commit"    // current daemon is already on this commit
-	StatusDisabled      Status = "disabled"       // operator turned update_mode to "never"
+	StatusDisabled      Status = "disabled"       // refused: dirty build or package-manager-owned binary
 	StatusMinFrom       Status = "min_from"       // current commit is older than envelope.min_from
-	StatusPendingManual Status = "pending_manual" // envelope persisted; operator must apply via UI/CLI
+	StatusPendingManual Status = "pending_manual" // legacy: envelope persisted under the removed manual mode
 	StatusQuarantined   Status = "quarantined"    // release was auto-reverted on this host; refuse re-apply
 	StatusDowngrade     Status = "downgrade"      // candidate is not strictly newer than the running build; deliberate rollback only via `outpost rollback`
 )

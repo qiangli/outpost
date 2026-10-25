@@ -31,7 +31,6 @@ type builtinsIn struct {
 	Cluster         *bool                        `json:"cluster,omitempty" jsonschema:"Join the cloudbox virtual-podman cluster as a node. OPT-IN (default off), unlike the podman/ollama/otel proxies: joining lets a remote control plane schedule workloads on this host and starts a k3s-agent (or virtual-kubelet) runtime, so it must be chosen explicitly."`
 	ClusterAgent    *bool                        `json:"cluster_agent,omitempty" jsonschema:"Run one real k3s-agent Node on this host."`
 	ClusterVirtual  []string                     `json:"cluster_virtual,omitempty" jsonschema:"Complete set of virtual-kubelet backends to run concurrently: vk-podman, vk-native, vk-ollama."`
-	UpdateMode      *string                      `json:"update_mode,omitempty" jsonschema:"Per-host policy for cloudbox-pushed self-upgrades — one of 'auto' (default; stage+swap+restart on push), 'manual' (persist envelope, operator applies), 'never' (refuse)"`
 	Mesh            *bool                        `json:"mesh,omitempty" jsonschema:"Toggle the libp2p mesh data plane (the peer node carrying authenticated, NAT-traversing peer↔peer streams — transport under shard-RPC, peer-backup, the resource fabric). Requires a paired access token."`
 	MeshPort        *int                         `json:"mesh_port,omitempty" jsonschema:"TCP+QUIC listen port for the mesh host (0 = ephemeral; a stable port helps NAT/hole-punch)"`
 	Services        map[string]bool              `json:"services,omitempty" jsonschema:"Desired state of service units, by unit name: {\"meet\":true,\"loom\":false}. This is the one way to turn a service on or off — the same write 'bashy service enable|disable' performs — and it applies LIVE: the monitor reconciles the process and outpost republishes the unit's declared app/mesh exposure without an outpost restart. Units are declared YAML (list them with 'bashy service list'), so a third-party daemon is toggled here with no outpost change."`
@@ -49,7 +48,7 @@ type setBuiltinsOut struct {
 func (s *Server) registerBuiltinsTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "outpost_set_builtins",
-		Description: "Toggle the built-in routes (shell/desktop/clipboard/ssh/sftp), the SSH-channel allow flags, the mesh data plane, the cluster join and the upgrade policy — and the desired state of SERVICE UNITS via `services` plus their declaration overrides via `service_settings`. Everything outpost used to carry its own toggle for (the File Browser, the podman and sandbox container mounts, the Ollama proxy and its pool, the warm and shard planes, the same-LAN inference listener, the observability and ycode surfaces) is a unit: switch it through `services` and configure it through `service_settings`. Service writes apply LIVE (no restart); the remaining FileConfig toggles set restart_pending. Read the units first from the outpost://services resource. Only fields present in the call are modified.",
+		Description: "Toggle the built-in routes (shell/desktop/clipboard/ssh/sftp), the SSH-channel allow flags, the mesh data plane and the cluster join — and the desired state of SERVICE UNITS via `services` plus their declaration overrides via `service_settings`. Upgrades always apply and the auto-rollback watchdog always reverts: there is no upgrade-policy toggle. Everything outpost used to carry its own toggle for (the File Browser, the podman and sandbox container mounts, the Ollama proxy and its pool, the warm and shard planes, the same-LAN inference listener, the observability and ycode surfaces) is a unit: switch it through `services` and configure it through `service_settings`. Service writes apply LIVE (no restart); the remaining FileConfig toggles set restart_pending. Read the units first from the outpost://services resource. Only fields present in the call are modified.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in builtinsIn) (*mcp.CallToolResult, setBuiltinsOut, error) {
 		res, err := s.core.SetBuiltins(ctx, admincore.BuiltinsParams{
 			Shell:                 in.Shell,
@@ -64,7 +63,6 @@ func (s *Server) registerBuiltinsTools() {
 			Cluster:               in.Cluster,
 			ClusterAgent:          in.ClusterAgent,
 			ClusterVirtual:        in.ClusterVirtual,
-			UpdateMode:            in.UpdateMode,
 			Mesh:                  in.Mesh,
 			MeshPort:              in.MeshPort,
 			Services:              in.Services,

@@ -1884,8 +1884,8 @@ function fmtTimestamp(s) {
 
 // buildUpdateSection populates the Update tab. One fetch to
 // /api/upgrade gets everything we render — build info, source, the
-// update_mode selector, the pending envelope (if any), the recent
-// ledger, and the rollback availability flag. The panel re-renders
+// always-on update policy note, the pending envelope (if any), the
+// recent ledger, and the rollback availability flag. The panel re-renders
 // in place when the operator triggers an action so the visible state
 // stays fresh without a full SPA reload.
 async function buildUpdateSection(parent) {
@@ -1953,46 +1953,25 @@ async function buildUpdateSection(parent) {
   src.append(sl);
 
   // === Update policy ============================================
+  // No toggle: upgrades always apply and the auto-rollback watchdog
+  // always reverts an unconfirmed upgrade. Static text, not a selector.
   const policy = el('fieldset', {});
   policy.append(el('legend', {}, 'Update policy'));
   const updateRow = el('div', {class: 'item-row'});
-  const updateSelect = el('select', {style: 'min-width:120px'});
-  const currentMode = data.update_mode || 'auto';
-  for (const opt of [
-    {v: 'auto',   label: 'Auto',   desc: 'apply cloudbox pushes immediately'},
-    {v: 'manual', label: 'Manual', desc: 'persist envelope; operator clicks Apply (here or in cloudbox)'},
-    {v: 'never',  label: 'Never',  desc: 'refuse all cloudbox pushes'},
-  ]) {
-    const o = el('option', {value: opt.v, title: opt.desc}, opt.label);
-    if (opt.v === currentMode) o.selected = true;
-    updateSelect.append(o);
-  }
-  updateSelect.addEventListener('change', async () => {
-    const newVal = updateSelect.value;
-    updateSelect.disabled = true;
-    try {
-      await api('POST', 'api/config/builtins', {update_mode: newVal});
-      msg('ok', `Update mode → ${newVal}`);
-    } catch (e) {
-      updateSelect.value = currentMode;
-      msg('err', e.message || 'Save failed');
-    } finally { updateSelect.disabled = false; }
-  });
   updateRow.append(
     el('span', {class: 'label', style: 'min-width:160px'},
-      'Cloudbox-pushed self-upgrades ',
-      el('code', {class: 'key-hint'}, 'update_mode'),
+      'Cloudbox-pushed self-upgrades',
     ),
-    updateSelect,
+    el('span', {}, 'Always apply — no per-host mode.'),
   );
   policy.append(updateRow);
   policy.append(el('p', {class: 'hint', style: 'margin-top:0.5rem'},
-    'Live: re-read on every cloudbox push without restarting the daemon.'));
+    'Every push is staged, probed, swapped and restarted; a build that never confirms healthy is auto-reverted and quarantined.'));
 
   // === Pending upgrade ==========================================
   if (data.pending) {
     const pend = el('fieldset', {});
-    pend.append(el('legend', {}, 'Pending upgrade (manual mode)'));
+    pend.append(el('legend', {}, 'Pending upgrade (legacy queue)'));
     const pl = el('div', {class: 'item-list'});
     const env = data.pending;
     buildRowInto(pl, 'Release tag', env.release_id);
@@ -2503,7 +2482,7 @@ function renderMain(status, cfg) {
 
   panelInbound.append(buildAgenticPlatformSection(cfg, status));
 
-  // (update_mode selector lives on the dedicated Update tab; this
+  // (the update policy note lives on the dedicated Update tab; this
   // panel stays focused on routes + daemon-proxy toggles.)
   // (LLM pool diagnostic was folded into the Ollama twister above —
   // all Ollama-related state in one place.)

@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/postinstall"
@@ -27,9 +29,46 @@ func postInstallRead(ctx context.Context) postinstall.Report {
 	u, h := postInstallIdentity()
 	return postinstall.Read(ctx, runtimeOS, u, h, postinstall.Exec)
 }
+
+// defaultSSHDProbeAddr is the loopback address of the LAN sshd unit
+// (`outpost.sshd`, declared port 2222). OUTPOST_SSHD_PROBE_ADDR
+// overrides it for custom-port hosts and for tests (a temp listener).
+// A literal IP, never a hostname.
+const defaultSSHDProbeAddr = "127.0.0.1:2222"
+
+// sshdListening reports whether the sshd unit's port accepts loopback
+// TCP — the same dial on macOS, Linux and Windows.
+func sshdListening() bool {
+	addr := os.Getenv("OUTPOST_SSHD_PROBE_ADDR")
+	if addr == "" {
+		addr = defaultSSHDProbeAddr
+	}
+	c, err := net.DialTimeout("tcp", addr, 600*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = c.Close()
+	return true
+}
+
+// postInstallProbes fills the same-on-every-OS local checks: the
+// supervisor the OS service owns is running, the daemon answers, the
+// sshd unit listens, and the boot PATH is sane.
+func postInstallProbes() postinstall.LocalChecks {
+	_, supFound, _ := discoverInit()
+	sane, detail := bootPathSane()
+	return postinstall.LocalChecks{
+		SupervisorRunning: supFound,
+		DaemonHealthy:     daemonRunning(),
+		SSHDListening:     sshdListening(),
+		BootPathSane:      sane,
+		BootPathDetail:    detail,
+	}
+}
+
 func verifyCmd() *cobra.Command {
 	var post, reboot bool
-	cmd := &cobra.Command{Use: "verify --post-install [--reboot]", Short: "Verify boot service and sleep policy; save raw PASS/FAIL evidence", Args: cobra.NoArgs,
+	cmd := &cobra.Command{Use: "verify --post-install [--reboot]", Short: "Verify boot service, supervisor, daemon, sshd, sleep policy and boot PATH; save raw PASS/FAIL evidence", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !post {
 				return fmt.Errorf("specify --post-install (and optionally --reboot)")
@@ -39,6 +78,7 @@ func verifyCmd() *cobra.Command {
 				return err
 			}
 			r := postInstallRead(cmd.Context())
+			r.ApplyLocal(postInstallProbes())
 			if err = postinstall.Write(dir, postinstall.ReportName, r); err != nil {
 				return err
 			}

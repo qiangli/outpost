@@ -25,6 +25,9 @@ type Status struct {
 	PID      int    `json:"pid,omitempty"`
 	Starts   int    `json:"starts"`
 	LastExit string `json:"last_exit,omitempty"`
+	// Parked reports the program is held down by its ShouldRun gate
+	// (a stop/disable intent) rather than crashed or starting.
+	Parked bool `json:"parked,omitempty"`
 }
 
 // Manager supervises a fixed set of Programs, one goroutine each, until its
@@ -80,6 +83,18 @@ func (m *Manager) superviseOne(ctx context.Context, p *Program) error {
 		if ctx.Err() != nil {
 			return nil
 		}
+
+		// Parked: an explicit stop/disable intent holds this program
+		// down. Wait without launching (and without growing the
+		// backoff) until the intent clears or the supervisor stops.
+		if p.ShouldRun != nil && !p.ShouldRun() {
+			m.setParked(p.Name)
+			if !sleep(ctx, p.minBackoff()) {
+				return nil
+			}
+			continue
+		}
+		m.clearParked(p.Name)
 
 		// Watchdog hook: inspect/repair on-disk state before each launch
 		// (auto-rollback reverts a binary that failed to confirm). Advisory
@@ -157,7 +172,28 @@ func (m *Manager) setRunning(name string, pid int) {
 	s := m.status[name]
 	s.Running = true
 	s.PID = pid
+	s.Parked = false
 	s.Starts++
+}
+
+func (m *Manager) setParked(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.status[name]
+	s.Running = false
+	s.PID = 0
+	s.Parked = true
+	s.LastExit = "parked: stop/disable intent"
+}
+
+func (m *Manager) clearParked(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.status[name]
+	if s.Parked {
+		s.Parked = false
+		s.LastExit = ""
+	}
 }
 
 func (m *Manager) setExited(name string, err error) {
@@ -166,6 +202,7 @@ func (m *Manager) setExited(name string, err error) {
 	s := m.status[name]
 	s.Running = false
 	s.PID = 0
+	s.Parked = false
 	if err != nil {
 		s.LastExit = err.Error()
 	} else {

@@ -22,14 +22,10 @@ import (
 // pull in their construction graph for tests.
 type State func() StateSnapshot
 
-// StateSnapshot is what State returns each tick. The worker treats
-// it as a momentary read — re-evaluates on each Apply call so a
-// just-flipped update_mode toggle takes effect immediately.
+// StateSnapshot is what State returns each tick. Upgrades always apply:
+// there is no per-host update-mode anymore (auto/manual/never was
+// removed — the only supported posture is "apply every push").
 type StateSnapshot struct {
-	// UpdateMode is the per-host policy for incoming pushes. One of
-	// "auto", "manual", "never" (the conf.UpdateMode* constants;
-	// empty is treated as "auto"). See conf/file.go for the contract.
-	UpdateMode string
 	// CurrentCommit is the running daemon's commit — wire it from
 	// agent.ReadBuildInfo().ShortCommit(), NOT Short(): on release
 	// builds Short() returns the semver tag ("v0.7.0"), which can
@@ -213,13 +209,6 @@ func (w *Worker) Apply(ctx context.Context, env Envelope) Result {
 	}
 
 	st := w.state()
-	// "never" beats everything (including Force=true) — operators
-	// who want a frozen host shouldn't be overridden by a cloudbox-
-	// side button. Flip the mode first.
-	if st.UpdateMode == "never" {
-		w.mu.Unlock()
-		return Result{Status: StatusDisabled, Detail: "update_mode is 'never'; operator must change it to accept cloudbox-pushed upgrades", ReleaseID: env.ReleaseID}
-	}
 	// Dirty build: the running binary was compiled from a working tree
 	// with uncommitted changes, so it carries code that exists in no
 	// release and no git object. Swapping it destroys that work
@@ -301,26 +290,6 @@ func (w *Worker) Apply(ctx context.Context, env Envelope) Result {
 			Detail:    "non-default config dir with shared binary — refusing to self-upgrade a binary shared with another instance; run from a private binary copy or unset XDG_CONFIG_HOME to allow upgrades",
 			ReleaseID: env.ReleaseID,
 		}
-	}
-
-	// Manual mode: persist the envelope and return without staging.
-	// Force=true bypasses the manual gate (used by `outpost upgrade
-	// apply` + cloudbox's "Apply" UI button), in which case we fall
-	// through to the auto path.
-	if st.UpdateMode == "manual" && !env.Force {
-		w.mu.Unlock()
-		if err := writePendingEnvelope(st.PendingPath, env); err != nil {
-			w.logger.Warn("manual: persist pending envelope", "err", err)
-		}
-		_ = w.appendLedger(LedgerEntry{
-			ReleaseID: env.ReleaseID,
-			Step:      "pending_manual",
-			FromSHA:   st.CurrentCommit,
-			ToSHA:     env.Commit,
-			URL:       env.URL,
-			Detail:    "queued; awaiting operator apply",
-		})
-		return Result{Status: StatusPendingManual, Detail: "update queued; operator must run `outpost upgrade apply` or click Apply in cloudbox UI", ReleaseID: env.ReleaseID, Commit: env.Commit}
 	}
 
 	// Remember the prior guard value so a run that FAILS before the swap

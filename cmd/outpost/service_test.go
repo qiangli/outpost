@@ -59,10 +59,11 @@ func TestRenderSystemdSystemUnit(t *testing.T) {
 	assertContains(t, "systemd system unit", got,
 		"ExecStart=/opt/outpost supervisord",
 		"User=dev", // drop to the regular user
-		"Restart=on-failure",
+		"Restart=always",
 		"WantedBy=multi-user.target", // boot, before any login
 		"network-online.target",
 	)
+	assertAbsent(t, "systemd system unit", got, "Restart=on-failure") // always, like KeepAlive
 }
 
 func TestRenderWindowsStartupTask(t *testing.T) {
@@ -76,6 +77,8 @@ func TestRenderWindowsStartupTask(t *testing.T) {
 		`-UserId 'EXAMPLE\Dev'`,
 		"-LogonType S4U",    // run as user, no stored password
 		"-RunLevel Limited", // regular user, not elevated
+		"-RestartCount",     // task-level restart backstop (restart-on-failure)
+		"-RestartInterval",  // ... complementing the supervisor's own restart
 	)
 	assertAbsent(t, "windows startup task", got, "-AtLogOn", "Interactive")
 }
@@ -97,10 +100,11 @@ func TestRenderSystemdUserUnit(t *testing.T) {
 	got := renderSystemdUserUnit("/opt/outpost")
 	assertContains(t, "systemd --user unit", got,
 		"ExecStart=/opt/outpost supervisord",
-		"Restart=on-failure",
+		"Restart=always",
 		"WantedBy=default.target", // per-user: login scope
 	)
-	assertAbsent(t, "systemd --user unit", got, "User=") // per-user: no User=
+	assertAbsent(t, "systemd --user unit", got, "User=")              // per-user: no User=
+	assertAbsent(t, "systemd --user unit", got, "Restart=on-failure") // always, like KeepAlive
 }
 
 // TestWindowsBootStartsSupervisorWithWatchdog pins the story link: the

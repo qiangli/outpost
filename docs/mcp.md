@@ -110,7 +110,7 @@ resource until `configured` settles.
   `clipboard`, `ssh`, `ssh_allow_local_forward`,
   `ssh_allow_remote_forward`, `ssh_allow_agent_forward`,
   `ssh_forward_sockets`, `sftp`, `mesh`, `mesh_port`, `cluster`,
-  `cluster_agent`, `cluster_virtual`, `update_mode`,
+  `cluster_agent`, `cluster_virtual`,
   `bashy_version`, `cloud_do_enabled`, `cloud_do_token` — plus the
   generic service pair `services` and `service_settings`. Only fields
   actually present are mutated.

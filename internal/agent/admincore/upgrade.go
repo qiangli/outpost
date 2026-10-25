@@ -33,7 +33,6 @@ type UpgradeSource struct {
 type UpgradeOverview struct {
 	Build             agent.BuildInfo       `json:"build"`
 	BinaryPath        string                `json:"binary_path,omitempty"`
-	UpdateMode        string                `json:"update_mode"`
 	RollbackAvailable bool                  `json:"rollback_available"`
 	CurrentSource     *UpgradeSource        `json:"current_source,omitempty"`
 	Pending           *upgrade.Envelope     `json:"pending,omitempty"`
@@ -56,15 +55,10 @@ func (s *Server) AttachUpgrade(worker *upgrade.Worker, ledger *upgrade.Ledger) {
 // don't typically need more than that, and the JSONL ledger is
 // unbounded in principle but rare in practice.
 func (s *Server) UpgradeOverview() (UpgradeOverview, error) {
-	fc, err := s.loadConfig()
-	if err != nil {
-		return UpgradeOverview{}, err
-	}
 	exe, _ := os.Executable()
 	out := UpgradeOverview{
 		Build:      agent.ReadBuildInfo(),
 		BinaryPath: exe,
-		UpdateMode: fc.UpdateModeName(),
 		History:    []upgrade.LedgerEntry{},
 	}
 

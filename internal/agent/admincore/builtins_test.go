@@ -3,12 +3,44 @@ package admincore
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 )
+
+// TestSetBuiltinsRemovedModesAreDead — update_mode / auto_rollback were
+// removed from BuiltinsParams. Payloads from older callers (or the old
+// SPA) carrying those keys must decode without error and change nothing:
+// upgrades always apply and the watchdog always reverts.
+func TestSetBuiltinsRemovedModesAreDead(t *testing.T) {
+	core, cfgPath := newTestCore(t)
+	var p BuiltinsParams
+	if err := json.Unmarshal([]byte(`{"update_mode":"never","auto_rollback":true,"mesh":true}`), &p); err != nil {
+		t.Fatalf("legacy payload must still decode: %v", err)
+	}
+	if _, err := core.SetBuiltins(context.Background(), p); err != nil {
+		t.Fatalf("SetBuiltins: %v", err)
+	}
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dead := range []string{"update_mode", "auto_upgrade", "auto_rollback_enabled"} {
+		if strings.Contains(string(raw), dead) {
+			t.Errorf("config carries removed key %q after SetBuiltins: %s", dead, raw)
+		}
+	}
+	fc, err := conf.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fc.MeshEnabled == nil || !*fc.MeshEnabled {
+		t.Fatalf("live field in the same payload must still apply: %+v", fc.MeshEnabled)
+	}
+}
 
 func TestSetBuiltinsPersistsBashyVersionPin(t *testing.T) {
 	core, cfgPath := newTestCore(t)

@@ -113,7 +113,7 @@ tool, or wipe `agent.json` by hand.
 | Cluster join | `cluster.enabled` | `builtins set --cluster` | Inbound > Cluster | `outpost_set_builtins` | Restart |
 | Digital Ocean support (cloud venue) | `cloud_do_enabled` | `builtins set --cloud-do` | Inbound > Cloud | `outpost_set_builtins` | Restart |
 | Digital Ocean API token | `cloud_do_token` | `builtins set --cloud-do-token` | Inbound > Cloud | `outpost_set_builtins` | Restart |
-| Cloudbox-pushed self-upgrade | `update_mode` | `builtins set --update=auto\|manual\|never` | Inbound > Built-ins | `outpost_set_builtins` | Live |
+| Cloudbox-pushed self-upgrade | — (always applies; no flag or config key) | — | Inbound > Built-ins | — | Always |
 | Auto-rollback watchdog (always on, no flag) | — (no config key; the supervisor always reverts an unconfirmed upgrade) | — | Inbound > Built-ins | — | Always |
 
 All built-in route toggles default to ON when the JSON key is absent (old
@@ -672,46 +672,30 @@ state still in `agent.json` (see the daemon-internal secrets table): it is
 outpost's own secret, persisted so sessions survive a restart, and a
 unit's `secrets` are vault *references* that cannot hold it.
 
-`update_mode` is the only built-in setting with **Live** effect — the
-upgrade worker re-reads the FileConfig on each `POST /admin/upgrade`,
-so flipping it doesn't require (and doesn't trigger) a restart. Three
-values, default **auto** for paired hosts:
+Upgrades always apply — there is no per-host update-mode. Every
+`POST /admin/upgrade` envelope is staged + probed + swapped and the
+daemon restarts: the "press button, fleet rolls" behavior, on every
+host, with no opt-out. The old `update_mode` (`auto`/`manual`/`never`),
+the legacy `auto_upgrade` boolean, and the `--update` /
+`--auto-upgrade` CLI flags were removed outright (no deprecation
+aliases): old `agent.json` files carrying those keys still load, and
+the next save drops them.
 
-- **`auto`** — incoming envelopes are staged + probed + swapped +
-  daemon re-execs. The "press button, fleet rolls" behavior.
-- **`manual`** — daemon validates the envelope, persists it to
-  `<cacheDir>/outpost/upgrade.pending.json`, returns 202
-  `pending_manual`, and does NOT swap. The cloudbox UI shows an
-  "Update pending — Apply" badge; the operator triggers the swap
-  by clicking Apply (which re-POSTs the envelope with `force: true`
-  to bypass the manual gate) or by running `outpost upgrade apply`
-  on the host. Use case: cautious operators who want notification
-  but not auto-application.
-- **`never`** — daemon returns 403 `disabled`. Even Force=true is
-  refused — the operator must flip the mode first. Use case: a
-  frozen box you fully control (debugging session, regression
-  bisection, compliance freeze).
-
-Migration: legacy `auto_upgrade: true` is read as `update_mode: auto`;
-`auto_upgrade: false` is read as `update_mode: never`. New writes
-clear `auto_upgrade` and persist only `update_mode`. The deprecated
-`--auto-upgrade=on|off` CLI flag survives as an alias.
-
-Unpaired hosts ignore the setting — the `/admin/upgrade` route only
+Unpaired hosts still ignore pushes — the `/admin/upgrade` route only
 mounts once cloudbox has issued an `access_token`.
 
 #### Cloudbox-pushed upgrade flow
 
-When `update_mode` is `auto` (or `manual` with `force: true` in the
-envelope), cloudbox POSTs to `<this-host>/admin/upgrade`
-through the matrix tunnel. No `Authorization` header — the route trusts
+Cloudbox POSTs to `<this-host>/admin/upgrade` through the matrix
+tunnel. No `Authorization` header — the route trusts
 the tunnel as the auth boundary, the same model `/apps` and `/healthz`
 already use. The daemon's main HTTP server binds 127.0.0.1 only, so
 cloudbox-via-tunnel is the only party that can reach the route.
-Defense-in-depth lives at the worker layer: the `auto_upgrade` toggle
-(operator opt-out), the sha256 + envelope.commit integrity checks, and
-the Probe step (`<candidate> version --json` must self-report
-envelope.commit). The envelope is shaped like:
+Defense-in-depth lives at the worker layer: the sha256 +
+envelope.commit integrity checks, the Probe step (`<candidate> version
+--json` must self-report envelope.commit), the dirty-build and
+package-manager guards, and the quarantine of auto-reverted releases.
+The envelope is shaped like:
 
 ```json
 {
@@ -761,7 +745,7 @@ Status codes the daemon returns to cloudbox:
 | 200 | replay | same `release_id` already applied (idempotent; remembered across the post-swap restart via the upgrade ledger) |
 | 409 | in_flight | another upgrade is currently running |
 | 304 | same_commit | daemon is already at this commit |
-| 403 | disabled | operator set `update_mode` to `never` |
+| 403 | disabled | dirty local build, or binary owned by a package manager (brew/scoop/apt) — upgrade via that installer instead |
 | 412 | min_from | daemon's current commit is older than `min_from` requires |
 | 409 | quarantined | this `release_id` was auto-reverted on this host; refused until cleared or superseded |
 | 400 | (invalid envelope) | required field missing or `url` is not https |

@@ -274,16 +274,70 @@ func ServiceState(platform string, raw map[string]Readback) string {
 	return "none"
 }
 
-type Report struct {
-	Version  int                 `json:"version"`
-	Platform string              `json:"platform"`
-	Time     time.Time           `json:"time"`
-	Result   string              `json:"result"`
-	Sleep    string              `json:"sleep"`
-	Service  string              `json:"service"`
-	Raw      map[string]Readback `json:"raw"`
-	Reboot   *RebootEvidence     `json:"reboot,omitempty"`
+// LocalChecks are the same-on-every-OS liveness probes `outpost verify
+// --post-install` fills in around Read. They need loopback dials and
+// process discovery — not shell commands — so they live outside the
+// Runner abstraction and are applied via ApplyLocal (injectable in
+// tests, wired to the real probes in the CLI).
+type LocalChecks struct {
+	SupervisorRunning bool
+	DaemonHealthy     bool
+	SSHDListening     bool
+	BootPathSane      bool
+	// BootPathDetail names what's wrong when BootPathSane is false
+	// (e.g. the missing PATH entries), for the evidence JSON.
+	BootPathDetail string
 }
+
+type Report struct {
+	Version  int       `json:"version"`
+	Platform string    `json:"platform"`
+	Time     time.Time `json:"time"`
+	Result   string    `json:"result"`
+	Sleep    string    `json:"sleep"`
+	Service  string    `json:"service"`
+	// Supervisor is "running" when the outpost init (supervisord) the
+	// OS service owns is alive; Daemon is "healthy" when the admin
+	// endpoint answers; SSHD is "listening" when the LAN sshd unit's
+	// port accepts loopback TCP; BootPath is "sane" when the boot
+	// session PATH carries the platform's expected prefixes.
+	Supervisor     string              `json:"supervisor"`
+	Daemon         string              `json:"daemon"`
+	SSHD           string              `json:"sshd"`
+	BootPath       string              `json:"boot_path"`
+	BootPathDetail string              `json:"boot_path_detail,omitempty"`
+	Raw            map[string]Readback `json:"raw"`
+	Reboot         *RebootEvidence     `json:"reboot,omitempty"`
+}
+
+// ApplyLocal records the local liveness probes into the report and
+// re-evaluates the verdict. The same six checks gate PASS on macOS,
+// Linux and Windows.
+func (r *Report) ApplyLocal(c LocalChecks) {
+	if c.SupervisorRunning {
+		r.Supervisor = "running"
+	} else {
+		r.Supervisor = "not-running"
+	}
+	if c.DaemonHealthy {
+		r.Daemon = "healthy"
+	} else {
+		r.Daemon = "down"
+	}
+	if c.SSHDListening {
+		r.SSHD = "listening"
+	} else {
+		r.SSHD = "closed"
+	}
+	if c.BootPathSane {
+		r.BootPath = "sane"
+	} else {
+		r.BootPath = "broken"
+	}
+	r.BootPathDetail = c.BootPathDetail
+	r.Evaluate()
+}
+
 type RebootEvidence struct {
 	RequestedAt        time.Time  `json:"requested_at"`
 	BootBefore         string     `json:"boot_before"`
@@ -297,7 +351,9 @@ type RebootEvidence struct {
 }
 
 func (r *Report) Evaluate() {
-	pass := r.Sleep == "disabled" && r.Service == "boot"
+	pass := r.Sleep == "disabled" && r.Service == "boot" &&
+		r.Supervisor == "running" && r.Daemon == "healthy" &&
+		r.SSHD == "listening" && r.BootPath == "sane"
 	if b := r.Reboot; b != nil {
 		pass = pass && b.BootChanged && b.NoLogin && b.ServiceLaunch && b.ServerAcknowledged
 	}

@@ -37,16 +37,8 @@ func newLocalUpgrade(cfgPath string, fc *conf.FileConfig, restart func()) (*upgr
 	upgrade.CleanupStaleSwaps(exe)
 	upgradeWorker, err := upgrade.NewWorker(upgrade.Options{
 		State: func() upgrade.StateSnapshot {
-			// Re-read the current FileConfig so a just-toggled
-			// update_mode takes effect on the next /admin/upgrade
-			// POST without a daemon restart.
-			cur, _ := conf.LoadFile(cfgPath)
-			if cur == nil {
-				cur = fc
-			}
 			bi := agent.ReadBuildInfo()
 			return upgrade.StateSnapshot{
-				UpdateMode:     cur.UpdateModeName(),
 				CurrentCommit:  bi.ShortCommit(),
 				CurrentVersion: bi.Version,
 				CurrentVCSTime: bi.VCSTime,

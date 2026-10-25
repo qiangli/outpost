@@ -8,10 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
@@ -255,10 +253,10 @@ type initHandoff struct {
 	isSupervisord func(pid int) bool
 	stop          func(pid int) error
 	spawn         func() error
-	goos          string
 	// exitWait bounds how long the old init gets to stop its children and
 	// exit; reclaimWait is how long a service manager (launchd KeepAlive,
-	// systemd Restart=) gets to bring up a replacement before we spawn one.
+	// systemd Restart=always, Task Scheduler restart) gets to bring up a
+	// replacement before we spawn one.
 	exitWait, reclaimWait, poll time.Duration
 }
 
@@ -283,11 +281,12 @@ func (h initHandoff) run() []string {
 	if !h.isSupervisord(pid) {
 		return skip("is not an outpost supervisord invocation; left alone")
 	}
-	if h.goos == "windows" {
-		// Windows can only hard-kill init, which would orphan its children
-		// rather than stop them; leave the restart to the operator.
-		return skip("predates the swap and cannot start bashy supervisord; WARN restart it (outpost service restart, or stop it and run outpost supervisord)")
-	}
+	// Same path on every OS: stop the legacy init and let the service
+	// manager (launchd KeepAlive, systemd Restart=always, Task Scheduler
+	// restart) reclaim it, spawning a replacement only if none appears.
+	// Windows stops via TerminateProcess through requestStop — the same
+	// helper `outpost stop` uses — and its re-exec spawns a detached
+	// successor, so no operator step is needed there either.
 	out := []string{fmt.Sprintf("init:     pid %d (%s) predates the swap; restarting it so bashy supervisord runs", pid, probe.source)}
 	if err := h.stop(pid); err != nil {
 		return append(out, fmt.Sprintf("init:     skipped: WARN stop pid %d: %v", pid, err))
@@ -341,10 +340,12 @@ func handOffLegacyInit(binary string) []string {
 			if err != nil {
 				return err
 			}
-			return p.Signal(syscall.SIGTERM)
+			// requestStop is the shared stop helper (SIGTERM on
+			// unix, TerminateProcess on Windows) — the handoff
+			// stops init exactly the way `outpost stop` does.
+			return requestStop(p, pid)
 		},
 		spawn:       func() error { return spawnInit(binary) },
-		goos:        runtime.GOOS,
 		exitWait:    30 * time.Second,
 		reclaimWait: 5 * time.Second,
 		poll:        250 * time.Millisecond,

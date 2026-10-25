@@ -139,6 +139,18 @@ func serviceLaunch(ctx context.Context, platform string, parent int, run Runner,
 	return false
 }
 
+// carryLocal copies point-in-time local liveness from a previous report
+// into a fresh re-read, so the reboot flow's verdict keeps the
+// pre-reboot verify's supervisor/daemon/sshd/PATH evidence while
+// sleep/service are re-read from the new boot.
+func carryLocal(dst, src *Report) {
+	dst.Supervisor = src.Supervisor
+	dst.Daemon = src.Daemon
+	dst.SSHD = src.SSHD
+	dst.BootPath = src.BootPath
+	dst.BootPathDetail = src.BootPathDetail
+}
+
 type Observer struct {
 	mu                        sync.Mutex
 	dir, platform, user, home string
@@ -175,6 +187,12 @@ func Resume(ctx context.Context, dir, platform, user, home string, parent int, r
 	r := pending
 	if pending.Reboot.BootAfter == "" {
 		r = Read(ctx, platform, user, home, run)
+		// The re-read refreshes sleep/service from the new boot; the
+		// point-in-time local liveness (supervisor/daemon/sshd/PATH)
+		// carries over from the pre-reboot verify — the fresh
+		// service-launch + server-ack evidence below is what proves
+		// the new boot came back.
+		carryLocal(&r, &pending)
 		r.Reboot = pending.Reboot
 		r.Raw["boot_before"] = pending.Raw["boot_before"]
 		r.Raw["boot_after"] = boot
@@ -210,6 +228,7 @@ func (o *Observer) Acknowledge(ctx context.Context) error {
 		return nil
 	}
 	r := Read(ctx, o.platform, o.user, o.home, o.run)
+	carryLocal(&r, &o.report)
 	for k, v := range o.report.Raw {
 		if _, exists := r.Raw[k]; exists {
 			r.Raw["startup_"+k] = v

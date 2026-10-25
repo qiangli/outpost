@@ -18,10 +18,10 @@ import (
 // require a shared secret cloudbox can present, and the obvious
 // candidate (fc.Token aka cfg.MatrixToken) is empty in real
 // production deployments where cloudbox runs without a matrix-tunnel
-// auth secret. Defense-in-depth lives elsewhere: the AutoUpgrade
-// toggle (operator opt-out), the sha256 + envelope.commit checks
-// (artifact integrity), and the Probe step (commit-match self-
-// verify) all gate what the worker will actually do.
+// auth secret. Defense-in-depth lives elsewhere: the sha256 +
+// envelope.commit checks (artifact integrity), the Probe step
+// (commit-match self-verify), and the dirty-build / package-manager /
+// quarantine guards all gate what the worker will actually do.
 //
 // The route is intentionally NOT under `/api/*` — cloudbox calls it
 // through the matrix tunnel and the daemon's main HTTP server is
