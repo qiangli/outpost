@@ -38,10 +38,15 @@ var reservedNames = map[string]struct{}{
 	"mcp":        {},
 	"_periscope": {},
 	// Cloudbox top-level namespace mirror.
+	"about":       {},
 	"cloudbox":    {},
+	"contact":     {},
 	"periscope":   {},
 	"matrix":      {},
 	"cloud":       {},
+	"install":     {},
+	"install.sh":  {},
+	"install.ps1": {},
 	"v1":          {},
 	"v2":          {}, // cloudbox registry origin (/v2/*)
 	"health":      {},

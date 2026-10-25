@@ -50,3 +50,29 @@ func TestValidateApp_ReservedNameV2(t *testing.T) {
 		}
 	}
 }
+
+// Public front-door pages and installer redirects are cloudbox-owned root
+// routes, so an app must not claim the corresponding top-level name.
+func TestValidateApp_ReservedInstallFrontDoorNames(t *testing.T) {
+	for _, reserved := range []string{"about", "contact", "install", "install.sh", "install.ps1"} {
+		t.Run(reserved, func(t *testing.T) {
+			for _, name := range []string{reserved, strings.ToUpper(reserved), " " + reserved + " "} {
+				ac := conf.AppConfig{Name: name, Port: 8080}
+				err := ValidateApp(&ac)
+				if err == nil || !strings.Contains(err.Error(), "reserved") {
+					t.Errorf("ValidateApp(%q): want reserved-name error, got %v", name, err)
+				}
+			}
+			if !isReserved(reserved) {
+				t.Errorf("isReserved(%q) = false, want true", reserved)
+			}
+		})
+	}
+
+	for _, name := range []string{"about-us", "contacts", "installer", "install.sh.backup", "install.ps10"} {
+		ac := conf.AppConfig{Name: name, Port: 8080}
+		if err := ValidateApp(&ac); err != nil {
+			t.Errorf("ValidateApp(%q): unexpected error %v", name, err)
+		}
+	}
+}
