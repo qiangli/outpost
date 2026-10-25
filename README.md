@@ -55,8 +55,9 @@ anyway**, or unblock the downloaded file with `Unblock-File <file>`. DHNT Inc.
 signed builds arrive in v1.0.x.
 
 Linux archives are `bashy-linux-amd64.tar.gz` and
-`bashy-linux-arm64.tar.gz`; releases also include `.deb`, `.rpm`, and `.apk`
-packages. Download the archive for the machine from the
+`bashy-linux-arm64.tar.gz`; starting with v1.0, Linux releases also publish
+`.deb`, `.rpm`, and `.apk` packages. Download the archive for the machine from
+the
 [latest bashy release](https://github.com/qiangli/bashy/releases/latest), then
 verify and install it:
 
