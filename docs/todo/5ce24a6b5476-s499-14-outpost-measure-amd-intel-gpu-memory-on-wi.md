@@ -3,9 +3,11 @@ id: 5ce24a6b5476
 kind: bug
 title: 'S499.14 outpost: measure AMD/Intel GPU memory on Windows (not the 4 GiB-capped WMI AdapterRAM) so dhnt.io/vram is advertised; vendor-neutral GPU workers (NVIDIA and AMD)'
 seq: 2723
-status: todo
+status: assigned
 priority: p0
 created: 2026-10-24T20:01:45.656169Z
+weave: 95
+assignee: agy-gemini3.8-flash
 sprint: 507
 sprint_id: 77d7ab0f-6aef-5bd3-876d-3f50e9b585ea
 sprint_title: 'YC demo blockers: four bug fixes (dks reattach, executor image default, AMD VRAM on Windows, kubectl /c/ paths)'
