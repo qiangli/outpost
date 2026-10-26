@@ -3,9 +3,11 @@ id: 374bb1c26b88
 kind: bug
 title: 'S507.5 outpost vknode: a vk-podman node on a Windows host advertises kubernetes.io/os=windows, but it runs Linux containers (podman machine), so Linux session pods never schedule there'
 seq: 2724
-status: todo
+status: assigned
 priority: p0
 created: 2026-10-26T05:01:34.847834Z
+weave: 96
+assignee: codex-gpt6-sol
 sprint: 507
 sprint_id: 77d7ab0f-6aef-5bd3-876d-3f50e9b585ea
 sprint_title: 'YC demo blockers: four bug fixes (dks reattach, executor image default, AMD VRAM on Windows, kubectl /c/ paths)'
