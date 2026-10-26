@@ -25,7 +25,7 @@ func TestPublishPodUsesReachableHost(t *testing.T) {
 		}}},
 	}
 	apps := recordingTransientApps{}
-	publishPod(apps, pod, "172.28.16.2")
+	publishPod(apps, pod, func(int) string { return "172.28.16.2" })
 	name := TransientAppName(pod.Namespace, pod.Name, string(pod.UID))
 	if got := apps[name]; got != "http://172.28.16.2:46391" {
 		t.Fatalf("transient target = %q, want machine address and mapped host port", got)
@@ -40,7 +40,7 @@ func TestProviderUpdatePodPublishesMachineAddress(t *testing.T) {
 		}}},
 	}
 	p := NewProviderWithBackend(&fakeBackend{})
-	p.transientHost = func(context.Context) string { return "172.28.16.2" }
+	p.transientHost = func(context.Context, int) string { return "172.28.16.2" }
 	apps := recordingTransientApps{}
 	p.SetTransientApps(apps)
 	if err := p.UpdatePod(context.Background(), pod); err != nil {
@@ -70,5 +70,34 @@ func TestMachineNameFromPodmanSocket(t *testing.T) {
 func TestFirstMachineIPv4(t *testing.T) {
 	if got := firstMachineIPv4("::1 127.0.0.1 169.254.0.3 172.28.16.2 10.0.0.1"); got != "172.28.16.2" {
 		t.Fatalf("firstMachineIPv4 = %q", got)
+	}
+}
+
+func TestChoosePublishedHost(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		reachable  map[string]bool
+		wantHost   string
+		wantSource string
+		wantLookup bool
+	}{
+		{"published host port wins", map[string]bool{"127.0.0.1": true, "172.28.16.2": true}, "127.0.0.1", "host-loopback", false},
+		{"machine port fallback", map[string]bool{"172.28.16.2": true}, "172.28.16.2", "podman-machine", true},
+		{"neither port ready", nil, "127.0.0.1", "host-loopback-unverified", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lookedUp := false
+			host, source := choosePublishedHost(context.Background(), 45563,
+				func(context.Context) string { lookedUp = true; return "172.28.16.2" },
+				func(_ context.Context, candidate string, port int) bool {
+					if port != 45563 {
+						t.Fatalf("probed port %d, want 45563", port)
+					}
+					return tc.reachable[candidate]
+				})
+			if host != tc.wantHost || source != tc.wantSource || lookedUp != tc.wantLookup {
+				t.Fatalf("choosePublishedHost = (%q, %q), machine lookup=%v; want (%q, %q), lookup=%v", host, source, lookedUp, tc.wantHost, tc.wantSource, tc.wantLookup)
+			}
+		})
 	}
 }

@@ -1,10 +1,29 @@
 package vknode
 
 import (
+	"context"
 	"net"
 	"path/filepath"
 	"strings"
 )
+
+// choosePublishedHost checks the actual published port before selecting a
+// transient app target. A machine address from the API socket alone does not
+// prove that a container port is reachable at that address.
+func choosePublishedHost(ctx context.Context, port int, machineHost func(context.Context) string, reachable func(context.Context, string, int) bool) (host, source string) {
+	const loopback = "127.0.0.1"
+	if reachable(ctx, loopback, port) {
+		return loopback, "host-loopback"
+	}
+	if machineHost != nil {
+		if machine := machineHost(ctx); machine != "" && reachable(ctx, machine, port) {
+			return machine, "podman-machine"
+		}
+	}
+	// The workload may still be starting. Prefer the published host port
+	// when neither address is listening yet, so a later attach can work.
+	return loopback, "host-loopback-unverified"
+}
 
 // machineNameFromPodmanSocket identifies the machine that owns a Windows
 // podman pipe or API socket. A generic docker_engine pipe is ambiguous.

@@ -5,25 +5,27 @@ package vknode
 import (
 	"context"
 	"log/slog"
+	"net"
 	"os/exec"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/qiangli/outpost/internal/bashypath"
 )
 
-// Podman on Windows publishes ports inside its Linux machine. Some Podman
-// versions fail to forward them to Windows loopback, while the machine IP
-// remains reachable. Use the address of the machine owning our API socket.
-func podmanTransientHost(socket string) func(context.Context) string {
+// Podman on Windows normally forwards published ports to host loopback.
+// Probe that exact port before considering a machine address: the API socket
+// can belong to a machine whose IP is not reachable from the Windows host.
+func podmanTransientHost(socket string) func(context.Context, int) string {
 	machine := machineNameFromPodmanSocket(socket)
-	if machine == "" {
-		return nil
-	}
 	var mu sync.Mutex
 	var host string
 	var checked time.Time
-	return func(ctx context.Context) string {
+	resolveMachine := func(ctx context.Context) string {
+		if machine == "" {
+			return ""
+		}
 		mu.Lock()
 		defer mu.Unlock()
 		if host != "" && time.Since(checked) < 30*time.Second {
@@ -55,4 +57,20 @@ func podmanTransientHost(socket string) func(context.Context) string {
 		slog.Debug("vknode: resolve Podman machine address", "machine", machine, "err", err)
 		return host
 	}
+	return func(ctx context.Context, port int) string {
+		host, source := choosePublishedHost(ctx, port, resolveMachine, reachableTransientPort)
+		slog.Info("vknode: selected transient app target", "host", host, "port", port, "source", source, "machine", machine)
+		return host
+	}
+}
+
+func reachableTransientPort(ctx context.Context, host string, port int) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(probeCtx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }

@@ -4,4 +4,4 @@ package vknode
 
 import "context"
 
-func podmanTransientHost(string) func(context.Context) string { return nil }
+func podmanTransientHost(string) func(context.Context, int) string { return nil }
