@@ -138,6 +138,44 @@ func TestBuildNodeFromInfo_NVIDIAGPU(t *testing.T) {
 	assertAllocatableMirrorsCapacity(t, n)
 }
 
+func TestBuildNodeFromInfo_AMDGPUUnifiedMemory(t *testing.T) {
+	const (
+		vram = 64 * 1024 * 1024 * 1024
+		mem  = 64 * 1024 * 1024 * 1024
+	)
+	n := BuildNodeFromInfo("test-windows-worker-vk-native", nil, sysinfo.Info{
+		CPUCount:      32,
+		MemTotalBytes: mem,
+		GPUs: []sysinfo.GPU{{
+			Kind:           sysinfo.GPUKindAMD,
+			Model:          "AMD Radeon(TM) 8060S Graphics",
+			Count:          1,
+			VRAMTotalBytes: vram,
+			UnifiedMemory:  true,
+		}},
+	})
+
+	if got := n.Status.Capacity[resourceVRAM]; got.Value() != vram {
+		t.Errorf("VRAM capacity = %s, want %d", got.String(), int64(vram))
+	}
+	if got := n.Labels[labelVRAMDeviceMax]; got != strconv.FormatInt(vram, 10) {
+		t.Errorf("label %s = %q, want %d", labelVRAMDeviceMax, got, int64(vram))
+	}
+	if n.Labels[labelGPUKind] != sysinfo.GPUKindAMD {
+		t.Errorf("GPU kind label = %q, want %q", n.Labels[labelGPUKind], sysinfo.GPUKindAMD)
+	}
+	if n.Labels[labelGPUModel] != "AMD-Radeon-TM--8060S-Graphics" {
+		t.Errorf("GPU model label = %q", n.Labels[labelGPUModel])
+	}
+	if _, ok := n.Status.Capacity[resourceNVIDIAGPU]; ok {
+		t.Errorf("NVIDIA resource must not be advertised for AMD GPU: %+v", n.Status.Capacity)
+	}
+	if _, ok := n.Status.Capacity[resourceMetalVRAM]; ok {
+		t.Errorf("Metal VRAM resource must stay Apple-only: %+v", n.Status.Capacity)
+	}
+	assertAllocatableMirrorsCapacity(t, n)
+}
+
 func TestBuildNodeFromInfo_ExtraLabelsOverrideGenerated(t *testing.T) {
 	n := BuildNodeFromInfo("gpu-host", map[string]string{
 		labelGPUKind: "manual",
