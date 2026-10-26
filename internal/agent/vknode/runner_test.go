@@ -2,9 +2,11 @@ package vknode
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/qiangli/outpost/internal/agent/sysinfo"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -125,5 +127,51 @@ func TestRun_PodmanBackendDefaultPath_RequiresSocket(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "PodmanSocket required") {
 		t.Errorf("expected PodmanSocket error, got: %v", err)
+	}
+}
+
+func TestBuildNodeForProviderUsesContainerPlatform(t *testing.T) {
+	sock := startFakeLibpod(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != apiPrefix+"/libpod/info" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"host":{"os":"linux","arch":"amd64"}}`))
+	})
+	podman, err := NewClient(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := sysinfo.Info{OS: "windows", Arch: "arm64", CPUCount: 8}
+	labels := map[string]string{"outpost.dhnt.io/backend": "vk-podman"}
+	node, err := buildNodeForProvider(context.Background(), "puppy-vk-podman", labels, host, podman)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.Labels[corev1.LabelOSStable] != "linux" || node.Labels[corev1.LabelArchStable] != "amd64" ||
+		node.Status.NodeInfo.OperatingSystem != "linux" || node.Status.NodeInfo.Architecture != "amd64" {
+		t.Fatalf("podman node platform: labels=%v status=%+v", node.Labels, node.Status.NodeInfo)
+	}
+	native, err := buildNodeForProvider(context.Background(), "puppy-vk-native", nil, host, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if native.Labels[corev1.LabelOSStable] != "windows" || native.Labels[corev1.LabelArchStable] != "arm64" ||
+		native.Status.NodeInfo.OperatingSystem != "windows" || native.Status.NodeInfo.Architecture != "arm64" {
+		t.Fatalf("native node platform: labels=%v status=%+v", native.Labels, native.Status.NodeInfo)
+	}
+}
+
+func TestBuildNodeForProviderRejectsUnknownContainerPlatform(t *testing.T) {
+	sock := startFakeLibpod(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"host":{"os":"linux"}}`))
+	})
+	podman, err := NewClient(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildNodeForProvider(context.Background(), "podman", nil,
+		sysinfo.Info{OS: "windows", Arch: "amd64"}, podman); err == nil {
+		t.Fatal("missing Podman architecture must not register a host-platform node")
 	}
 }

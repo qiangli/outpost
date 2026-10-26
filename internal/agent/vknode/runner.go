@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"time"
 
+	"github.com/qiangli/outpost/internal/agent/sysinfo"
 	"github.com/virtual-kubelet/virtual-kubelet/node"
 	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
@@ -178,7 +180,10 @@ func Run(ctx context.Context, opts RunOptions) error {
 
 	rec := newEventRecorder(client.CoreV1())
 
-	nodeObj := BuildNode(opts.NodeName, opts.ExtraNodeLabels)
+	nodeObj, err := buildNodeForProvider(ctx, opts.NodeName, opts.ExtraNodeLabels, sysinfo.Collect(""), prov.Client())
+	if err != nil {
+		return err
+	}
 	nodeProvider := NewNodeProvider(prov.Client(), nodeObj)
 	nodeProvider.SetResourceAccounting(opts.HostLoad, prov.RequestedResources)
 	nc, err := node.NewNodeController(
@@ -263,6 +268,22 @@ func Run(ctx context.Context, opts RunOptions) error {
 		return err
 	}
 	return nil
+}
+
+func buildNodeForProvider(ctx context.Context, name string, labels map[string]string, info sysinfo.Info, podman *Client) (*corev1.Node, error) {
+	if podman != nil {
+		// The Podman service may live in a Linux VM on a Windows or macOS
+		// host. Kubernetes schedules containers against the service's
+		// platform, not the outpost process's platform.
+		queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		var err error
+		info.OS, info.Arch, err = podman.ContainerPlatform(queryCtx)
+		if err != nil {
+			return nil, fmt.Errorf("podman container platform: %w", err)
+		}
+	}
+	return BuildNodeFromInfo(name, labels, info), nil
 }
 
 // guard runs fn and converts a panic into an error so a crash inside

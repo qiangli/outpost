@@ -50,6 +50,8 @@ func (f *fakeLibpod) handler(t *testing.T) http.HandlerFunc {
 		switch {
 		case path == "/libpod/_ping":
 			_, _ = io.WriteString(w, "OK\n")
+		case path == "/libpod/info":
+			_, _ = io.WriteString(w, `{"host":{"os":"linux","arch":"amd64"}}`)
 		case path == "/libpod/images/pull" && r.Method == http.MethodPost:
 			ref := r.URL.Query().Get("reference")
 			f.pulledRefs = append(f.pulledRefs, ref)

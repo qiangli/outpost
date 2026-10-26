@@ -74,6 +74,32 @@ func (c *Client) Ping(ctx context.Context) error {
 	return nil
 }
 
+// ContainerPlatform returns the platform of the Podman service, which may
+// run inside a Linux machine even when the outpost process runs on Windows.
+func (c *Client) ContainerPlatform(ctx context.Context) (string, string, error) {
+	resp, err := c.do(ctx, http.MethodGet, apiPrefix+"/libpod/info", nil, nil)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", "", statusErr("info", resp)
+	}
+	var info struct {
+		Host struct {
+			OS   string `json:"os"`
+			Arch string `json:"arch"`
+		} `json:"host"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return "", "", fmt.Errorf("vknode: decode podman info: %w", err)
+	}
+	if info.Host.OS == "" || info.Host.Arch == "" {
+		return "", "", errors.New("vknode: podman info missing host OS or architecture")
+	}
+	return info.Host.OS, info.Host.Arch, nil
+}
+
 // do issues a request against the libpod REST API. body, when non-nil,
 // is JSON-encoded; query, when non-nil, is appended as URL-encoded.
 // The returned response's Body must be closed by the caller — do does
