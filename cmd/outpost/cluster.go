@@ -541,7 +541,8 @@ admin UI's Cluster section.`,
 				return err
 			}
 
-			path, err := userkube.FetchAndWrite(cmd.Context(), cloudboxBase, fc.AccessToken, node, outputFlag)
+			outPath := userkube.NormalizePath(outputFlag)
+			path, err := userkube.FetchAndWrite(cmd.Context(), cloudboxBase, fc.AccessToken, node, outPath)
 			if err != nil {
 				return err
 			}
@@ -623,11 +624,12 @@ chain it without touching the default), or --stdout to print.`,
 				return err
 			}
 			if outputFlag != "" {
-				if err := userkube.WriteStandalone(yaml, outputFlag); err != nil {
+				outPath := userkube.NormalizePath(outputFlag)
+				if err := userkube.WriteStandalone(yaml, outPath); err != nil {
 					return err
 				}
-				fmt.Printf("wrote %s\n", outputFlag)
-				fmt.Println("Use it: export KUBECONFIG=" + outputFlag)
+				fmt.Printf("wrote %s\n", outPath)
+				fmt.Println("Use it: export KUBECONFIG=" + outPath)
 				return nil
 			}
 			path, err := userkube.MergeIntoKubectl(yaml, "")

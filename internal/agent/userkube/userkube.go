@@ -43,7 +43,7 @@ const DefaultFilename = "outpost.yaml"
 // should surface a useful error to the operator in that case.
 func Path() string {
 	if p := strings.TrimSpace(os.Getenv("OUTPOST_KUBECONFIG_PATH")); p != "" {
-		return p
+		return NormalizePath(p)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
@@ -92,6 +92,7 @@ func FetchAndWrite(ctx context.Context, cloudboxBase, accessToken, nodeName, out
 	if outPath == "" {
 		outPath = Path()
 	}
+	outPath = NormalizePath(outPath)
 	if outPath == "" {
 		err := errors.New("no kubeconfig path — set OUTPOST_KUBECONFIG_PATH or ensure HOME resolves")
 		recordStatus(outPath, nodeName, "", err)
@@ -141,6 +142,7 @@ func FetchUserAndWrite(ctx context.Context, cloudboxBase, accessToken, outPath s
 	if outPath == "" {
 		outPath = Path()
 	}
+	outPath = NormalizePath(outPath)
 	if outPath == "" {
 		err := errors.New("no kubeconfig path — set OUTPOST_KUBECONFIG_PATH or ensure HOME resolves")
 		recordStatus(outPath, "user", "", err)

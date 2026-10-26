@@ -176,7 +176,7 @@ func DefaultKubectlPath() string {
 	if env := strings.TrimSpace(os.Getenv("KUBECONFIG")); env != "" {
 		for _, part := range strings.Split(env, string(os.PathListSeparator)) {
 			if p := strings.TrimSpace(part); p != "" {
-				return p
+				return NormalizePath(p)
 			}
 		}
 	}
@@ -200,6 +200,7 @@ func MergeIntoKubectl(newYAML []byte, path string) (string, error) {
 	if path == "" {
 		path = DefaultKubectlPath()
 	}
+	path = NormalizePath(path)
 	if path == "" {
 		return "", errors.New("userkube: no kubeconfig path — set KUBECONFIG or ensure HOME resolves")
 	}
@@ -267,10 +268,12 @@ func WriteStandalone(yaml []byte, path string) error {
 	if path == "" {
 		return errors.New("userkube: empty output path")
 	}
+	path = NormalizePath(path)
 	return writeValidatedAtomic(path, yaml)
 }
 
 func writeValidatedAtomic(path string, data []byte) error {
+	path = NormalizePath(path)
 	if _, err := ValidateKubeconfig(data); err != nil {
 		return fmt.Errorf("userkube: refusing to write invalid kubeconfig: %w", err)
 	}
