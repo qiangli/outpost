@@ -1,8 +1,8 @@
 package vknode
 
 import (
-	"fmt"
 	"log/slog"
+	"net"
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
@@ -52,7 +52,7 @@ func TransientAppName(namespace, name, uid string) string {
 // are skipped: with no podman-side port publish there's nothing to
 // route to. Callers should log + ignore errors here — publishing is
 // best-effort glue, not part of the pod's correctness contract.
-func publishPod(apps TransientApps, pod *corev1.Pod) {
+func publishPod(apps TransientApps, pod *corev1.Pod, host string) {
 	if apps == nil || pod == nil {
 		return
 	}
@@ -62,7 +62,7 @@ func publishPod(apps TransientApps, pod *corev1.Pod) {
 				continue
 			}
 			name := transientAppNameForPort(pod, int(p.HostPort))
-			target := fmt.Sprintf("http://127.0.0.1:%d", p.HostPort)
+			target := "http://" + net.JoinHostPort(host, strconv.Itoa(int(p.HostPort)))
 			if err := apps.Register(name, target); err != nil {
 				slog.Warn("vknode: transient app register failed",
 					"name", name, "target", target, "err", err)

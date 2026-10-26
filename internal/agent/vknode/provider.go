@@ -31,6 +31,9 @@ type Provider struct {
 	client  *Client       // retained only for Client() — NodeProvider shares the socket
 	access  *Access       // nil = no namespace check (single-tenant dev)
 	apps    TransientApps // nil = don't publish pods into the outpost's app router
+	// transientHost resolves the address at which this process can reach
+	// published pod ports. Podman on Windows runs inside a separate machine.
+	transientHost func(context.Context) string
 
 	// requireExplicitAccess selects the access-gate mode. When false
 	// (podman), nil Access means "allow all namespaces" — the
@@ -70,6 +73,7 @@ func NewProvider(podmanSocket, clusterID string) (*Provider, error) {
 	}
 	p := NewProviderWithBackend(&podmanBackend{client: c, clusterID: clusterID})
 	p.client = c
+	p.transientHost = podmanTransientHost(podmanSocket)
 	p.requireExplicitAccess = false
 	return p, nil
 }
@@ -220,7 +224,7 @@ func (p *Provider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	}
 	endSpan(nil)
 	p.cachePod(pod)
-	publishPod(p.apps, pod)
+	publishPod(p.apps, pod, p.transientTargetHost(ctx))
 	return nil
 }
 
@@ -246,7 +250,7 @@ func (p *Provider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 	// restart even when libpod still owns the container.
 	// AppRegistry.Register is idempotent (it overwrites entries),
 	// so repeated UpdatePods for the same pod converge cleanly.
-	publishPod(p.apps, pod)
+	publishPod(p.apps, pod, p.transientTargetHost(ctx))
 	return nil
 }
 
@@ -345,10 +349,19 @@ func (p *Provider) Reconcile(ctx context.Context) error {
 		// cloudbox /api/cluster/svc/* responds with "unknown app"
 		// until PodController's first UpdatePod fires. Idempotent —
 		// Register overwrites entries.
-		publishPod(p.apps, skeleton)
+		publishPod(p.apps, skeleton, p.transientTargetHost(ctx))
 	}
 	slog.Info("vknode: reconcile complete", "pods_cached", len(p.pods))
 	return nil
+}
+
+func (p *Provider) transientTargetHost(ctx context.Context) string {
+	if p.transientHost != nil {
+		if host := p.transientHost(ctx); host != "" {
+			return host
+		}
+	}
+	return "127.0.0.1"
 }
 
 func (p *Provider) cachePod(pod *corev1.Pod) {
