@@ -3,9 +3,11 @@ id: d65ca7e58b35
 kind: bug
 title: 'S507.6 outpost vk-podman on Windows: a session pod''s attach port is not reachable from Outpost (edge 502 Bad Gateway)'
 seq: 2725
-status: todo
+status: assigned
 priority: p0
 created: 2026-10-26T05:29:22.389828Z
+weave: 97
+assignee: codex-gpt6-sol
 sprint: 507
 sprint_id: 77d7ab0f-6aef-5bd3-876d-3f50e9b585ea
 sprint_title: 'YC demo blockers: four bug fixes (dks reattach, executor image default, AMD VRAM on Windows, kubectl /c/ paths)'
