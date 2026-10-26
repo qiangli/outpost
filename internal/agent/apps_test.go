@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,6 +32,37 @@ func newTestRouter(reg *AppRegistry) *gin.Engine {
 	r.Any("/app/:name", reg.handler())
 	r.Any("/app/:name/*p", reg.handler())
 	return r
+}
+
+func TestTransientDialerChoosesAddressWhenProxied(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("replay"))
+	}))
+	defer upstream.Close()
+	reg := NewAppRegistry()
+	var dials atomic.Int32
+	err := reg.RegisterWithMetaDialer("session", "http://127.0.0.1:1", AppMeta{RequireLogin: false},
+		func(ctx context.Context, network, _ string) (net.Conn, error) {
+			dials.Add(1)
+			return (&net.Dialer{}).DialContext(ctx, network, strings.TrimPrefix(upstream.URL, "http://"))
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httptest.NewServer(newTestRouter(reg))
+	defer proxy.Close()
+	resp, err := http.Get(proxy.URL + "/app/session/replay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || string(body) != "replay" || dials.Load() != 1 {
+		t.Fatalf("proxy status=%d body=%q dials=%d", resp.StatusCode, body, dials.Load())
+	}
 }
 
 // TestRegisterFromConfig — happy path plus validation: bad scheme/port

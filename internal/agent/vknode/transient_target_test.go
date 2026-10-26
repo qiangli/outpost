@@ -2,6 +2,7 @@ package vknode
 
 import (
 	"context"
+	"net"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -25,14 +26,25 @@ func TestPublishPodUsesReachableHost(t *testing.T) {
 		}}},
 	}
 	apps := recordingTransientApps{}
-	publishPod(apps, pod, func(int) string { return "172.28.16.2" })
+	publishPod(apps, pod, func(int) string { return "172.28.16.2" }, nil)
 	name := TransientAppName(pod.Namespace, pod.Name, string(pod.UID))
 	if got := apps[name]; got != "http://172.28.16.2:46391" {
 		t.Fatalf("transient target = %q, want machine address and mapped host port", got)
 	}
 }
 
-func TestProviderUpdatePodPublishesMachineAddress(t *testing.T) {
+type recordingDialApps struct {
+	recordingTransientApps
+	dial func(context.Context, string, string) (net.Conn, error)
+}
+
+func (r *recordingDialApps) RegisterWithDialer(name, target string, dial func(context.Context, string, string) (net.Conn, error)) error {
+	r.recordingTransientApps[name] = target
+	r.dial = dial
+	return nil
+}
+
+func TestProviderUpdatePodSelectsHostAtDial(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "user-1", Name: "bashy-run-1", UID: types.UID("abcdef123456")},
 		Spec: corev1.PodSpec{Containers: []corev1.Container{{
@@ -40,15 +52,26 @@ func TestProviderUpdatePodPublishesMachineAddress(t *testing.T) {
 		}}},
 	}
 	p := NewProviderWithBackend(&fakeBackend{})
-	p.transientHost = func(context.Context, int) string { return "172.28.16.2" }
-	apps := recordingTransientApps{}
+	lookups := 0
+	p.transientHost = func(context.Context, int) string { lookups++; return "127.0.0.1" }
+	apps := &recordingDialApps{recordingTransientApps: recordingTransientApps{}}
 	p.SetTransientApps(apps)
 	if err := p.UpdatePod(context.Background(), pod); err != nil {
 		t.Fatal(err)
 	}
 	name := TransientAppName(pod.Namespace, pod.Name, string(pod.UID))
-	if got := apps[name]; got != "http://172.28.16.2:46391" {
-		t.Fatalf("transient target = %q, want reachable machine address", got)
+	if got := apps.recordingTransientApps[name]; got != "http://127.0.0.1:46391" {
+		t.Fatalf("transient target = %q, want published host port", got)
+	}
+	if lookups != 0 || apps.dial == nil {
+		t.Fatalf("machine lookups at registration = %d; dialer installed = %v", lookups, apps.dial != nil)
+	}
+	conn, _ := apps.dial(context.Background(), "tcp", "127.0.0.1:46391")
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if lookups != 1 {
+		t.Fatalf("machine lookups after dial = %d, want 1", lookups)
 	}
 }
 
@@ -70,6 +93,9 @@ func TestMachineNameFromPodmanSocket(t *testing.T) {
 func TestFirstMachineIPv4(t *testing.T) {
 	if got := firstMachineIPv4("::1 127.0.0.1 169.254.0.3 172.28.16.2 10.0.0.1"); got != "172.28.16.2" {
 		t.Fatalf("firstMachineIPv4 = %q", got)
+	}
+	if got := firstMachineIPv4("2: eth0 inet 172.17.254.194/20 brd 172.17.255.255 scope global eth0"); got != "172.17.254.194" {
+		t.Fatalf("ip addr address = %q", got)
 	}
 }
 

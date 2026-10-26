@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -365,7 +366,16 @@ func (p *Provider) transientTargetHost(ctx context.Context, port int) string {
 }
 
 func (p *Provider) publishTransientPod(ctx context.Context, pod *corev1.Pod) {
-	publishPod(p.apps, pod, func(port int) string { return p.transientTargetHost(ctx, port) })
+	var dialForPort func(int) func(context.Context, string, string) (net.Conn, error)
+	if p.transientHost != nil {
+		dialForPort = func(port int) func(context.Context, string, string) (net.Conn, error) {
+			return func(ctx context.Context, _, _ string) (net.Conn, error) {
+				host := p.transientTargetHost(ctx, port)
+				return (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+			}
+		}
+	}
+	publishPod(p.apps, pod, func(port int) string { return p.transientTargetHost(ctx, port) }, dialForPort)
 }
 
 func (p *Provider) cachePod(pod *corev1.Pod) {

@@ -36,7 +36,7 @@ func podmanTransientHost(socket string) func(context.Context, int) string {
 		// Use the same managed bashy Podman that started the machine. A
 		// standalone podman.exe may not be installed on Windows.
 		if bin, _, err := bashypath.Find(nil); err == nil {
-			out, err := exec.CommandContext(queryCtx, bin, "podman", "machine", "ssh", machine, "hostname", "-I").Output()
+			out, err := exec.CommandContext(queryCtx, bin, "podman", "machine", "ssh", machine, "ip", "-4", "-o", "addr", "show", "scope", "global").Output()
 			if err == nil {
 				if ip := firstMachineIPv4(string(out)); ip != "" {
 					host, checked = ip, time.Now()
@@ -47,7 +47,7 @@ func podmanTransientHost(socket string) func(context.Context, int) string {
 		}
 		// Operator-owned Podman remains a fallback when this daemon did
 		// not start the machine with the managed bashy binary.
-		out, err := exec.CommandContext(queryCtx, "podman", "machine", "ssh", machine, "hostname", "-I").Output()
+		out, err := exec.CommandContext(queryCtx, "podman", "machine", "ssh", machine, "ip", "-4", "-o", "addr", "show", "scope", "global").Output()
 		if err == nil {
 			if ip := firstMachineIPv4(string(out)); ip != "" {
 				host, checked = ip, time.Now()

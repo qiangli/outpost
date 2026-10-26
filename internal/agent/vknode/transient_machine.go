@@ -54,6 +54,9 @@ func asciiLetterOrDigit(c byte) bool {
 
 func firstMachineIPv4(output string) string {
 	for _, field := range strings.Fields(output) {
+		// ip -4 -o addr prints CIDR addresses (for example,
+		// "inet 172.17.254.194/20").
+		field, _, _ = strings.Cut(field, "/")
 		ip := net.ParseIP(field)
 		if ip == nil || ip.To4() == nil || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsMulticast() {
 			continue

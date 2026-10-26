@@ -434,6 +434,23 @@ func (r *AppRegistry) RegisterWithMeta(name, target string, meta AppMeta) error 
 	return r.register(name, u, meta, nil)
 }
 
+// RegisterWithMetaDialer lets a transient app choose its TCP address when a
+// proxy connection opens. Its URL remains stable for proxy metadata and
+// request rewriting; the dialer may choose a different reachable address.
+func (r *AppRegistry) RegisterWithMetaDialer(name, target string, meta AppMeta, dial func(context.Context, string, string) (net.Conn, error)) error {
+	u, err := url.Parse(target)
+	if err != nil {
+		return fmt.Errorf("app %q target: %w", name, err)
+	}
+	if u.Scheme != "http" || u.Host == "" {
+		return fmt.Errorf("app %q dynamic target must be absolute HTTP (got %q)", name, target)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = dial
+	return r.register(name, u, meta, transport)
+}
+
 // register is the unified internal entry point. target must have Scheme
 // "http" or "https". For socket-backed apps, callers pass a synthetic
 // http://socket URL plus a transport whose DialContext dials the socket.

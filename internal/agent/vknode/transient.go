@@ -1,6 +1,7 @@
 package vknode
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"strconv"
@@ -23,6 +24,10 @@ type TransientApps interface {
 	Register(name, target string) error
 	// Unregister removes the name. No-op if not present.
 	Unregister(name string)
+}
+
+type transientDialApps interface {
+	RegisterWithDialer(name, target string, dial func(context.Context, string, string) (net.Conn, error)) error
 }
 
 // TransientAppName returns the deterministic AppRegistry name for a
@@ -52,7 +57,7 @@ func TransientAppName(namespace, name, uid string) string {
 // are skipped: with no podman-side port publish there's nothing to
 // route to. Callers should log + ignore errors here — publishing is
 // best-effort glue, not part of the pod's correctness contract.
-func publishPod(apps TransientApps, pod *corev1.Pod, hostForPort func(int) string) {
+func publishPod(apps TransientApps, pod *corev1.Pod, hostForPort func(int) string, dialForPort func(int) func(context.Context, string, string) (net.Conn, error)) {
 	if apps == nil || pod == nil {
 		return
 	}
@@ -62,9 +67,22 @@ func publishPod(apps TransientApps, pod *corev1.Pod, hostForPort func(int) strin
 				continue
 			}
 			name := transientAppNameForPort(pod, int(p.HostPort))
-			host := hostForPort(int(p.HostPort))
+			dynamic, canDial := apps.(transientDialApps)
+			useDialer := canDial && dialForPort != nil
+			// A dynamic app keeps a stable URL. Its dialer selects the
+			// reachable address after the container starts listening.
+			host := "127.0.0.1"
+			if !useDialer {
+				host = hostForPort(int(p.HostPort))
+			}
 			target := "http://" + net.JoinHostPort(host, strconv.Itoa(int(p.HostPort)))
-			if err := apps.Register(name, target); err != nil {
+			var err error
+			if useDialer {
+				err = dynamic.RegisterWithDialer(name, target, dialForPort(int(p.HostPort)))
+			} else {
+				err = apps.Register(name, target)
+			}
+			if err != nil {
 				slog.Warn("vknode: transient app register failed",
 					"name", name, "target", target, "err", err)
 				continue

@@ -3203,6 +3203,13 @@ func (a appsAsTransient) Register(name, target string) error {
 	return a.r.RegisterWithMeta(name, target, agent.AppMeta{RequireLogin: false})
 }
 
+func (a appsAsTransient) RegisterWithDialer(name, target string, dial func(context.Context, string, string) (net.Conn, error)) error {
+	if a.r == nil {
+		return nil
+	}
+	return a.r.RegisterWithMetaDialer(name, target, agent.AppMeta{RequireLogin: false}, dial)
+}
+
 func (a appsAsTransient) Unregister(name string) {
 	if a.r == nil {
 		return
