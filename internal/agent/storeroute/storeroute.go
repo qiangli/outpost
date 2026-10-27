@@ -1,13 +1,11 @@
-// Package storeroute is the stable peer storage name: a loopback listener
-// that routes <peer>.<sat>.localhost requests to that peer's `s3` mesh
-// service, passing Host through unchanged (SigV4 presigned URLs sign it).
+// Package storeroute provides a loopback listener that routes path-style
+// s3-<peer-id> buckets to the peer's s3 service, preserving signed request URLs.
 package storeroute
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"strings"
@@ -19,11 +17,11 @@ const DefaultPort = 31890
 // ErrUnknownPeer means no peer by that name exposes the s3 service.
 var ErrUnknownPeer = errors.New("unknown peer")
 
-// Resolver maps a peer label to a dialable host:port of its s3 service
+// Resolver maps a peer ID to a dialable host:port of its s3 service
 // (the local backend for self, else a mesh forward address).
 type Resolver func(ctx context.Context, peer string) (addr string, err error)
 
-// Handler returns the Host-routing reverse proxy.
+// Handler returns the bucket-routing reverse proxy.
 func Handler(resolve Resolver) http.Handler {
 	rp := &httputil.ReverseProxy{
 		Director: func(r *http.Request) {
@@ -37,9 +35,9 @@ func Handler(resolve Resolver) http.Handler {
 		},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		peer, ok := PeerFromHost(r.Host)
+		peer, ok := PeerFromPath(r.URL.EscapedPath())
 		if !ok {
-			http.Error(w, fmt.Sprintf("host %q is not <peer>.<sat>.localhost", r.Host), http.StatusNotFound)
+			http.Error(w, "storage bucket must be s3-<peer-id>", http.StatusNotFound)
 			return
 		}
 		addr, err := resolve(r.Context(), peer)
@@ -57,14 +55,24 @@ func Handler(resolve Resolver) http.Handler {
 
 type addrKey struct{}
 
-// PeerFromHost extracts the leading label of <peer>.<sat>.localhost[:port].
-func PeerFromHost(host string) (string, bool) {
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	parts := strings.Split(strings.ToLower(host), ".")
-	if len(parts) != 3 || parts[len(parts)-1] != "localhost" || parts[0] == "" || parts[1] == "" {
+// PeerFromPath extracts the peer ID from the first path segment s3-<peer-id>.
+// Inspect the escaped path so an encoded separator cannot change the bucket.
+func PeerFromPath(path string) (string, bool) {
+	if !strings.HasPrefix(path, "/") {
 		return "", false
 	}
-	return parts[0], true
+	bucket, _, _ := strings.Cut(path[1:], "/")
+	if !strings.HasPrefix(bucket, "s3-") || len(bucket) > 63 {
+		return "", false
+	}
+	peer := strings.TrimPrefix(bucket, "s3-")
+	if peer == "" || peer[0] == '-' || peer[len(peer)-1] == '-' {
+		return "", false
+	}
+	for _, c := range peer {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+			return "", false
+		}
+	}
+	return peer, true
 }

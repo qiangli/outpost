@@ -17,7 +17,7 @@ import (
 )
 
 // serveStoreRoute listens on 127.0.0.1:<storeroute.DefaultPort> and routes
-// <peer>.<sat>.localhost to that peer's `s3` mesh service (self → the local
+// s3-<peer-id> buckets to that peer's `s3` mesh service (self → the local
 // s3 backend). Mesh links prefer the direct LAN path on their own.
 func serveStoreRoute(ctx context.Context, self string, local func() ([]admincore.MeshServiceView, error), fwd *mesh.Forwarder, resolve func(string) ([]admincore.MeshResolvedPeer, error)) error {
 	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(storeroute.DefaultPort))

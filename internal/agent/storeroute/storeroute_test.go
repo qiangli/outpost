@@ -10,41 +10,53 @@ import (
 	"testing"
 )
 
-func TestHostRouted(t *testing.T) {
-	var gotHost, gotQuery string
+func TestBucketRouted(t *testing.T) {
+	const host = "127.0.0.1:31890"
+	const target = "/s3-peer-a/key%2Fpart?X-Amz-Signature=abc&key=a%2Fb&key=two"
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHost, gotQuery = r.Host, r.URL.RawQuery
+		if r.Host != host || r.RequestURI != target {
+			t.Errorf("request changed: host=%q uri=%q", r.Host, r.RequestURI)
+		}
 		b, _ := io.ReadAll(r.Body)
 		fmt.Fprintf(w, "body=%s", b)
 	}))
 	defer backend.Close()
-	be := strings.TrimPrefix(backend.URL, "http://")
-	front := httptest.NewServer(Handler(func(_ context.Context, p string) (string, error) {
-		if p == "peera" {
-			return be, nil
+	h := Handler(func(_ context.Context, p string) (string, error) {
+		if p != "peer-a" {
+			t.Errorf("peer = %q", p)
 		}
-		return "", ErrUnknownPeer
-	}))
-	defer front.Close()
+		return strings.TrimPrefix(backend.URL, "http://"), nil
+	})
+	r := httptest.NewRequest(http.MethodPut, "http://"+host+target, strings.NewReader("data"))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || w.Body.String() != "body=data" {
+		t.Fatalf("got %d %q", w.Code, w.Body.String())
+	}
+}
 
-	do := func(host string) *http.Response {
-		req, _ := http.NewRequest("PUT", front.URL+"/b/k?X-Amz-Signature=abc&X-Amz-Expires=60", strings.NewReader("data"))
-		req.Host = host
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return resp
+func TestUnknownBucket(t *testing.T) {
+	h := Handler(func(_ context.Context, peer string) (string, error) { return "", ErrUnknownPeer })
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/s3-unknown/key", nil))
+	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "unknown peer") {
+		t.Fatalf("got %d %q", w.Code, w.Body.String())
 	}
-	resp := do("peera.sat1.localhost:31890")
-	b, _ := io.ReadAll(resp.Body)
-	if string(b) != "body=data" || gotHost != "peera.sat1.localhost:31890" || gotQuery != "X-Amz-Signature=abc&X-Amz-Expires=60" {
-		t.Fatalf("host=%q query=%q body=%q", gotHost, gotQuery, b)
-	}
-	if r := do("nope.sat1.localhost:31890"); r.StatusCode != 404 {
-		t.Fatalf("unknown peer: %d", r.StatusCode)
-	}
-	if r := do("example.com"); r.StatusCode != 404 {
-		t.Fatalf("bad host: %d", r.StatusCode)
+}
+
+func TestPeerFromPath(t *testing.T) {
+	for _, tc := range []struct{ path, peer string }{
+		{"/s3-peer-a/key", "peer-a"}, {"/s3-self", "self"}, {"/s3-123/", "123"},
+		{"/", ""}, {"/bucket/key", ""}, {"/s3-/key", ""}, {"/s3--peer/key", ""},
+		{"/s3-peer-/key", ""}, {"/s3-Peer/key", ""}, {"/s3-peer.name/key", ""},
+		{"/s3-peer%2Fother/key", ""}, {"/s3-peer_id/key", ""}, {"s3-peer/key", ""},
+		{"/s3-" + strings.Repeat("a", 61), ""},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			peer, ok := PeerFromPath(tc.path)
+			if peer != tc.peer || ok != (tc.peer != "") {
+				t.Fatalf("got %q, %v", peer, ok)
+			}
+		})
 	}
 }
