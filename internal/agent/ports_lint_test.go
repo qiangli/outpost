@@ -67,6 +67,7 @@ var watchedPorts = map[int]string{
 	24556: "fleet llm door",
 	31880: "fleet loom",
 	31881: "fleet loom ssh",
+	31890: "peer storage name",
 	5000:  "fleet zot",
 	8333:  "fleet seaweedfs",
 	51515: "fleet kopia",
@@ -79,14 +80,15 @@ var watchedPorts = map[int]string{
 // where the default is declared. Yoke-baseline ports have no outpost
 // declaring file, so they are absent here on purpose.
 var declaringFiles = map[string]string{
-	"cmd/outpost/capability_laninference.go": "DefaultLANInferencePort",
-	"internal/agent/conf/conf.go":            "DefaultServerPort",
-	"internal/agent/conf/file.go":            "DefaultTunnelBindPort / DefaultK8sAPIPort / DefaultControlPlaneAPIAddr",
-	"internal/agent/headlamp/headlamp.go":    "DefaultLocalPort",
-	"internal/agent/ollama/bashy.go":         "BashyManagedPort",
-	"internal/agent/ollama/default.go":       "DefaultURL / DefaultPort",
-	"internal/agent/otel/detect.go":          "DefaultProxyURL",
-	"internal/agent/runtime/server.go":       "DefaultControlPlaneAPIPort / controlPlaneContainerAPIPort",
+	"cmd/outpost/capability_laninference.go":  "DefaultLANInferencePort",
+	"internal/agent/conf/conf.go":             "DefaultServerPort",
+	"internal/agent/conf/file.go":             "DefaultTunnelBindPort / DefaultK8sAPIPort / DefaultControlPlaneAPIAddr",
+	"internal/agent/headlamp/headlamp.go":     "DefaultLocalPort",
+	"internal/agent/ollama/bashy.go":          "BashyManagedPort",
+	"internal/agent/ollama/default.go":        "DefaultURL / DefaultPort",
+	"internal/agent/otel/detect.go":           "DefaultProxyURL",
+	"internal/agent/storeroute/storeroute.go": "DefaultPort",
+	"internal/agent/runtime/server.go":        "DefaultControlPlaneAPIPort / controlPlaneContainerAPIPort",
 }
 
 type portHit struct {
