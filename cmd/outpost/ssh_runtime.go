@@ -648,7 +648,8 @@ func dialDirectSSH(ctx context.Context, host string, port int, user string) (*ss
 		_ = conn.Close()
 		return nil, func() {}, err
 	}
-	hostKeyCB, err := sshclient.KnownHostsCallbackTOFU(knownHostsPath, sshclient.HostAliasForHost(host))
+	hostAlias := sshclient.HostAliasForHost(addr)
+	hostKeyCB, err := sshDirectHostKeyCallback(knownHostsPath, hostAlias)
 	if err != nil {
 		_ = conn.Close()
 		return nil, func() {}, err
@@ -657,7 +658,7 @@ func dialDirectSSH(ctx context.Context, host string, port int, user string) (*ss
 	defer closeAgent()
 	cli, err := sshclient.Dial(ctx, sshclient.Config{
 		Transport:       conn,
-		HostAlias:       sshclient.HostAliasForHost(host),
+		HostAlias:       hostAlias,
 		User:            user,
 		HostKeyCallback: hostKeyCB,
 		Auth:            auth,
@@ -671,8 +672,9 @@ func dialDirectSSH(ctx context.Context, host string, port int, user string) (*ss
 }
 
 // sshDirectAuth uses the configured SSH agent, or the conventional unencrypted
-// identity files when no agent is configured. Keep the agent connection alive
-// through the handshake: its signers delegate signing back to the agent.
+// identity files when the agent is unavailable or has no signers. Keep the
+// agent connection alive through the handshake: its signers delegate signing
+// back to the agent.
 // Missing, encrypted, or unreadable keys quietly leave password auth available.
 func sshDirectAuth(user, target string) ([]ssh.AuthMethod, func()) {
 	var signers []ssh.Signer
@@ -683,7 +685,12 @@ func sshDirectAuth(user, target string) ([]ssh.AuthMethod, func()) {
 			_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 			signers, _ = sshagent.NewClient(conn).Signers()
 		}
-	} else if home, err := os.UserHomeDir(); err == nil {
+	}
+	if len(signers) == 0 {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return sshPasswordAuth(user, target), cleanup
+		}
 		for _, name := range []string{"id_ed25519", "id_ecdsa", "id_rsa"} {
 			key, err := os.ReadFile(filepath.Join(home, ".ssh", name))
 			if err != nil {

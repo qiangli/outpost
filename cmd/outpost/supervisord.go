@@ -16,6 +16,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/supervisor"
 	"github.com/qiangli/outpost/internal/agent/svcunit"
+	"github.com/qiangli/outpost/internal/agent/upgrade"
 )
 
 // envSupervised is set to "1" in the daemon's env by the supervisor. The
@@ -122,8 +123,9 @@ func runSupervisord(ctx context.Context) error {
 }
 
 // attachWatchdog arms the auto-rollback watchdog on the daemon program:
-// before each (re)launch, the supervisor reverts a just-upgraded binary
-// that failed to confirm healthy. Always on, no flag. No-op without a
+// while running, a missed confirm deadline stops the child; before each
+// (re)launch, the supervisor reverts a binary that failed to confirm healthy.
+// Always on, no flag. No-op without a
 // pending upgrade. Extracted so tests can prove the boot chain
 // (OS service → `outpost supervisord` → here) always carries the hook,
 // on every platform.
@@ -132,6 +134,7 @@ func attachWatchdog(programs []*supervisor.Program, cacheDir string) {
 		return
 	}
 	programs[0].PreStart = watchdogPreStart(cacheDir)
+	programs[0].RestartWhen = watchdogDeadline(upgrade.PendingConfirmPath(cacheDir))
 }
 
 // superviseOnce resolves the children and supervises them until ctx ends or
