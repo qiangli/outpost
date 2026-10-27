@@ -58,7 +58,7 @@ func NewSession(opts SessionOptions) (*Session, error) {
 		_ = terminal.close()
 		return nil, err
 	}
-	return &Session{terminal: terminal, path: path, env: BuildEnvWith(overrides), done: make(chan struct{})}, nil
+	return &Session{terminal: terminal, path: path, env: buildSessionEnv(path, overrides), done: make(chan struct{})}, nil
 }
 
 func (s *Session) Master() io.ReadWriteCloser { return s.terminal.master() }

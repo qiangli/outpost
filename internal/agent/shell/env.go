@@ -39,6 +39,22 @@ func BuildEnv() []string {
 	return BuildEnvWith(nil)
 }
 
+// buildSessionEnv exports the session environment through exec.Cmd.Env.
+// Include the resolved Bashy directory even when it is an override or a
+// versioned cache entry, so nested commands and pipelines find the same binary.
+func buildSessionEnv(bashyPath string, overrides map[string]string) []string {
+	env := BuildEnvWith(overrides)
+	for i, kv := range env {
+		key, value, ok := strings.Cut(kv, "=")
+		if ok && envKeyEqual(key, "PATH", runtime.GOOS) {
+			paths := augmentPathEntries(strings.Split(value, string(os.PathListSeparator)), []string{filepath.Dir(bashyPath)}, runtime.GOOS, dirExists)
+			env[i] = key + "=" + strings.Join(paths, string(os.PathListSeparator))
+			break
+		}
+	}
+	return env
+}
+
 // BuildEnvWith is BuildEnv with caller-supplied overrides applied on top.
 // Each key in overrides replaces any existing entry of that name in the
 // outpost process env; absent keys are appended. Used by NewSession to

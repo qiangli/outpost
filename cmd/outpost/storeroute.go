@@ -19,20 +19,41 @@ import (
 // serveStoreRoute listens on 127.0.0.1:<storeroute.DefaultPort> and routes
 // <peer>.<sat>.localhost to that peer's `s3` mesh service (self → the local
 // s3 backend). Mesh links prefer the direct LAN path on their own.
-func serveStoreRoute(ctx context.Context, self string, fwd *mesh.Forwarder, resolve func(string) ([]admincore.MeshResolvedPeer, error)) error {
+func serveStoreRoute(ctx context.Context, self string, local func() ([]admincore.MeshServiceView, error), fwd *mesh.Forwarder, resolve func(string) ([]admincore.MeshResolvedPeer, error)) error {
 	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(storeroute.DefaultPort))
 	if err != nil {
 		slog.Warn("storeroute: listen failed", "err", err)
 		return nil
 	}
+	srv := &http.Server{Handler: storeRouteHandler(self, local, fwd, resolve), ReadHeaderTimeout: 10 * time.Second}
+	go func() { <-ctx.Done(); _ = srv.Close() }()
+	_ = srv.Serve(ln)
+	return nil
+}
+
+func storeRouteHandler(self string, local func() ([]admincore.MeshServiceView, error), fwd *mesh.Forwarder, resolve func(string) ([]admincore.MeshResolvedPeer, error)) http.Handler {
 	var mu sync.Mutex
 	fwds := map[string]string{} // peer id → local forward addr
-	h := storeroute.Handler(func(_ context.Context, peer string) (string, error) {
+	return storeroute.Handler(func(_ context.Context, peer string) (string, error) {
 		if strings.EqualFold(peer, self) {
-			if a := fwd.Snapshot().Exposed["s3"]; a != "" {
-				return a, nil
+			if fwd != nil {
+				if a := fwd.Snapshot().Exposed["s3"]; a != "" {
+					return a, nil
+				}
+			}
+			services, err := local()
+			if err != nil {
+				return "", err
+			}
+			for _, service := range services {
+				if service.Name == "s3" && service.Addr != "" {
+					return service.Addr, nil
+				}
 			}
 			return "", fmt.Errorf("local s3 service is not exposed")
+		}
+		if fwd == nil || resolve == nil {
+			return "", fmt.Errorf("mesh not available")
 		}
 		peers, err := resolve("s3")
 		if err != nil {
@@ -56,8 +77,4 @@ func serveStoreRoute(ctx context.Context, self string, fwd *mesh.Forwarder, reso
 		}
 		return "", storeroute.ErrUnknownPeer
 	})
-	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
-	go func() { <-ctx.Done(); _ = srv.Close() }()
-	_ = srv.Serve(ln)
-	return nil
 }
