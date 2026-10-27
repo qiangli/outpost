@@ -3,17 +3,21 @@ id: 6cba9217391e
 kind: feature
 title: 'LAN connect works without cloudbox: minor adaptation of existing outpost sshd/ssh (local first, MVP)'
 seq: 2757
-status: todo
+status: done
 priority: p1
 labels:
     - ssh
     - outpost
     - lan
 created: 2026-10-25T13:12:04.639359Z
+weave: 101
 assignee: codex-gpt6-astra
 sprint: 505
 sprint_id: 4354bb44-85fc-5fff-b997-58e305948c09
 sprint_title: 'v1.0 user-path gaps: master lists every host a user owns across satellites; a release reaches every host and satellite'
+closed: 2026-10-27T03:44:41.160851Z
+resolution: fixed
+closed_by: codex-gpt6-astra-w
 ---
 
 MVP/KISS (operator 2026-10-25): the connection should already mostly work; this story is a minor adaptation so the LAN/p2p path also works when cloudbox/satellite is down (local first). No new subsystem, no new pairing protocol.
@@ -67,3 +71,5 @@ BRIEF for the redo run (outpost only):
 2. Supervisor: `Program.RestartWhen func() bool` + `RestartCheckInterval` (default 30s). `waitForChild` polls it while the child runs, stops the child via a per-child context, then the normal PreStart revert path runs. supervisord wires `RestartWhen` to `watchdogDeadline(confirmPath)` (upgrade.ReadPendingConfirm; true once now > ConfirmDeadline). Test with a fake hanging daemon: reverted shortly after the deadline with no restart or reboot. A recovered partial patch of this half from the previous attempt is at `$HOME/.bashy/s505-6cba9217-recovered-watchdog.patch` (apply_patch format) — reuse it.
 3. Host keys: direct dials are STRICT by default (a changed key is refused with a clear message; `OUTPOST_SSH_STRICT_HOST_KEY=0` opts out); pins are keyed per host:port so :22 and :2222 never collide. Tests for both.
 Gate: `go test -short ./cmd/outpost/... ./internal/agent/supervisor/... ./internal/agent/upgrade/...` && `go build ./...` && `GOOS=windows go build ./cmd/outpost`. Commit in outpost with trailers (Sprint: #505, Story: #2757, Story-ID: 6cba9217391e). No hostnames in code, tests or docs.
+
+REWORK 2 (conductor review of 6e97a2d, merged f6128af): if RevertToPrevious fails (double-brick), PreStart leaves the marker past its deadline, so watchdogDeadline returns true on every tick and the supervisor stops a running daemon every 30s forever. Make the running-child deadline trigger fire at most once per pending marker (remember the ReleaseID/ToSHA + ConfirmDeadline already acted on inside the watchdogDeadline closure). Test: revert fails -> child stopped once, relaunched on the current binary and left running (no second stop). Same gate and trailers.
