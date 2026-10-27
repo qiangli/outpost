@@ -41,7 +41,7 @@ func runLocal(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	}
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
-	cmd.Env = BuildEnvWith(env)
+	cmd.Env = buildSessionEnv(path, env)
 	configureCommand(cmd, len(args) > 0 && args[0] == "-c")
 	// A detached grandchild must not hold this request's output pipes forever.
 	cmd.WaitDelay = 2 * time.Second

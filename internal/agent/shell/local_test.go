@@ -3,9 +3,47 @@ package shell
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/qiangli/outpost/internal/bashypath"
 )
+
+func TestRunCommandSessionEnvironmentExported(t *testing.T) {
+	t.Setenv("OUTPOST_SESSION_TEST", "inherited")
+	var out bytes.Buffer
+	code, err := RunCommand(context.Background(), `bashy -c 'printf "%s:%s:%s" "$OUTPOST_SESSION_TEST" "$SSH_AUTH_SOCK" "${PATH:+set}"' | cat`, nil, &out, &out, map[string]string{"SSH_AUTH_SOCK": "/session/socket"})
+	if err != nil || code != 0 || out.String() != "inherited:/session/socket:set" {
+		t.Fatalf("session env: code=%d err=%v output=%q", code, err, out.String())
+	}
+}
+
+func TestRunCommandResolvedBashyOnSessionPath(t *testing.T) {
+	path, _, err := bashypath.Find(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	installed := filepath.Join(dir, bashypath.Name())
+	if err := os.WriteFile(installed, data, 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OUTPOST_BASHY_BIN", installed)
+	t.Setenv("PATH", dir)
+	var out bytes.Buffer
+	// An explicit session PATH must still find the Bashy selected for this
+	// session, including when it lives outside the usual install directories.
+	code, err := RunCommand(context.Background(), `bashy -c 'printf child' | cat`, nil, &out, &out, map[string]string{"PATH": t.TempDir()})
+	if err != nil || code != 0 || out.String() != "child" {
+		t.Fatalf("session PATH: code=%d err=%v output=%q", code, err, out.String())
+	}
+}
 
 func TestRunLocalCommand_Echo(t *testing.T) {
 	var out bytes.Buffer

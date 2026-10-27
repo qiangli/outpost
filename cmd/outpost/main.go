@@ -1047,9 +1047,13 @@ func startCmd() *cobra.Command {
 				})
 			}
 
-			if meshHost != nil && meshResolver != nil {
-				g.Go(func() error { return serveStoreRoute(gctx, fc.AgentName, meshHost.Forwarder(), meshResolver) })
+			var storeForwarder *mesh.Forwarder
+			if meshHost != nil {
+				storeForwarder = meshHost.Forwarder()
 			}
+			g.Go(func() error {
+				return serveStoreRoute(gctx, fc.AgentName, core.MeshServices, storeForwarder, meshResolver)
+			})
 			// Mobility-aware continuous directory mirror: each job mirrors a local
 			// dir to a peer's mesh service, but ONLY while the pair is reachable
 			// (and same-LAN / directly-connected when lan_only) — it pauses when

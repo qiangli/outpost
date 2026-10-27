@@ -14,6 +14,27 @@ func pathFromEnviron(t *testing.T, env []string) string {
 	return envValue(env, "PATH", runtime.GOOS)
 }
 
+func TestBuildSessionEnv(t *testing.T) {
+	dir := t.TempDir()
+	other := t.TempDir()
+	env := buildSessionEnv(filepath.Join(dir, "bashy"), map[string]string{
+		"PATH": other, "TERM": "xterm", "SSH_AUTH_SOCK": "socket with spaces", "EMPTY": "",
+	})
+	wantPath := dir + string(os.PathListSeparator) + other
+	if got := pathFromEnviron(t, env); got != wantPath {
+		t.Fatalf("session PATH=%q, want %q", got, wantPath)
+	}
+	for _, want := range []string{"TERM=xterm", "SSH_AUTH_SOCK=socket with spaces", "EMPTY="} {
+		found := false
+		for _, entry := range env {
+			found = found || entry == want
+		}
+		if !found {
+			t.Errorf("session environment missing %q", want)
+		}
+	}
+}
+
 func TestBuildEnv_PrependsExeDir(t *testing.T) {
 	// Use a known-bare PATH so we can assert the helper's additions
 	// without depending on the developer's $PATH.
