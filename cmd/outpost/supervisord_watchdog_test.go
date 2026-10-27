@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -203,10 +205,63 @@ func TestWatchdogDeadlineObservesWithoutMutating(t *testing.T) {
 	}
 }
 
+func TestWatchdogDeadlineTriggersOncePerMarker(t *testing.T) {
+	dir := t.TempDir()
+	_, path := armMarker(t, dir, nil)
+	pc, err := upgrade.ReadPendingConfirm(path)
+	if err != nil || pc == nil {
+		t.Fatalf("pending marker: %v", err)
+	}
+	pc.ConfirmDeadline = time.Now().Add(-time.Minute)
+	check := watchdogDeadline(path)
+	for _, change := range []struct {
+		name string
+		edit func()
+	}{
+		{"initial", func() {}},
+		{"release", func() { pc.ReleaseID += "-next" }},
+		{"commit", func() { pc.ToSHA += "-next" }},
+		{"deadline", func() { pc.ConfirmDeadline = pc.ConfirmDeadline.Add(time.Second) }},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			change.edit()
+			if err := upgrade.WritePendingConfirm(path, *pc); err != nil {
+				t.Fatal(err)
+			}
+			if !check() {
+				t.Fatal("new expired marker must trigger restart")
+			}
+			// A failed revert writes back a bumped boot count, keeping the
+			// same upgrade identity and deadline. It must not rearm the timer.
+			pc.BootCount++
+			if err := upgrade.WritePendingConfirm(path, *pc); err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < 3; i++ {
+				if check() {
+					t.Fatal("same expired marker triggered another restart")
+				}
+			}
+		})
+	}
+}
+
 func TestWatchdogRevertsHangingDaemon(t *testing.T) {
+	for _, revertFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("revertFails=%t", revertFails), func(t *testing.T) {
+			testWatchdogHangingDaemon(t, revertFails)
+		})
+	}
+}
+
+func testWatchdogHangingDaemon(t *testing.T, revertFails bool) {
 	dir := t.TempDir()
 	const previousVersion = `{"commit":"deadbee1234","go_version":"go1.25"}`
-	previous := fakeProbeBinary(t, previousVersion, 0)
+	exit := 0
+	if revertFails {
+		exit = 1 // corrupt .previous: probing it fails
+	}
+	previous := fakeProbeBinary(t, previousVersion, exit)
 	candidate := fakeProbeBinary(t, `{"commit":"badbeef1234","go_version":"go1.25"}`, 0)
 	binary, confirmPath := armMarker(t, dir, previous)
 	if err := os.WriteFile(binary, candidate, 0755); err != nil {
@@ -219,6 +274,13 @@ func TestWatchdogRevertsHangingDaemon(t *testing.T) {
 		RestartCheckInterval: 20 * time.Millisecond,
 	}
 	attachWatchdog([]*supervisor.Program{p}, dir)
+	var polls atomic.Int64
+	check := p.RestartWhen
+	p.RestartWhen = func() bool {
+		restart := check()
+		polls.Add(1)
+		return restart
+	}
 	m := supervisor.New(p)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -258,6 +320,10 @@ func TestWatchdogRevertsHangingDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 	wait("reverted daemon startup", func() bool {
+		if revertFails {
+			s := m.Snapshot()[0]
+			return s.Starts >= 2 && s.Running
+		}
 		data, _ := os.ReadFile(started)
 		return string(data) == previousVersion
 	})
@@ -267,6 +333,29 @@ func TestWatchdogRevertsHangingDaemon(t *testing.T) {
 	}
 	if time.Now().Before(pc.ConfirmDeadline) {
 		t.Fatal("reverted before the deadline")
+	}
+	if revertFails {
+		// Observe multiple real supervisor ticks after the failed rollback:
+		// the relaunched current binary must remain alive with the same PID.
+		nextPolls := polls.Load() + 10
+		wait("deadline checks after failed rollback", func() bool { return polls.Load() >= nextPolls })
+		if got := m.Snapshot()[0]; got.Starts != 2 || !got.Running || got.PID != status.PID {
+			t.Fatalf("failed rollback must leave the relaunched daemon running: %+v", got)
+		}
+		if got, err := os.ReadFile(binary); err != nil || !bytes.Equal(got, candidate) {
+			t.Fatalf("current binary changed after failed rollback: %v", err)
+		}
+		if pc, err := upgrade.ReadPendingConfirm(confirmPath); err != nil || pc == nil || pc.BootCount != 2 {
+			t.Fatalf("failed rollback must keep the marker with two boots: %+v, %v", pc, err)
+		}
+		if upgrade.NewQuarantine(upgrade.QuarantinePath(dir)).Has("rel-bad") {
+			t.Fatal("failed rollback must not quarantine the running release")
+		}
+		entries, err := upgrade.NewLedger(filepath.Join(dir, "upgrade.log")).Tail(10)
+		if err != nil || len(entries) != 1 || entries[0].Step != "auto_rollback_failed" {
+			t.Fatalf("expected one failed rollback attempt: %+v, %v", entries, err)
+		}
+		return
 	}
 	if got, err := os.ReadFile(binary); err != nil || !bytes.Equal(got, previous) {
 		t.Fatalf("previous binary was not restored: %v", err)

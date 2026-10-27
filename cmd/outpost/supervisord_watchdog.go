@@ -14,14 +14,25 @@ import (
 // boot or write back a marker the daemon may have just cleared on confirmation.
 // The supervisor stops the child first, then PreStart re-reads the marker and
 // performs the same rollback as a crash/respawn, if still unconfirmed.
+// Trigger once per upgrade/deadline in this supervisor: a failed rollback leaves
+// the marker in place, but must not repeatedly stop the relaunched daemon.
 func watchdogDeadline(confirmPath string) func() bool {
+	var actedOn *upgrade.PendingConfirm
 	return func() bool {
 		pc, err := upgrade.ReadPendingConfirm(confirmPath)
 		if err != nil {
 			slog.Warn("watchdog: read confirm marker", "err", err)
 			return false
 		}
-		return pc != nil && time.Now().UTC().After(pc.ConfirmDeadline)
+		if pc == nil || !time.Now().UTC().After(pc.ConfirmDeadline) {
+			return false
+		}
+		if actedOn != nil && pc.ReleaseID == actedOn.ReleaseID && pc.ToSHA == actedOn.ToSHA &&
+			pc.ConfirmDeadline.Equal(actedOn.ConfirmDeadline) {
+			return false
+		}
+		actedOn = pc
+		return true
 	}
 }
 
