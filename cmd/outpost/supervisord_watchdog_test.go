@@ -1,24 +1,29 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"testing"
+	"time"
 
+	"github.com/qiangli/outpost/internal/agent/supervisor"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
 )
 
 // fakeProbeBinary builds a tiny program that answers `version --json` with
 // the given body and exit code — enough for upgrade.Probe to accept/reject
-// it as a rollback target.
+// it as a rollback target. Otherwise it records startup in its first argument
+// and hangs without confirming, so a supervisor must stop it at the deadline.
 func fakeProbeBinary(t *testing.T, jsonBody string, exit int) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	src := filepath.Join(dir, "fake.go")
-	body := "package main\nimport (\"fmt\";\"os\")\nfunc main(){\nif len(os.Args)>=3 && os.Args[1]==\"version\" && os.Args[2]==\"--json\"{\nfmt.Print(`" + jsonBody + "`)\nos.Exit(" + strconv.Itoa(exit) + ")\n}\nos.Exit(2)\n}\n"
+	body := "package main\nimport (\"fmt\";\"os\";\"time\")\nfunc main(){\nif len(os.Args)>=3 && os.Args[1]==\"version\" && os.Args[2]==\"--json\"{\nfmt.Print(`" + jsonBody + "`)\nos.Exit(" + strconv.Itoa(exit) + ")\n}\nif len(os.Args)>1 { os.WriteFile(os.Args[1], []byte(`" + jsonBody + "`), 0600) }; for { time.Sleep(time.Hour) }\n}\n"
 	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -164,6 +169,120 @@ func TestWatchdogNoMarkerIsNoop(t *testing.T) {
 	}
 }
 
+func TestWatchdogDeadlineObservesWithoutMutating(t *testing.T) {
+	dir := t.TempDir()
+	_, path := armMarker(t, dir, nil)
+	check := watchdogDeadline(path)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check() {
+		t.Fatal("deadline has not passed")
+	}
+	after, _ := os.ReadFile(path)
+	if !bytes.Equal(before, after) {
+		t.Fatal("polling changed the marker or boot count")
+	}
+	pc, err := upgrade.ReadPendingConfirm(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc.ConfirmDeadline = time.Now().Add(-time.Second)
+	if err := upgrade.WritePendingConfirm(path, *pc); err != nil {
+		t.Fatal(err)
+	}
+	if !check() {
+		t.Fatal("unconfirmed deadline must trigger restart")
+	}
+	if err := upgrade.ClearPendingConfirm(path); err != nil {
+		t.Fatal(err)
+	}
+	if check() {
+		t.Fatal("confirmed upgrade must not trigger restart")
+	}
+}
+
+func TestWatchdogRevertsHangingDaemon(t *testing.T) {
+	dir := t.TempDir()
+	const previousVersion = `{"commit":"deadbee1234","go_version":"go1.25"}`
+	previous := fakeProbeBinary(t, previousVersion, 0)
+	candidate := fakeProbeBinary(t, `{"commit":"badbeef1234","go_version":"go1.25"}`, 0)
+	binary, confirmPath := armMarker(t, dir, previous)
+	if err := os.WriteFile(binary, candidate, 0755); err != nil {
+		t.Fatal(err)
+	}
+	started := filepath.Join(dir, "started")
+	p := &supervisor.Program{
+		Name: "daemon", Path: binary, Args: []string{started},
+		MinBackoff: 10 * time.Millisecond, MaxBackoff: 20 * time.Millisecond,
+		RestartCheckInterval: 20 * time.Millisecond,
+	}
+	attachWatchdog([]*supervisor.Program{p}, dir)
+	m := supervisor.New(p)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Error(err)
+			}
+		case <-time.After(15 * time.Second):
+			t.Error("supervisor failed to stop")
+		}
+	})
+	wait := func(what string, condition func() bool) {
+		t.Helper()
+		limit := time.Now().Add(5 * time.Second)
+		for !condition() {
+			if time.Now().After(limit) {
+				t.Fatalf("timed out waiting for %s; status: %+v", what, m.Snapshot())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	wait("candidate startup", func() bool { _, err := os.Stat(started); return err == nil })
+	initial := m.Snapshot()[0]
+	if initial.Starts != 1 || !initial.Running {
+		t.Fatalf("candidate should be hanging on its first boot: %+v", initial)
+	}
+	pc, err := upgrade.ReadPendingConfirm(confirmPath)
+	if err != nil || pc == nil {
+		t.Fatalf("pending marker: %v", err)
+	}
+	pc.ConfirmDeadline = time.Now().Add(150 * time.Millisecond)
+	if err := upgrade.WritePendingConfirm(confirmPath, *pc); err != nil {
+		t.Fatal(err)
+	}
+	wait("reverted daemon startup", func() bool {
+		data, _ := os.ReadFile(started)
+		return string(data) == previousVersion
+	})
+	status := m.Snapshot()[0]
+	if status.Starts != 2 || !status.Running || status.PID == initial.PID {
+		t.Fatalf("expected one watchdog restart: %+v", status)
+	}
+	if time.Now().Before(pc.ConfirmDeadline) {
+		t.Fatal("reverted before the deadline")
+	}
+	if got, err := os.ReadFile(binary); err != nil || !bytes.Equal(got, previous) {
+		t.Fatalf("previous binary was not restored: %v", err)
+	}
+	if pc, err := upgrade.ReadPendingConfirm(confirmPath); err != nil || pc != nil {
+		t.Fatalf("marker not cleared: %+v, %v", pc, err)
+	}
+	if !upgrade.NewQuarantine(upgrade.QuarantinePath(dir)).Has("rel-bad") {
+		t.Fatal("failed release not quarantined")
+	}
+	entries, err := upgrade.NewLedger(filepath.Join(dir, "upgrade.log")).Tail(10)
+	if err != nil || len(entries) == 0 || entries[len(entries)-1].Step != "auto_rollback" {
+		t.Fatalf("missing auto_rollback ledger entry: %+v, %v", entries, err)
+	}
+}
+
 // TestSupervisordWiresWatchdogPreStart pins the second half of the boot
 // chain: superviseOnce must attach the auto-rollback watchdog to the
 // daemon program before the supervisor runs it, on every platform
@@ -179,7 +298,10 @@ func TestSupervisordWiresWatchdogPreStart(t *testing.T) {
 	if programs[0].PreStart == nil {
 		t.Fatal("daemon program has no watchdog PreStart — an unconfirmed upgrade would never revert")
 	}
-	if programs[1].PreStart != nil {
+	if programs[0].RestartWhen == nil {
+		t.Fatal("daemon program has no deadline check while running")
+	}
+	if programs[1].PreStart != nil || programs[1].RestartWhen != nil {
 		t.Fatal("bashy monitor program must not carry the outpost watchdog hook")
 	}
 }

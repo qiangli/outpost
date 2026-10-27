@@ -17,7 +17,6 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	sshagent "golang.org/x/crypto/ssh/agent"
-	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/yoke/pkg/sshclient"
@@ -38,9 +37,10 @@ func directTestKey(t *testing.T) (ed25519.PrivateKey, ssh.Signer) {
 
 func TestSSHDirectKeyAuth(t *testing.T) {
 	for _, tc := range []struct {
-		name, file, password                 string
-		wrongKey, encrypted, wantFailure     bool
-		agent, unavailableAgent, changedHost bool
+		name, file, password                             string
+		wrongKey, encrypted, wantFailure                 bool
+		agent, emptyAgent, unavailableAgent, changedHost bool
+		strict                                           string
 	}{
 		{name: "key only without TTY", file: "id_ed25519"},
 		{name: "second default identity", file: "id_ecdsa"},
@@ -51,9 +51,13 @@ func TestSSHDirectKeyAuth(t *testing.T) {
 		{name: "password without keys", password: "secret"},
 		{name: "skip encrypted key", file: "id_ed25519", encrypted: true, password: "secret"},
 		{name: "agent key only", agent: true},
+		{name: "empty agent file fallback", emptyAgent: true, file: "id_ed25519"},
+		{name: "unavailable agent file fallback", unavailableAgent: true, file: "id_ed25519"},
 		{name: "agent preferred over files", agent: true, file: "id_ed25519", wrongKey: true},
 		{name: "unavailable agent password fallback", unavailableAgent: true, password: "secret"},
-		{name: "strict host key mismatch", file: "id_ed25519", changedHost: true},
+		{name: "default host key mismatch", file: "id_ed25519", changedHost: true},
+		{name: "strict host key mismatch", file: "id_ed25519", changedHost: true, strict: "1"},
+		{name: "explicit host key opt out", file: "id_ed25519", changedHost: true, strict: "0"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tmp := t.TempDir()
@@ -63,7 +67,7 @@ func TestSSHDirectKeyAuth(t *testing.T) {
 			t.Setenv("AppData", tmp)
 			t.Setenv("SSH_AUTH_SOCK", "")
 			t.Setenv("OUTPOST_SSH_PASSWORD", tc.password)
-			t.Setenv("OUTPOST_SSH_STRICT_HOST_KEY", "1")
+			t.Setenv("OUTPOST_SSH_STRICT_HOST_KEY", tc.strict)
 			// Make a password prompt fail even when the suite has a TTY.
 			oldPrompt := sshPromptPassword
 			sshPromptPassword = func(string, bool) (string, error) {
@@ -74,6 +78,8 @@ func TestSSHDirectKeyAuth(t *testing.T) {
 			key, authorized := directTestKey(t)
 			if tc.agent {
 				startDirectTestAgent(t, key)
+			} else if tc.emptyAgent {
+				startDirectTestAgent(t, nil)
 			} else if tc.unavailableAgent {
 				t.Setenv("SSH_AUTH_SOCK", filepath.Join(tmp, "missing-agent"))
 			}
@@ -101,16 +107,6 @@ func TestSSHDirectKeyAuth(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tc.changedHost {
-				_, previousKey := directTestKey(t)
-				if err := os.MkdirAll(filepath.Dir(khPath), 0700); err != nil {
-					t.Fatal(err)
-				}
-				line := knownhosts.Line([]string{sshclient.HostAliasForHost("127.0.0.1")}, previousKey.PublicKey())
-				if err := os.WriteFile(khPath, []byte(line+"\n"), 0600); err != nil {
-					t.Fatal(err)
-				}
-			}
 			passwordCalls := 0
 			cfg := &ssh.ServerConfig{
 				PublicKeyCallback: func(_ ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
@@ -134,6 +130,16 @@ func TestSSHDirectKeyAuth(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if tc.changedHost {
+				_, previousKey := directTestKey(t)
+				if err := os.MkdirAll(filepath.Dir(khPath), 0700); err != nil {
+					t.Fatal(err)
+				}
+				line := sshclient.HostAliasForHost(ln.Addr().String()) + " " + string(ssh.MarshalAuthorizedKey(previousKey.PublicKey()))
+				if err := os.WriteFile(khPath, []byte(line), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			defer ln.Close()
 			done := make(chan struct{})
 			go func() {
@@ -154,7 +160,7 @@ func TestSSHDirectKeyAuth(t *testing.T) {
 			_, cleanup, err := dialOutpostHost(ctx, "127.0.0.1", "test", ln.Addr().(*net.TCPAddr).Port)
 			cleanup()
 			<-done
-			if tc.changedHost {
+			if tc.changedHost && tc.strict != "0" {
 				if err == nil || !strings.Contains(err.Error(), "REMOTE HOST IDENTIFICATION HAS CHANGED") {
 					t.Fatalf("changed host key: got %v, want host-key rejection", err)
 				}
@@ -194,9 +200,11 @@ func startDirectTestAgent(t *testing.T, key ed25519.PrivateKey) {
 		t.Fatal(err)
 	}
 	keyring := sshagent.NewKeyring()
-	if err := keyring.Add(sshagent.AddedKey{PrivateKey: key}); err != nil {
-		_ = ln.Close()
-		t.Fatal(err)
+	if key != nil {
+		if err := keyring.Add(sshagent.AddedKey{PrivateKey: key}); err != nil {
+			_ = ln.Close()
+			t.Fatal(err)
+		}
 	}
 	done := make(chan struct{})
 	go func() {

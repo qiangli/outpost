@@ -105,7 +105,8 @@ func (m *Manager) superviseOne(ctx context.Context, p *Program) error {
 			}
 		}
 
-		cmd := exec.CommandContext(ctx, p.Path, p.Args...)
+		childCtx, stopChild := context.WithCancel(ctx)
+		cmd := exec.CommandContext(childCtx, p.Path, p.Args...)
 		cmd.Dir = p.Dir
 		cmd.Env = p.env()
 		// Graceful shutdown: on ctx cancel, os/exec calls Cancel (the
@@ -128,6 +129,7 @@ func (m *Manager) superviseOne(ctx context.Context, p *Program) error {
 
 		startedAt := time.Now()
 		if err := cmd.Start(); err != nil {
+			stopChild()
 			if logf != nil {
 				_ = logf.Close()
 			}
@@ -142,7 +144,8 @@ func (m *Manager) superviseOne(ctx context.Context, p *Program) error {
 		m.setRunning(p.Name, cmd.Process.Pid)
 		slog.Info("supervisor: started", "program", p.Name, "pid", cmd.Process.Pid)
 
-		waitErr := cmd.Wait()
+		waitErr := waitForChild(cmd, p, stopChild)
+		stopChild()
 		if logf != nil {
 			_ = logf.Close()
 		}
@@ -162,6 +165,35 @@ func (m *Manager) superviseOne(ctx context.Context, p *Program) error {
 		}
 		if ranFor < p.startSecs() {
 			backoff = jitter.Backoff(backoff, p.minBackoff(), p.maxBackoff())
+		}
+	}
+}
+
+// waitForChild polls only while this child is alive. Cancellation uses the
+// same bounded graceful stop as supervisor shutdown, and Wait reaps the
+// process before PreStart can replace its binary (also required on Windows).
+func waitForChild(cmd *exec.Cmd, p *Program, stopChild context.CancelFunc) error {
+	if p.RestartWhen == nil {
+		return cmd.Wait()
+	}
+	interval := p.RestartCheckInterval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-ticker.C:
+			if p.RestartWhen() {
+				slog.Warn("supervisor: watchdog requested restart", "program", p.Name)
+				stopChild()
+				return <-done
+			}
 		}
 	}
 }

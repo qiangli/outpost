@@ -10,6 +10,21 @@ import (
 	"github.com/qiangli/outpost/internal/agent/upgrade"
 )
 
+// watchdogDeadline only observes the marker: polling must not count as a
+// boot or write back a marker the daemon may have just cleared on confirmation.
+// The supervisor stops the child first, then PreStart re-reads the marker and
+// performs the same rollback as a crash/respawn, if still unconfirmed.
+func watchdogDeadline(confirmPath string) func() bool {
+	return func() bool {
+		pc, err := upgrade.ReadPendingConfirm(confirmPath)
+		if err != nil {
+			slog.Warn("watchdog: read confirm marker", "err", err)
+			return false
+		}
+		return pc != nil && time.Now().UTC().After(pc.ConfirmDeadline)
+	}
+}
+
 // watchdogPreStart returns the supervisor PreStart hook that implements the
 // auto-rollback watchdog's revert half. It runs IN THE SUPERVISOR PROCESS
 // before each launch of the daemon — the only place that survives a daemon

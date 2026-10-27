@@ -48,6 +48,13 @@ type Program struct {
 	// advisory, never a gate that could wedge the daemon down.
 	PreStart func() error
 
+	// RestartWhen is checked while the child is running. A true result
+	// stops and reaps the child before returning to the normal PreStart
+	// and restart path. Nil disables polling.
+	RestartWhen func() bool
+	// RestartCheckInterval defaults to 30 seconds.
+	RestartCheckInterval time.Duration
+
 	// ShouldRun, when non-nil, gates every launch: while it reports
 	// false the supervisor parks the program — no launch, no backoff
 	// growth — rechecking every MinBackoff. This is how `outpost stop`
