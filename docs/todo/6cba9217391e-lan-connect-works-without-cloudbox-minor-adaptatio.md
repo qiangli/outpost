@@ -61,3 +61,9 @@ Status 2026-10-26 (s505-manager):
 Status 2026-10-26 later (s505-manager):
 - Run dhnt#180 was abandoned before its outpost commit was preserved; the workspace (and c1ada25) is gone. Redo in a new run, outpost repo, same scope (REWORK 1+2 above) PLUS the host-key item: strict by default for direct dials, pins keyed per host:port.
 - Recovered partial patch of the supervisor/watchdog half (from the worker transcript) is provided in the brief; ssh_runtime + tests must be rewritten.
+
+BRIEF for the redo run (outpost only):
+1. sshDirectAuth: SSH_AUTH_SOCK set but agent unreachable or zero signers -> still try ~/.ssh/id_ed25519, id_ecdsa, id_rsa. Test: agent empty -> file key used.
+2. Supervisor: `Program.RestartWhen func() bool` + `RestartCheckInterval` (default 30s). `waitForChild` polls it while the child runs, stops the child via a per-child context, then the normal PreStart revert path runs. supervisord wires `RestartWhen` to `watchdogDeadline(confirmPath)` (upgrade.ReadPendingConfirm; true once now > ConfirmDeadline). Test with a fake hanging daemon: reverted shortly after the deadline with no restart or reboot. A recovered partial patch of this half from the previous attempt is at `$HOME/.bashy/s505-6cba9217-recovered-watchdog.patch` (apply_patch format) — reuse it.
+3. Host keys: direct dials are STRICT by default (a changed key is refused with a clear message; `OUTPOST_SSH_STRICT_HOST_KEY=0` opts out); pins are keyed per host:port so :22 and :2222 never collide. Tests for both.
+Gate: `go test -short ./cmd/outpost/... ./internal/agent/supervisor/... ./internal/agent/upgrade/...` && `go build ./...` && `GOOS=windows go build ./cmd/outpost`. Commit in outpost with trailers (Sprint: #505, Story: #2757, Story-ID: 6cba9217391e). No hostnames in code, tests or docs.
