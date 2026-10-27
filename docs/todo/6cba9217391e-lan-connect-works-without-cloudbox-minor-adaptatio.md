@@ -10,14 +10,14 @@ labels:
     - outpost
     - lan
 created: 2026-10-25T13:12:04.639359Z
-weave: 101
+weave: 102
 assignee: codex-gpt6-astra
 sprint: 505
 sprint_id: 4354bb44-85fc-5fff-b997-58e305948c09
 sprint_title: 'v1.0 user-path gaps: master lists every host a user owns across satellites; a release reaches every host and satellite'
-closed: 2026-10-27T03:44:41.160851Z
+closed: 2026-10-27T03:56:34.602801Z
 resolution: fixed
-closed_by: codex-gpt6-astra-w
+closed_by: codex-gpt6-astra-x
 ---
 
 MVP/KISS (operator 2026-10-25): the connection should already mostly work; this story is a minor adaptation so the LAN/p2p path also works when cloudbox/satellite is down (local first). No new subsystem, no new pairing protocol.
