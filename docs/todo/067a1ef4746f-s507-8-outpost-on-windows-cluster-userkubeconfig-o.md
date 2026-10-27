@@ -8,7 +8,6 @@ priority: p0
 labels:
     - windows
 created: 2026-10-26T06:16:44.201067Z
-weave: 100
 assignee: agy-gemini3.8-flash
 sprint: 507
 sprint_id: 77d7ab0f-6aef-5bd3-876d-3f50e9b585ea

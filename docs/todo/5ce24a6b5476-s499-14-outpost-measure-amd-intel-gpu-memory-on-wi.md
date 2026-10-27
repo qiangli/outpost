@@ -6,7 +6,6 @@ seq: 2723
 status: done
 priority: p0
 created: 2026-10-24T20:01:45.656169Z
-weave: 95
 assignee: agy-gemini3.8-flash
 sprint: 507
 sprint_id: 77d7ab0f-6aef-5bd3-876d-3f50e9b585ea
