@@ -182,6 +182,36 @@ func TestDeclinePulledTarget(t *testing.T) {
 			want:   false,
 		},
 		{
+			name:   "v1.0.0-rc.21 SHOULD replace v1.0.0-rc.16-dev (promoted rc over older rc dev build)",
+			cur:    agent.BuildInfo{Version: "v1.0.0-rc.16-dev", VCSTime: "2026-10-27T05:00:00Z"},
+			target: Envelope{ReleaseID: "v1.0.0-rc.21"},
+			want:   false,
+		},
+		{
+			name:   "v1.0.0-rc.21 must NOT replace v1.0.0-rc.21-dev (same base, byte-identical)",
+			cur:    agent.BuildInfo{Version: "v1.0.0-rc.21-dev", VCSTime: "2026-10-28T01:00:00Z"},
+			target: Envelope{ReleaseID: "v1.0.0-rc.21"},
+			want:   true,
+		},
+		{
+			name:   "v1.0.0-rc.20 must NOT replace v1.0.0-rc.21-dev (older base)",
+			cur:    agent.BuildInfo{Version: "v1.0.0-rc.21-dev", VCSTime: "2026-10-28T01:00:00Z"},
+			target: Envelope{ReleaseID: "v1.0.0-rc.20"},
+			want:   true,
+		},
+		{
+			name:   "v1.0.0-rc.10 SHOULD replace v1.0.0-rc.9-dev (numeric, not ASCII, order)",
+			cur:    agent.BuildInfo{Version: "v1.0.0-rc.9-dev", VCSTime: "2026-10-17T00:00:00Z"},
+			target: Envelope{ReleaseID: "v1.0.0-rc.10"},
+			want:   false,
+		},
+		{
+			name:   "v1.0.0-rc.22-dev SHOULD replace v1.0.0-rc.21 (newer base dev build)",
+			cur:    agent.BuildInfo{Version: "v1.0.0-rc.21", VCSTime: "2026-10-28T01:00:00Z"},
+			target: Envelope{ReleaseID: "v1.0.0-rc.22-dev"},
+			want:   false,
+		},
+		{
 			name:   "no VCSTime, build_time ignored",
 			cur:    agent.BuildInfo{Version: "v0.32.0-dev"},
 			target: Envelope{ReleaseID: "v0.33.0", BuildTime: "2026-10-07T00:00:00Z"},

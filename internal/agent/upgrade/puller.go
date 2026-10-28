@@ -210,6 +210,11 @@ func shouldDeclinePulledTarget(cur agent.BuildInfo, target Envelope) (bool, stri
 			if semver.Compare(curBase, targetBase) >= 0 {
 				return true, "current prerelease base >= target base"
 			}
+			// The target's base is strictly newer: accept. The plain semver
+			// compare below must not decide here - it ranks a `-dev` suffix
+			// glued to a numeric identifier ("rc.16-dev") above any numeric one
+			// ("rc.21"), so a promoted rc would never replace an older rc dev build.
+			return false, ""
 		}
 	}
 	// 1. Semver ordering.
