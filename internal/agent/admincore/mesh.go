@@ -1,6 +1,15 @@
 package admincore
 
-import "github.com/qiangli/outpost/internal/agent/conf"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"time"
+
+	"github.com/qiangli/outpost/internal/agent/conf"
+)
 
 // MeshForwardOps is the mesh forwarder's operation surface. The daemon wires in
 // an adapter over mesh.Forwarder (nil when the mesh data plane is off); admincore
@@ -155,6 +164,11 @@ type MeshConsumeView struct {
 	Service   string `json:"service"`
 	PeerID    string `json:"peer_id"`
 	LocalAddr string `json:"local_addr"`
+	// Live reports whether a forward listener is currently bound for this
+	// consume. A persisted consume reads Live=false when its boot-time bind
+	// failed (e.g. the bind address was not up yet) or its listener died
+	// afterwards — the consume reconciler keeps retrying until it binds.
+	Live bool `json:"live"`
 }
 
 // MeshConsumeUpsert persists a mesh consume (service ← peer id → local addr) so
@@ -205,8 +219,19 @@ func (s *Server) MeshConsumeDelete(service, localAddr string) error {
 	kept := fc.MeshConsumes[:0]
 	for _, c := range fc.MeshConsumes {
 		if c.Service == service && c.LocalAddr == localAddr {
-			if s.deps.MeshForward != nil && c.LocalAddr != "" {
-				_ = s.deps.MeshForward.CloseListen(c.LocalAddr)
+			if s.deps.MeshForward != nil {
+				if c.LocalAddr != "" && !hasPortZero(c.LocalAddr) {
+					_ = s.deps.MeshForward.CloseListen(c.LocalAddr)
+				} else {
+					// Ephemeral bind: the bound address was never
+					// persisted, so close the live listeners for the
+					// same (service, peer) instead of leaking them.
+					for _, l := range s.deps.MeshForward.Forwards().Listeners {
+						if l.Service == c.Service && l.PeerID == c.PeerID {
+							_ = s.deps.MeshForward.CloseListen(l.Addr)
+						}
+					}
+				}
 			}
 			continue
 		}
@@ -219,7 +244,8 @@ func (s *Server) MeshConsumeDelete(service, localAddr string) error {
 	return nil
 }
 
-// MeshConsumes lists the persisted (auto-established) mesh consumes.
+// MeshConsumes lists the persisted (auto-established) mesh consumes, each
+// marked live when a forward listener is currently bound for it.
 func (s *Server) MeshConsumes() ([]MeshConsumeView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -227,11 +253,110 @@ func (s *Server) MeshConsumes() ([]MeshConsumeView, error) {
 	if err != nil {
 		return nil, err
 	}
+	var listeners []MeshListenerView
+	if s.deps.MeshForward != nil {
+		listeners = s.deps.MeshForward.Forwards().Listeners
+	}
 	out := make([]MeshConsumeView, 0, len(fc.MeshConsumes))
 	for _, c := range fc.MeshConsumes {
-		out = append(out, MeshConsumeView{Service: c.Service, PeerID: c.PeerID, LocalAddr: c.LocalAddr})
+		out = append(out, MeshConsumeView{
+			Service:   c.Service,
+			PeerID:    c.PeerID,
+			LocalAddr: c.LocalAddr,
+			Live:      consumeLive(listeners, c),
+		})
 	}
 	return out, nil
+}
+
+// consumeLive reports whether listeners holds a live forward for c. A fixed
+// LocalAddr must match the bound address exactly; an empty (or port-0)
+// LocalAddr matches any listener for the same (service, peer), since the
+// bound ephemeral address was never persisted.
+func consumeLive(listeners []MeshListenerView, c conf.MeshConsume) bool {
+	for _, l := range listeners {
+		if l.Service != c.Service || l.PeerID != c.PeerID {
+			continue
+		}
+		if c.LocalAddr == "" || hasPortZero(c.LocalAddr) {
+			return true
+		}
+		if l.Addr == c.LocalAddr {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPortZero(addr string) bool {
+	_, port, err := net.SplitHostPort(addr)
+	return err == nil && port == "0"
+}
+
+// ReconcileMeshConsumes re-establishes every persisted consume that has no
+// live listener — the retry half of the boot-time re-establish. A bind that
+// fails at boot (bind address not up yet) or a listener that dies afterwards
+// (accept-loop death, peer reconnect) reads Live=false until a later pass
+// binds it. Returns nil when every persisted consume is live, else the
+// per-consume bind failures joined (never silent: the caller backs off and
+// retries). No-op when the mesh data plane is off.
+func (s *Server) ReconcileMeshConsumes() error {
+	if s.deps.MeshForward == nil {
+		return nil
+	}
+	persisted, err := s.MeshConsumes()
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, c := range persisted {
+		if c.Live {
+			continue
+		}
+		if _, err := s.deps.MeshForward.Listen(c.PeerID, c.Service, c.LocalAddr); err != nil {
+			errs = append(errs, fmt.Errorf("mesh consume %s <- peer %s -> %s: %w",
+				c.Service, c.PeerID, c.LocalAddr, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// meshConsumeRetryMax caps the reconciler's backoff between passes.
+const meshConsumeRetryMax = 5 * time.Minute
+
+// RunMeshConsumeReconciler re-establishes persisted consumes now and keeps
+// retrying until the context ends: one immediate pass, then a tick that
+// doubles its interval on consecutive failing rounds (up to
+// meshConsumeRetryMax) and resets to baseInterval once every consume is live.
+// A listener that dies between passes reads not-live on the next pass and is
+// re-bound there. Returns when ctx is done.
+func (s *Server) RunMeshConsumeReconciler(ctx context.Context, baseInterval time.Duration) {
+	if baseInterval <= 0 {
+		baseInterval = 5 * time.Second
+	}
+	if err := s.ReconcileMeshConsumes(); err != nil {
+		slog.Warn("mesh consume: reconcile failed (retrying)", "err", err)
+	}
+	interval := baseInterval
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			if err := s.ReconcileMeshConsumes(); err != nil {
+				slog.Warn("mesh consume: reconcile failed (retrying)", "err", err)
+				interval *= 2
+				if interval > meshConsumeRetryMax {
+					interval = meshConsumeRetryMax
+				}
+			} else {
+				interval = baseInterval
+			}
+			timer.Reset(interval)
+		}
+	}
 }
 
 // MeshResolvedPeer is one peer from the cloudbox service registry.

@@ -165,13 +165,18 @@ loom forge exposed on another host.`,
 					Service   string `json:"service"`
 					PeerID    string `json:"peer_id"`
 					LocalAddr string `json:"local_addr"`
+					Live      bool   `json:"live"`
 				} `json:"consumes"`
 			}
 			if err := runMeshTool(cmd.Context(), "outpost_mesh_consumes", struct{}{}, &out); err != nil {
 				return err
 			}
 			for _, c := range out.Consumes {
-				fmt.Printf("%s <- peer %s -> %s\n", c.Service, c.PeerID, c.LocalAddr)
+				state := "down"
+				if c.Live {
+					state = "live"
+				}
+				fmt.Printf("%s <- peer %s -> %s [%s]\n", c.Service, c.PeerID, c.LocalAddr, state)
 			}
 			return nil
 		},

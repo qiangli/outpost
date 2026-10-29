@@ -222,7 +222,7 @@ func (s *Server) registerMeshTools() {
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "outpost_mesh_consumes",
-		Description: "List the persistent mesh consumes (the dial-side wrap-harness config).",
+		Description: "List the persistent mesh consumes (the dial-side wrap-harness config), each marked live when its forward listener is currently bound.",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, meshConsumesOut, error) {
 		cons, err := s.core.MeshConsumes()
 		if err != nil {

@@ -1101,6 +1101,17 @@ func startCmd() *cobra.Command {
 					return nil
 				})
 			}
+			// Persistent mesh consumes: the boot loop above makes the
+			// first bind attempt; the reconciler keeps retrying with
+			// backoff until every persisted consume is live and re-binds
+			// listeners that die later (bind address not up yet at boot,
+			// accept-loop death, peer reconnect).
+			if meshHost != nil {
+				g.Go(func() error {
+					core.RunMeshConsumeReconciler(gctx, 5*time.Second)
+					return nil
+				})
+			}
 			if meshRdv != nil {
 				g.Go(func() error {
 					if err := meshRdv.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
