@@ -332,6 +332,51 @@ func TestWorker_FailedApplyDoesNotDedup(t *testing.T) {
 	waitForInFlight(t, h.worker, false, 5*time.Second)
 }
 
+// A product release has distinct bashy and outpost commits. A valid asset
+// checksum cannot make the bashy commit a valid outpost probe expectation.
+func TestWorker_ProductCommitMismatchThenCorrectedRetry(t *testing.T) {
+	h := newHarness(t)
+	h.setState(func(s *StateSnapshot) { s.CurrentVersion = "v1.0.0-rc.10-dev" })
+	candidate := fakeOutpostBinary(t, `{"commit":"4da588d684ac","version":"v1.0.0-rc.23-dev","go_version":"go1.27.2"}`, 0)
+	url, sha, client := h.serveBinary(candidate)
+	h.worker.client = client
+	env := Envelope{ReleaseID: "v1.0.0-rc.23-dev", URL: url, SHA256: sha, Commit: "51271e35"}
+	apply := func() {
+		t.Helper()
+		if r := h.worker.Apply(context.Background(), env); r.Status != StatusAccepted {
+			t.Fatalf("expected accepted, got %+v", r)
+		}
+		waitForInFlight(t, h.worker, false, 5*time.Second)
+	}
+	apply()
+	entries, err := h.ledger.Tail(1)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("ledger: %v, %v", entries, err)
+	}
+	failure := entries[0]
+	if failure.Step != "probe_failed" || !strings.Contains(failure.Error, "51271e3") || !strings.Contains(failure.Error, "4da588d") {
+		t.Fatalf("missing commit mismatch evidence: %+v", failure)
+	}
+	if !strings.Contains(failure.Error, "outpost commit") {
+		t.Errorf("diagnostic must explain which product commit to send: %s", failure.Error)
+	}
+	if got, err := os.ReadFile(h.binary); err != nil || string(got) != "old binary content" || h.restarts != 0 {
+		t.Fatalf("failed probe changed live binary or restarted: %q, %v, restarts=%d", got, err, h.restarts)
+	}
+	// Correct only the commit, preserving the release ID, bytes and checksum.
+	env.Commit = "4da588d684ac"
+	apply()
+	entries, err = h.ledger.Tail(1)
+	if err != nil || len(entries) != 1 || entries[0].Step != "swap_done" || h.restarts != 1 {
+		t.Fatalf("corrected retry did not swap/restart: %v, %v, restarts=%d", entries, err, h.restarts)
+	}
+	got, err := os.ReadFile(h.binary)
+	want, readErr := os.ReadFile(candidate)
+	if err != nil || readErr != nil || string(got) != string(want) {
+		t.Fatalf("corrected retry did not install candidate: %v, %v", err, readErr)
+	}
+}
+
 // failingVerifier is a test ArtifactVerifier that always refuses.
 type failingVerifier struct{ msg string }
 

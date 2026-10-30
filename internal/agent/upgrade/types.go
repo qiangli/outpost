@@ -38,8 +38,9 @@ type Envelope struct {
 	// the CLI variant treats it as optional — a cloudbox push without
 	// an integrity check is not acceptable.
 	SHA256 string `json:"sha256"`
-	// Commit is the 7-char short sha the candidate's BuildInfo must
-	// expose. Probe rejects the candidate if its self-reported
+	// Commit is the outpost source sha (short or full) the candidate's
+	// BuildInfo must expose, NOT the bashy/product release repository sha.
+	// Probe rejects the candidate if its self-reported
 	// commit doesn't match, defending against URL/SHA collisions
 	// against an unrelated build.
 	Commit string `json:"commit"`
@@ -176,8 +177,7 @@ func shortCommit(full string) string {
 }
 
 // envelopeMismatch builds the diagnostic shown when the envelope's
-// Commit doesn't match the probed binary. The full sha is included
-// so an operator reading the ledger can correlate.
+// Commit doesn't match the probed binary. Probe passes normalized short shas.
 func envelopeMismatch(want, got string) error {
-	return fmt.Errorf("%w: envelope said %s, candidate says %s", ErrShortCommit, want, got)
+	return fmt.Errorf("%w: envelope said %s, candidate says %s; commit must be the candidate's outpost commit (version --json), not the bashy/product release commit", ErrShortCommit, want, got)
 }
