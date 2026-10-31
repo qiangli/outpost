@@ -603,8 +603,8 @@ github.com/qiangli/yoke/external/go-billy v0.0.0-20261021004834-b008dcc14dfa h1:
 github.com/qiangli/yoke/external/go-billy v0.0.0-20261021004834-b008dcc14dfa/go.mod h1:Q0Q5T6VFoIzC2QCjcH2DnKhvD6lvneoJKxG0TYasq8E=
 github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261024023325-63180e3f234e h1:semQU1TmtACTPaWzgvgzCKqDect9HiAa03yd0ZCnY10=
 github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261024023325-63180e3f234e/go.mod h1:UnJ5Aw/zCOdFgHdziuLv9sU0t/KT8dcOrGfmwcm6X4E=
-github.com/qiangli/yoke/pkg/provider v0.0.0-20261030122408-f6b5f7868fd1 h1:a0YGfOOiKUdeSXSVRx6AqTnb1iQpFbNkIwnLmIOGY74=
-github.com/qiangli/yoke/pkg/provider v0.0.0-20261030122408-f6b5f7868fd1/go.mod h1:AklFvdbEWnpyb9XUNRhiD0P/AuDnEsUDpAYoSzqZb5Y=
+github.com/qiangli/yoke/pkg/provider v0.0.0-20261031184001-89df473c6035 h1:DL6Zt4NpcW/y4T3TzHncK/fJHou4FT+WHFIR6DC7bGk=
+github.com/qiangli/yoke/pkg/provider v0.0.0-20261031184001-89df473c6035/go.mod h1:AklFvdbEWnpyb9XUNRhiD0P/AuDnEsUDpAYoSzqZb5Y=
 github.com/quic-go/qpack v0.6.0 h1:g7W+BMYynC1LbYLSqRt8PBg5Tgwxn214ZZR34VIOjz8=
 github.com/quic-go/qpack v0.6.0/go.mod h1:lUpLKChi8njB4ty2bFLX2x4gzDqXwUpaO1DP9qMDZII=
 github.com/quic-go/quic-go v0.59.1 h1:0Gmua0HW1Tv7ANR7hUYwRyD0MG5OJfgvYSZasGZzBic=
