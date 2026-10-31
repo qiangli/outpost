@@ -1275,6 +1275,8 @@ from `SafeView` like other secrets.
 | Field | Env | CLI | UI | MCP | Effect |
 |---|---|---|---|---|---|
 | Provision request id | `$OUTPOST_GPU_WORKER_REQUEST_ID` | — (set by the worker bootstrapper) | — | — | Boot-only |
+| Idle stop | `$OUTPOST_GPU_WORKER_IDLE` (default `20m`) | — | — | — | Boot-only |
+| Session cap | `$OUTPOST_GPU_WORKER_MAX_SESSION` (default `4h`) | — | — | — | Boot-only |
 
 A host created by a cloud GPU provision request runs with
 `OUTPOST_GPU_WORKER_REQUEST_ID` set, in the daemon's service environment, to
@@ -1298,6 +1300,32 @@ is outside 1-64 chars, the block is omitted (logged once) and the push goes
 out without it — an out-of-contract block would get the whole push rejected.
 A failed measurement is retried on the next poll; a successful one is cached
 and folded into the push content hash, so the master persists it.
+
+**Guest stop watchdog.** A provisioned worker also stops itself, so a lost
+control plane can never leave a GPU running. This is a second, independent
+stop beside the master's keep-alive stop, armed only when
+`OUTPOST_GPU_WORKER_REQUEST_ID` is set (every other host is unchanged). It
+fires on whichever comes first:
+
+- **idle** — no model resident in Ollama's `/api/ps` and no inference in
+  flight through `/app/ollama/*` for `OUTPOST_GPU_WORKER_IDLE` (default `20m`,
+  deliberately longer than the master's warm window so the master's stop
+  normally wins). A failed `/api/ps` probe counts as idle: a dead daemon does
+  not keep the GPU up.
+- **max_session** — host uptime past `OUTPOST_GPU_WORKER_MAX_SESSION`
+  (default `4h`) regardless of load. Uptime is the host's (`/proc/uptime`),
+  so a daemon restart does not reset the cap.
+
+Both take Go durations (`45m`, `2h30m`); an unparseable or non-positive value
+keeps the default and is logged — a typo never disables the stop. The probe
+does not depend on the `outpost.ollama-pool` unit being enabled.
+
+On trigger the daemon logs the reason, sends one final registry push (best
+effort; skipped when the pool is off or the master is unreachable), then
+powers the host off via the OS: `systemctl poweroff`, else `poweroff`, else
+the `reboot(2)` power-off. The instance is launched with shutdown behavior =
+stop, so power-off STOPS it — never terminates it. A refused power-off is
+logged at error level and retried every 30 s, never swallowed.
 
 ### Peer image distribution (recipes, not blobs)
 

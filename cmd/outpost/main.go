@@ -1500,6 +1500,18 @@ func startCmd() *cobra.Command {
 				}
 			}
 
+			// Provisioned GPU worker: the host's own idle / session-cap stop,
+			// independent of the master's keep-alive stop. Nil (unarmed) on
+			// every host without $OUTPOST_GPU_WORKER_REQUEST_ID.
+			if wd := newGPUWorkerWatchdog(caps.Ollama, caps.OllamaPool); wd != nil {
+				g.Go(func() error {
+					if err := wd.Run(gctx); err != nil {
+						slog.Error("gpu worker watchdog", "err", err)
+					}
+					return nil
+				})
+			}
+
 			// Fleet inventory push — the tool/agent/skill counterpart of the
 			// ollama model registry above. The host is the source of truth
 			// about what it can run; cloudbox caches that behind a freshness

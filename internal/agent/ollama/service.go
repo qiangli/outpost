@@ -41,6 +41,9 @@ func (s *Service) Counter() *Counter { return s.counter }
 // capacity slice with an empty WatcherStatus.
 func (s *Service) SetWatcher(w *Watcher) { s.watcher = w }
 
+// Watcher returns the attached registry watcher, nil while the pool is off.
+func (s *Service) Watcher() *Watcher { return s.watcher }
+
 // Status returns the combined diagnostic snapshot.
 func (s *Service) Status() PoolStatus {
 	out := PoolStatus{Capacity: s.Snapshot()}

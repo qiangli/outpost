@@ -319,6 +319,18 @@ func (c *ollamaPoolCapability) Health(context.Context) error {
 	return nil
 }
 
+// PushNow sends one unconditional registry push through the live watcher —
+// the GPU worker watchdog's last word before power-off.
+func (c *ollamaPoolCapability) PushNow(ctx context.Context) error {
+	c.mu.Lock()
+	bound := c.bound
+	c.mu.Unlock()
+	if bound == nil || bound.Watcher() == nil {
+		return fmt.Errorf("ollama pool: not active; no registry push to send")
+	}
+	return bound.Watcher().PushNow(ctx)
+}
+
 // resolveFn calls a nil-safe string closure.
 func resolveFn(f func() string) string {
 	if f == nil {

@@ -191,6 +191,11 @@ type Watcher struct {
 	// a persistent failure is logged once rather than every tick.
 	worker    *WorkerInfo
 	workerErr string
+
+	// tickMu serializes push cycles: Run's loop and PushNow (the GPU
+	// worker watchdog's final push) both drive tick, and tick owns the
+	// worker cache above.
+	tickMu sync.Mutex
 }
 
 // LoadedSnapshot returns the watcher's most recent view of which
@@ -398,6 +403,8 @@ func (w *Watcher) bumpBackoff(cur time.Duration) time.Duration {
 // false-positive "change detected" pushes. ContentHash projects onto
 // the stable fields so timestamp noise is invisible.
 func (w *Watcher) tick(ctx context.Context, lastSnapshot *[]ModelInfo, lastPushedHash *string, lastPushAt *time.Time) error {
+	w.tickMu.Lock()
+	defer w.tickMu.Unlock()
 	models, sources, err := w.fetchModelsWithSources(ctx)
 	if err != nil {
 		return fmt.Errorf("fetch tags: %w", err)
@@ -446,6 +453,22 @@ func (w *Watcher) tick(ctx context.Context, lastSnapshot *[]ModelInfo, lastPushe
 	return nil
 }
 
+// PushNow runs one unconditional fetch + push cycle outside the Run loop
+// (the change/heartbeat gate is bypassed). The GPU worker watchdog calls it
+// as the host's last word before powering off, so the master sees the
+// final state rather than waiting out the freshness clock.
+func (w *Watcher) PushNow(ctx context.Context) error {
+	if strings.TrimSpace(w.cfg.AccessToken) == "" {
+		return errors.New("ollama watcher: no access_token (outpost is unpaired)")
+	}
+	var (
+		snap []ModelInfo
+		hash string
+		at   time.Time
+	)
+	return w.tick(ctx, &snap, &hash, &at)
+}
+
 // refreshLoaded GETs /api/ps and updates the loadedModels / swapping
 // cache. Best-effort: on any failure (404, decode error, transport)
 // the cache is left untouched so transient blips don't flip cloudbox
@@ -472,28 +495,40 @@ func (w *Watcher) refreshLoaded(ctx context.Context) {
 // probeLoaded GETs one daemon's /api/ps. ok=false on any failure —
 // the caller decides whether that is fatal (primary) or skippable.
 func (w *Watcher) probeLoaded(ctx context.Context, baseURL string) (names []string, swapping, ok bool) {
-	pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(pctx, http.MethodGet, baseURL+"/api/ps", nil)
-	if err != nil {
-		return nil, false, false
-	}
-	resp, err := w.cfg.HTTPClient.Do(req)
+	names, swapping, err := ProbeLoaded(ctx, w.cfg.HTTPClient, baseURL)
 	if err != nil {
 		w.cfg.Logger.Debug("ollama watcher: /api/ps probe failed", "err", err)
 		return nil, false, false
 	}
+	return names, swapping, true
+}
+
+// ProbeLoaded GETs one daemon's /api/ps and returns the resident model
+// names plus a swap-in-progress hint. Any failure (transport, non-200 —
+// a 404 means an old daemon or a non-ollama replacement — or decode) is
+// an error; the caller decides whether that is fatal. Nil client →
+// http.DefaultClient.
+func ProbeLoaded(ctx context.Context, client *http.Client, baseURL string) (names []string, swapping bool, err error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(pctx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/api/ps", nil)
+	if err != nil {
+		return nil, false, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, false, err
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		// 404 on /api/ps means the daemon is older than 0.1.x or the
-		// probe is being served by a non-ollama replacement; don't
-		// alarm, just leave the cache stale.
-		return nil, false, false
+		return nil, false, fmt.Errorf("/api/ps: HTTP %d", resp.StatusCode)
 	}
 	var pr psResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&pr); err != nil {
-		w.cfg.Logger.Debug("ollama watcher: /api/ps decode failed", "err", err)
-		return nil, false, false
+		return nil, false, fmt.Errorf("/api/ps decode: %w", err)
 	}
 	now := time.Now()
 	names = make([]string, 0, len(pr.Models))
@@ -520,7 +555,7 @@ func (w *Watcher) probeLoaded(ctx context.Context, baseURL string) (names []stri
 			swapping = true
 		}
 	}
-	return names, swapping, true
+	return names, swapping, nil
 }
 
 // unionStrings merges two name lists, deduplicated. Order is normalized
@@ -780,7 +815,7 @@ func (w *Watcher) fetchDetails(ctx context.Context, baseURL, name string) modelD
 // (already folded into contentHash by the caller).
 // workerInfo returns the worker block for this push, or nil on a non-worker
 // host or when it cannot be built. Fail soft: the push goes out without it.
-// Only called from the Run goroutine, so the cache needs no lock.
+// Called only from tick, under tickMu.
 func (w *Watcher) workerInfo(ctx context.Context) *WorkerInfo {
 	if w.cfg.WorkerRequestID == "" {
 		return nil
