@@ -3,9 +3,11 @@ id: e713a2189d43
 kind: feature
 title: 'S546.3 (outpost half): GPU worker registry push carries worker{request_id, vram_bytes, gpu_model}'
 seq: 2762
-status: todo
+status: assigned
 priority: p1
 created: 2026-10-31T02:08:34.325629Z
+weave: 109
+assignee: claude-opus5.5
 sprint: 546
 sprint_id: ae111a75-889f-50a4-a423-de1bab0fbca6
 sprint_title: On-demand cloud GPU workers for large/custom Ollama models via Cloudbox and Outpost (AWS EC2 first)
