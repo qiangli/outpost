@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"strings"
 	"sync"
@@ -51,7 +52,8 @@ func (f *fakeGuest) config(requestID string) GuestWatchdogConfig {
 			f.mu.Unlock()
 			return nil
 		},
-		Uptime: func() (time.Duration, error) { return 0, nil },
+		Uptime:  func() (time.Duration, error) { return 0, nil },
+		Machine: func(string) error { return nil },
 		Active: func(context.Context) (bool, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
@@ -236,5 +238,87 @@ func TestGuestWatchdogEnvDurations(t *testing.T) {
 	idle, maxSession, warn = GuestWatchdogDurations()
 	if idle != DefaultGuestIdle || maxSession != DefaultGuestMaxSession || len(warn) != 0 {
 		t.Fatalf("defaults = %v/%v %v", idle, maxSession, warn)
+	}
+}
+
+// dmiFiles is a fake DMI tree for EC2MachineFact: path → contents; a
+// missing path reads as "file does not exist".
+func dmiFiles(files map[string]string) func(string) ([]byte, error) {
+	return func(path string) ([]byte, error) {
+		if v, ok := files[path]; ok {
+			return []byte(v), nil
+		}
+		return nil, fs.ErrNotExist
+	}
+}
+
+func TestEC2MachineFact(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string]string
+		ok    bool
+	}{
+		{"no DMI", nil, false},
+		{"other vendor", map[string]string{dmiSysVendor: "Dell Inc.\n", dmiBoardVendor: "Dell Inc.\n"}, false},
+		{"sys_vendor EC2", map[string]string{dmiSysVendor: "Amazon EC2\n"}, true},
+		{"board_vendor EC2", map[string]string{dmiSysVendor: "Xen\n", dmiBoardVendor: "Amazon EC2\n"}, true},
+		{"lookalike", map[string]string{dmiSysVendor: "Amazon EC2 Lookalike\n"}, false},
+	}
+	for _, tc := range cases {
+		err := EC2MachineFact(dmiFiles(tc.files))("req-1")
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: err = %v, want ok=%v", tc.name, err, tc.ok)
+		}
+	}
+}
+
+// armed runs the watchdog with the real DMI fact over a fake DMI tree and
+// reports whether it armed (i.e. ever powered off).
+func armedWith(t *testing.T, requestID string, files map[string]string) (*fakeGuest, bool) {
+	t.Helper()
+	f := newFakeGuest()
+	cfg := f.config(requestID)
+	cfg.Machine = EC2MachineFact(dmiFiles(files))
+	if err := runWatchdog(t, cfg); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	return f, len(f.powered) > 0
+}
+
+func TestGuestWatchdogEnvSetDMIAbsentNeverArms(t *testing.T) {
+	for _, files := range []map[string]string{
+		nil,
+		{dmiSysVendor: "QEMU\n", dmiBoardVendor: "\n"},
+	} {
+		f, armed := armedWith(t, "req-1", files)
+		if armed || len(f.pushes) != 0 {
+			t.Fatalf("DMI %v: armed without the EC2 machine fact (powered=%v)", files, f.powered)
+		}
+		if got := strings.Count(f.log.String(), "refusing to arm"); got != 1 {
+			t.Fatalf("DMI %v: refusal logged %d times, want once:\n%s", files, got, f.log.String())
+		}
+	}
+}
+
+func TestGuestWatchdogEnvSetDMIEC2Arms(t *testing.T) {
+	f, armed := armedWith(t, "req-1", map[string]string{dmiSysVendor: "Amazon EC2\n"})
+	if !armed || f.powered[0] != 20*time.Minute {
+		t.Fatalf("EC2 worker did not arm: powered=%v\n%s", f.powered, f.log.String())
+	}
+}
+
+func TestGuestWatchdogEnvUnsetDMIEC2NeverArms(t *testing.T) {
+	consulted := false
+	f := newFakeGuest()
+	cfg := f.config("")
+	cfg.Machine = func(id string) error {
+		consulted = true
+		return EC2MachineFact(dmiFiles(map[string]string{dmiSysVendor: "Amazon EC2\n"}))(id)
+	}
+	if err := runWatchdog(t, cfg); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(f.powered) != 0 || consulted || strings.Contains(f.log.String(), "refusing") {
+		t.Fatalf("non-worker EC2 host armed or logged: powered=%v consulted=%v\n%s", f.powered, consulted, f.log.String())
 	}
 }

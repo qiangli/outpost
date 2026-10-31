@@ -10,6 +10,8 @@ import (
 
 // newGPUWorkerWatchdog builds the provisioned GPU worker's own idle/session
 // stop, or nil on every ordinary host (no $OUTPOST_GPU_WORKER_REQUEST_ID).
+// Run additionally refuses to arm unless the machine is an EC2 instance per
+// DMI (ollama.EC2MachineFact), so a stray env var cannot power off a desktop.
 // It is deliberately independent of the master's keep-alive stop and of the
 // pool unit: activity is probed directly (/api/ps on the proxy's target, or
 // the default daemon, plus the proxy's in-flight counter), so a disabled

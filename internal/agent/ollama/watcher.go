@@ -365,6 +365,10 @@ func (w *Watcher) Run(ctx context.Context) error {
 		case errors.Is(err, ErrAuthRevoked):
 			w.recordError(err)
 			return err
+		case ctx.Err() != nil:
+			// A tick cut short by shutdown is not a failure to report.
+			w.cfg.Logger.Info("ollama watcher: shutting down")
+			return nil
 		default:
 			backoff = w.bumpBackoff(backoff)
 			w.recordError(err)

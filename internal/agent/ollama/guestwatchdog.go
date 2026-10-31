@@ -68,6 +68,15 @@ type GuestWatchdogConfig struct {
 	// Empty — every ordinary host — means Run returns at once, unarmed.
 	RequestID string
 
+	// Machine is the independent machine fact the watchdog also requires
+	// before it arms, so one leaked env var can never power off an
+	// ordinary host: nil error means this machine is a provisioned worker,
+	// an error is the refusal reason (logged once). Consulted only when
+	// RequestID is set. Nil → EC2MachineFact(os.ReadFile). A first-boot
+	// handoff marker, once the bootstrapper writes one, is checked here
+	// too (path + request id must match) — same seam, one more fact.
+	Machine func(requestID string) error
+
 	// Idle stops the host after this long with no loaded model and no
 	// in-flight inference; MaxSession after this much host uptime
 	// regardless of load. Zero → the defaults.
@@ -125,6 +134,9 @@ func NewGuestWatchdog(cfg GuestWatchdogConfig) *GuestWatchdog {
 	if cfg.Uptime == nil {
 		cfg.Uptime = HostUptime
 	}
+	if cfg.Machine == nil {
+		cfg.Machine = EC2MachineFact(os.ReadFile)
+	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
@@ -142,6 +154,10 @@ func NewGuestWatchdog(cfg GuestWatchdogConfig) *GuestWatchdog {
 func (g *GuestWatchdog) Run(ctx context.Context) error {
 	c := g.cfg
 	if c.RequestID == "" {
+		return nil
+	}
+	if err := c.Machine(c.RequestID); err != nil {
+		c.Logger.Warn("gpu worker watchdog: "+WorkerRequestIDEnv+" is set but this machine is not a provisioned GPU worker; refusing to arm", "reason", err)
 		return nil
 	}
 	start := c.Now()
@@ -198,6 +214,36 @@ func (g *GuestWatchdog) stop(ctx context.Context, reason, key string, d time.Dur
 		if serr := c.Sleep(ctx, c.Retry); serr != nil {
 			return fmt.Errorf("gpu worker watchdog: power-off (%s) never succeeded: %w", reason, err)
 		}
+	}
+}
+
+// DMI identity files the EC2 machine fact reads (Linux sysfs).
+const (
+	dmiSysVendor   = "/sys/class/dmi/id/sys_vendor"
+	dmiBoardVendor = "/sys/class/dmi/id/board_vendor"
+	ec2DMIVendor   = "Amazon EC2"
+)
+
+// EC2MachineFact is the default machine fact: the host is an EC2 instance
+// per DMI (sys_vendor or board_vendor is exactly "Amazon EC2"). read is the
+// one injectable source (os.ReadFile in production). A host without DMI —
+// macOS, Windows, most containers — never satisfies it.
+func EC2MachineFact(read func(path string) ([]byte, error)) func(requestID string) error {
+	return func(string) error {
+		var seen []string
+		for _, p := range []string{dmiSysVendor, dmiBoardVendor} {
+			b, err := read(p)
+			if err != nil {
+				seen = append(seen, fmt.Sprintf("%s: %v", p, err))
+				continue
+			}
+			v := strings.TrimSpace(string(b))
+			if v == ec2DMIVendor {
+				return nil
+			}
+			seen = append(seen, fmt.Sprintf("%s=%q", p, v))
+		}
+		return fmt.Errorf("not an EC2 instance per DMI (%s)", strings.Join(seen, "; "))
 	}
 }
 

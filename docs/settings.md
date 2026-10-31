@@ -1303,9 +1303,22 @@ and folded into the push content hash, so the master persists it.
 
 **Guest stop watchdog.** A provisioned worker also stops itself, so a lost
 control plane can never leave a GPU running. This is a second, independent
-stop beside the master's keep-alive stop, armed only when
-`OUTPOST_GPU_WORKER_REQUEST_ID` is set (every other host is unchanged). It
-fires on whichever comes first:
+stop beside the master's keep-alive stop. It arms only when BOTH hold
+(every other host is unchanged):
+
+- `OUTPOST_GPU_WORKER_REQUEST_ID` is set, **and**
+- an independent machine fact: the host is an EC2 instance per DMI —
+  `/sys/class/dmi/id/sys_vendor` or `/sys/class/dmi/id/board_vendor` reads
+  exactly `Amazon EC2`.
+
+The second fact is defense in depth: one leaked env var on a Linux desktop
+must never power it off. When the env var is set but the machine fact is
+absent (no DMI, as on macOS/Windows/most containers, or another vendor), the
+watchdog stays unarmed and logs the refusal reason once at boot. If the
+first-boot bootstrap later writes a handoff marker, it becomes a further
+required fact behind the same check (path + request id must match).
+
+Once armed it fires on whichever comes first:
 
 - **idle** — no model resident in Ollama's `/api/ps` and no inference in
   flight through `/app/ollama/*` for `OUTPOST_GPU_WORKER_IDLE` (default `20m`,
