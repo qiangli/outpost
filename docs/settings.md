@@ -1270,6 +1270,35 @@ outpost stays an ordinary single-machine pool member. Both are
 boot-time-bound (a change restarts the daemon). The key is redacted
 from `SafeView` like other secrets.
 
+### Provisioned cloud GPU worker (bootstrap env)
+
+| Field | Env | CLI | UI | MCP | Effect |
+|---|---|---|---|---|---|
+| Provision request id | `$OUTPOST_GPU_WORKER_REQUEST_ID` | — (set by the worker bootstrapper) | — | — | Boot-only |
+
+A host created by a cloud GPU provision request runs with
+`OUTPOST_GPU_WORKER_REQUEST_ID` set, in the daemon's service environment, to
+the id of that request (1-64 chars). It is the only knob: no `agent.json` key,
+because nothing but the bootstrapper should ever set it. On every other host
+it is unset and nothing changes.
+
+When it is set, the `outpost.ollama-pool` registry push
+(`POST /api/v1/llm/registry`) carries an optional top-level `worker` object
+next to the usual model list:
+
+```json
+"worker": {"request_id": "<provision request id>", "vram_bytes": 85899345920, "gpu_model": "<device name>"}
+```
+
+`vram_bytes` (total across the host's NVIDIA GPUs) and `gpu_model` (first
+device, clamped to 64 chars) are measured on the host: `/proc/driver/nvidia`
+must exist, and the numbers come from the driver's own `nvidia-smi` — no
+distro package. Fail soft: when the GPU cannot be measured, or the request id
+is outside 1-64 chars, the block is omitted (logged once) and the push goes
+out without it — an out-of-contract block would get the whole push rejected.
+A failed measurement is retried on the next poll; a successful one is cached
+and folded into the push content hash, so the master persists it.
+
 ### Peer image distribution (recipes, not blobs)
 
 | Field | File key | CLI | UI | MCP | Effect |

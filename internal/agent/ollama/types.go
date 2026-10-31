@@ -195,6 +195,11 @@ type RegistryPushPayload struct {
 	// pre-warm-serving outposts and on an idle host.
 	Busy bool `json:"busy,omitempty"`
 
+	// Worker is the provisioned-cloud-GPU-worker descriptor (see
+	// WorkerInfo). Nil — omitted from the wire — on every other host, and
+	// on a worker whose GPU could not be measured.
+	Worker *WorkerInfo `json:"worker,omitempty"`
+
 	// ContentHash is sha256 over the stable fields of the model list
 	// (name, digest, size, family, parameter_size, quantization,
 	// capabilities, context_length — NOT modified_at, which Ollama

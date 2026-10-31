@@ -44,14 +44,17 @@ type capturingRegistry struct {
 	// and backoff behavior.
 	status atomic.Int32
 	auths  []string
+	raws   [][]byte
 }
 
 func (cr *capturingRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cr.calls.Add(1)
 	cr.mu.Lock()
 	cr.auths = append(cr.auths, r.Header.Get("Authorization"))
+	raw, _ := io.ReadAll(r.Body)
+	cr.raws = append(cr.raws, raw)
 	var p RegistryPushPayload
-	_ = json.NewDecoder(r.Body).Decode(&p)
+	_ = json.Unmarshal(raw, &p)
 	cr.payloads = append(cr.payloads, p)
 	cr.mu.Unlock()
 	st := int(cr.status.Load())

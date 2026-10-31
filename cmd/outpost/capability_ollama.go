@@ -231,6 +231,9 @@ func (c *ollamaPoolCapability) Activate(ctx context.Context, cfg service.Config)
 		// CapacityReport (counter snapshot + the watcher's /api/ps cache)
 		// so the push and the /_pool/capacity probe emit the same shape.
 		Capacity: svc,
+		// Set only by the cloud GPU worker bootstrapper; empty elsewhere,
+		// which keeps the worker block off the push.
+		WorkerRequestID: ollama.WorkerRequestID(),
 	}
 	// Bashy's own Ollama engine keeps a separate model store from the host
 	// daemon: register its models too, so a bashy-managed pull shows up in

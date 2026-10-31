@@ -121,6 +121,16 @@ type Config struct {
 	// zero (omitted) values — the pre-warm-serving shape.
 	WarmStatus func() (bytes int64, busy bool)
 
+	// WorkerRequestID marks this host as a provisioned cloud GPU worker
+	// (normally WorkerRequestID(), i.e. $OUTPOST_GPU_WORKER_REQUEST_ID).
+	// Empty — every ordinary host — keeps the worker block off the wire.
+	WorkerRequestID string
+
+	// WorkerGPU measures total VRAM + GPU model for the worker block.
+	// Consulted only when WorkerRequestID is set; nil → MeasureNVIDIAGPU.
+	// An error omits the block (logged) and is retried on the next tick.
+	WorkerGPU func(ctx context.Context) (vramBytes int64, gpuModel string, err error)
+
 	// PollInterval overrides the /api/tags poll cadence. Zero → default.
 	PollInterval time.Duration
 
@@ -175,6 +185,12 @@ type Watcher struct {
 	loadedMu     sync.Mutex
 	loadedModels []string
 	swapping     bool
+
+	// worker caches the measured worker block (VRAM does not change under
+	// a running host); workerErr is the last measurement failure, kept so
+	// a persistent failure is logged once rather than every tick.
+	worker    *WorkerInfo
+	workerErr string
 }
 
 // LoadedSnapshot returns the watcher's most recent view of which
@@ -402,7 +418,11 @@ func (w *Watcher) tick(ctx context.Context, lastSnapshot *[]ModelInfo, lastPushe
 			models = mergeModels(models, src.ClusterModels())
 		}
 	}
+	worker := w.workerInfo(ctx)
 	currentHash := CombineHash(ContentHash(models), cluster)
+	if tag := workerHashTag(worker); tag != "" {
+		currentHash = hashString(currentHash + tag)
+	}
 	changed := currentHash != *lastPushedHash
 	heartbeatDue := time.Since(*lastPushAt) >= w.cfg.HeartbeatInterval
 	if !changed && !heartbeatDue {
@@ -411,7 +431,7 @@ func (w *Watcher) tick(ctx context.Context, lastSnapshot *[]ModelInfo, lastPushe
 	if err := w.probeModels(ctx, models, sources); err != nil {
 		return err
 	}
-	if err := w.push(ctx, models, currentHash, cluster); err != nil {
+	if err := w.push(ctx, models, currentHash, cluster, worker); err != nil {
 		return err
 	}
 	*lastSnapshot = models
@@ -758,7 +778,39 @@ func (w *Watcher) fetchDetails(ctx context.Context, baseURL, name string) modelD
 // non-2xx returns an error the outer loop will back off and retry on.
 // cluster is nil on single-machine outposts and is attached verbatim
 // (already folded into contentHash by the caller).
-func (w *Watcher) push(ctx context.Context, models []ModelInfo, contentHash string, cluster *ClusterCapacity) error {
+// workerInfo returns the worker block for this push, or nil on a non-worker
+// host or when it cannot be built. Fail soft: the push goes out without it.
+// Only called from the Run goroutine, so the cache needs no lock.
+func (w *Watcher) workerInfo(ctx context.Context) *WorkerInfo {
+	if w.cfg.WorkerRequestID == "" {
+		return nil
+	}
+	if w.worker != nil {
+		return w.worker
+	}
+	measure := w.cfg.WorkerGPU
+	if measure == nil {
+		measure = MeasureNVIDIAGPU
+	}
+	vram, model, err := measure(ctx)
+	var wi *WorkerInfo
+	if err == nil {
+		wi, err = buildWorkerInfo(w.cfg.WorkerRequestID, vram, model)
+	}
+	if err != nil {
+		if msg := err.Error(); msg != w.workerErr {
+			w.workerErr = msg
+			w.cfg.Logger.Warn("ollama watcher: omitting worker block from registry push", "err", err)
+		}
+		return nil
+	}
+	w.worker, w.workerErr = wi, ""
+	w.cfg.Logger.Info("ollama watcher: advertising provisioned GPU worker",
+		"vram_bytes", wi.VRAMBytes, "gpu_model", wi.GPUModel)
+	return wi
+}
+
+func (w *Watcher) push(ctx context.Context, models []ModelInfo, contentHash string, cluster *ClusterCapacity, worker *WorkerInfo) error {
 	capReport := CapacityReport{MaxParallel: defaultMaxParallel}
 	if w.cfg.Capacity != nil {
 		capReport = w.cfg.Capacity.Snapshot()
@@ -772,6 +824,7 @@ func (w *Watcher) push(ctx context.Context, models []ModelInfo, contentHash stri
 		ContentHash: contentHash,
 		Cluster:     cluster,
 		LANEndpoint: w.cfg.LANEndpoint,
+		Worker:      worker,
 	}
 	if w.cfg.WarmStatus != nil {
 		payload.WarmBudgetBytes, payload.Busy = w.cfg.WarmStatus()
