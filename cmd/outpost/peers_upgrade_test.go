@@ -2,9 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/peerstatus"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
@@ -47,7 +52,104 @@ func TestPeerUpgradeTargetBindsOwnedHost(t *testing.T) {
 		t.Fatal("alias collision bypassed host binding")
 	}
 	targets[1].Via = "hop-placeholder"
-	if _, err := peerUpgradeTarget("peer-placeholder", targets); err == nil {
-		t.Fatal("hop address treated as owned identity")
+	if _, err := peerUpgradeTarget("peer-placeholder", targets); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPeerRepairRestartVerification(t *testing.T) {
+	for _, tt := range []struct {
+		name, version, want string
+		unreachable         bool
+	}{
+		{name: "target after restart", version: "v1.1.0"},
+		{name: "old after timeout", version: "v1.0.0", want: "rolled back or not applied"},
+		{name: "unreachable", unreachable: true, want: "unreachable"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			env := upgrade.Envelope{ReleaseID: "v1.1.0", URL: "https://example.invalid/release", SHA256: strings.Repeat("a", 64)}
+			peer := peerstatus.Peer{Host: "peer-a", Owned: true, Version: "v1.0.0"}
+			ledger := upgrade.RepairLedger{Path: filepath.Join(t.TempDir(), "heals.jsonl"), Peer: peer.Host}
+			if err := ledger.Observe(agent.BuildInfo{Version: peer.Version}, env, false, "", false); err != nil {
+				t.Fatal(err)
+			}
+			sent, queries := 0, 0
+			run := func(ctx context.Context, host, command string) (string, error) {
+				if strings.HasPrefix(command, "outpost upgrade") {
+					sent++
+					return "", peerRepairUncertain{errors.New("session dropped")}
+				}
+				queries++
+				if queries == 1 || tt.unreachable {
+					return "", errors.New("connection unavailable")
+				}
+				return `{"status":{"build":{"version":"` + tt.version + `"}}}`, nil
+			}
+			err := finishPeerRepair(context.Background(), peer, env, ledger, run, 30*time.Millisecond, time.Millisecond)
+			if tt.want == "" && err != nil {
+				t.Fatal(err)
+			}
+			if tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)) {
+				t.Fatalf("error=%v", err)
+			}
+			if sent != 1 || queries < 2 {
+				t.Fatalf("sent=%d queries=%d", sent, queries)
+			}
+			rows, err := agent.ReadHealRecords(ledger.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 1 {
+				t.Fatalf("rows=%v", rows)
+			}
+			row := rows[0]
+			evidence, err := json.Marshal(row.Evidence)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantResult := "healed"
+			if tt.want != "" {
+				wantResult = "failed"
+			}
+			if row.Result != wantResult || row.Rung != "upgrade" || row.Before != peer.Version || row.After != env.ReleaseID || !strings.Contains(string(evidence), env.SHA256) {
+				t.Fatalf("record=%+v", row)
+			}
+			if tt.want != "" && !strings.Contains(row.Reason, tt.want) {
+				t.Fatal(row.Reason)
+			}
+		})
+	}
+}
+
+func TestPeerUpgradeMissingAliasGuidance(t *testing.T) {
+	_, err := peerUpgradeTarget("peer-a", nil)
+	if err == nil || err.Error() != "no SSH alias for peer-a; add one with: outpost ssh add peer-a --host peer-a" {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestPeerRepairExecResult(t *testing.T) {
+	for _, tt := range []struct {
+		code      int
+		stderr    string
+		uncertain bool
+	}{
+		{-1, "", true}, {-1, " ", true}, {-1, "upgrade rejected", false}, {1, "", false}, {0, "", false},
+	} {
+		_, err := peerRepairExecResult(sshExecResult{ExitCode: tt.code, Stderr: tt.stderr})
+		var uncertain peerRepairUncertain
+		if errors.As(err, &uncertain) != tt.uncertain || (err == nil) != (tt.code == 0) {
+			t.Fatalf("code=%d stderr=%q error=%v", tt.code, tt.stderr, err)
+		}
+	}
+}
+
+func TestPeerRepairDefiniteFailureDoesNotPoll(t *testing.T) {
+	env := upgrade.Envelope{ReleaseID: "v1.1.0", URL: "https://example.invalid/release", SHA256: strings.Repeat("a", 64)}
+	calls := 0
+	cause := errors.New("upgrade rejected")
+	err := applyPeerRepair(context.Background(), peerstatus.Peer{Host: "peer-a", Owned: true}, env, func(context.Context, string, string) (string, error) { calls++; return "", cause })
+	if !errors.Is(err, cause) || calls != 1 {
+		t.Fatalf("calls=%d error=%v", calls, err)
 	}
 }

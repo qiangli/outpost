@@ -19,6 +19,14 @@ import (
 
 type peerRepairExec func(context.Context, string, string) (string, error)
 
+// peerRepairUncertain marks an error after the execution request was sent.
+type peerRepairUncertain struct{ error }
+
+func finishPeerRepair(ctx context.Context, peer peerstatus.Peer, env upgrade.Envelope, ledger upgrade.RepairLedger, run peerRepairExec, timeout, interval time.Duration) error {
+	err := applyPeerRepairWithPolling(ctx, peer, env, run, timeout, interval)
+	return errors.Join(err, ledger.FinishTarget(env, err))
+}
+
 func peersUpgradeCmd() *cobra.Command {
 	var approve bool
 	cmd := &cobra.Command{Use: "upgrade <host>", Short: "Resolve an owned peer upgrade; --approve applies and verifies it", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
@@ -54,12 +62,11 @@ func peersUpgradeCmd() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "Resolved %s with sha256 %s; run peers upgrade <host> --approve to apply.\n", env.ReleaseID, env.SHA256)
 			return nil
 		}
-		err = applyPeerRepair(cmd.Context(), *peer, env, execPeerRepair)
-		if err != nil {
-			_ = r.FinishTarget(env, err)
+		if err := finishPeerRepair(cmd.Context(), *peer, env, r, execPeerRepair, 3*time.Minute, 3*time.Second); err != nil {
 			return err
 		}
-		return r.Observe(agent.BuildInfo{Version: peer.Version}, env, false, "", true)
+		fmt.Fprintf(cmd.OutOrStdout(), "Upgraded %s from %s to %s; verified target with sha256 %s.\n", peer.Host, peer.Version, env.ReleaseID, env.SHA256)
+		return nil
 	}}
 	cmd.Flags().BoolVar(&approve, "approve", false, "Approve the resolved release and run the peer's own upgrade CLI")
 	return cmd
@@ -68,6 +75,10 @@ func peersUpgradeCmd() *cobra.Command {
 // Arguments are quoted for the peer exec path's shell, on every OS.
 func peerRepairQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
 func applyPeerRepair(ctx context.Context, peer peerstatus.Peer, env upgrade.Envelope, run peerRepairExec) error {
+	return applyPeerRepairWithPolling(ctx, peer, env, run, 3*time.Minute, 3*time.Second)
+}
+
+func applyPeerRepairWithPolling(ctx context.Context, peer peerstatus.Peer, env upgrade.Envelope, run peerRepairExec, timeout, interval time.Duration) error {
 	if !peer.Owned || peer.Shared {
 		return errors.New("upgrade requires an owned peer")
 	}
@@ -76,24 +87,60 @@ func applyPeerRepair(ctx context.Context, peer peerstatus.Peer, env upgrade.Enve
 	}
 	command := "outpost upgrade --from " + peerRepairQuote(env.URL) + " --sha256 " + peerRepairQuote(env.SHA256)
 	if _, err := run(ctx, peer.Host, command); err != nil {
-		return err
+		var uncertain peerRepairUncertain
+		if !errors.As(err, &uncertain) {
+			return err
+		}
 	}
-	// Query the daemon, not just the executable: an on-disk swap alone is not success.
-	raw, err := run(ctx, peer.Host, "outpost status --json")
+	verifyCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var version string
+	var lastErr error
+	for {
+		// Each call reconnects; bound individual requests as well as the whole window.
+		queryCtx, queryCancel := context.WithTimeout(verifyCtx, 15*time.Second)
+		version, lastErr = peerRepairVersion(queryCtx, peer.Host, run)
+		queryCancel()
+		if lastErr == nil && version == env.ReleaseID {
+			return nil
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-verifyCtx.Done():
+			timer.Stop()
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if lastErr != nil {
+				return fmt.Errorf("peer unreachable during upgrade verification: %w", lastErr)
+			}
+			if version == peer.Version {
+				return fmt.Errorf("peer auto-rolled back or not applied: still reports %s after verification timeout", version)
+			}
+			return fmt.Errorf("peer version recheck timed out: got %s, want %s", version, env.ReleaseID)
+		case <-timer.C:
+		}
+	}
+}
+
+func peerRepairVersion(ctx context.Context, host string, run peerRepairExec) (string, error) {
+	// Query the daemon: an on-disk swap alone is not success.
+	raw, err := run(ctx, host, "outpost status --json")
 	if err != nil {
-		return fmt.Errorf("recheck peer: %w", err)
+		return "", err
 	}
 	var response struct {
 		Status admincore.StatusView `json:"status"`
 	}
 	if err := json.Unmarshal([]byte(raw), &response); err != nil {
-		return fmt.Errorf("decode peer status: %w", err)
+		return "", fmt.Errorf("decode peer status: %w", err)
 	}
-	if response.Status.Build.Version != env.ReleaseID {
-		return fmt.Errorf("peer version recheck: got %s, want %s", response.Status.Build.Version, env.ReleaseID)
+	if response.Status.Build.Version == "" {
+		return "", errors.New("peer status has no running version")
 	}
-	return nil
+	return response.Status.Build.Version, nil
 }
+
 func execPeerRepair(ctx context.Context, host, command string) (string, error) {
 	session, err := dialMCP(ctx)
 	if err != nil {
@@ -112,7 +159,14 @@ func execPeerRepair(ctx context.Context, host, command string) (string, error) {
 	}
 	var result sshExecResult
 	if err := session.callTool(ctx, "outpost_ssh_exec", map[string]any{"name": name, "command": command, "timeout_seconds": int((5 * time.Minute).Seconds())}, &result); err != nil {
-		return "", err
+		return "", peerRepairUncertain{err}
+	}
+	return peerRepairExecResult(result)
+}
+
+func peerRepairExecResult(result sshExecResult) (string, error) {
+	if result.ExitCode == -1 && strings.TrimSpace(result.Stderr) == "" {
+		return result.Stdout, peerRepairUncertain{errors.New("peer session ended without an exit status")}
 	}
 	if result.ExitCode != 0 {
 		return "", fmt.Errorf("peer command exited %d: %s", result.ExitCode, result.Stderr)
@@ -121,12 +175,12 @@ func execPeerRepair(ctx context.Context, host, command string) (string, error) {
 }
 
 // Bind the SSH alias to the owned board entry. A same-named alias may point
-// elsewhere, and a hop-side address is not proof of ownership of that endpoint.
+// elsewhere; only a matching configured Host identifies the owned endpoint.
 func peerUpgradeTarget(host string, targets []admincore.SSHTargetView) (string, error) {
 	for _, target := range targets {
-		if target.Host == host && target.Via == "" {
+		if target.Host == host {
 			return target.Name, nil
 		}
 	}
-	return "", errors.New("owned peer needs a direct configured SSH target; use outpost ssh add and outpost connect first")
+	return "", fmt.Errorf("no SSH alias for %s; add one with: outpost ssh add %s --host %s", host, host, host)
 }
