@@ -22,9 +22,8 @@ import (
 // pull in their construction graph for tests.
 type State func() StateSnapshot
 
-// StateSnapshot is what State returns each tick. Upgrades always apply:
-// there is no per-host update-mode anymore (auto/manual/never was
-// removed — the only supported posture is "apply every push").
+// StateSnapshot is what State returns each tick. Automatic approval is supplied
+// separately through Options.Automatic.
 type StateSnapshot struct {
 	// CurrentCommit is the running daemon's commit — wire it from
 	// agent.ReadBuildInfo().ShortCommit(), NOT Short(): on release
@@ -76,12 +75,14 @@ type StateSnapshot struct {
 //     goroutine never mutates Worker fields after it's spawned (it
 //     just appends to the ledger and calls restart).
 type Worker struct {
-	state    State
-	restart  func()
-	ledger   *Ledger
-	client   *http.Client
-	logger   *slog.Logger
-	verifier ArtifactVerifier
+	repairs   *RepairLedger
+	automatic func() bool
+	state     State
+	restart   func()
+	ledger    *Ledger
+	client    *http.Client
+	logger    *slog.Logger
+	verifier  ArtifactVerifier
 
 	// confirmPath is where run() writes the auto-rollback watchdog marker
 	// after a swap (see pending_confirm.go). Empty disables the marker
@@ -108,12 +109,14 @@ type Worker struct {
 // Options configures a Worker. State and Restart are required;
 // everything else has a sensible zero default.
 type Options struct {
-	State    State
-	Restart  func()
-	Ledger   *Ledger
-	Client   *http.Client
-	Logger   *slog.Logger
-	Verifier ArtifactVerifier // nil → NoopVerifier (today's cloudbox-as-root-of-trust)
+	Repairs   *RepairLedger
+	Automatic func() bool
+	State     State
+	Restart   func()
+	Ledger    *Ledger
+	Client    *http.Client
+	Logger    *slog.Logger
+	Verifier  ArtifactVerifier // nil → NoopVerifier (today's cloudbox-as-root-of-trust)
 	// ConfirmPath is where run() writes the auto-rollback watchdog marker
 	// after a swap. Empty disables the marker.
 	ConfirmPath string
@@ -134,6 +137,7 @@ func NewWorker(opts Options) (*Worker, error) {
 		return nil, errors.New("upgrade.NewWorker: Restart is required")
 	}
 	w := &Worker{
+		repairs: opts.Repairs, automatic: opts.Automatic,
 		state:       opts.State,
 		restart:     opts.Restart,
 		ledger:      opts.Ledger,
@@ -185,9 +189,23 @@ func seedLastReleaseID(l *Ledger) string {
 // Apply is the single entry point. The route handler calls this
 // after binding the JSON body. Returns the wire Result; the handler
 // maps Status → HTTP code via HTTPStatus.
-func (w *Worker) Apply(ctx context.Context, env Envelope) Result {
+func (w *Worker) Apply(ctx context.Context, env Envelope) (result Result) {
+	defer func() {
+		if w.repairs != nil && result.Status != StatusAccepted && result.Status != StatusPendingManual && result.Status != StatusInFlight && result.Status != StatusSameCommit && result.Status != StatusReplay {
+			w.observeRepair(env, result.Detail, false)
+		}
+	}()
 	if err := env.Validate(); err != nil {
 		return Result{Status: "invalid", Detail: err.Error(), ReleaseID: env.ReleaseID}
+	}
+
+	if w.repairs != nil {
+		if err := w.observeRepair(env, "", false); err != nil {
+			return Result{Status: "invalid", Detail: err.Error(), ReleaseID: env.ReleaseID}
+		}
+		if !w.isAutomatic() && !env.Force {
+			return Result{Status: StatusPendingManual, Detail: "approval required: outpost apps heals; outpost upgrade --repair <id>", ReleaseID: env.ReleaseID}
+		}
 	}
 
 	// Quarantine short-circuits BOTH the push and the pull path: a release
@@ -405,6 +423,10 @@ func (w *Worker) run(ctx context.Context, env Envelope, binaryPath, fromSHA, pen
 	previous := binaryPath + ".previous"
 	retained := true
 	if len(companions) > 0 {
+		if w.repairs != nil && w.confirmPath == "" {
+			w.fail(env, "confirm_failed", fromSHA, errors.New("repair requires auto-rollback confirmation path"))
+			return
+		}
 		if _, err := ApplyPair(ctx, binaryPath, candidate, companions, PairOptions{ConfirmPath: w.confirmPath, ReleaseID: env.ReleaseID, FromSHA: fromSHA}); err != nil {
 			w.fail(env, "swap_failed", fromSHA, err)
 			return
@@ -412,9 +434,26 @@ func (w *Worker) run(ctx context.Context, env Envelope, binaryPath, fromSHA, pen
 	} else {
 		if err := RetainPrevious(binaryPath, previous); err != nil {
 			retained = false
+			if w.repairs != nil {
+				w.fail(env, "previous_failed", fromSHA, err)
+				return
+			}
 			_ = w.appendLedger(LedgerEntry{ReleaseID: env.ReleaseID, Step: "previous_unavailable", FromSHA: fromSHA, Error: err.Error()})
 		}
+		if w.repairs != nil {
+			if w.confirmPath == "" {
+				w.fail(env, "confirm_failed", fromSHA, errors.New("repair requires auto-rollback confirmation path"))
+				return
+			}
+			if err := WritePendingConfirm(w.confirmPath, NewPendingConfirm(env.ReleaseID, fromSHA, build.Commit, binaryPath, previous)); err != nil {
+				w.fail(env, "confirm_failed", fromSHA, err)
+				return
+			}
+		}
 		if err := SwapAtomic(binaryPath, candidate); err != nil {
+			if w.repairs != nil {
+				_ = ClearPendingConfirm(w.confirmPath)
+			}
 			w.fail(env, "swap_failed", fromSHA, err)
 			return
 		}
@@ -438,7 +477,7 @@ func (w *Worker) run(ctx context.Context, env Envelope, binaryPath, fromSHA, pen
 	// reverts. Only when we actually retained a .previous to revert to —
 	// no rollback target ⇒ no watchdog. Marker write is best-effort; a
 	// failure just means no auto-rollback for this upgrade.
-	if retained && w.confirmPath != "" {
+	if retained && w.confirmPath != "" && w.repairs == nil {
 		if err := WritePendingConfirm(w.confirmPath,
 			NewPendingConfirm(env.ReleaseID, fromSHA, build.Commit, binaryPath, previous)); err != nil {
 			w.logger.Warn("upgrade: writing confirm marker", "err", err)
@@ -456,6 +495,7 @@ func (w *Worker) run(ctx context.Context, env Envelope, binaryPath, fromSHA, pen
 		}
 	}
 
+	_ = w.observeRepair(env, "", true)
 	w.restart()
 	// After this point the daemon is on its way out. Any further
 	// ledger writes risk being interrupted mid-flush — the
@@ -508,6 +548,7 @@ func RetainPrevious(binary, previous string) error {
 // step name is the phase that failed (stage_failed / probe_failed /
 // swap_failed); err carries the precise reason.
 func (w *Worker) fail(env Envelope, step, fromSHA string, cause error) {
+	_ = w.observeRepair(env, cause.Error(), false)
 	w.logger.Error("upgrade failed", "release_id", env.ReleaseID, "step", step, "err", cause)
 	_ = w.appendLedger(LedgerEntry{
 		ReleaseID: env.ReleaseID,
@@ -606,4 +647,13 @@ func isSharedBinary(binaryPath string) bool {
 		return true
 	}
 	return false
+}
+
+func (w *Worker) isAutomatic() bool { return w.automatic == nil || w.automatic() }
+func (w *Worker) observeRepair(env Envelope, reason string, applied bool) error {
+	if w.repairs == nil {
+		return nil
+	}
+	st := w.state()
+	return w.repairs.Observe(agent.BuildInfo{Version: st.CurrentVersion, VCSTime: st.CurrentVCSTime}, env, w.isAutomatic(), reason, applied)
 }

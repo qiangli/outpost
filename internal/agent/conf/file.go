@@ -246,11 +246,8 @@ type FileConfig struct {
 	// is supplied. Redacted from SafeView like other secrets.
 	ClusterLLMAPIKey string `json:"cluster_llm_api_key,omitempty"`
 
-	// NOTE: update_mode / auto_upgrade / auto_rollback_enabled were
-	// removed (one lifecycle: upgrades always apply, the auto-rollback
-	// watchdog always reverts). Old agent.json files may still carry
-	// the keys — encoding/json ignores unknown fields on load, and
-	// saves simply stop writing them.
+	// UpdateMode: only auto permits unattended upgrades; all other values require approval.
+	UpdateMode string `json:"update_mode,omitempty"`
 
 	// AdminSessionKey is the HMAC secret used to sign admin-UI session
 	// cookies. Persisting it across restarts is what keeps the admin user

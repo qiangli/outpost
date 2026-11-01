@@ -47,7 +47,7 @@ func appsCmd() *cobra.Command {
 
 func appsHealsCmd() *cobra.Command {
 	var asJSON bool
-	cmd := &cobra.Command{Use: "heals", Short: "List app heal records", RunE: func(cmd *cobra.Command, _ []string) error {
+	cmd := &cobra.Command{Use: "heals", Short: "List app and upgrade heal records", RunE: func(cmd *cobra.Command, _ []string) error {
 		session, err := dialMCP(cmd.Context())
 		if err != nil {
 			return err

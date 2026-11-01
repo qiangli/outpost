@@ -36,6 +36,11 @@ func newLocalUpgrade(cfgPath string, fc *conf.FileConfig, restart func()) (*upgr
 	// prior Windows-swap run. No-op on Unix. Idempotent.
 	upgrade.CleanupStaleSwaps(exe)
 	upgradeWorker, err := upgrade.NewWorker(upgrade.Options{
+		Repairs: &upgrade.RepairLedger{Path: filepath.Join(filepath.Dir(cfgPath), "heals.jsonl")},
+		Automatic: func() bool {
+			current, err := conf.LoadFile(cfgPath)
+			return err == nil && current != nil && current.UpdateMode == "auto"
+		},
 		State: func() upgrade.StateSnapshot {
 			bi := agent.ReadBuildInfo()
 			return upgrade.StateSnapshot{

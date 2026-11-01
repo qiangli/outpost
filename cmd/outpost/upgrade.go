@@ -12,9 +12,12 @@ import (
 	"github.com/qiangli/yoke/pkg/binmgr"
 	"github.com/spf13/cobra"
 
+	"encoding/json"
+	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
+	"runtime"
 )
 
 // outpost upgrade — swap the running daemon's binary in place and ask
@@ -44,8 +47,11 @@ import (
 // place. Either way the supervisor picks the new binary up on restart
 // (init re-execs itself on a swap, spawning a detached successor on
 // Windows) and the legacy-init handoff restarts a pre-swap init.
-func upgradeCmd() *cobra.Command {
+func upgradeCmd() *cobra.Command { return upgradeCommand(false) }
+
+func upgradeCommand(repair bool, targets ...upgrade.Envelope) *cobra.Command {
 	var (
+		repairID  string
 		fromURL   string
 		localPath string
 		sha256Hex string
@@ -101,8 +107,29 @@ the retained <binary>.previous.`,
 			if sources > 1 {
 				return errors.New("--from, --local, and --direct are mutually exclusive")
 			}
+			if repairID != "" {
+				if sources != 0 || force || noRestart || sha256Hex != "" {
+					return errors.New("--repair cannot be combined with source, force, checksum or no-restart flags")
+				}
+				path, err := conf.DefaultConfigPath()
+				if err != nil {
+					return err
+				}
+				ledger := upgrade.RepairLedger{Path: filepath.Join(filepath.Dir(path), "heals.jsonl")}
+				if err := resolveBashyRepair(cmd.Context(), ledger.Path, repairID); err != nil {
+					return err
+				}
+				return ledger.Approve(cmd.Context(), repairID, func(ctx context.Context, env upgrade.Envelope) error {
+					inner := upgradeCommand(true, env)
+					inner.SetArgs([]string{"--from", env.URL, "--sha256", env.SHA256, "--wait", waitFor.String()})
+					return inner.ExecuteContext(ctx)
+				})
+			}
 			ctx := cmd.Context()
 			expectedCommit := ""
+			if len(targets) > 0 {
+				expectedCommit = targets[0].Commit
+			}
 
 			// Phase 1: ask the daemon what it is and where it lives.
 			before, err := readStatus(ctx)
@@ -111,6 +138,15 @@ the retained <binary>.previous.`,
 			}
 			if before.BinaryPath == "" {
 				return errors.New("daemon did not report binary_path — running an older outpost that predates `outpost upgrade`; please update by hand once")
+			}
+			if repair {
+				cache, err := conf.ResolveCacheDir()
+				if err != nil {
+					return err
+				}
+				if cache == "" {
+					return errors.New("repair requires rollback state directory")
+				}
 			}
 			fmt.Printf("running:  %s at %s\n", before.Build.Short(), before.BinaryPath)
 
@@ -195,6 +231,9 @@ the retained <binary>.previous.`,
 			if err != nil {
 				return fmt.Errorf("verify candidate: %w", err)
 			}
+			if len(targets) > 0 && strings.TrimSuffix(newBuild.Version, "-dev") != strings.TrimSuffix(targets[0].ReleaseID, "-dev") {
+				return fmt.Errorf("repair candidate version %s does not match recorded target %s", newBuild.Version, targets[0].ReleaseID)
+			}
 			fmt.Printf("candidate: %s (%s)\n", newBuild.Short(), newBuild.GoVersion)
 
 			// Never-downgrade guard (every source mode): the probed
@@ -202,7 +241,7 @@ the retained <binary>.previous.`,
 			// --force below only excuses a same-commit reinstall and
 			// never allows a downgrade; deliberate rollback stays
 			// available only through `outpost rollback`.
-			if decline, reason := upgrade.ShouldDeclineCandidate(before.Build, newBuild.Version, newBuild.VCSTime); decline {
+			if decline, reason := upgrade.ShouldDeclineCandidate(before.Build, newBuild.Version, newBuild.VCSTime); decline && !(repair && len(companions) > 0 && newBuild.Commit != "" && newBuild.Commit == before.Build.Commit && newBuild.Version == before.Build.Version) {
 				return fmt.Errorf("%s", reason)
 			}
 
@@ -217,9 +256,28 @@ the retained <binary>.previous.`,
 				}
 			} else {
 				if err := upgrade.RetainPrevious(before.BinaryPath, previous); err != nil {
+					if repair {
+						return fmt.Errorf("retain rollback target: %w", err)
+					}
 					fmt.Printf("previous: WARN couldn't retain rollback target: %v\n", err)
 				}
+				if repair {
+					cache, err := conf.ResolveCacheDir()
+					if err != nil {
+						return err
+					}
+					if cache == "" {
+						return errors.New("repair requires rollback state directory")
+					}
+					if err := upgrade.WritePendingConfirm(upgrade.PendingConfirmPath(cache), upgrade.NewPendingConfirm(newBuild.Version, before.Build.Commit, newBuild.Commit, before.BinaryPath, previous)); err != nil {
+						return err
+					}
+				}
 				if err := upgrade.SwapAtomic(before.BinaryPath, candidate); err != nil {
+					if repair {
+						cache, _ := conf.ResolveCacheDir()
+						_ = os.Remove(upgrade.PendingConfirmPath(cache))
+					}
 					return fmt.Errorf("swap binary into place: %w", err)
 				}
 				_ = os.Remove(before.BinaryPath + ".pair-rollback.json")
@@ -268,6 +326,7 @@ the retained <binary>.previous.`,
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&repairID, "repair", "", "Approve and apply a verified upgrade heal record")
 	cmd.Flags().StringVar(&fromURL, "from", "", "HTTPS URL to download the candidate binary from")
 	cmd.Flags().StringVar(&localPath, "local", "", "Local path to a paired release archive or legacy outpost binary")
 	cmd.Flags().StringVar(&sha256Hex, "sha256", "", "Expected sha256 (hex) of the candidate — required-recommended for --from")
@@ -416,4 +475,47 @@ func waitForBuildVersion(ctx context.Context, want, version string, max time.Dur
 		case <-time.After(400 * time.Millisecond):
 		}
 	}
+}
+
+// A reconcile can fail before the release service supplies its checksum. Resolve
+// that same pinned companion target on approval, then use the recorded pair.
+func resolveBashyRepair(ctx context.Context, path, id string) error {
+	rows, err := agent.ReadHealRecords(path)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.ID != id || row.App != "bashy" {
+			continue
+		}
+		var evidence upgrade.RepairEvidence
+		b, err := json.Marshal(row.Evidence)
+		if err != nil {
+			return err
+		}
+		if err = json.Unmarshal(b, &evidence); err != nil {
+			return err
+		}
+		if upgrade.ValidateRepairTarget(evidence.Target) == nil {
+			return nil
+		}
+		tool, err := resolveBashyTool(ctx, bashyResolveOptions{Version: evidence.Target.ReleaseID})
+		if err != nil {
+			return err
+		}
+		asset := tool.Assets[runtime.GOOS+"/"+runtime.GOARCH]
+		evidence.Target.URL = asset.URL
+		evidence.Target.SHA256 = asset.SHA256
+		if err := upgrade.ValidateRepairTarget(evidence.Target); err != nil {
+			return err
+		}
+		return agent.UpdateHeal(path, id, func(saved *agent.HealRecord) error {
+			if saved.Result == "repairing" || saved.Result == "healed" {
+				return errors.New("repair already running or healed")
+			}
+			saved.Evidence = evidence
+			return nil
+		})
+	}
+	return nil
 }

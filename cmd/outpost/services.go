@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/sync/errgroup"
@@ -185,6 +186,9 @@ func startServiceReconciler(g *errgroup.Group, ctx context.Context, store *svcun
 	// re-enters here.
 	if fc != nil {
 		bashyResolver.SetVersion(fc.BashyVersion)
+		bashyResolver.mu.Lock()
+		bashyResolver.healPath = filepath.Join(filepath.Dir(cfgPath), "heals.jsonl")
+		bashyResolver.mu.Unlock()
 	}
 	// Fleet auto-roll: reconcile an existing outpost-managed bashy to the
 	// matched version at boot even on a host with no enabled unit — it may

@@ -672,14 +672,28 @@ state still in `agent.json` (see the daemon-internal secrets table): it is
 outpost's own secret, persisted so sessions survive a restart, and a
 unit's `secrets` are vault *references* that cannot hold it.
 
-Upgrades always apply — there is no per-host update-mode. Every
-`POST /admin/upgrade` envelope is staged + probed + swapped and the
-daemon restarts: the "press button, fleet rolls" behavior, on every
-host, with no opt-out. The old `update_mode` (`auto`/`manual`/`never`),
-the legacy `auto_upgrade` boolean, and the `--update` /
-`--auto-upgrade` CLI flags were removed outright (no deprecation
-aliases): old `agent.json` files carrying those keys still load, and
-the next save drops them.
+`update_mode: "auto"` permits unattended fleet upgrades. With any other
+value (including an omitted setting), a strictly newer verified release creates
+one `upgrade` incident in the heal ledger and waits for operator approval.
+Use `outpost apps heals` to list incidents and `outpost upgrade --repair <id>`
+to approve the recorded HTTPS URL and SHA256 through the normal swap path.
+Rollback retention and the auto-rollback watchdog remain enabled. Legacy
+`auto_upgrade` and `auto_rollback_enabled` keys remain ignored.
+
+A target becomes `stuck` after three declined/failed attempts, or after six
+hours since its first failure. Records include running and target versions,
+resolved artifact, checksum and failure reason. Automatic applies close their
+informational record after the swap; queue acceptance alone is not success.
+An unpaired host checks the newest verifiable release directly. Failed
+managed-bashy reconciliation also produces an upgrade incident. Approval retries checksum resolution when the failed reconcile could not
+reach the release service; no swap occurs without a resolved checksum.
+
+`outpost peers upgrade <host>` resolves a target for an owned peer's platform.
+Add `--approve` to invoke that peer's own `upgrade --from <url> --sha256 <hex>`
+through peer exec and recheck the running daemon version. Shared or non-owned
+peers are refused. Peer exec requires a configured SSH target bound directly
+to the owned peer and an existing elevation session (`outpost connect`).
+The initiating host records the repair in its local ledger.
 
 Unpaired hosts still ignore pushes — the `/admin/upgrade` route only
 mounts once cloudbox has issued an `access_token`.

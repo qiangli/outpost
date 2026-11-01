@@ -54,8 +54,8 @@ type Envelope struct {
 	// local `outpost upgrade apply` CLI) when the OPERATOR explicitly
 	// chose to apply this envelope right now. Never set by the
 	// GH-Action release webhook (those are advisory, not
-	// operator-blessed). Retained on the wire for compatibility; the
-	// worker no longer gates on it (there is no update-mode to bypass).
+	// operator-blessed). An explicit approval bypasses the manual
+	// repair gate, but never the downgrade or integrity guards.
 	Force bool `json:"force,omitempty"`
 
 	// BuildTime is the RFC3339 timestamp of the target artifact's
@@ -110,7 +110,7 @@ const (
 	StatusSameCommit    Status = "same_commit"    // current daemon is already on this commit
 	StatusDisabled      Status = "disabled"       // refused: dirty build or package-manager-owned binary
 	StatusMinFrom       Status = "min_from"       // current commit is older than envelope.min_from
-	StatusPendingManual Status = "pending_manual" // legacy: envelope persisted under the removed manual mode
+	StatusPendingManual Status = "pending_manual" // verified target recorded, awaiting operator approval
 	StatusQuarantined   Status = "quarantined"    // release was auto-reverted on this host; refuse re-apply
 	StatusDowngrade     Status = "downgrade"      // candidate is not strictly newer than the running build; deliberate rollback only via `outpost rollback`
 )

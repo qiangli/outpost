@@ -13,7 +13,7 @@ func (s *Server) healLedgerPath() string {
 	return filepath.Join(filepath.Dir(s.deps.ConfigPath), "heals.jsonl")
 }
 
-// ListHeals returns the local app-heal audit log.
+// ListHeals returns the latest state of local app and upgrade heal records.
 func (s *Server) ListHeals() ([]agent.HealRecord, error) {
 	return agent.ReadHealRecords(s.healLedgerPath())
 }

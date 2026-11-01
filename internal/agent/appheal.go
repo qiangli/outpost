@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -43,7 +42,17 @@ func ReadHealRecords(path string) ([]HealRecord, error) {
 			}
 			return nil, err
 		}
-		rows = append(rows, row)
+		found := false
+		for i := range rows {
+			if rows[i].ID == row.ID {
+				rows[i] = row
+				found = true
+				break
+			}
+		}
+		if !found {
+			rows = append(rows, row)
+		}
 	}
 }
 
@@ -284,18 +293,9 @@ func (h *AppHealer) finish(app, sig, state, reason, where string) {
 func (h *AppHealer) record(row HealRecord) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_ = os.MkdirAll(filepath.Dir(h.path), 0700)
-	f, err := os.OpenFile(h.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
+	if err := UpdateHeal(h.path, row.ID, func(saved *HealRecord) error { *saved = row; return nil }); err != nil {
 		slog.Warn("app heal ledger append failed", "err", err)
-		return
 	}
-	defer f.Close()
-	if err := restrictSecretFile(h.path); err != nil {
-		slog.Warn("app heal ledger permissions failed", "err", err)
-		return
-	}
-	_ = json.NewEncoder(f).Encode(row)
 }
 
 func (h *AppHealer) ReportCode(app string, target *url.URL, resp *http.Response) {

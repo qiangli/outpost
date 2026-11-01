@@ -1025,6 +1025,11 @@ func startCmd() *cobra.Command {
 			fmt.Fprintf(os.Stderr, "MCP endpoint: %s/mcp/  (bearer: %s)\n", adminSrv.URL(), mcpToken)
 
 			g, gctx := errgroup.WithContext(ctx)
+			if fc.AccessToken == "" {
+				bi := agent.ReadBuildInfo()
+				puller := upgrade.PullerConfig{Worker: upgradeWorker, Resolve: upgrade.GitHubSource{Platform: bi.OS + "_" + bi.Arch, Current: bi, Token: githubUpgradeToken()}.Resolve}
+				g.Go(func() error { return puller.Run(gctx) })
+			}
 			// The load sensor samples for the lifetime of the daemon, so it
 			// is bound to the errgroup's context rather than to whichever
 			// unit activation happened to start it.
@@ -1301,8 +1306,6 @@ func startCmd() *cobra.Command {
 				MountRepairRoute: func(rg *gin.RouterGroup) {
 					repair.MountRoute(rg, repairExec)
 				},
-				// NOTE: the update_mode provider was removed with the
-				// update-mode toggle (upgrades always apply).
 				SystemInfo: func() any {
 					dir, _ := conf.DefaultCacheDir()
 					return sysinfo.Collect(dir)

@@ -11,11 +11,7 @@ import (
 // disk, read it back, and assert every field survives.
 func bp(b bool) *bool { return &b }
 
-// TestRemovedRunModeKeysIgnored — update_mode, auto_upgrade and
-// auto_rollback_enabled were removed (one lifecycle: upgrades always
-// apply, the watchdog always reverts). An agent.json written by an
-// older build still loads, and the next save drops the dead keys
-// instead of round-tripping them.
+// Legacy boolean upgrade toggles are ignored; update_mode survives for repair approval.
 func TestRemovedRunModeKeysIgnored(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), "agent.json")
 	legacy := `{"agent_name":"host-1","update_mode":"never","auto_upgrade":false,"auto_rollback_enabled":true,"shell_enabled":true}`
@@ -25,6 +21,9 @@ func TestRemovedRunModeKeysIgnored(t *testing.T) {
 	fc, err := LoadFile(tmp)
 	if err != nil {
 		t.Fatalf("LoadFile with legacy keys: %v", err)
+	}
+	if fc.UpdateMode != "never" {
+		t.Fatal("update mode must survive load")
 	}
 	if fc.AgentName != "host-1" || !fc.ShellOn() {
 		t.Fatalf("live fields drifted: %+v", fc)
@@ -40,7 +39,7 @@ func TestRemovedRunModeKeysIgnored(t *testing.T) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatal(err)
 	}
-	for _, dead := range []string{"update_mode", "auto_upgrade", "auto_rollback_enabled"} {
+	for _, dead := range []string{"auto_upgrade", "auto_rollback_enabled"} {
 		if _, ok := m[dead]; ok {
 			t.Errorf("saved config still carries removed key %q: %s", dead, raw)
 		}

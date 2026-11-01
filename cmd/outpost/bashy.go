@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/qiangli/outpost/internal/agent"
+	"github.com/qiangli/outpost/internal/agent/upgrade"
 	"github.com/qiangli/outpost/internal/bashypath"
 	"github.com/qiangli/yoke/pkg/binmgr"
 )
@@ -43,6 +44,7 @@ const bashyAutoInstallBackoff = 5 * time.Minute
 // installed manually or the network returns. Simply failing forever is not an
 // option — a missing userland should self-remediate.
 type bashyBinaryResolver struct {
+	healPath   string
 	mu         sync.Mutex
 	cached     string
 	lastFetch  time.Time
@@ -159,15 +161,32 @@ func (r *bashyBinaryResolver) reconcile(ctx context.Context, path string) string
 	}
 	r.lastFetch = time.Now()
 	slog.Info("bashy version mismatch with outpost; rolling to match", "have", have, "want", want, "path", path)
-	cached, err := ensureBashy(ctx, bashyResolveOptions{Version: want})
+
+	ledger := upgrade.RepairLedger{Path: r.healPath, Component: "bashy"}
+	env := upgrade.Envelope{ReleaseID: want}
+	tool, err := resolveBashyTool(ctx, bashyResolveOptions{Version: want})
+	if err == nil {
+		asset := tool.Assets[runtime.GOOS+"/"+runtime.GOARCH]
+		env.URL = asset.URL
+		env.SHA256 = asset.SHA256
+	}
 	if err != nil {
-		slog.Warn("bashy auto-roll: fetch failed (keeping current bashy)", "err", err)
+		_ = ledger.RecordMismatch(have, env, err)
+		slog.Warn("bashy auto-roll: resolve failed", "err", err)
+		return ""
+	}
+	cached, err := binmgr.Ensure(ctx, tool)
+	if err != nil {
+		_ = ledger.RecordMismatch(have, env, err)
+		slog.Warn("bashy auto-roll: fetch failed", "err", err)
 		return ""
 	}
 	if err := installBashyExecutable(cached, path); err != nil {
-		slog.Warn("bashy auto-roll: install failed (keeping current bashy)", "err", err)
+		_ = ledger.RecordMismatch(have, env, err)
+		slog.Warn("bashy auto-roll: install failed", "err", err)
 		return ""
 	}
+	_ = ledger.FinishTarget(env, nil)
 	slog.Info("bashy auto-rolled to match outpost", "version", want, "path", path)
 	return path
 }

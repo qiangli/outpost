@@ -37,7 +37,7 @@ func peersCmd() *cobra.Command {
 		Use:   "peers",
 		Short: "Inspect the discovery cache, reachability history, and temporal predictions",
 	}
-	cmd.AddCommand(peersListCmd(), peersStatusCmd(), peersHistoryCmd(), peersPredictedCmd(), peersRouteToCmd(), peersHelpMintInviteCmd())
+	cmd.AddCommand(peersUpgradeCmd(), peersListCmd(), peersStatusCmd(), peersHistoryCmd(), peersPredictedCmd(), peersRouteToCmd(), peersHelpMintInviteCmd())
 	return cmd
 }
 

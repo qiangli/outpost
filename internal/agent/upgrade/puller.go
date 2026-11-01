@@ -61,6 +61,8 @@ type PullerConfig struct {
 	// HTTPClient is the client used for the target GET. nil →
 	// http.DefaultClient.
 	HTTPClient *http.Client
+	// Resolve overrides fleet transport for an unpaired host.
+	Resolve func(context.Context) (Envelope, error)
 }
 
 // Run blocks until ctx is canceled, polling the fleet target on the
@@ -69,7 +71,7 @@ type PullerConfig struct {
 // errgroup it runs under. Note that a successful apply restarts the
 // daemon, which cancels ctx and ends this goroutine.
 func (p PullerConfig) Run(ctx context.Context) error {
-	if p.Worker == nil || strings.TrimSpace(p.CloudboxBase) == "" || strings.TrimSpace(p.AccessToken) == "" {
+	if p.Worker == nil || (p.Resolve == nil && (strings.TrimSpace(p.CloudboxBase) == "" || strings.TrimSpace(p.AccessToken) == "")) {
 		slog.Info("upgrade puller: not configured (unpaired or no worker); pull-trigger disabled")
 		<-ctx.Done()
 		return nil
@@ -129,6 +131,8 @@ func (p PullerConfig) checkOnce(ctx context.Context) {
 			"current", agent.ReadBuildInfo().Version, "target", env.ReleaseID, "reason", reason)
 		return
 	}
+	// A passive fleet observation is never an operator approval.
+	env.Force = false
 	res := p.Worker.Apply(ctx, env)
 	switch res.Status {
 	case StatusAccepted, StatusPendingManual:
@@ -217,6 +221,10 @@ func shouldDeclinePulledTarget(cur agent.BuildInfo, target Envelope) (bool, stri
 			return false, ""
 		}
 	}
+	// Build time is authoritative over prerelease identifier ordering.
+	if targetNewerByTime && semver.Compare(stripDevSuffix(target.ReleaseID), stripDevSuffix(cur.Version)) >= 0 {
+		return false, ""
+	}
 	// 1. Semver ordering.
 	if semver.Compare(target.ReleaseID, cur.Version) <= 0 {
 		return true, "target semver not strictly newer than current"
@@ -275,6 +283,10 @@ func parseBuildTime(s string) (time.Time, error) {
 // (env, true, nil) on 200, (Envelope{}, false, nil) on 204 (nothing to
 // do), and an error on anything else.
 func (p PullerConfig) fetchTarget(ctx context.Context) (Envelope, bool, error) {
+	if p.Resolve != nil {
+		env, err := p.Resolve(ctx)
+		return env, err == nil, err
+	}
 	base := strings.TrimRight(p.CloudboxBase, "/")
 	target := base + "/api/v1/fleet/target?platform=" + p.Platform
 	cctx, cancel := context.WithTimeout(ctx, pullRequestTimeout)

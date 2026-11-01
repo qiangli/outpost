@@ -182,6 +182,18 @@ func TestDeclinePulledTarget(t *testing.T) {
 			want:   false,
 		},
 		{
+			name:   "build time proves promoted rc newer",
+			cur:    agent.BuildInfo{Version: "v1.0.0-rc.16-dev", VCSTime: "2026-10-27T05:00:00Z"},
+			target: Envelope{ReleaseID: "v1.0.0-rc.21", BuildTime: "2026-10-28T05:00:00Z"},
+			want:   false,
+		},
+		{
+			name:   "older build remains a downgrade",
+			cur:    agent.BuildInfo{Version: "v1.0.0-rc.21", VCSTime: "2026-10-28T05:00:00Z"},
+			target: Envelope{ReleaseID: "v1.0.0-rc.16-dev", BuildTime: "2026-10-27T05:00:00Z"},
+			want:   true,
+		},
+		{
 			name:   "v1.0.0-rc.21 SHOULD replace v1.0.0-rc.16-dev (promoted rc over older rc dev build)",
 			cur:    agent.BuildInfo{Version: "v1.0.0-rc.16-dev", VCSTime: "2026-10-27T05:00:00Z"},
 			target: Envelope{ReleaseID: "v1.0.0-rc.21"},
