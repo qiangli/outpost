@@ -99,9 +99,10 @@ func applyPeerRepairWithPolling(ctx context.Context, peer peerstatus.Peer, env u
 	for {
 		// Each call reconnects; bound individual requests as well as the whole window.
 		queryCtx, queryCancel := context.WithTimeout(verifyCtx, 15*time.Second)
-		version, lastErr = peerRepairVersion(queryCtx, peer.Host, run)
+		var commit string
+		version, commit, lastErr = peerRepairVersion(queryCtx, peer.Host, run)
 		queryCancel()
-		if lastErr == nil && version == env.ReleaseID {
+		if lastErr == nil && peerRunsTarget(version, commit, env) {
 			return nil
 		}
 		timer := time.NewTimer(interval)
@@ -123,22 +124,34 @@ func applyPeerRepairWithPolling(ctx context.Context, peer peerstatus.Peer, env u
 	}
 }
 
-func peerRepairVersion(ctx context.Context, host string, run peerRepairExec) (string, error) {
+func peerRepairVersion(ctx context.Context, host string, run peerRepairExec) (string, string, error) {
 	// Query the daemon: an on-disk swap alone is not success.
 	raw, err := run(ctx, host, "outpost status --json")
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var response struct {
 		Status admincore.StatusView `json:"status"`
 	}
 	if err := json.Unmarshal([]byte(raw), &response); err != nil {
-		return "", fmt.Errorf("decode peer status: %w", err)
+		return "", "", fmt.Errorf("decode peer status: %w", err)
 	}
 	if response.Status.Build.Version == "" {
-		return "", errors.New("peer status has no running version")
+		return "", "", errors.New("peer status has no running version")
 	}
-	return response.Status.Build.Version, nil
+	return response.Status.Build.Version, response.Status.Build.Commit, nil
+}
+
+// peerRunsTarget reports whether the peer's running build is the target.
+// The build commit is the identity when both sides carry one (short or
+// full sha); a release build reports its tag with a "-dev" suffix, so the
+// version comparison ignores that suffix only when no commit is available.
+func peerRunsTarget(version, commit string, env upgrade.Envelope) bool {
+	want, have := strings.ToLower(strings.TrimSpace(env.Commit)), strings.ToLower(strings.TrimSpace(commit))
+	if want != "" && have != "" {
+		return strings.HasPrefix(have, want) || strings.HasPrefix(want, have)
+	}
+	return version == env.ReleaseID || strings.TrimSuffix(version, "-dev") == env.ReleaseID
 }
 
 func execPeerRepair(ctx context.Context, host, command string) (string, error) {

@@ -153,3 +153,29 @@ func TestPeerRepairDefiniteFailureDoesNotPoll(t *testing.T) {
 		t.Fatalf("calls=%d error=%v", calls, err)
 	}
 }
+
+// Live shape: a release v1.0.0-rc.23 runs as "v1.0.0-rc.23-dev" (S549.R5b
+// live run). Identity is the build commit when both sides carry one.
+func TestPeerRunsTargetByCommit(t *testing.T) {
+	env := upgrade.Envelope{ReleaseID: "v1.1.0", Commit: "4da588d"}
+	cases := []struct {
+		name, version, commit string
+		want                  bool
+	}{
+		{"dev-suffixed release, same commit", "v1.1.0-dev", "4da588d684ac143f5ca2b9bdd9f231b83daff5b3", true},
+		{"same tag, different commit", "v1.1.0", "0123456789abcdef", false},
+		{"old build", "v1.0.0-dev", "fedcba9876543210", false},
+	}
+	for _, c := range cases {
+		if got := peerRunsTarget(c.version, c.commit, env); got != c.want {
+			t.Errorf("%s: peerRunsTarget(%q,%q) = %v, want %v", c.name, c.version, c.commit, got, c.want)
+		}
+	}
+	noCommit := upgrade.Envelope{ReleaseID: "v1.1.0"}
+	if !peerRunsTarget("v1.1.0-dev", "", noCommit) {
+		t.Error("without commits a -dev suffixed release must match its tag")
+	}
+	if peerRunsTarget("v1.1.0-rc.1", "", noCommit) {
+		t.Error("a different prerelease must not match")
+	}
+}
