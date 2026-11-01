@@ -39,8 +39,59 @@ func appsCmd() *cobra.Command {
 		appsSecretCmd(),
 		appsRotateSecretCmd(),
 		appsSuggestCmd(),
+		appsHealsCmd(),
+		appsHealUndoCmd(),
 	)
 	return cmd
+}
+
+func appsHealsCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{Use: "heals", Short: "List app heal records", RunE: func(cmd *cobra.Command, _ []string) error {
+		session, err := dialMCP(cmd.Context())
+		if err != nil {
+			return err
+		}
+		defer session.close()
+		var out struct {
+			Heals []json.RawMessage `json:"heals"`
+		}
+		if err := session.callTool(cmd.Context(), "outpost_list_app_heals", map[string]any{}, &out); err != nil {
+			return err
+		}
+		if asJSON {
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(out.Heals)
+		}
+		for _, row := range out.Heals {
+			var summary struct{ ID, App, Rung, Result, Reason string }
+			if err := json.Unmarshal(row, &summary); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s  %s  %s  %s  %s\n", summary.ID, summary.App, summary.Rung, summary.Result, summary.Reason)
+		}
+		return nil
+	}}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Print JSON records")
+	return cmd
+}
+
+func appsHealUndoCmd() *cobra.Command {
+	return &cobra.Command{Use: "heal-undo <id>", Short: "Restore an app configuration before a heal", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		session, err := dialMCP(cmd.Context())
+		if err != nil {
+			return err
+		}
+		defer session.close()
+		var out struct {
+			OK  bool           `json:"ok"`
+			App conf.AppConfig `json:"app"`
+		}
+		if err := session.callTool(cmd.Context(), "outpost_undo_app_heal", map[string]any{"id": args[0]}, &out); err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "restored app %q\n", out.App.Name)
+		return nil
+	}}
 }
 
 // appsStopCmd / appsStartCmd flip an app's Enabled flag without re-

@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"github.com/qiangli/outpost/internal/agent/federation"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -411,10 +412,48 @@ func New(deps Deps) (*Server, error) {
 	if deps.Apps == nil {
 		deps.Apps = agent.NewAppRegistry()
 	}
-	return &Server{
+	s := &Server{
 		deps:     deps,
 		detector: agent.NewBuiltinDetector(5 * time.Second),
-	}, nil
+	}
+	deps.Apps.ConfigureHealing(filepath.Join(filepath.Dir(deps.ConfigPath), "heals.jsonl"), func(name string) (conf.AppConfig, error) {
+		apps, err := s.ListApps()
+		if err != nil {
+			return conf.AppConfig{}, err
+		}
+		for _, app := range apps {
+			if app.Name == name {
+				return app, nil
+			}
+		}
+		return conf.AppConfig{}, fmt.Errorf("app %q is not configured", name)
+	}, func(app conf.AppConfig) error {
+		_, err := s.UpsertApp(AppUpsertParams{AppConfig: app})
+		return err
+	}, func(ctx context.Context, app string) (string, string, func(context.Context) error) {
+		ops := s.deps.Services
+		if ops == nil {
+			return "", "", nil
+		}
+		view, err := s.ServiceStatus()
+		if err != nil {
+			return "", "", nil
+		}
+		for _, u := range view.Units {
+			if u.App != app {
+				continue
+			}
+			starter, ok := ops.(interface {
+				StartUnit(context.Context, string) error
+			})
+			if !ok {
+				return u.Name, u.State, nil
+			}
+			return u.Name, u.State, func(ctx context.Context) error { return starter.StartUnit(ctx, u.Name) }
+		}
+		return "", "", nil
+	})
+	return s, nil
 }
 
 // Deps returns the underlying dependency struct (read-only access for

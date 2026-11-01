@@ -2,8 +2,10 @@ package mcpapi
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/qiangli/outpost/internal/agent"
 
 	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/conf"
@@ -67,7 +69,45 @@ type suggestionsOut struct {
 	Suggestions []admincore.Suggestion `json:"suggestions"`
 }
 
+type listHealsOut struct {
+	Heals []agent.HealRecord `json:"heals"`
+}
+
 func (s *Server) registerAppsTools() {
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "outpost_list_app_heals", Description: "List local app heal records."}, func(_ context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, listHealsOut, error) {
+		rows, err := s.core.ListHeals()
+		if err != nil {
+			return apiErrResult[listHealsOut](err)
+		}
+		for i := range rows {
+			if rows[i].Before != nil {
+				if b, e := json.Marshal(rows[i].Before); e == nil {
+					var app conf.AppConfig
+					if json.Unmarshal(b, &app) == nil {
+						rows[i].Before = admincore.RedactApp(app)
+					}
+				}
+			}
+			if rows[i].After != nil {
+				if b, e := json.Marshal(rows[i].After); e == nil {
+					var app conf.AppConfig
+					if json.Unmarshal(b, &app) == nil {
+						rows[i].After = admincore.RedactApp(app)
+					}
+				}
+			}
+		}
+		return nil, listHealsOut{Heals: rows}, nil
+	})
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "outpost_undo_app_heal", Description: "Restore the prior app configuration for a reversible heal."}, func(_ context.Context, _ *mcp.CallToolRequest, in struct {
+		ID string `json:"id"`
+	}) (*mcp.CallToolResult, upsertAppOut, error) {
+		app, err := s.core.UndoHeal(in.ID)
+		if err != nil {
+			return apiErrResult[upsertAppOut](err)
+		}
+		return nil, upsertAppOut{OK: true, App: admincore.RedactApp(app)}, nil
+	})
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "outpost_list_apps",
 		Description: "List the custom apps registered with this outpost. See also resource outpost://apps for an idempotent fetch.",

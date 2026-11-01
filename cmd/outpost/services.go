@@ -73,6 +73,21 @@ func (c *serviceControl) Kick() {
 	}
 }
 
+// StartUnit delegates a declared unit's process lifecycle to bashy supervisord.
+func (c *serviceControl) StartUnit(ctx context.Context, name string) error {
+	if _, ok := c.Unit(name); !ok {
+		return &svcunit.UnknownUnitError{Name: name, Known: unitNames(c.Store)}
+	}
+	if c.cli == nil {
+		return fmt.Errorf("service monitor is unavailable")
+	}
+	_, err := c.cli(ctx, "service", "start", name)
+	if err == nil {
+		c.Kick()
+	}
+	return err
+}
+
 // SetFields applies declaration overrides through `bashy service set`.
 //
 // enable/disable is a single boolean on a record, so it goes through fleet's

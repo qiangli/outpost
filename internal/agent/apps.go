@@ -138,6 +138,7 @@ type AppRegistry struct {
 	// for git-scheme apps (default: `git credential fill`). Injectable
 	// so tests can fake it without touching a credential store.
 	gitCredentialFill gitCredentialFillFunc
+	healer            *AppHealer
 }
 
 // exposeTokenHeader is the header `bashy dks relay` (and any other
@@ -468,8 +469,23 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 		return err
 	}
 	trustIdentity := meta.TrustCloudIdentity
+	if transport == nil {
+		base := http.DefaultTransport.(*http.Transport).Clone()
+		base.DialContext = (&net.Dialer{Timeout: 2 * time.Second}).DialContext
+		transport = base
+	}
 	rp := &httputil.ReverseProxy{
 		Transport: transport,
+		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
+			r.mu.RLock()
+			h := r.healer
+			r.mu.RUnlock()
+			if h == nil {
+				http.Error(w, "upstream unavailable", http.StatusBadGateway)
+				return
+			}
+			h.ProxyError(w, req, name, target, err)
+		},
 		// Rewrite absolute-path Location headers (3xx redirects) so they
 		// stay inside the public mount. Without this, an upstream that
 		// returns `Location: /admin/login` (lots of CMS / classic web
@@ -486,6 +502,12 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 		// prefixed by the mount (so a well-behaved app that already
 		// honors X-Forwarded-Prefix doesn't get double-prefixed).
 		ModifyResponse: func(resp *http.Response) error {
+			r.mu.RLock()
+			h := r.healer
+			r.mu.RUnlock()
+			if h != nil && resp.StatusCode >= 500 {
+				h.ReportCode(name, target, resp)
+			}
 			// Echo the traceparent outpost saw back as a response
 			// header so an end-to-end caller (ycode + curl) can
 			// inspect the trace_id outpost actually received — load-
@@ -995,6 +1017,7 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	intercepts := r.intercepts[name]
 	wrap := r.proxyWrap[name]
 	guard, guarded := r.expose[name]
+	healer := r.healer
 	r.mu.RUnlock()
 	// Expose-token guard (S487.2). Runs FIRST — before the intercepts,
 	// the reverse proxy and the tcp/egress WebSocket bridges — so a
@@ -1032,7 +1055,7 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 		// match: "/kiosk" blocks "/kiosk" and "/kiosk/foo" but not
 		// "/kiosks-of-truth".
 		for _, p := range lanOnly {
-			if matchSegmentPrefix(rest, p) {
+			if rest != "/.outpost/heal" && matchSegmentPrefix(rest, p) {
 				c.AbortWithStatus(http.StatusNotFound)
 				return
 			}
@@ -1041,6 +1064,15 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	// Per-app intercept (e.g. /_pool/capacity on the ollama mount).
 	// Runs after the cloud-side gate so intercepts inherit the same
 	// auth posture as the proxy itself.
+	if rest == "/.outpost/heal" && healer != nil {
+		if c.Request.Method != http.MethodGet {
+			c.AbortWithStatus(http.StatusMethodNotAllowed)
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		c.JSON(http.StatusOK, healer.Status(name))
+		return
+	}
 	if h := matchIntercept(intercepts, rest); h != nil {
 		h.ServeHTTP(c.Writer, c.Request)
 		return
