@@ -1479,7 +1479,7 @@ func startCmd() *cobra.Command {
 			// later would never be registered and its unit would report
 			// "capability is not registered" on a daemon that in fact hosts
 			// it.
-			svcControl := startServiceReconciler(g, gctx, svcStore, cfgPath, fc, apps, meshHost, caps)
+			svcControl := startServiceReconciler(g, gctx, svcStore, cfgPath, fc, apps, meshHost, caps, core)
 			core.SetServices(svcControl)
 
 			// Fleet-upgrade pull trigger — the catch-up half of the
