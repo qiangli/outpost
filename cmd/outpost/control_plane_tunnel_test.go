@@ -51,7 +51,11 @@ func TestStartControlPlaneTunnel_MintsAndPersistsBothCredentials(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	g, gctx := errgroup.WithContext(ctx)
-	startControlPlaneTunnel(gctx, g, fc, cfgPath)
+	prepared := startControlPlaneTunnel(gctx, g, testServiceSecrets(t, cfgPath, fc))
+	if prepared == nil || prepared.Cluster == nil || prepared.Cluster.ControlPlaneKubeconfig == "" {
+		t.Fatal("runtime consumers received no prepared kubeconfig")
+	}
+	fc = prepared
 
 	// A worker needs BOTH. Minting one would leave a control plane that looks
 	// configured and refuses every join.
@@ -105,7 +109,11 @@ func TestStartControlPlaneTunnel_KeepsOperatorKubeconfigPath(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	g, gctx := errgroup.WithContext(ctx)
-	startControlPlaneTunnel(gctx, g, fc, cfgPath)
+	prepared := startControlPlaneTunnel(gctx, g, testServiceSecrets(t, cfgPath, fc))
+	if prepared == nil || prepared.Cluster == nil || prepared.Cluster.ControlPlaneKubeconfig == "" {
+		t.Fatal("runtime consumers received no prepared kubeconfig")
+	}
+	fc = prepared
 	if fc.Cluster.ControlPlaneKubeconfig != "/operator/chose/this.yaml" {
 		t.Errorf("clobbered the operator's path: %q", fc.Cluster.ControlPlaneKubeconfig)
 	}
@@ -132,7 +140,12 @@ func TestStartControlPlaneTunnel_NoOpWhenNotControlPlane(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			g, gctx := errgroup.WithContext(ctx)
-			startControlPlaneTunnel(gctx, g, fc, filepath.Join(dir, "agent.json"))
+			startControlPlaneTunnel(gctx, g, testServiceSecrets(t, filepath.Join(dir, "agent.json"), fc))
+			persisted, err := conf.LoadFile(filepath.Join(dir, "agent.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cc = persisted.Cluster
 
 			if cc != nil && (cc.TunnelToken != "" || cc.STCPSecret != "") {
 				t.Error("minted cluster credentials on a host that hosts nothing")

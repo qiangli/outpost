@@ -189,9 +189,8 @@ func startServiceReconciler(g *errgroup.Group, ctx context.Context, store *svcun
 	if store == nil {
 		store = serviceStore()
 	}
-	if _, err := migrateLegacyServices(cfgPath, fc, store); err != nil {
-		slog.Warn("legacy service migration", "err", err)
-	}
+	// Legacy migration runs once before listeners start; never replay a stale
+	// raw-config rewrite from this asynchronous capability setup.
 	// The in-process capabilities this daemon hosts. The caller built each
 	// one with the live objects only it has (the app registry, the mesh
 	// forwarder, the load sensor); the one thing resolved here is the forge
