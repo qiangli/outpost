@@ -22,7 +22,6 @@ import (
 	"github.com/qiangli/yoke/pkg/service"
 
 	"github.com/qiangli/outpost/internal/agent"
-	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/svcunit"
 )
@@ -99,7 +98,7 @@ func TestTrustedUnitAppReceivesVerifiableIdentity(t *testing.T) {
 	r := svcunit.New(svcunit.Deps{
 		Source:  st,
 		Apps:    appExposer{reg: reg},
-		Secrets: testServiceSecrets(t, cfgPath, fc),
+		Secrets: serviceSecrets{path: cfgPath, fc: fc},
 	})
 	if err := r.ReloadAndReconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -151,16 +150,12 @@ func TestTrustedUnitSSOKeyIsMintedOnceAndPersisted(t *testing.T) {
 	r := svcunit.New(svcunit.Deps{
 		Source:  st,
 		Apps:    appExposer{reg: reg},
-		Secrets: testServiceSecrets(t, cfgPath, fc),
+		Secrets: serviceSecrets{path: cfgPath, fc: fc},
 	})
 	if err := r.ReloadAndReconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	persisted, err := conf.LoadFile(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	minted := persisted.ServiceSSO["console"]
+	minted := fc.ServiceSSO["console"]
 	if minted == "" {
 		t.Fatal("no sso key was minted for a trust_cloud_identity unit")
 	}
@@ -179,7 +174,7 @@ func TestTrustedUnitSSOKeyIsMintedOnceAndPersisted(t *testing.T) {
 	if err := r.ReloadAndReconcile(context.Background()); err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
-	if reg.SSOSecret("console") != minted {
+	if fc.ServiceSSO["console"] != minted {
 		t.Fatal("the sso key rotated on an unchanged reconcile")
 	}
 	// The declared elevation requirement survived into the live registry.
@@ -443,16 +438,4 @@ func TestActrunnerCapabilityReusesRegistrationWithoutToken(t *testing.T) {
 	if err := cap.Deactivate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func testServiceSecrets(t *testing.T, path string, fc *conf.FileConfig) *admincore.Server {
-	t.Helper()
-	if err := conf.SaveFile(path, fc); err != nil {
-		t.Fatal(err)
-	}
-	core, err := admincore.New(admincore.Deps{ConfigPath: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return core
 }

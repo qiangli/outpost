@@ -333,7 +333,7 @@ func startCmd() *cobra.Command {
 					// The session signing key is outpost's secret, persisted so
 					// File Browser sessions survive a daemon restart; a unit's
 					// `secrets` are vault REFERENCES and cannot hold it.
-					// Bound to the configuration owner below before activation.
+					SigningKey: func() ([]byte, error) { return conf.EnsureFilesSigningKey(cfgPath, fc) },
 				},
 				Podman:  &podmanCapability{Apps: apps},
 				Sandbox: &sandboxCapability{Apps: apps},
@@ -871,7 +871,6 @@ func startCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("admincore: %w", err)
 			}
-			caps.Files.SigningKey = core.FilesSigningKey
 
 			// Considerate warm-serving plane (P3) — a service unit
 			// (`outpost.warm`). The executor keeps a small conservative set
@@ -961,10 +960,18 @@ func startCmd() *cobra.Command {
 				return fmt.Errorf("mcp bearer token: %w", err)
 			}
 			mcpSrv, err := mcpapi.New(mcpapi.Deps{
-				Core:     core,
-				Token:    mcpToken,
-				Version:  agent.ReadBuildInfo().Short(),
-				RotateFn: core.RotateMCPBearer,
+				Core:    core,
+				Token:   mcpToken,
+				Version: agent.ReadBuildInfo().Short(),
+				RotateFn: func() (string, error) {
+					// Re-load the FileConfig from disk so any other write
+					// since boot is respected, then rotate atomically.
+					cur, lerr := conf.LoadFile(cfgPath)
+					if lerr != nil || cur == nil {
+						cur = fc
+					}
+					return conf.RotateMCPBearerToken(cfgPath, cur)
+				},
 				Upgrader: upgradeWorker,
 				Ledger:   upgradeLedger,
 				// Wave 3B.2: pluggable discovery-cache snapshot. The
@@ -1472,7 +1479,7 @@ func startCmd() *cobra.Command {
 			// later would never be registered and its unit would report
 			// "capability is not registered" on a daemon that in fact hosts
 			// it.
-			svcControl := startServiceReconciler(g, gctx, svcStore, cfgPath, fc, apps, meshHost, caps, core)
+			svcControl := startServiceReconciler(g, gctx, svcStore, cfgPath, fc, apps, meshHost, caps)
 			core.SetServices(svcControl)
 
 			// Fleet-upgrade pull trigger — the catch-up half of the
@@ -1549,7 +1556,16 @@ func startCmd() *cobra.Command {
 						Principal:    fc.AgentName,
 						HostKey:      sshHostKey,
 						OnRefresh: func(cert, caPubkey string) error {
-							return core.StoreHostCertificate(fc.AgentName, fc.AccessToken, cert, caPubkey)
+							cur, lerr := conf.LoadFile(cfgPath)
+							if lerr != nil || cur == nil {
+								return lerr
+							}
+							if cur.Cluster == nil {
+								cur.Cluster = &conf.ClusterConfig{}
+							}
+							cur.Cluster.HostCert = cert
+							cur.Cluster.CAPubkey = caPubkey
+							return conf.SaveFile(cfgPath, cur)
 						},
 					})
 					if mErr != nil {
@@ -1647,10 +1663,10 @@ func startCmd() *cobra.Command {
 			// operator had not also given this host a runtime would be a
 			// confusing failure: the workers' symptom would be "connection
 			// refused" with nothing wrong on their side.
-			planeConfig := startControlPlaneTunnel(gctx, g, core)
-			startFederationHost(gctx, g, planeConfig, core)
+			startControlPlaneTunnel(gctx, g, fc, cfgPath)
+			startFederationHost(gctx, g, fc, core)
 			startFederationMember(gctx, g, fc)
-			startControlPlaneTelemetry(gctx, g, planeConfig, caps.Otel)
+			startControlPlaneTelemetry(gctx, g, fc, caps.Otel)
 
 			if runtimeErr := fc.Cluster.ValidateRuntimes(); fc.ClusterOn() && runtimeErr != nil {
 				slog.Warn("cluster: disabled by invalid runtime configuration", "err", runtimeErr)
@@ -1670,7 +1686,7 @@ func startCmd() *cobra.Command {
 					// restarted the daemon. Runs in the background so bringing
 					// a cold runtime up never holds the tunnel or admin UI.
 					g.Go(func() error {
-						joinClusterWithRetry(gctx, g, fc, cfgPath, core, apps, peerPlaneSvc, loadPlane, caps.Ollama)
+						joinClusterWithRetry(gctx, g, fc, cfgPath, apps, peerPlaneSvc, loadPlane, caps.Ollama)
 						return nil
 					})
 				}
@@ -2231,7 +2247,7 @@ func logPeerOverlayFetch(node string, haveKey bool, err error) {
 //
 // Returns once the join succeeds; startClusterRunner owns the long-lived
 // goroutines from that point on.
-func joinClusterWithRetry(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, core *admincore.Server, apps *agent.AppRegistry, peerSvc *peerplane.Service, load *sysloadPlane, pool *ollamaCapability) {
+func joinClusterWithRetry(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service, load *sysloadPlane, pool *ollamaCapability) {
 	if err := startPeerVirtualVisitor(ctx, g, fc, func(tc agent.TunnelConfig, visitors []agent.STCPVisitor) (peerVisitorTunnel, error) {
 		return agent.NewTunnel(tc, nil, visitors, nil)
 	}); err != nil {
@@ -2243,7 +2259,7 @@ func joinClusterWithRetry(ctx context.Context, g *errgroup.Group, fc *conf.FileC
 		maxDelay   = 2 * time.Minute
 	)
 	for attempt, delay := 1, firstDelay; ; attempt++ {
-		err := startClusterRunner(ctx, g, fc, cfgPath, core, apps, peerSvc, load, workerBootstrapJoiners{Pool: pool})
+		err := startClusterRunner(ctx, g, fc, cfgPath, apps, peerSvc, load, workerBootstrapJoiners{Pool: pool})
 		if err == nil {
 			return
 		}
@@ -2263,15 +2279,7 @@ func joinClusterWithRetry(ctx context.Context, g *errgroup.Group, fc *conf.FileC
 	}
 }
 
-func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, core *admincore.Server, apps *agent.AppRegistry, peerSvc *peerplane.Service, load *sysloadPlane, joiners ...workerBootstrapJoiners) error {
-	// Startup consumers own this snapshot. Refresh callbacks only update disk
-	// and the token file; they never race the running workers' config reads.
-	var err error
-	fc, err = core.LoadConfig()
-	if err != nil {
-		return err
-	}
-
+func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string, apps *agent.AppRegistry, peerSvc *peerplane.Service, load *sysloadPlane, joiners ...workerBootstrapJoiners) error {
 	nodeBase := fc.ClusterNodeName()
 	if nodeBase == "" {
 		return errors.New("ClusterNodeName empty (agent_name unset?)")
@@ -2399,10 +2407,7 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 				slog.Warn("cluster virtual runtimes: fetch failed; falling back to cached credentials",
 					"err", err, "host", hostName)
 			} else {
-				if err := core.StoreClusterCredential(fc.AgentName, fc.AccessToken, fetched.APIURL, fetched.Token, fetched.CA); err != nil {
-					return fmt.Errorf("persist cluster credentials: %w", err)
-				}
-				cc.APIURL, cc.Token, cc.CA = fetched.APIURL, fetched.Token, fetched.CA
+				persistClusterCredential(fc, cfgPath, fetched)
 			}
 		}
 
@@ -2581,9 +2586,7 @@ func startClusterRunner(ctx context.Context, g *errgroup.Group, fc *conf.FileCon
 			NodeName:      hostName,
 			TokenFilePath: tokenFile,
 			OnRotation: func(p *vknode.ParsedKubeconfig) {
-				if err := core.StoreClusterCredential(fc.AgentName, fc.AccessToken, p.APIURL, p.Token, p.CA); err != nil {
-					slog.Warn("cluster virtual runtimes: credential persistence failed", "err", err)
-				}
+				persistClusterCredential(fc, cfgPath, p)
 			},
 		})
 		g.Go(func() error {
@@ -2650,16 +2653,10 @@ func runVirtualNodeWithRetry(ctx context.Context, node, backend string, initialB
 //
 // A no-op on every host that is not the control plane, which is nearly all of
 // them.
-func startControlPlaneTunnel(ctx context.Context, g *errgroup.Group, core *admincore.Server) *conf.FileConfig {
-	kubeDir := controlPlaneKubeconfigDir()
-	fc, err := core.PrepareControlPlane(runtime.KubeconfigPath(kubeDir))
-	if err != nil {
-		slog.Warn("control plane: configuration unavailable", "err", err)
-		return nil
-	}
+func startControlPlaneTunnel(ctx context.Context, g *errgroup.Group, fc *conf.FileConfig, cfgPath string) {
 	if fc == nil {
 		slog.Info("control plane: not hosting (no configuration loaded)")
-		return nil
+		return
 	}
 	// A2 — this decline used to be SILENT, which is why a host that was meant
 	// to host the plane produced no log line at all: cluster.control_plane was
@@ -2678,12 +2675,25 @@ func startControlPlaneTunnel(ctx context.Context, g *errgroup.Group, core *admin
 			slog.Warn("control plane: not hosting — control_plane flag is off, " +
 				"but this host carries control-plane credentials; the flag may " +
 				"have been dropped on register/recover (re-set cluster.control_plane)")
-			return fc
+			return
 		}
 		slog.Info("control plane: not hosting (cluster.control_plane is off)")
-		return fc
+		return
 	}
-	token, secret := fc.Cluster.TunnelToken, fc.Cluster.STCPSecret
+	// Both credentials, minted together: a worker needs the pair, and a plane
+	// with only one of them accepts logins and refuses every join.
+	token, err := conf.EnsureClusterTunnelToken(cfgPath, fc)
+	if err != nil {
+		// Non-fatal, like every other cluster boot failure here: a host that
+		// cannot mint a token should still serve its apps and shell.
+		slog.Warn("control plane: disabled (no tunnel token)", "err", err)
+		return
+	}
+	secret, err := conf.EnsureControlPlaneSTCPSecret(cfgPath, fc)
+	if err != nil {
+		slog.Warn("control plane: disabled (no stcp secret)", "err", err)
+		return
+	}
 	addr, port := fc.Cluster.TunnelBind()
 
 	// THE CONTROL PLANE IS A CONTAINER, not an in-process tunnel server.
@@ -2696,6 +2706,7 @@ func startControlPlaneTunnel(ctx context.Context, g *errgroup.Group, core *admin
 	// Co-locating them in one container is what cloudbox does in one process,
 	// and it is the only arrangement that works identically on Linux and on
 	// macOS (where podman runs a VM, so "the host" is a different machine).
+	kubeDir := controlPlaneKubeconfigDir()
 	opts := runtime.ServerOptions{
 		AgentName:      fc.ClusterNodeName(),
 		TunnelToken:    token,
@@ -2714,7 +2725,13 @@ func startControlPlaneTunnel(ctx context.Context, g *errgroup.Group, core *admin
 	}
 	if opts.AgentName == "" {
 		slog.Warn("control plane: disabled (no node name)")
-		return nil
+		return
+	}
+
+	// Remember where the kubeconfig lands so the reconcilers below — and the
+	// operator — can find it without being told twice.
+	if err := rememberControlPlaneKubeconfig(fc, cfgPath, runtime.KubeconfigPath(kubeDir)); err != nil {
+		slog.Warn("control plane: could not record kubeconfig path", "err", err)
 	}
 
 	// A1/A3 — supervise the container for the daemon's life instead of a
@@ -2745,7 +2762,6 @@ func startControlPlaneTunnel(ctx context.Context, g *errgroup.Group, core *admin
 	// The reconcilers act on the plane THIS host hosts, so they belong here
 	// beside the server rather than in the join path.
 	startControlPlaneReconcilers(ctx, g, fc)
-	return fc
 }
 
 // controlPlaneKubeconfigDir is the host directory the control-plane container
@@ -2758,6 +2774,20 @@ func controlPlaneKubeconfigDir() string {
 		return filepath.Join(home, ".kube", "outpost-control-plane")
 	}
 	return filepath.Join(os.TempDir(), "outpost-control-plane")
+}
+
+// rememberControlPlaneKubeconfig records the path so the reconcilers pick it
+// up without the operator having to configure what we already know. An
+// explicit operator value is never overwritten.
+func rememberControlPlaneKubeconfig(fc *conf.FileConfig, cfgPath, path string) error {
+	if fc == nil || fc.Cluster == nil || strings.TrimSpace(fc.Cluster.ControlPlaneKubeconfig) != "" {
+		return nil
+	}
+	fc.Cluster.ControlPlaneKubeconfig = path
+	if cfgPath == "" {
+		return nil
+	}
+	return conf.SaveFile(cfgPath, fc)
 }
 
 // startControlPlaneReconcilers lives in control_plane_reconcilers.go — it has
@@ -2868,6 +2898,33 @@ func shouldFetchKubeconfig(fc *conf.FileConfig) bool {
 		return true
 	}
 	return time.Now().After(exp)
+}
+
+// persistClusterCredential writes a freshly-fetched (or rotated)
+// kubeconfig triple back into fc.Cluster + saves the FileConfig so a
+// future outpost restart starts from the rotated state without
+// re-fetching. Best-effort: a save failure logs but doesn't undo the
+// in-memory rotation (the next refresh tick will try again).
+func persistClusterCredential(fc *conf.FileConfig, cfgPath string, p *vknode.ParsedKubeconfig) {
+	if fc.Cluster == nil {
+		// Defensive: we only reach here for a host already joining
+		// (shouldFetchKubeconfig is gated on ClusterOn), so Cluster is
+		// normally non-nil with Enabled explicitly true. Mark Enabled so
+		// the credential we're persisting isn't left dangling under an
+		// opt-in (nil→off) config.
+		on := true
+		fc.Cluster = &conf.ClusterConfig{Enabled: &on}
+	}
+	fc.Cluster.APIURL = p.APIURL
+	fc.Cluster.Token = p.Token
+	fc.Cluster.CA = p.CA
+	if cfgPath == "" {
+		return
+	}
+	if err := conf.SaveFile(cfgPath, fc); err != nil {
+		slog.Warn("cluster virtual runtimes: rotated credentials but file save failed",
+			"err", err, "path", cfgPath)
+	}
 }
 
 // tryReattach is the boot-time Layer-1 defense call: when we hold a

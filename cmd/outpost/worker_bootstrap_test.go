@@ -78,9 +78,7 @@ func runWorkerStartup(t *testing.T, fc *conf.FileConfig, deps workerBootstrapJoi
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	var g errgroup.Group
-	cfgPath := filepath.Join(t.TempDir(), "agent.json")
-	core := testServiceSecrets(t, cfgPath, fc)
-	if err := startClusterRunner(ctx, &g, fc, cfgPath, core, nil, nil, nil, deps); err != nil {
+	if err := startClusterRunner(ctx, &g, fc, filepath.Join(t.TempDir(), "agent.json"), nil, nil, nil, deps); err != nil {
 		cancel()
 		return err
 	}

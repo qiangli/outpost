@@ -160,6 +160,18 @@ type meshExposer struct{ host *mesh.Host }
 func (m meshExposer) Expose(name, addr string) { m.host.Forwarder().Expose(name, addr) }
 func (m meshExposer) Unexpose(name string)     { m.host.Forwarder().Unexpose(name) }
 
+// serviceSecrets mints and persists the per-app trusted-identity HMAC keys a
+// unit's `expose.app.trust_cloud_identity` asks for. The declaration never
+// holds the key — it only says that one is wanted.
+type serviceSecrets struct {
+	path string
+	fc   *conf.FileConfig
+}
+
+func (s serviceSecrets) SSOSecret(app string) (string, error) {
+	return conf.EnsureServiceSSOSecret(s.path, s.fc, app)
+}
+
 // startServiceReconciler wires the exposure reconciler into the daemon's
 // errgroup and returns the control surface admincore hands to the SPA, MCP
 // and CLI.
@@ -167,7 +179,7 @@ func (m meshExposer) Unexpose(name string)     { m.host.Forwarder().Unexpose(nam
 // apps may be nil (nothing to publish to) and meshHost may be nil (mesh off);
 // the reconciler simply has one fewer surface to reconcile.
 func startServiceReconciler(g *errgroup.Group, ctx context.Context, store *svcunit.Store, cfgPath string, fc *conf.FileConfig,
-	apps *agent.AppRegistry, meshHost *mesh.Host, deps capabilityDeps, secrets svcunit.Secrets) *serviceControl {
+	apps *agent.AppRegistry, meshHost *mesh.Host, deps capabilityDeps) *serviceControl {
 
 	// Pin (or leave at latest) the bashy release the self-heal auto-install
 	// fetches. Read once at boot; changing it schedules a restart, which
@@ -189,8 +201,9 @@ func startServiceReconciler(g *errgroup.Group, ctx context.Context, store *svcun
 	if store == nil {
 		store = serviceStore()
 	}
-	// Legacy migration runs once before listeners start; never replay a stale
-	// raw-config rewrite from this asynchronous capability setup.
+	if _, err := migrateLegacyServices(cfgPath, fc, store); err != nil {
+		slog.Warn("legacy service migration", "err", err)
+	}
 	// The in-process capabilities this daemon hosts. The caller built each
 	// one with the live objects only it has (the app registry, the mesh
 	// forwarder, the load sensor); the one thing resolved here is the forge
@@ -209,7 +222,7 @@ func startServiceReconciler(g *errgroup.Group, ctx context.Context, store *svcun
 
 	rdeps := svcunit.Deps{
 		Source:   store,
-		Secrets:  secrets,
+		Secrets:  serviceSecrets{path: cfgPath, fc: fc},
 		Internal: internal,
 		// The monitor's owner socket: it decides which of this daemon's
 		// internal units run, and is told what they actually did.

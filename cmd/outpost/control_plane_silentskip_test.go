@@ -46,7 +46,7 @@ func TestStartControlPlaneTunnel_WarnsOnResidualCredentialsWithFlagOff(t *testin
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	g, gctx := errgroup.WithContext(ctx)
-	startControlPlaneTunnel(gctx, g, testServiceSecrets(t, filepath.Join(dir, "agent.json"), fc))
+	startControlPlaneTunnel(gctx, g, fc, filepath.Join(dir, "agent.json"))
 	cancel()
 	_ = g.Wait()
 
@@ -68,7 +68,7 @@ func TestStartControlPlaneTunnel_LogsPlainDeclineWhenNotControlPlane(t *testing.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	g, gctx := errgroup.WithContext(ctx)
-	startControlPlaneTunnel(gctx, g, testServiceSecrets(t, filepath.Join(dir, "agent.json"), fc))
+	startControlPlaneTunnel(gctx, g, fc, filepath.Join(dir, "agent.json"))
 	cancel()
 	_ = g.Wait()
 

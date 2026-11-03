@@ -19,11 +19,6 @@ func (f *fakeUserServiceManager) Uninstall() error {
 }
 
 func TestActivatePairedService(t *testing.T) {
-	// The default-service scenario must not inherit a scratch XDG path.
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
 	original := pairingServiceManager
 	fake := &fakeUserServiceManager{}
 	pairingServiceManager = fake
