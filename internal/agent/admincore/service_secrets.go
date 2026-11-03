@@ -14,3 +14,15 @@ func (s *Server) SSOSecret(app string) (string, error) {
 	}
 	return conf.EnsureServiceSSOSecret(s.deps.ConfigPath, fc, app)
 }
+
+// FilesSigningKey lazily mints the File Browser key without allowing a late
+// capability activation to write the daemon's stale startup configuration.
+func (s *Server) FilesSigningKey() ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fc, err := s.loadConfig()
+	if err != nil {
+		return nil, err
+	}
+	return conf.EnsureFilesSigningKey(s.deps.ConfigPath, fc)
+}

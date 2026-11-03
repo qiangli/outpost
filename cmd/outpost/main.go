@@ -333,7 +333,7 @@ func startCmd() *cobra.Command {
 					// The session signing key is outpost's secret, persisted so
 					// File Browser sessions survive a daemon restart; a unit's
 					// `secrets` are vault REFERENCES and cannot hold it.
-					SigningKey: func() ([]byte, error) { return conf.EnsureFilesSigningKey(cfgPath, fc) },
+					// Bound to the configuration owner below before activation.
 				},
 				Podman:  &podmanCapability{Apps: apps},
 				Sandbox: &sandboxCapability{Apps: apps},
@@ -871,6 +871,7 @@ func startCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("admincore: %w", err)
 			}
+			caps.Files.SigningKey = core.FilesSigningKey
 
 			// Considerate warm-serving plane (P3) — a service unit
 			// (`outpost.warm`). The executor keeps a small conservative set
