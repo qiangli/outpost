@@ -2906,6 +2906,32 @@ func shouldFetchKubeconfig(fc *conf.FileConfig) bool {
 // re-fetching. Best-effort: a save failure logs but doesn't undo the
 // in-memory rotation (the next refresh tick will try again).
 func persistClusterCredential(fc *conf.FileConfig, cfgPath string, p *vknode.ParsedKubeconfig) {
+	applyClusterCredential(fc, p)
+	if cfgPath == "" {
+		return
+	}
+	// fc is the snapshot taken at boot, and the rotation runs on a 12 h
+	// timer. Saving it whole erased every change made since — apps added
+	// with `outpost apps add` vanished at the next rotation. Apply the
+	// credential to the file as it is now, like the host-cert refresh does.
+	cur, err := conf.LoadFile(cfgPath)
+	if err != nil {
+		slog.Warn("cluster virtual runtimes: rotated credentials but could not reload config",
+			"err", err, "path", cfgPath)
+		return
+	}
+	if cur == nil {
+		cur = fc // first boot: nothing on disk yet
+	} else {
+		applyClusterCredential(cur, p)
+	}
+	if err := conf.SaveFile(cfgPath, cur); err != nil {
+		slog.Warn("cluster virtual runtimes: rotated credentials but file save failed",
+			"err", err, "path", cfgPath)
+	}
+}
+
+func applyClusterCredential(fc *conf.FileConfig, p *vknode.ParsedKubeconfig) {
 	if fc.Cluster == nil {
 		// Defensive: we only reach here for a host already joining
 		// (shouldFetchKubeconfig is gated on ClusterOn), so Cluster is
@@ -2918,13 +2944,6 @@ func persistClusterCredential(fc *conf.FileConfig, cfgPath string, p *vknode.Par
 	fc.Cluster.APIURL = p.APIURL
 	fc.Cluster.Token = p.Token
 	fc.Cluster.CA = p.CA
-	if cfgPath == "" {
-		return
-	}
-	if err := conf.SaveFile(cfgPath, fc); err != nil {
-		slog.Warn("cluster virtual runtimes: rotated credentials but file save failed",
-			"err", err, "path", cfgPath)
-	}
 }
 
 // tryReattach is the boot-time Layer-1 defense call: when we hold a
