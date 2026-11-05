@@ -48,10 +48,6 @@ type Info struct {
 	// agent_name, not this.
 	Hostname string `json:"hostname,omitempty"`
 
-	// LANIPs are private addresses on active, non-loopback interfaces.
-	// Recollected on each poll so network changes do not require a restart.
-	LANIPs []string `json:"lan_ips,omitempty"`
-
 	// GPUs is the list of accelerator devices we managed to detect.
 	// Each entry is one physical (or logical, for Apple Silicon) GPU.
 	// Empty list = "no GPU detected or the platform probe failed" —
@@ -104,7 +100,6 @@ func Collect(dataDir string) Info {
 		OS:       runtime.GOOS,
 		CPUCount: runtime.NumCPU(),
 		Hostname: hostname(),
-		LANIPs:   lanIPs(),
 		CPUModel: cpuModel(),
 	}
 	if m := memTotalBytes(); m > 0 {
