@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -81,6 +82,37 @@ func resolvePairingConfigPath(out string) string {
 		return p
 	}
 	return ""
+}
+
+// pairingReachesRunningDaemon reports whether a pairing written to out is
+// the config the running daemon reads (the default config path under the
+// current environment). A pairing written anywhere else, such as the
+// profile file outpost-profile add writes, must not restart the daemon:
+// the restart would only drop the daemon's own satellite connection.
+// Unknown cases answer true, keeping the old restart behavior.
+func pairingReachesRunningDaemon(out string) bool {
+	def, err := conf.DefaultConfigPath()
+	if err != nil {
+		return true
+	}
+	target := resolvePairingConfigPath(out)
+	if target == "" {
+		return true
+	}
+	a, errA := filepath.Abs(target)
+	b, errB := filepath.Abs(def)
+	if errA != nil || errB != nil {
+		return true
+	}
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	if fa, err := os.Stat(a); err == nil {
+		if fb, err := os.Stat(b); err == nil && os.SameFile(fa, fb) {
+			return true
+		}
+	}
+	return false
 }
 
 // activatePairedService installs the per-user service after pairing so

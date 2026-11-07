@@ -3355,8 +3355,10 @@ code" dialog usually only needs --code.`,
 				if err := doRecover(cmd.Context(), serverURL, recoveryCode, name, title, authURL, out, clientOnly, withService); err != nil {
 					return err
 				}
-				if handled, _ := restartRunningDaemon(cmd.Context()); handled {
-					return nil
+				if pairingReachesRunningDaemon(out) {
+					if handled, _ := restartRunningDaemon(cmd.Context()); handled {
+						return nil
+					}
 				}
 				if clientOnly {
 					fmt.Println()
@@ -3424,8 +3426,15 @@ code" dialog usually only needs --code.`,
 			// The merge above preserved its MCP bearer token, so the call
 			// authenticates. handled=true means a daemon was present, so we
 			// skip our own start-now prompt.
-			if handled, _ := restartRunningDaemon(cmd.Context()); handled {
-				return nil
+			// Only a pairing into the daemon's own config needs the restart;
+			// one written elsewhere (--out, e.g. an outpost-profile profile)
+			// leaves the running outpost and its satellite connection alone.
+			if pairingReachesRunningDaemon(out) {
+				if handled, _ := restartRunningDaemon(cmd.Context()); handled {
+					return nil
+				}
+			} else if _, running := runningDaemonPID(); running {
+				fmt.Printf("Paired into %s. The running outpost uses a different config and was left running.\n", resolvePairingConfigPath(out))
 			}
 			// Client-only registrations have no tunnel + no inbound
 			// surface, so the only thing `outpost start` would do is

@@ -176,3 +176,40 @@ func TestConfIsDefaultHelpers(t *testing.T) {
 	}
 	_ = os.MkdirAll // keep import used
 }
+
+// TestPairingReachesRunningDaemon: a pairing restarts the running outpost
+// only when it lands in the config that outpost reads. outpost-profile add
+// writes a profile file (register --out <profile>/agent.json), and that
+// must leave the running outpost and its satellite connection alone.
+func TestPairingReachesRunningDaemon(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	def, err := conf.DefaultConfigPath()
+	if err != nil {
+		t.Fatalf("DefaultConfigPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(def), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(def, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	profile := filepath.Join(xdg, "matrix", "profiles", "class", "agent.json")
+	for _, tc := range []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{"no --out (default config)", "", true},
+		{"--out is the default config", def, true},
+		{"--out is the default config, unclean spelling", filepath.Join(filepath.Dir(def), ".", "agent.json"), true},
+		{"--out is a profile file", profile, false},
+		{"--out is elsewhere", filepath.Join(t.TempDir(), "agent.json"), false},
+	} {
+		if got := pairingReachesRunningDaemon(tc.out); got != tc.want {
+			t.Errorf("%s: pairingReachesRunningDaemon(%q) = %v, want %v", tc.name, tc.out, got, tc.want)
+		}
+	}
+}
