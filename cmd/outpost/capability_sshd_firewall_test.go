@@ -13,10 +13,10 @@ func TestSSHDFirewallRuleArgs(t *testing.T) {
 	got := sshdRuleArgs("outpost sshd", `C:\Program Files\outpost\outpost.exe`, 2222, "private,domain", "any")
 	joined := strings.Join(got, " ")
 	for _, want := range []string{
-		`name="outpost sshd"`,
+		`name=outpost sshd`,
 		`dir=in`,
 		`action=allow`,
-		`program="C:\Program Files\outpost\outpost.exe"`,
+		`program=C:\Program Files\outpost\outpost.exe`,
 		`protocol=TCP`,
 		`localport=2222`,
 		`profile=private,domain`,
@@ -93,6 +93,15 @@ Action:                               Allow
 
 func (f *fakeNetsh) run(_ context.Context, args ...string) (string, error) {
 	f.calls = append(f.calls, args)
+	// Real netsh, given an argument with embedded quotes (which os/exec on
+	// Windows escapes as \"), refuses the whole command. Observed on a
+	// Windows 11 host: name="outpost sshd" as one argument fails, while
+	// name=outpost sshd (quoted whole by os/exec) finds the rule.
+	for _, a := range args {
+		if strings.Contains(a, `"`) {
+			return "A specified value is not valid.", errors.New("exit status 1")
+		}
+	}
 	joined := strings.Join(args, " ")
 	for prefix, err := range f.fail {
 		if strings.HasPrefix(joined, prefix) && err != nil {
@@ -193,7 +202,7 @@ func TestSSHDFirewallEnsureIdempotent(t *testing.T) {
 		t.Fatalf("Ensure: %v", err)
 	}
 	for _, v := range fake.verbs() {
-		if strings.HasPrefix(v, "add") || strings.HasPrefix(v, "delete rule name=\"outpost sshd\"") {
+		if strings.HasPrefix(v, "add") || strings.HasPrefix(v, "delete rule name=outpost sshd") {
 			t.Errorf("converged rule was added/deleted instead of set: %v", fake.verbs())
 		}
 	}

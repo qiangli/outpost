@@ -153,17 +153,16 @@ func (c *sshdCapability) Activate(ctx context.Context, cfg service.Config) error
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Idempotent re-activation (the reconciler re-activates on every pass
-	// while degraded): when the same declaration is already serving, only
-	// re-probe the firewall — never rebind a working listener. A still-
-	// failing firewall returns the degraded condition (not nil) so the
-	// unit stays degraded instead of flapping active/degraded.
+	// Idempotent re-activation: when the same declaration is already
+	// serving, only re-probe the firewall — never rebind a working
+	// listener. A still-failing firewall is recorded for Health, not
+	// returned (see the note at the end of Activate).
 	if c.ln != nil && c.applied == st.key() {
 		if ferr := c.ensureFirewallLocked(st.Port); ferr != nil {
 			c.fwErr = svcunit.NewDegraded(ferr.Error())
-			return c.fwErr
+		} else {
+			c.fwErr = nil
 		}
-		c.fwErr = nil
 		return nil
 	}
 	if c.ln != nil {
@@ -220,9 +219,8 @@ func (c *sshdCapability) Activate(ctx context.Context, cfg service.Config) error
 	slog.Info("sshd: listening", "addr", ln.Addr().String(), "authorized_keys", ak)
 
 	// Firewall: best-effort gate, never fatal to the listener. A failure
-	// records the exact reason and returns the degraded condition — a
-	// silently unreachable listener is the failure this unit exists to
-	// prevent.
+	// records the exact reason for Health — a silently unreachable
+	// listener is the failure this unit exists to prevent.
 	if ferr := c.ensureFirewallLocked(boundPort); ferr != nil {
 		slog.Warn("sshd: firewall rule not ensured (continuing degraded)", "err", ferr)
 		c.fwErr = svcunit.NewDegraded(ferr.Error())
@@ -236,7 +234,13 @@ func (c *sshdCapability) Activate(ctx context.Context, cfg service.Config) error
 	if st.MDNS {
 		c.advertiseLocked(serveCtx, hostKey, boundPort)
 	}
-	return c.fwErr
+	// The listener is serving, so activation succeeded. The firewall
+	// limitation is reported through Health, never returned here: the
+	// yoke internal provider marks any Activate error Failed, and the
+	// monitor then cycles the unit into its start limit, closing the
+	// working listener. Health's DegradedError is what the reconciler
+	// maps to state degraded without cycling.
+	return nil
 }
 
 // ensureFirewallLocked installs (or converges) the inbound allow rule.

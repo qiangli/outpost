@@ -269,8 +269,10 @@ func TestSSHDActivateDeactivatePublishesWithdraws(t *testing.T) {
 	}
 }
 
-// A refusing firewall does not stop the listener: Activate reports the
-// degraded condition (exact reason) while still serving.
+// A refusing firewall does not stop the listener: Activate succeeds (the
+// yoke internal provider marks any Activate error Failed, which cycled a
+// serving listener into its start limit) and Health reports the degraded
+// condition with the exact reason.
 func TestSSHDegradedFirewallStillServes(t *testing.T) {
 	signer := testSSHDHostKey(t)
 	ak := filepath.Join(t.TempDir(), "sshd_authorized_keys")
@@ -279,13 +281,16 @@ func TestSSHDegradedFirewallStillServes(t *testing.T) {
 	cap := newTestSSHDCapability(signer, fw, adv)
 	port := freePort(t)
 
-	err := cap.Activate(context.Background(), sshdTestConfig(port, ak))
-	var deg *svcunit.DegradedError
-	if !errors.As(err, &deg) {
-		t.Fatalf("Activate = %v, want a degraded condition", err)
+	if err := cap.Activate(context.Background(), sshdTestConfig(port, ak)); err != nil {
+		t.Fatalf("Activate = %v, want nil while the listener serves", err)
 	}
-	if !strings.Contains(err.Error(), "Access is denied") {
-		t.Fatalf("Activate = %q, want the exact firewall reason", err)
+	// Re-activation with the same declaration stays successful too.
+	if err := cap.Activate(context.Background(), sshdTestConfig(port, ak)); err != nil {
+		t.Fatalf("re-Activate = %v, want nil", err)
+	}
+	var deg *svcunit.DegradedError
+	if herr := cap.Health(context.Background()); !errors.As(herr, &deg) || !strings.Contains(herr.Error(), "Access is denied") {
+		t.Fatalf("Health = %v, want degraded with the exact firewall reason", herr)
 	}
 	// The listener still serves despite the degraded firewall.
 	addr := fmt.Sprintf("127.0.0.1:%d", port)

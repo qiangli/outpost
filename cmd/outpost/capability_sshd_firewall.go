@@ -132,13 +132,20 @@ func sshdFirewallPlan(active networkProfile) (publicRestricted bool) {
 	return active == profilePublic || active == profileUnknown
 }
 
+// netshValue builds one key=value netsh argument. No quotes are embedded:
+// os/exec quotes the whole argument on Windows when the value has a space
+// ("name=outpost sshd"), which netsh accepts. An embedded pair is escaped
+// to name=\"outpost sshd\", which netsh rejects with "A specified value
+// is not valid." — every show/set/add/delete then fails.
+func netshValue(key, value string) string { return key + "=" + value }
+
 // sshdRuleArgs builds the add/set argument tail for one allow rule.
 func sshdRuleArgs(name, program string, port int, profiles, remoteIP string) []string {
 	return []string{
-		"name=\"" + name + "\"",
+		netshValue("name", name),
 		"dir=in",
 		"action=allow",
-		"program=\"" + program + "\"",
+		netshValue("program", program),
 		"protocol=TCP",
 		fmt.Sprintf("localport=%d", port),
 		"profile=" + profiles,
@@ -178,10 +185,10 @@ func (f *netshFirewall) Ensure(port int, program string) error {
 // netsh itself is broken (or not elevated for reads) — return that exact
 // reason instead of blindly adding a duplicate.
 func (f *netshFirewall) ensureRule(ctx context.Context, run netshRunner, name string, tail []string) error {
-	out, err := run(ctx, "advfirewall", "firewall", "show", "rule", "name=\""+name+"\"")
+	out, err := run(ctx, "advfirewall", "firewall", "show", "rule", netshValue("name", name))
 	switch {
 	case err == nil || strings.Contains(out, "Rule Name:"):
-		setArgs := append([]string{"advfirewall", "firewall", "set", "rule", "name=\"" + name + "\"", "new"}, tail...)
+		setArgs := append([]string{"advfirewall", "firewall", "set", "rule", netshValue("name", name), "new"}, tail...)
 		if out, serr := run(ctx, setArgs...); serr != nil {
 			return fmt.Errorf("set rule %q: %w: %s", name, serr, strings.TrimSpace(out))
 		}
@@ -200,10 +207,10 @@ func (f *netshFirewall) ensureRule(ctx context.Context, run netshRunner, name st
 // removeRule deletes one rule; an absent rule is success. A broken show
 // is an error (the rule may linger — the caller warns).
 func (f *netshFirewall) removeRule(ctx context.Context, run netshRunner, name string) error {
-	out, err := run(ctx, "advfirewall", "firewall", "show", "rule", "name=\""+name+"\"")
+	out, err := run(ctx, "advfirewall", "firewall", "show", "rule", netshValue("name", name))
 	switch {
 	case strings.Contains(out, "Rule Name:"):
-		if out, derr := run(ctx, "advfirewall", "firewall", "delete", "rule", "name=\""+name+"\""); derr != nil {
+		if out, derr := run(ctx, "advfirewall", "firewall", "delete", "rule", netshValue("name", name)); derr != nil {
 			return fmt.Errorf("delete rule %q: %w: %s", name, derr, strings.TrimSpace(out))
 		}
 		return nil
