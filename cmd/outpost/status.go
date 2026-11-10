@@ -44,9 +44,9 @@ func statusCmd() *cobra.Command {
 					fc = &conf.FileConfig{}
 				}
 				if jsonOut {
-					return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"state": pairingState(fc.AgentName), "agent_name": fc.AgentName})
+					return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"state": pairingState(fc.AgentName, cloudboxHost(fc.Cloudbox)), "agent_name": fc.AgentName})
 				}
-				fmt.Println(pairingState(fc.AgentName))
+				fmt.Println(pairingState(fc.AgentName, cloudboxHost(fc.Cloudbox)))
 				return nil
 			}
 			defer session.close()
@@ -62,7 +62,7 @@ func statusCmd() *cobra.Command {
 				b, _ := json.MarshalIndent(map[string]any{
 					"status": status,
 					"config": cfg,
-					"state":  pairingState(status.AgentName),
+					"state":  pairingState(status.AgentName, viewHost(cfg.Cloudbox)),
 				}, "", "  ")
 				fmt.Println(string(b))
 				return nil
@@ -74,6 +74,9 @@ func statusCmd() *cobra.Command {
 				fmt.Printf("  cloudbox    %s\n", status.CloudboxURL)
 				fmt.Printf("  protocol    %s\n", cfg.Protocol)
 				fmt.Printf("  has_token   %t\n", cfg.HasToken)
+			} else if host := viewHost(cfg.Cloudbox); host != "" {
+				fmt.Printf("  state       %s\n", pairingState("", host))
+				fmt.Printf("  portal      %s\n", cfg.Cloudbox.PortalURL)
 			} else {
 				fmt.Println("  state       dormant (unpaired)")
 				fmt.Println("  unpaired — run `outpost register` or visit the admin UI to pair.")
@@ -153,11 +156,32 @@ func statusCmd() *cobra.Command {
 	return cmd
 }
 
-func pairingState(name string) string {
-	if name == "" {
+// pairingState names the legacy pairing first, else the pair-once identity
+// with the cloudbox master (identity only: no tunnel until a satellite is
+// attached), else none.
+func pairingState(name, cloudboxHost string) string {
+	switch {
+	case name != "":
+		return fmt.Sprintf("active (paired as %s)", name)
+	case cloudboxHost != "":
+		return fmt.Sprintf("paired once as %s (identity only)", cloudboxHost)
+	default:
 		return "dormant (unpaired)"
 	}
-	return fmt.Sprintf("active (paired as %s)", name)
+}
+
+func cloudboxHost(id *conf.CloudboxPairing) string {
+	if id == nil {
+		return ""
+	}
+	return id.Host
+}
+
+func viewHost(id *admincore.CloudboxIdentityView) string {
+	if id == nil {
+		return ""
+	}
+	return id.Host
 }
 
 // printClusterStatus renders the control-plane failure and the worker's view

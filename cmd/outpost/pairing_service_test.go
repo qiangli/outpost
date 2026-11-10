@@ -50,11 +50,15 @@ func TestActivatePairedService(t *testing.T) {
 }
 
 func TestPairingState(t *testing.T) {
-	if got := pairingState(""); got != "dormant (unpaired)" {
+	if got := pairingState("", ""); got != "dormant (unpaired)" {
 		t.Fatalf("unpaired state = %q", got)
 	}
-	if got := pairingState("moss"); got != "active (paired as moss)" {
+	if got := pairingState("moss", ""); got != "active (paired as moss)" {
 		t.Fatalf("paired state = %q", got)
+	}
+	// Pair-once leaves agent_name empty; the host is paired, not dormant.
+	if got := pairingState("", "studio"); got != "paired once as studio (identity only)" {
+		t.Fatalf("pair-once state = %q", got)
 	}
 }
 
