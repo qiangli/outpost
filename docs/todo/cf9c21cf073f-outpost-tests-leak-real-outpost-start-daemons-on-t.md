@@ -10,6 +10,9 @@ labels:
     - hygiene
 created: 2026-11-10T15:15:35.196482Z
 assignee: codex-gpt6-astra
+sprint: 606
+sprint_id: ebee3343-b774-520a-9d53-b57b306f4210
+sprint_title: Streamline Cloudbox master, satellite, and outpost relationships
 ---
 
 On the dev box many processes '<tmp>/outpost-e2e-bin-*/outpost start' were running (some 20 days old, several from 2026-11-10 worker test runs). Tests that build and start a real outpost daemon must stop it (t.Cleanup kill of the process group + wait) even on failure/timeout. Find every such test (grep outpost-e2e-bin), fix cleanup, add a guard test. Also reap the leaked ones on this host: only processes whose executable lives under a temp dir named outpost-e2e-bin-*; never touch the real outpost or bashy services.
@@ -36,3 +39,39 @@ Delivery evidence (2026-11-10):
   directly inside an `outpost-e2e-bin-*` directory under the host temp directory
   or `/tmp`. Final process scan found zero matching executables. Real outpost
   and bashy services were not targeted.
+
+Service-manager follow-up (2026-11-10, review steering):
+
+- Read bashy run 68's `docs/bashy-service-design.md`: its execution-journal
+  finding attributes the 13:15:13/13:15:37 bootouts to a register test. The
+  dangerous repo path is register -> activatePairedServiceForPath -> platform
+  Install -> preflightTakeover -> removeManagedRegistrations -> launchctl
+  bootout of the real label. HOME/XDG changes do not isolate launchd's GUI
+  domain. `TestRegisterScriptedLegacyGate` already has a local fake in commit
+  61da765 (13:16Z); relying on each test remembering that fake was insufficient.
+- All launchd/systemd/Windows registration and `run` commands now use an
+  injected service-command boundary. TestMain rejects unmocked calls before
+  exec; ignored command errors cannot conceal a violation. Power/linger/reboot
+  runners also have an injected boundary, including service install's power
+  step that runs before registration. Existing postinstall unit tests already
+  use injected runners.
+- The sole outpost-e2e-bin builder now requires `outpost_testisolated`. That
+  build permanently rejects service-manager calls, uses a per-test service
+  identity, and writes attempted calls to a per-test audit checked at cleanup.
+  No PATH fallback to a real manager is possible through these boundaries.
+  Explicit platform tests use a harmless test-executable fake and unique label.
+- Also fixed unpair's separate unconditional uninstall: a non-default scratch
+  config now leaves the host service alone, matching pairing's existing gate.
+  The final unpair output no longer claims a service was removed when skipped.
+- Red: TestDeactivatePairedServiceScratchConfig recorded one fake uninstall;
+  TestServiceCommandBoundary reported direct exec bypasses on all platforms
+  and the missing isolated-build tag. Neither red ran a real service manager.
+- Green: targeted race gate, `go test -race -tags fb_archives ./cmd/outpost
+  -run '^(TestService.*|TestRegisterServiceGuard|TestRegisterScriptedLegacyGate|TestActivatePairedService.*|TestDeactivatePairedService.*|TestRender.*|TestDaemonProcessCleanup)$'
+  -count=1 -timeout=60s`. Registration, uninstall, power-policy, source-boundary,
+  and failure/timeout cleanup guards passed. Separate race gate with tags
+  `fb_archives outpost_testisolated` passed the service guards and audit test.
+  The isolated runner was tested with test-executable subprocesses, not a daemon.
+- Rechecked executable paths using macOS proc_pidpath: zero matching test
+  daemons remained. No additional processes were signaled. No real service
+  manager, real-daemon E2E, Podman, VM, or full-suite run was performed.

@@ -66,7 +66,7 @@ func unpairCmd() *cobra.Command {
 			if asJSON {
 				return json.NewEncoder(os.Stdout).Encode(map[string]any{"ok": true})
 			}
-			fmt.Println("Unpaired. The per-user outpost service has been stopped and removed (dormant).")
+			fmt.Println("Unpaired.")
 			return nil
 		},
 	}

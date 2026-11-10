@@ -27,7 +27,7 @@ func postInstallIdentity() (string, string) {
 }
 func postInstallRead(ctx context.Context) postinstall.Report {
 	u, h := postInstallIdentity()
-	return postinstall.Read(ctx, runtimeOS, u, h, postinstall.Exec)
+	return postinstall.Read(ctx, runtimeOS, u, h, hostPostinstallRunner)
 }
 
 // defaultSSHDProbeAddr is the loopback address of the LAN sshd unit
@@ -83,7 +83,7 @@ func verifyCmd() *cobra.Command {
 				return err
 			}
 			if reboot {
-				if err = postinstall.Schedule(cmd.Context(), dir, r, postinstall.Exec); err != nil {
+				if err = postinstall.Schedule(cmd.Context(), dir, r, hostPostinstallRunner); err != nil {
 					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Reboot scheduled in one minute; reboot result remains FAIL until boot and server checks pass. Evidence: %s\n", filepath.Join(dir, postinstall.RebootReportName))

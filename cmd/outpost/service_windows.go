@@ -5,7 +5,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"os/user"
 	"strings"
 )
@@ -23,7 +22,7 @@ const (
 // path as the cmdlet), so a task that launches via Start-ScheduledTask will run
 // at boot. See docs/windows-service.md.
 func startTask() error {
-	out, err := exec.Command(psExe, "-NoProfile", "-Command",
+	out, err := serviceCommand(psExe, "-NoProfile", "-Command",
 		"$ErrorActionPreference='Stop'; Start-ScheduledTask -TaskName '"+windowsTask+"'").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
@@ -73,7 +72,7 @@ func installService(opts installOpts) error {
 	if err := preflightTakeover(opts); err != nil {
 		return err
 	}
-	out, err := exec.Command(psExe, "-NoProfile", "-Command", body).CombinedOutput()
+	out, err := serviceCommand(psExe, "-NoProfile", "-Command", body).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("Register-ScheduledTask failed: %w\n%s", err, out)
 	}
@@ -94,10 +93,10 @@ func installService(opts installOpts) error {
 // already-running supervisor. Stop the task first so it cannot respawn the
 // daemon while the replacement registration is being installed.
 func removeManagedRegistrations(_ installOpts) {
-	_ = exec.Command(psExe, "-NoProfile", "-NonInteractive", "-Command",
+	_ = serviceCommand(psExe, "-NoProfile", "-NonInteractive", "-Command",
 		"$ErrorActionPreference='Stop'; $t=Get-ScheduledTask -TaskName '"+windowsTask+"' -ErrorAction SilentlyContinue; if($t){Stop-ScheduledTask -TaskName '"+windowsTask+"'}").Run()
 	if self, err := serviceTarget(); err == nil {
-		_ = exec.Command(self, "stop").Run()
+		_ = serviceCommand(self, "stop").Run()
 	}
 }
 
@@ -105,7 +104,7 @@ func uninstallService(opts installOpts) error {
 	if opts.System && !isWindowsAdmin() {
 		return fmt.Errorf("system service uninstall needs Administrator — re-run from an elevated prompt")
 	}
-	out, err := exec.Command(schtasksExe, "/Delete", "/TN", windowsTask, "/F").CombinedOutput()
+	out, err := serviceCommand(schtasksExe, "/Delete", "/TN", windowsTask, "/F").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("schtasks /Delete failed: %w\n%s", err, out)
 	}
@@ -114,7 +113,7 @@ func uninstallService(opts installOpts) error {
 }
 
 func statusService(_ installOpts) error {
-	out, err := exec.Command(schtasksExe, "/Query", "/TN", windowsTask).CombinedOutput()
+	out, err := serviceCommand(schtasksExe, "/Query", "/TN", windowsTask).CombinedOutput()
 	if err != nil {
 		fmt.Printf("Task Scheduler task %q: not registered\n", windowsTask)
 		return nil
@@ -129,7 +128,7 @@ func statusService(_ installOpts) error {
 func isWindowsAdmin() bool {
 	const cmd = "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent())" +
 		".IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)"
-	out, err := exec.Command(psExe, "-NoProfile", "-Command", cmd).Output()
+	out, err := serviceCommand(psExe, "-NoProfile", "-Command", cmd).Output()
 	if err != nil {
 		return false
 	}

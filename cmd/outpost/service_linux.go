@@ -59,10 +59,10 @@ func installSystemdUser(self string, opts installOpts) error {
 	if err := os.WriteFile(path, []byte(unit), 0o644); err != nil {
 		return fmt.Errorf("write unit: %w", err)
 	}
-	if err := exec.Command("systemctl", "--user", "daemon-reload").Run(); err != nil {
+	if err := serviceCommand("systemctl", "--user", "daemon-reload").Run(); err != nil {
 		return fmt.Errorf("systemctl --user daemon-reload: %w", err)
 	}
-	if err := exec.Command("systemctl", "--user", "enable", "--now", systemdUnit).Run(); err != nil {
+	if err := serviceCommand("systemctl", "--user", "enable", "--now", systemdUnit).Run(); err != nil {
 		return fmt.Errorf("systemctl --user enable --now failed (unit at %s): %w", path, err)
 	}
 	u, err := user.Current()
@@ -70,11 +70,11 @@ func installSystemdUser(self string, opts installOpts) error {
 		return err
 	}
 	c := postinstall.Command{"loginctl", "--no-ask-password", "enable-linger", u.Username}
-	r := postinstall.Exec(context.Background(), c)
+	r := hostPostinstallRunner(context.Background(), c)
 	if !r.OK() {
 		return fmt.Errorf("enable linger failed: %s %s\nRun:\n  sudo %s", r.Error, r.Value(), postinstall.ShellCommand("linux", c))
 	}
-	r = postinstall.Exec(context.Background(), postinstall.Command{"loginctl", "show-user", u.Username, "--property=Linger", "--value"})
+	r = hostPostinstallRunner(context.Background(), postinstall.Command{"loginctl", "show-user", u.Username, "--property=Linger", "--value"})
 	if !r.OK() || r.Value() != "yes" {
 		return fmt.Errorf("linger readback failed; run: sudo %s", postinstall.ShellCommand("linux", c))
 	}
@@ -107,10 +107,10 @@ func installSystemdSystem(self string, opts installOpts) error {
 	if err := os.WriteFile(path, []byte(unit), 0o644); err != nil {
 		return fmt.Errorf("write unit %s: %w", path, err)
 	}
-	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+	if err := serviceCommand("systemctl", "daemon-reload").Run(); err != nil {
 		return fmt.Errorf("systemctl daemon-reload: %w", err)
 	}
-	if err := exec.Command("systemctl", "enable", "--now", systemdUnit).Run(); err != nil {
+	if err := serviceCommand("systemctl", "enable", "--now", systemdUnit).Run(); err != nil {
 		return fmt.Errorf("systemctl enable --now failed (unit at %s): %w", path, err)
 	}
 	fmt.Printf("registered systemd system unit %s — starts `outpost supervisord` at boot as %q (no login required)\n", systemdUnit, runUser)
@@ -119,11 +119,11 @@ func installSystemdSystem(self string, opts installOpts) error {
 
 func uninstallService(opts installOpts) error {
 	if !opts.System {
-		_ = exec.Command("systemctl", "--user", "disable", "--now", systemdUnit).Run()
+		_ = serviceCommand("systemctl", "--user", "disable", "--now", systemdUnit).Run()
 		if err := os.Remove(systemdUserUnitPath()); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove unit: %w", err)
 		}
-		if err := exec.Command("systemctl", "--user", "daemon-reload").Run(); err != nil {
+		if err := serviceCommand("systemctl", "--user", "daemon-reload").Run(); err != nil {
 			return fmt.Errorf("systemctl --user daemon-reload: %w", err)
 		}
 		fmt.Printf("unregistered systemd --user unit %s\n", systemdUnit)
@@ -132,11 +132,11 @@ func uninstallService(opts installOpts) error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("system service uninstall needs root — re-run with sudo")
 	}
-	_ = exec.Command("systemctl", "disable", "--now", systemdUnit).Run()
+	_ = serviceCommand("systemctl", "disable", "--now", systemdUnit).Run()
 	if err := os.Remove(systemdSystemUnitPath()); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove unit: %w", err)
 	}
-	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+	if err := serviceCommand("systemctl", "daemon-reload").Run(); err != nil {
 		return fmt.Errorf("systemctl daemon-reload: %w", err)
 	}
 	fmt.Printf("unregistered systemd system unit %s\n", systemdUnit)
@@ -149,17 +149,17 @@ func uninstallService(opts installOpts) error {
 // pidfile. Best-effort and quiet; system-scope ops no-op without root.
 func removeManagedRegistrations(opts installOpts) {
 	// system unit (needs root)
-	_ = exec.Command("systemctl", "disable", "--now", systemdUnit).Run()
+	_ = serviceCommand("systemctl", "disable", "--now", systemdUnit).Run()
 	_ = os.Remove(systemdSystemUnitPath())
 	// --user unit — the run-as user under sudo (via runuser), else current user
 	if name, home, err := resolveRunAsUnix(opts.RunAs); err == nil && os.Geteuid() == 0 {
 		if u, lookupErr := user.Lookup(name); lookupErr == nil {
 			runtimeDir := "/run/user/" + u.Uid
-			_ = exec.Command("runuser", "-u", name, "--", "env", "XDG_RUNTIME_DIR="+runtimeDir, "DBUS_SESSION_BUS_ADDRESS=unix:path="+runtimeDir+"/bus", "systemctl", "--user", "disable", "--now", systemdUnit).Run()
+			_ = serviceCommand("runuser", "-u", name, "--", "env", "XDG_RUNTIME_DIR="+runtimeDir, "DBUS_SESSION_BUS_ADDRESS=unix:path="+runtimeDir+"/bus", "systemctl", "--user", "disable", "--now", systemdUnit).Run()
 		}
 		_ = os.Remove(filepath.Join(home, ".config", "systemd", "user", systemdUnit))
 	} else {
-		_ = exec.Command("systemctl", "--user", "disable", "--now", systemdUnit).Run()
+		_ = serviceCommand("systemctl", "--user", "disable", "--now", systemdUnit).Run()
 		_ = os.Remove(systemdUserUnitPath())
 	}
 }
@@ -180,7 +180,7 @@ func systemctlShow(system bool, verb string) string {
 	if system {
 		args = []string{verb, systemdUnit}
 	}
-	out, _ := exec.Command("systemctl", args...).Output()
+	out, _ := serviceCommand("systemctl", args...).Output()
 	s := strings.TrimSpace(string(out))
 	if s == "" {
 		return "unknown"

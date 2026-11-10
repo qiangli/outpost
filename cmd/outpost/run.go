@@ -25,7 +25,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"runtime"
@@ -172,7 +171,7 @@ func runSubmit(spec runSpec) error {
 	// error on macOS 11+ unless the domain is empty for that label.
 	uid := strconv.Itoa(os.Getuid())
 	fullLabel := labelPrefix + spec.Label
-	_ = exec.Command("launchctl", "bootout", "gui/"+uid+"/"+fullLabel).Run()
+	_ = serviceCommand("launchctl", "bootout", "gui/"+uid+"/"+fullLabel).Run()
 
 	plist, err := renderPlist(spec, fullLabel)
 	if err != nil {
@@ -185,7 +184,7 @@ func runSubmit(spec runSpec) error {
 		return fmt.Errorf("write plist: %w", err)
 	}
 
-	out, err := exec.Command("launchctl", "bootstrap", "gui/"+uid, plistPath).CombinedOutput()
+	out, err := serviceCommand("launchctl", "bootstrap", "gui/"+uid, plistPath).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("launchctl bootstrap: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
@@ -208,7 +207,7 @@ func runRemove(label string) error {
 	}
 	fullLabel := labelPrefix + label
 	uid := strconv.Itoa(os.Getuid())
-	out, err := exec.Command("launchctl", "bootout", "gui/"+uid+"/"+fullLabel).CombinedOutput()
+	out, err := serviceCommand("launchctl", "bootout", "gui/"+uid+"/"+fullLabel).CombinedOutput()
 	// bootout returns non-zero when the service isn't loaded — we
 	// still want to clean up the plist in that case, so don't return
 	// early. We only report the launchctl error if the plist write

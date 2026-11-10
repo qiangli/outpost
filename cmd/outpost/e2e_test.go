@@ -43,6 +43,10 @@ var e2eBinary, e2eBuildErr, e2eBuildDir string
 var e2eBuildOnce sync.Once
 
 func TestMain(m *testing.M) {
+	if !serviceCommandsIsolated {
+		serviceCommand = rejectTestServiceCommand
+	}
+	hostPostinstallRunner = rejectTestPostinstallCommand
 	code := m.Run()
 	if e2eBuildDir != "" {
 		_ = os.RemoveAll(e2eBuildDir)
@@ -63,7 +67,7 @@ func requireE2E(t *testing.T) {
 		}
 		e2eBuildDir = dir
 		bin := filepath.Join(dir, "outpost")
-		cmd := exec.Command("go", "build", "-o", bin, ".")
+		cmd := exec.Command("go", "build", "-tags", "outpost_testisolated", "-o", bin, ".")
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 		if err := cmd.Run(); err != nil {
 			e2eBuildErr = err.Error()
@@ -133,6 +137,7 @@ func spawnDaemon(t *testing.T) *daemon {
 		"OUTPOST_ADMIN_ADDR="+d.addr,
 		"PATH="+os.Getenv("PATH"),
 	)
+	d.cmd.Env = append(d.cmd.Env, testServiceEnv(t)...)
 	d.cmd.Stdout = d.stdout
 	d.cmd.Stderr = d.stderr
 	d.process = startTestProcess(t, d.cmd)
@@ -403,7 +408,7 @@ func TestE2E_DocsCommand(t *testing.T) {
 	// No need for a running daemon — `docs` reads only from the
 	// embedded FS and the on-disk FileConfig isn't touched.
 	d := &daemon{cmd: exec.Command(e2eBinary)}
-	d.cmd.Env = []string{"HOME=" + t.TempDir(), "PATH=" + os.Getenv("PATH")}
+	d.cmd.Env = append([]string{"HOME=" + t.TempDir(), "PATH=" + os.Getenv("PATH")}, testServiceEnv(t)...)
 	out, err := d.cli(ctx, "docs")
 	if err != nil {
 		t.Fatalf("`outpost docs`: %v\n%s", err, out)
@@ -518,6 +523,7 @@ func TestE2E_XDGMigrationAutoMoves(t *testing.T) {
 		"OUTPOST_ADMIN_ADDR=" + addr,
 		"PATH=" + os.Getenv("PATH"),
 	}
+	cmd.Env = append(cmd.Env, testServiceEnv(t)...)
 	stdout := &lockedTestBuffer{}
 	stderr := &lockedTestBuffer{}
 	cmd.Stdout = stdout

@@ -5,7 +5,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
@@ -49,8 +48,8 @@ func installLaunchAgent(self string, opts installOpts) error {
 	if err := os.WriteFile(path, []byte(plist), 0o644); err != nil {
 		return fmt.Errorf("write plist: %w", err)
 	}
-	_ = exec.Command("launchctl", "bootout", "gui/"+uid+"/"+launchdLabel).Run()
-	if err := exec.Command("launchctl", "bootstrap", "gui/"+uid, path).Run(); err != nil {
+	_ = serviceCommand("launchctl", "bootout", "gui/"+uid+"/"+launchdLabel).Run()
+	if err := serviceCommand("launchctl", "bootstrap", "gui/"+uid, path).Run(); err != nil {
 		return fmt.Errorf("launchctl bootstrap failed (plist at %s — load manually: launchctl bootstrap gui/%s %s): %w", path, uid, path, err)
 	}
 	fmt.Printf("registered launchd agent %s (--user) — runs `outpost supervisord` at login\n", launchdLabel)
@@ -83,11 +82,11 @@ func installLaunchDaemon(self string, opts installOpts) error {
 	if err := os.Chown(path, 0, 0); err != nil {
 		return fmt.Errorf("set LaunchDaemon ownership: %w", err)
 	}
-	if err := exec.Command("launchctl", "enable", "system/"+launchdLabel).Run(); err != nil {
+	if err := serviceCommand("launchctl", "enable", "system/"+launchdLabel).Run(); err != nil {
 		return fmt.Errorf("enable LaunchDaemon: %w", err)
 	}
-	_ = exec.Command("launchctl", "bootout", "system/"+launchdLabel).Run()
-	if err := exec.Command("launchctl", "bootstrap", "system", path).Run(); err != nil {
+	_ = serviceCommand("launchctl", "bootout", "system/"+launchdLabel).Run()
+	if err := serviceCommand("launchctl", "bootstrap", "system", path).Run(); err != nil {
 		return fmt.Errorf("launchctl bootstrap system failed (plist at %s — load manually: sudo launchctl bootstrap system %s): %w", path, path, err)
 	}
 	fmt.Printf("registered launchd daemon %s — starts `outpost supervisord` at boot as %q (no login required)\n", launchdLabel, runUser)
@@ -97,7 +96,7 @@ func installLaunchDaemon(self string, opts installOpts) error {
 func uninstallService(opts installOpts) error {
 	if !opts.System {
 		uid := strconv.Itoa(os.Getuid())
-		_ = exec.Command("launchctl", "bootout", "gui/"+uid+"/"+launchdLabel).Run()
+		_ = serviceCommand("launchctl", "bootout", "gui/"+uid+"/"+launchdLabel).Run()
 		if err := os.Remove(launchAgentPath()); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove plist: %w", err)
 		}
@@ -107,7 +106,7 @@ func uninstallService(opts installOpts) error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("system service uninstall needs root — re-run with sudo")
 	}
-	_ = exec.Command("launchctl", "bootout", "system/"+launchdLabel).Run()
+	_ = serviceCommand("launchctl", "bootout", "system/"+launchdLabel).Run()
 	if err := os.Remove(launchDaemonPath()); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove LaunchDaemon plist: %w", err)
 	}
@@ -122,17 +121,17 @@ func uninstallService(opts installOpts) error {
 // supervisor. Best-effort and quiet; system-domain ops no-op without root.
 func removeManagedRegistrations(opts installOpts) {
 	// system LaunchDaemon (needs root)
-	_ = exec.Command("launchctl", "bootout", "system/"+launchdLabel).Run()
+	_ = serviceCommand("launchctl", "bootout", "system/"+launchdLabel).Run()
 	_ = os.Remove(launchDaemonPath())
 	// per-user LaunchAgent — the run-as user under sudo, else the current user
 	if name, home, err := resolveRunAsUnix(opts.RunAs); err == nil {
 		if u, e := user.Lookup(name); e == nil {
-			_ = exec.Command("launchctl", "bootout", "gui/"+u.Uid+"/"+launchdLabel).Run()
+			_ = serviceCommand("launchctl", "bootout", "gui/"+u.Uid+"/"+launchdLabel).Run()
 		}
 		_ = os.Remove(filepath.Join(home, "Library", "LaunchAgents", launchdLabel+".plist"))
 	} else {
 		uid := strconv.Itoa(os.Getuid())
-		_ = exec.Command("launchctl", "bootout", "gui/"+uid+"/"+launchdLabel).Run()
+		_ = serviceCommand("launchctl", "bootout", "gui/"+uid+"/"+launchdLabel).Run()
 		_ = os.Remove(launchAgentPath())
 	}
 }
@@ -140,7 +139,7 @@ func removeManagedRegistrations(opts installOpts) {
 func statusService(opts installOpts) error {
 	if !opts.System {
 		uid := strconv.Itoa(os.Getuid())
-		if err := exec.Command("launchctl", "print", "gui/"+uid+"/"+launchdLabel).Run(); err == nil {
+		if err := serviceCommand("launchctl", "print", "gui/"+uid+"/"+launchdLabel).Run(); err == nil {
 			fmt.Printf("launchd agent %s (--user): loaded\n", launchdLabel)
 			return nil
 		}
@@ -151,7 +150,7 @@ func statusService(opts installOpts) error {
 		}
 		return nil
 	}
-	if err := exec.Command("launchctl", "print", "system/"+launchdLabel).Run(); err == nil {
+	if err := serviceCommand("launchctl", "print", "system/"+launchdLabel).Run(); err == nil {
 		fmt.Printf("launchd daemon %s: loaded\n", launchdLabel)
 		return nil
 	}

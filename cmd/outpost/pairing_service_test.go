@@ -59,6 +59,10 @@ func TestPairingState(t *testing.T) {
 }
 
 func TestDeactivatePairedService(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
 	original := pairingServiceManager
 	fake := &fakeUserServiceManager{}
 	pairingServiceManager = fake
@@ -68,5 +72,22 @@ func TestDeactivatePairedService(t *testing.T) {
 	}
 	if fake.uninstalls != 1 {
 		t.Fatalf("uninstalls = %d, want 1", fake.uninstalls)
+	}
+}
+
+// A scratch config must not boot out the host's real launchd/systemd job.
+func TestDeactivatePairedServiceScratchConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	original := pairingServiceManager
+	fake := &fakeUserServiceManager{}
+	pairingServiceManager = fake
+	t.Cleanup(func() { pairingServiceManager = original })
+	if err := deactivatePairedService(); err != nil {
+		t.Fatal(err)
+	}
+	if fake.uninstalls != 0 {
+		t.Fatalf("scratch config uninstalled host service %d times", fake.uninstalls)
 	}
 }

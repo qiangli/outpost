@@ -197,7 +197,7 @@ func startCmd() *cobra.Command {
 
 			evidenceDir, _ := conf.ResolveCacheDir()
 			evidenceUser, evidenceHome := postInstallIdentity()
-			rebootObserver, evidenceErr := postinstall.Resume(cmd.Context(), evidenceDir, runtimeOS, evidenceUser, evidenceHome, os.Getppid(), postinstall.Exec)
+			rebootObserver, evidenceErr := postinstall.Resume(cmd.Context(), evidenceDir, runtimeOS, evidenceUser, evidenceHome, os.Getppid(), hostPostinstallRunner)
 			if evidenceErr != nil {
 				slog.Warn("post-install reboot evidence", "err", evidenceErr)
 			}

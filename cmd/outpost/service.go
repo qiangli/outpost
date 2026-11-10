@@ -34,7 +34,7 @@ import (
 // windows}.go; the pure render helpers below are shared + unit-tested.
 
 // Identifiers for the registered service on each platform.
-const (
+var (
 	launchdLabel = "io.dhnt.outpost" // macOS launchd label (Agent + Daemon)
 	systemdUnit  = "outpost.service" // Linux systemd unit (--user + system)
 	windowsTask  = "outpost"         // Windows Task Scheduler task name
@@ -148,7 +148,14 @@ func activatePairedServiceForPath(configPath string, daemonWasRunning, noService
 	return pairingServiceManager.Install()
 }
 
-func deactivatePairedService() error { return pairingServiceManager.Uninstall() }
+func deactivatePairedService() error {
+	// Unpairing a scratch/profile config must not unload the host service.
+	// HOME/XDG isolation alone does not isolate the OS service-manager domain.
+	if !conf.ShouldTouchHostService(resolvePairingConfigPath(""), false) {
+		return nil
+	}
+	return pairingServiceManager.Uninstall()
+}
 
 func serviceCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -160,7 +167,7 @@ func serviceCmd() *cobra.Command {
 }
 
 func serviceInstallCmd() *cobra.Command {
-	return newServiceInstallCmd(postinstall.Exec, installService)
+	return newServiceInstallCmd(hostPostinstallRunner, installService)
 }
 
 func newServiceInstallCmd(run postinstall.Runner, install func(installOpts) error) *cobra.Command {
