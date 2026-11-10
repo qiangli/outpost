@@ -152,6 +152,16 @@ satellite …`; with no daemon running they edit `agent.json` directly.
   `outpost satellite attach ID` on the host's main daemon, then remove the
   profile; `bashy llm share --satellite NAME` resolves the attachment first.
 
+**Share a published app with a mutual member:** `outpost apps share APP
+--email E`; remove it with `outpost apps unshare APP --email E`; inspect
+grants with `outpost apps shares [APP]`. The same commands are available
+through `bashy outpost apps …`. All three accept `--json`; share and
+unshare accept `--dry-run`. They use the first attachment's endpoint and
+host token when attached, otherwise the legacy pairing's portal and
+access token. A cloudbox pairing alone is an identity record and cannot
+publish or share an app. Unshare resolves the grant ID through the host's
+share list before deleting it; an already absent grant is complete.
+
 To clear a pairing: `outpost unpair --yes` (CLI; `--dry-run` shows the
 request, `--json` for machines; edits `agent.json` directly when no
 daemon runs), the equivalent MCP tool, or wipe `agent.json` by hand.

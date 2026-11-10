@@ -41,6 +41,9 @@ func appsCmd() *cobra.Command {
 		appsSuggestCmd(),
 		appsHealsCmd(),
 		appsHealUndoCmd(),
+		appsShareCmd(),
+		appsUnshareCmd(),
+		appsSharesCmd(),
 	)
 	return cmd
 }
