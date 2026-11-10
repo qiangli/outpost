@@ -3,7 +3,7 @@ id: cf9c21cf073f
 kind: bug
 title: outpost tests leak real 'outpost start' daemons on the dev box
 seq: 2765
-status: assigned
+status: todo
 priority: p1
 labels:
     - test
