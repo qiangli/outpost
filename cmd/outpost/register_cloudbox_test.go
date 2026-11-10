@@ -27,7 +27,7 @@ func TestDoPairWithMasterStoresIdentityOnly(t *testing.T) {
 		AgentName: "studio", ServerAddr: "sat.example.com", AccessToken: "legacy", MCPBearerToken: "mcp",
 		Attachments: []conf.SatelliteAttachment{{SatelliteID: "sat_1", Endpoint: "https://sat.example.com", Token: "stok"}},
 	})
-	id, err := doPair(context.Background(), master.URL, "K7QX-2MPD", "studio", "", "", path, false, "")
+	id, err := doPair(context.Background(), master.URL, "K7QX-2MPD", "studio", "", "", path, false, "", nil)
 	if err != nil || id == nil {
 		t.Fatalf("doPair: id=%v err=%v", id, err)
 	}

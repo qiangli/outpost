@@ -104,7 +104,11 @@ with a host token and `tunnel: false`: the record lands in `cloudbox` and
 fields above untouched — so a host paired only this way runs like an
 unpaired host plus its account record. A server without that route (a
 satellite or standalone server, 404) is paired over the legacy
-`/api/register/exchange` exactly as before. `tunnel: true` is refused (a
+`/api/register/exchange` after explicit owner consent: that redemption
+makes the account which minted the code this host's **owner**, so
+`register` prints it and asks y/N (interactive) or requires
+`--as-owner-node` (non-interactive `--code` / `--no-input` runs).
+`tunnel: true` is refused (a
 different contract). One pairing per master: pairing the same master
 under a second host name is refused until `outpost unpair`.
 

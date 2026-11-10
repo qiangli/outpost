@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net"
@@ -3346,6 +3347,8 @@ func registerCmd() *cobra.Command {
 		ring         string
 		dryRun       bool
 		asJSON       bool
+		asOwnerNode  bool
+		noInput      bool
 	)
 	cmd := &cobra.Command{
 		Use:     "register",
@@ -3358,7 +3361,12 @@ Or pass --code (and optionally --server / --name) to skip the prompts —
 useful for installer scripts and CI. --server defaults to the official
 portal and --name defaults to this machine's hostname (.local/.lan
 suffix stripped), so a fresh paste from the cloudbox "Generate invite
-code" dialog usually only needs --code.`,
+code" dialog usually only needs --code.
+
+A code from a SATELLITE (any server without the pair-once endpoint) uses
+the legacy exchange, which makes the account that minted the code the
+OWNER of this host: register prints that and asks y/N (interactive) or
+requires --as-owner-node (non-interactive --code / --no-input runs).`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Recovery branch (Layer-4 defense): when --recovery-code
 			// is set, skip the invite-redemption Exchange path entirely
@@ -3395,6 +3403,9 @@ code" dialog usually only needs --code.`,
 			// installer scripts pipe stdin from somewhere unpredictable, so
 			// we can't fall back to "ask the user" without surprising them.
 			scripted := code != ""
+			if noInput && !scripted {
+				return errors.New("--no-input requires --code (register has no other way to learn the pairing code)")
+			}
 			reader := bufio.NewReader(os.Stdin)
 
 			// In scripted mode, apply the same defaults the interactive
@@ -3423,7 +3434,17 @@ code" dialog usually only needs --code.`,
 				if dryRun {
 					return printRegisterDryRun(serverURL, name, asJSON)
 				}
-				if res, err := doPair(cmd.Context(), serverURL, code, name, title, authURL, out, clientOnly, ring); err == nil {
+				// The legacy satellite exchange (the server answered the
+				// pair-once endpoint 404) transfers ownership of this host to
+				// the account that minted the code — gate it on explicit
+				// consent before the code is redeemed. Non-interactive runs
+				// (--code on the CLI / --no-input) must carry --as-owner-node;
+				// interactive ones answer y/N.
+				interactive := !scripted && !noInput
+				confirmLegacy := func() error {
+					return confirmLegacyOwner(os.Stderr, reader, asOwnerNode, interactive)
+				}
+				if res, err := doPair(cmd.Context(), serverURL, code, name, title, authURL, out, clientOnly, ring, confirmLegacy); err == nil {
 					if res != nil {
 						// Identity-only pairing with the cloudbox master:
 						// no tunnel, so nothing to restart or activate.
@@ -3431,6 +3452,10 @@ code" dialog usually only needs --code.`,
 					}
 					break
 				} else {
+					if errors.Is(err, errLegacyOwnerDeclined) {
+						// The operator backed out on purpose — no retry.
+						return err
+					}
 					fmt.Fprintf(os.Stderr, "Registration failed: %v\n", err)
 					if scripted {
 						return err
@@ -3494,6 +3519,10 @@ code" dialog usually only needs --code.`,
 		"Pair this machine as a credential-only outpost — outbound SSH via `outpost ssh-proxy` only, no inbound listeners, no matrix tunnel. The host row shows up in cloudbox with a 'client' badge so the operator can see it; it cannot be a share target.")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the pairing requests register would send (cloudbox master first, then the legacy satellite exchange) and send nothing")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Machine-readable output")
+	cmd.Flags().BoolVar(&asOwnerNode, "as-owner-node", false,
+		"Accept up front that the account which minted the pairing code becomes this host's owner (legacy satellite exchange). Required to redeem a satellite code in non-interactive runs (--code on the CLI / --no-input); interactive runs ask y/N instead")
+	cmd.Flags().BoolVar(&noInput, "no-input", false,
+		"Never prompt: requires --code, and the legacy satellite exchange additionally requires --as-owner-node")
 	cmd.Flags().StringVar(&ring, "ring", "",
 		"Optional deployment ring tag (e.g. dev/test/stage/prod) that seeds the host's ring on cloudbox at first pairing. Used to scope fleet-upgrade fan-out to one cohort. Empty leaves the host untagged. Cloudbox admins can re-assign rings from the SPA — a subsequent re-pair without --ring will not overwrite their value.")
 	return cmd
@@ -3587,12 +3616,50 @@ func doRecover(ctx context.Context, serverURL, recoveryCode, name, title, authUR
 	return nil
 }
 
+// legacyOwnerNotice is printed BEFORE a code is redeemed over the legacy
+// /api/register/exchange (a satellite or standalone server): that path
+// makes the account which minted the code the OWNER of this host.
+const legacyOwnerNotice = "Legacy satellite pairing: this host will be owned by the account that minted the code.\n" +
+	"Use a code from your OWN account: bashy paired-host invite"
+
+// errLegacyOwnerDeclined marks the interactive "n" answer: nothing was
+// redeemed, the operator backed out on purpose. The register retry loop
+// does not offer "Try again?" for it.
+var errLegacyOwnerDeclined = errors.New("legacy pairing declined — no code was redeemed (use a code from your OWN account: bashy paired-host invite)")
+
+// confirmLegacyOwner gates the legacy exchange redemption. The notice is
+// printed unconditionally; consent comes from --as-owner-node up front or,
+// when interactive, a y/N answer (default N). Non-interactive callers
+// without the flag are refused — an installer script must spell out that
+// the code's minter will own this node.
+func confirmLegacyOwner(w io.Writer, r *bufio.Reader, asOwnerNode, interactive bool) error {
+	fmt.Fprintln(w, legacyOwnerNotice)
+	if asOwnerNode {
+		return nil
+	}
+	if !interactive || r == nil {
+		return errors.New("refusing the legacy exchange: this host will be owned by the account that minted the code; " +
+			"use a code from your OWN account (bashy paired-host invite), or re-run with --as-owner-node to accept that owner")
+	}
+	ans, err := promptDefault(r, "Continue and make that account this host's owner? [y/N]", "n")
+	if err != nil {
+		return err
+	}
+	if !isYes(ans) {
+		return errLegacyOwnerDeclined
+	}
+	return nil
+}
+
 // doPair pairs with the server at serverURL. The cloudbox master pairs
 // once, identity-only (POST /api/v1/hosts/pair): the record lands in
 // agent.json's `cloudbox` block and the non-nil result tells the caller no
 // tunnel exists. Any other server answers that endpoint 404 and pairs over
-// the legacy exchange exactly as before (nil result).
-func doPair(ctx context.Context, serverURL, code, name, title, authURL, out string, clientOnly bool, ring string) (*conf.CloudboxPairing, error) {
+// the legacy exchange exactly as before (nil result) — after
+// confirmLegacy (when non-nil) obtains the owner consent that path needs.
+// confirmLegacy is nil only where the legacy fallback is unreachable or
+// gated elsewhere (tests of the master path; move has its own consent).
+func doPair(ctx context.Context, serverURL, code, name, title, authURL, out string, clientOnly bool, ring string, confirmLegacy func() error) (*conf.CloudboxPairing, error) {
 	path := resolvePairingConfigPath(out)
 	existing, _ := conf.LoadFile(path)
 	if err := admincore.CloudboxRepairConflict(existing, serverURL, name); err != nil {
@@ -3600,6 +3667,11 @@ func doPair(ctx context.Context, serverURL, code, name, title, authURL, out stri
 	}
 	id, err := portal.HostPair(ctx, portal.HostPairRequest{ServerURL: serverURL, Code: code, Host: name})
 	if errors.Is(err, portal.ErrNoHostPair) {
+		if confirmLegacy != nil {
+			if cerr := confirmLegacy(); cerr != nil {
+				return nil, cerr
+			}
+		}
 		return nil, doExchange(ctx, serverURL, code, name, title, authURL, out, clientOnly, ring)
 	}
 	if err != nil {
@@ -3628,15 +3700,19 @@ func printIdentityPairing(id *conf.CloudboxPairing, path string, asJSON bool) er
 	return nil
 }
 
-func printRegisterDryRun(serverURL, name string, asJSON bool) error {
-	plan := map[string]any{
+func registerDryRunPlan(serverURL, name string) map[string]any {
+	return map[string]any{
 		"dry_run": true,
 		"host":    name,
 		"requests": []string{
 			"POST " + portal.HostPairURL(serverURL) + " (cloudbox master: identity only, no tunnel)",
-			"POST " + strings.TrimRight(serverURL, "/") + "/api/register/exchange (only when the first answers 404: legacy satellite pairing)",
+			"POST " + strings.TrimRight(serverURL, "/") + "/api/register/exchange (only when the first answers 404: legacy satellite pairing — needs owner consent first: --as-owner-node non-interactively / y-N interactively; the code's minter becomes this host's owner)",
 		},
 	}
+}
+
+func printRegisterDryRun(serverURL, name string, asJSON bool) error {
+	plan := registerDryRunPlan(serverURL, name)
 	if asJSON {
 		return json.NewEncoder(os.Stdout).Encode(plan)
 	}
