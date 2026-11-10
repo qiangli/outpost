@@ -74,6 +74,13 @@ resource until `configured` settles.
   `auth_url`, `client_only`.
 - `outpost_unpair` — wipe AgentName/Token/AccessToken; keep apps,
   outbound mounts, built-in toggles.
+- `outpost_satellite_list` — satellites this host may attach to, with
+  `attached` / `local`. Needs the cloudbox pairing.
+- `outpost_satellite_attach` — attach to one satellite with the cloudbox
+  pairing (no code). Args: `satellite` (id or unique name), optional
+  `migrate`, `dry_run`. A second satellite is `409 attached_elsewhere`.
+- `outpost_satellite_detach` — leave the satellite + detach at the master.
+  Args: optional `satellite`, `dry_run`.
 
 ### Apps (inbound custom proxies)
 

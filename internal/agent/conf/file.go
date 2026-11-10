@@ -85,6 +85,11 @@ type FileConfig struct {
 	// list so attaching never overwrites Cloudbox or the top-level pairing.
 	Attachments []SatelliteAttachment `json:"attachments,omitempty"`
 
+	// attachmentOverlay marks a config whose top-level pairing fields were
+	// filled in memory from Attachments[0] (ApplyAttachmentTunnel); SaveFile
+	// strips them so the overlay is never persisted.
+	attachmentOverlay bool
+
 	// Apps managed through the admin UI. When this field is present (even
 	// empty), it is authoritative — the legacy MATRIX_APPS env is ignored.
 	// When absent (nil) on a config written before the admin UI shipped,
@@ -1671,7 +1676,7 @@ func SaveFile(path string, fc *FileConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := json.NewEncoder(f).Encode(fc); err != nil {
+	if err := json.NewEncoder(f).Encode(fc.persistable()); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
 		return err

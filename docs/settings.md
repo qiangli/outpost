@@ -95,7 +95,7 @@ across re-pairs.
 | Field | File key | CLI | UI | MCP | Effect |
 |---|---|---|---|---|---|
 | Cloudbox identity | `cloudbox.{portal_url,host,token,scopes,owner_email,paired_at}` | `register --code` against the master | `cloudbox` in `GET /api/config` (token as `has_token`) | `outpost_pair` (`identity_only: true`) | Live (no tunnel, no restart) |
-| Satellite attachments | `attachments[].{satellite_id,name,endpoint,token,scopes,attached_at}` | `outpost satellite attach` (S606 S3) | `attachments` in `GET /api/config` (tokens as `has_token`) | — | — |
+| Satellite attachments | `attachments[].{satellite_id,name,endpoint,host,token,scopes,attached_at,tunnel}` | `outpost satellite {list,attach,detach}` | `attachments` in `GET /api/config` (tokens as `has_token`, registration as `tunnel`) | `outpost_satellite_{list,attach,detach}` | Restart (attach/detach) |
 
 `register` first POSTs `/api/v1/hosts/pair` (yoke
 `docs/cloudbox-members-attach-wire.md` §3). The cloudbox master answers
@@ -111,12 +111,50 @@ under a second host name is refused until `outpost unpair`.
 `attachments[]` is a separate list so attaching to a satellite never
 overwrites `cloudbox` or the top-level pairing.
 
+**Attach to a satellite** (wire contract §4) — no satellite pairing code,
+the host's one `cloudbox` pairing is the credential:
+
+```
+outpost satellite list [--json]                  # GET /api/v1/satellites (host token): rows with `attached`
+outpost satellite attach ID|NAME [--dry-run] [--json] [--migrate]
+outpost satellite detach [ID|NAME] [--dry-run] [--json]
+```
+
+`attach` asks the master for an attach token (`POST
+/api/v1/satellites/:id/attach`), redeems it at the satellite (`POST
+/api/v1/hosts/attach`) and stores the satellite host token plus the
+satellite's `registration` (the `/api/register/exchange` tunnel fields) as
+`attachments[0]`. The daemon restarts and, at boot, overlays that
+registration onto the top-level pairing fields **in memory only** — the one
+tunnel client dials the satellite and publishes the local apps exactly as
+a legacy pairing does; `agent.json` keeps the attachment in `attachments`
+(the overlay is stripped on every save). One attachment per host: a
+second satellite is `409 attached_elsewhere` (checked locally and by the
+master) until `detach`; re-attaching to the same satellite refreshes the
+credential. `detach` sends `DELETE /api/v1/hosts/self` to the satellite
+(best effort; the master revokes within 60 s anyway) and `DELETE
+/api/v1/satellites/:id/attach` to the master, drops the attachment and
+restarts to stop the tunnel. Agents use the same verbs as `bashy outpost
+satellite …`; with no daemon running they edit `agent.json` directly.
+
+**Migrating to an attachment** (one step, no satellite pairing code):
+
+- *Satellite-paired host* (top-level `agent_name`/`access_token` from a
+  satellite code): pair with the master once (`outpost register --code`),
+  then `outpost satellite attach ID --migrate` — the attachment replaces the
+  legacy pairing. Without `--migrate` attach refuses, and until migrated
+  the legacy pairing keeps working unchanged (it wins over an attachment).
+- *outpost-profile instance* (the deprecated multi-daemon workaround): run
+  `outpost satellite attach ID` on the host's main daemon, then remove the
+  profile; `bashy llm share --satellite NAME` resolves the attachment first.
+
 To clear a pairing: `outpost unpair --yes` (CLI; `--dry-run` shows the
 request, `--json` for machines; edits `agent.json` directly when no
 daemon runs), the equivalent MCP tool, or wipe `agent.json` by hand.
 Unpair first sends `DELETE /api/v1/hosts/self` with the `cloudbox` host
 token (a `401` counts as done; any other failure keeps the identity), then
-clears `cloudbox`, `attachments` and the tunnel pairing.
+clears `cloudbox`, `attachments` and the tunnel pairing (the master's
+delete also detaches every satellite).
 
 ### Built-in routes (boot-time-bound)
 

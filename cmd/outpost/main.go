@@ -114,7 +114,7 @@ func main() {
 		outboundCmd(), jobsCmd(), fgCmd(), bgCmd(), killCmd(), runCmd(),
 		clusterCmd(), departCmd(), poolCmd(), kubectlCmd(), moveCmd(),
 		// MCP-client CLI parity (Phase 1.5):
-		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), servicesCmd(), unpairCmd(), restartCmd(), mcpCmd(), tokenCmd(),
+		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), servicesCmd(), unpairCmd(), satelliteCmd(), restartCmd(), mcpCmd(), tokenCmd(),
 		remoteCmd(), meshCmd(), mirrorCmd(), shardCmd(), bundleCmd(), appstoreCmd(),
 		docsCmd(), gitCmd(), shellCmd(), versionCmd(), upgradeCmd(), rollbackCmd(), buildCmd(), bashyCmd(),
 		supervisordCmd(), serviceCmd(), doctorCmd(), verifyCmd(),
@@ -217,6 +217,21 @@ func startCmd() *cobra.Command {
 			// has its own 30s deadline; we use cmd.Context() here
 			// because the errgroup ctx isn't built yet.
 			fc, _ = tryReattach(cmd.Context(), fc, cfgPath)
+
+			// A satellite attachment (`outpost satellite attach`) serves
+			// this host exactly like a legacy satellite pairing: its tunnel
+			// registration fills the top-level pairing fields in memory, so
+			// the one tunnel client below dials the satellite and publishes
+			// the local apps as today. SaveFile never persists the overlay.
+			// Applied after tryReattach: an attachment has no legacy
+			// reattach row to reassert.
+			if fc.ApplyAttachmentTunnel() {
+				slog.Info("matrix-agent: tunnelling to attached satellite",
+					"satellite", fc.Attachments[0].SatelliteID, "endpoint", fc.Attachments[0].Endpoint, "name", fc.AgentName)
+			} else if len(fc.Attachments) > 0 && !fc.LegacyPaired() {
+				slog.Warn("matrix-agent: satellite attachment has no tunnel registration; re-run `outpost satellite attach`",
+					"satellite", fc.Attachments[0].SatelliteID)
+			}
 
 			// Layer the on-disk FileConfig under whatever the env supplied,
 			// then apply hardcoded defaults to fields still empty. CLI
