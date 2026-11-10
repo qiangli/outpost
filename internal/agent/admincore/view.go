@@ -237,9 +237,13 @@ type SafeView struct {
 	RemotePort  int    `json:"remote_port"`
 	AuthURL     string `json:"auth_url,omitempty"`
 	HasToken    bool   `json:"has_token"`
-	LocalAddr   string `json:"local_addr,omitempty"`
-	VNCAddr     string `json:"vnc_addr,omitempty"`
-	AdminAddr   string `json:"admin_addr,omitempty"`
+	// Cloudbox is the pair-once identity with the cloudbox master and
+	// Attachments the satellites attached under it; tokens redacted.
+	Cloudbox    *CloudboxIdentityView `json:"cloudbox,omitempty"`
+	Attachments []AttachmentView      `json:"attachments,omitempty"`
+	LocalAddr   string                `json:"local_addr,omitempty"`
+	VNCAddr     string                `json:"vnc_addr,omitempty"`
+	AdminAddr   string                `json:"admin_addr,omitempty"`
 	// Wave 3A discovery knobs (all default off). The LAN sshd is a
 	// service unit now (outpost.sshd) — see ServiceUnitView.
 	DiscoveryEnabled        bool             `json:"discovery_enabled"`
@@ -340,6 +344,8 @@ func (s *Server) toSafeView(fc *conf.FileConfig) SafeView {
 		RemotePort:  fc.RemotePort,
 		AuthURL:     fc.AuthURL,
 		HasToken:    fc.Token != "",
+		Cloudbox:    cloudboxIdentityView(fc),
+		Attachments: attachmentViews(fc),
 		LocalAddr:   fc.LocalAddr,
 		VNCAddr:     fc.VNCAddr,
 		AdminAddr:   fc.AdminAddr,
@@ -579,4 +585,37 @@ func cpStatusSummary(status *ControlPlaneStatus) string {
 		return "no status"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// CloudboxIdentityView is FileConfig.Cloudbox with the host token redacted.
+type CloudboxIdentityView struct {
+	PortalURL  string    `json:"portal_url"`
+	Host       string    `json:"host"`
+	OwnerEmail string    `json:"owner_email,omitempty"`
+	PairedAt   time.Time `json:"paired_at,omitempty"`
+	HasToken   bool      `json:"has_token"`
+}
+
+// AttachmentView is one FileConfig.Attachments row with its token redacted.
+type AttachmentView struct {
+	SatelliteID string `json:"satellite_id"`
+	Name        string `json:"name,omitempty"`
+	Endpoint    string `json:"endpoint"`
+	HasToken    bool   `json:"has_token"`
+}
+
+func cloudboxIdentityView(fc *conf.FileConfig) *CloudboxIdentityView {
+	if fc.Cloudbox == nil {
+		return nil
+	}
+	c := fc.Cloudbox
+	return &CloudboxIdentityView{PortalURL: c.PortalURL, Host: c.Host, OwnerEmail: c.OwnerEmail, PairedAt: c.PairedAt, HasToken: c.Token != ""}
+}
+
+func attachmentViews(fc *conf.FileConfig) []AttachmentView {
+	var out []AttachmentView
+	for _, a := range fc.Attachments {
+		out = append(out, AttachmentView{SatelliteID: a.SatelliteID, Name: a.Name, Endpoint: a.Endpoint, HasToken: a.Token != ""})
+	}
+	return out
 }

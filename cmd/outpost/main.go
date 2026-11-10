@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -3328,6 +3329,8 @@ func registerCmd() *cobra.Command {
 		clientOnly   bool
 		withService  bool
 		ring         string
+		dryRun       bool
+		asJSON       bool
 	)
 	cmd := &cobra.Command{
 		Use:     "register",
@@ -3402,7 +3405,15 @@ code" dialog usually only needs --code.`,
 					return errors.New("scripted mode requires --code; --server and --name fall back to defaults if omitted, but the host name resolver returned empty — pass --name explicitly")
 				}
 
-				if err := doExchange(cmd.Context(), serverURL, code, name, title, authURL, out, clientOnly, ring); err == nil {
+				if dryRun {
+					return printRegisterDryRun(serverURL, name, asJSON)
+				}
+				if res, err := doPair(cmd.Context(), serverURL, code, name, title, authURL, out, clientOnly, ring); err == nil {
+					if res != nil {
+						// Identity-only pairing with the cloudbox master:
+						// no tunnel, so nothing to restart or activate.
+						return printIdentityPairing(res, resolvePairingConfigPath(out), asJSON)
+					}
 					break
 				} else {
 					fmt.Fprintf(os.Stderr, "Registration failed: %v\n", err)
@@ -3466,6 +3477,8 @@ code" dialog usually only needs --code.`,
 	cmd.Flags().BoolVar(&withService, "service", false, "Install or update the host service even when using a non-default config dir (XDG_CONFIG_HOME override or --out)")
 	cmd.Flags().BoolVar(&clientOnly, "client-only", false,
 		"Pair this machine as a credential-only outpost — outbound SSH via `outpost ssh-proxy` only, no inbound listeners, no matrix tunnel. The host row shows up in cloudbox with a 'client' badge so the operator can see it; it cannot be a share target.")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the pairing requests register would send (cloudbox master first, then the legacy satellite exchange) and send nothing")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Machine-readable output")
 	cmd.Flags().StringVar(&ring, "ring", "",
 		"Optional deployment ring tag (e.g. dev/test/stage/prod) that seeds the host's ring on cloudbox at first pairing. Used to scope fleet-upgrade fan-out to one cohort. Empty leaves the host untagged. Cloudbox admins can re-assign rings from the SPA — a subsequent re-pair without --ring will not overwrite their value.")
 	return cmd
@@ -3556,6 +3569,66 @@ func doRecover(ctx context.Context, serverURL, recoveryCode, name, title, authUR
 		return err
 	}
 	fmt.Printf("Recovered as %q. Config saved to %s\n", merged.AgentName, path)
+	return nil
+}
+
+// doPair pairs with the server at serverURL. The cloudbox master pairs
+// once, identity-only (POST /api/v1/hosts/pair): the record lands in
+// agent.json's `cloudbox` block and the non-nil result tells the caller no
+// tunnel exists. Any other server answers that endpoint 404 and pairs over
+// the legacy exchange exactly as before (nil result).
+func doPair(ctx context.Context, serverURL, code, name, title, authURL, out string, clientOnly bool, ring string) (*conf.CloudboxPairing, error) {
+	path := resolvePairingConfigPath(out)
+	existing, _ := conf.LoadFile(path)
+	if err := admincore.CloudboxRepairConflict(existing, serverURL, name); err != nil {
+		return nil, err
+	}
+	id, err := portal.HostPair(ctx, portal.HostPairRequest{ServerURL: serverURL, Code: code, Host: name})
+	if errors.Is(err, portal.ErrNoHostPair) {
+		return nil, doExchange(ctx, serverURL, code, name, title, authURL, out, clientOnly, ring)
+	}
+	if err != nil {
+		return nil, err
+	}
+	fc := existing
+	if fc == nil {
+		fc = &conf.FileConfig{}
+	}
+	fc.Cloudbox = id
+	if err := conf.SaveFile(path, fc); err != nil {
+		return nil, fmt.Errorf("save config: %w", err)
+	}
+	return id, nil
+}
+
+func printIdentityPairing(id *conf.CloudboxPairing, path string, asJSON bool) error {
+	if asJSON {
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"ok": true, "identity_only": true, "tunnel": false, "host": id.Host,
+			"owner_email": id.OwnerEmail, "portal_url": id.PortalURL, "config": path,
+		})
+	}
+	fmt.Printf("Paired with %s as %q (owner %s). Config saved to %s\n", id.PortalURL, id.Host, id.OwnerEmail, path)
+	fmt.Println("Identity only: no tunnel was configured. Attach a satellite to reach its apps and coordination.")
+	return nil
+}
+
+func printRegisterDryRun(serverURL, name string, asJSON bool) error {
+	plan := map[string]any{
+		"dry_run": true,
+		"host":    name,
+		"requests": []string{
+			"POST " + portal.HostPairURL(serverURL) + " (cloudbox master: identity only, no tunnel)",
+			"POST " + strings.TrimRight(serverURL, "/") + "/api/register/exchange (only when the first answers 404: legacy satellite pairing)",
+		},
+	}
+	if asJSON {
+		return json.NewEncoder(os.Stdout).Encode(plan)
+	}
+	fmt.Printf("would pair %q:\n", name)
+	for _, r := range plan["requests"].([]string) {
+		fmt.Println("  " + r)
+	}
 	return nil
 }
 
