@@ -82,6 +82,15 @@ func main() {
 	emitStartupTrace()
 
 	build := agent.ReadBuildInfo()
+	root := newRootCmd(build.Short())
+	if err := root.Execute(); err != nil {
+		os.Exit(1)
+	}
+}
+
+// newRootCmd builds the fully-wired outpost root command. main executes
+// it; tests introspect it.
+func newRootCmd(version string) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "outpost",
 		Short: "Pair a home host with the portal and tunnel local apps to it",
@@ -89,7 +98,7 @@ func main() {
 		// template prints "outpost version <short-commit>"; keep it close
 		// to that with the Go version appended so `outpost --version`
 		// stays a useful one-liner.
-		Version: build.Short(),
+		Version: version,
 		// Don't dump the usage block on operational RunE errors — those
 		// are runtime outcomes ("already at the latest release", "no
 		// route to host"), not the operator mis-invoking the command.
@@ -97,6 +106,9 @@ func main() {
 		// the "Error: <msg>" line (SilenceErrors stays false), and flag/
 		// arg help is one `--help` away.
 		SilenceUsage: true,
+		// No cobra `completion` subcommand: bashy fronts this tree as
+		// `bashy outpost` and owns completion on its side.
+		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 	}
 	root.SetVersionTemplate("outpost version {{.Version}}\n")
 	// Persistent flags that target a remote outpost via MCP. Read by
@@ -126,9 +138,7 @@ func main() {
 	// via a helper so main.go's root AddCommand block stays compact.
 	registerDiscoveryCommands(root)
 	runtimecmd.Register(root)
-	if err := root.Execute(); err != nil {
-		os.Exit(1)
-	}
+	return root
 }
 
 func startCmd() *cobra.Command {
