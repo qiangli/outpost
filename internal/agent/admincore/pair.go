@@ -70,6 +70,7 @@ func (s *Server) Pair(ctx context.Context, p PairParams) (PairResult, error) {
 	prevBase := CloudboxHTTPBase(existing)
 	merged := *existing
 	merged.AgentName = exchanged.AgentName
+	merged.PortalURL = exchanged.PortalURL
 	merged.ServerAddr = exchanged.ServerAddr
 	merged.ServerPort = exchanged.ServerPort
 	merged.Protocol = exchanged.Protocol
@@ -117,6 +118,7 @@ func (s *Server) Unpair() (PairResult, error) {
 		return PairResult{}, err
 	}
 	fc.AgentName = ""
+	fc.PortalURL = ""
 	fc.ServerAddr = ""
 	fc.ServerPort = 0
 	fc.Protocol = ""

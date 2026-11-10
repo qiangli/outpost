@@ -121,7 +121,8 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 		payload["machine_id"] = mid
 	}
 	body, _ := json.Marshal(payload)
-	url := strings.TrimRight(req.ServerURL, "/") + "/api/register/exchange"
+	portalURL := strings.TrimRight(strings.TrimSpace(req.ServerURL), "/")
+	url := portalURL + "/api/register/exchange"
 
 	// Retry the POST on transient failures (network errors + 5xx) so
 	// pairing survives a cloud portal-replica restart. Cloudbox's split
@@ -282,6 +283,7 @@ func Exchange(ctx context.Context, req ExchangeRequest) (*conf.FileConfig, error
 	off := func() *bool { b := false; return &b }
 	fc := &conf.FileConfig{
 		AgentName:            ex.AgentName,
+		PortalURL:            portalURL,
 		ServerAddr:           ex.ServerAddr,
 		ServerPort:           ex.ServerPort,
 		Protocol:             ex.Protocol,
@@ -384,7 +386,8 @@ func Reattach(ctx context.Context, req ReattachRequest) (*conf.FileConfig, error
 		"client_only":     req.ClientOnly,
 	}
 	body, _ := json.Marshal(payload)
-	url := strings.TrimRight(req.ServerURL, "/") + "/api/register/reattach"
+	portalURL := strings.TrimRight(strings.TrimSpace(req.ServerURL), "/")
+	url := portalURL + "/api/register/reattach"
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	var respBody []byte
@@ -474,6 +477,7 @@ func Reattach(ctx context.Context, req ReattachRequest) (*conf.FileConfig, error
 
 	fc := &conf.FileConfig{
 		AgentName:            ex.AgentName,
+		PortalURL:            portalURL,
 		ServerAddr:           ex.ServerAddr,
 		ServerPort:           ex.ServerPort,
 		Protocol:             ex.Protocol,

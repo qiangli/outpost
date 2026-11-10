@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/machineid"
 )
 
@@ -56,8 +57,84 @@ func TestExchangeRoundTrip(t *testing.T) {
 	if _, ok := gotBody["has_auth_url"].(bool); !ok {
 		t.Errorf("has_auth_url not present or wrong type: %+v", gotBody)
 	}
-	if fc.AgentName != "laptop-alice" || fc.Token != "secret-token" || fc.RemotePort != 7100 || fc.Protocol != "wss" {
+	if fc.AgentName != "laptop-alice" || fc.PortalURL != server.URL || fc.Token != "secret-token" || fc.RemotePort != 7100 || fc.Protocol != "wss" {
 		t.Errorf("decoded fc = %+v, mismatch", fc)
+	}
+}
+
+func TestPortalURLPersistedByEveryPairingFlow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+		  "agent_name":"host-1",
+		  "server_addr":"tunnel.example.com",
+		  "server_port":7000,
+		  "protocol":"tcp",
+		  "token":"tunnel-token",
+		  "remote_port":7100,
+		  "access_token":"fresh-access"
+		}`)
+	}))
+	defer server.Close()
+
+	baseWithSlash := server.URL + "/"
+	tests := []struct {
+		name string
+		run  func() (*conf.FileConfig, error)
+	}{
+		{
+			name: "exchange",
+			run: func() (*conf.FileConfig, error) {
+				return Exchange(context.Background(), ExchangeRequest{ServerURL: baseWithSlash, Code: "code", Name: "host-1"})
+			},
+		},
+		{
+			name: "reattach",
+			run: func() (*conf.FileConfig, error) {
+				return Reattach(context.Background(), ReattachRequest{ServerURL: baseWithSlash, AccessToken: "existing-access", Name: "host-1"})
+			},
+		},
+		{
+			name: "recover",
+			run: func() (*conf.FileConfig, error) {
+				return Recover(context.Background(), RecoverRequest{ServerURL: baseWithSlash, RecoveryCode: "recovery-code", Name: "host-1"})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc, err := tt.run()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fc.PortalURL != server.URL {
+				t.Fatalf("PortalURL = %q, want canonical request base %q", fc.PortalURL, server.URL)
+			}
+			if fc.ServerPort != 7000 {
+				t.Fatalf("ServerPort = %d, want tunnel port 7000", fc.ServerPort)
+			}
+		})
+	}
+}
+
+func TestLegacyFileConfigWithoutPortalURL(t *testing.T) {
+	var fc conf.FileConfig
+	if err := json.Unmarshal([]byte(`{
+	  "agent_name":"legacy-host",
+	  "server_addr":"legacy.example.com",
+	  "server_port":443,
+	  "protocol":"wss",
+	  "token":"token",
+	  "remote_port":7100
+	}`), &fc); err != nil {
+		t.Fatal(err)
+	}
+	if fc.PortalURL != "" {
+		t.Fatalf("legacy PortalURL = %q, want empty fallback sentinel", fc.PortalURL)
+	}
+	if fc.AgentName != "legacy-host" || fc.ServerAddr != "legacy.example.com" {
+		t.Fatalf("legacy config did not decode: %+v", fc)
 	}
 }
 

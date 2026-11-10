@@ -23,7 +23,13 @@ import (
 // host OS (PAM / dscl / LogonUserW) to an external HTTP endpoint that
 // owns its own application-level user list.
 type FileConfig struct {
-	AgentName  string `json:"agent_name"`
+	AgentName string `json:"agent_name"`
+	// PortalURL is the canonical HTTP(S) origin used for portal API calls.
+	// It is independent of the matrix tunnel endpoint below: ServerPort may
+	// be the tunnel port (for example 7000), not the portal's HTTPS port.
+	// Empty preserves compatibility with agent.json files written before the
+	// portal origin was persisted.
+	PortalURL  string `json:"portal_url,omitempty"`
 	ServerAddr string `json:"server_addr"`
 	ServerPort int    `json:"server_port"`
 	// Protocol is "tcp" (default for legacy raw-TCP matrix-tunnel

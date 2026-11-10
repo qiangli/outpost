@@ -133,7 +133,8 @@ func Recover(ctx context.Context, req RecoverRequest) (*conf.FileConfig, error) 
 		"client_only":     req.ClientOnly,
 	}
 	body, _ := json.Marshal(payload)
-	url := strings.TrimRight(req.ServerURL, "/") + "/api/register/recover"
+	portalURL := strings.TrimRight(strings.TrimSpace(req.ServerURL), "/")
+	url := portalURL + "/api/register/recover"
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	var respBody []byte
@@ -209,6 +210,7 @@ func Recover(ctx context.Context, req RecoverRequest) (*conf.FileConfig, error) 
 
 	return &conf.FileConfig{
 		AgentName:   ex.AgentName,
+		PortalURL:   portalURL,
 		ServerAddr:  ex.ServerAddr,
 		ServerPort:  ex.ServerPort,
 		Protocol:    ex.Protocol,

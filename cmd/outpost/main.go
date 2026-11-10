@@ -2990,6 +2990,10 @@ func tryReattach(ctx context.Context, fc *conf.FileConfig, cfgPath string) (*con
 
 	// Cloudbox-controlled fields — overwrite. The rest of fc stays as-is.
 	changed := false
+	if refreshed.PortalURL != "" && refreshed.PortalURL != fc.PortalURL {
+		fc.PortalURL = refreshed.PortalURL
+		changed = true
+	}
 	if refreshed.Token != "" && refreshed.Token != fc.Token {
 		fc.Token = refreshed.Token
 		changed = true
@@ -3607,6 +3611,7 @@ func mergePairing(path string, exchanged *conf.FileConfig) *conf.FileConfig {
 	// the pairing fields are overlaid — the S482 comparison below needs both.
 	prevBase := cloudboxHTTPBase(merged)
 	merged.AgentName = exchanged.AgentName
+	merged.PortalURL = exchanged.PortalURL
 	merged.ServerAddr = exchanged.ServerAddr
 	merged.ServerPort = exchanged.ServerPort
 	merged.Protocol = exchanged.Protocol
