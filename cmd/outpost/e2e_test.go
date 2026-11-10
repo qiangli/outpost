@@ -142,6 +142,12 @@ func spawnDaemon(t *testing.T) *daemon {
 	d.cmd.Stderr = d.stderr
 	d.process = startTestProcess(t, d.cmd)
 
+	d.waitReady(t)
+	return d
+}
+
+func (d *daemon) waitReady(t *testing.T) {
+	t.Helper()
 	// Wait for /healthz to flip OK.
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
@@ -150,7 +156,7 @@ func spawnDaemon(t *testing.T) *daemon {
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			if resp.StatusCode == 200 {
-				return d
+				return
 			}
 		}
 		// Daemon may have died early — surface that fast rather than
@@ -163,7 +169,16 @@ func spawnDaemon(t *testing.T) *daemon {
 	}
 	t.Fatalf("daemon /healthz never responded.\nstdout:\n%s\nstderr:\n%s",
 		d.stdout.String(), d.stderr.String())
-	return nil
+}
+
+// restart supplies the supervisor that supervised test daemons expect. Every
+// replacement retains the same test label, audit, config, and cleanup ownership.
+func (d *daemon) restart(t *testing.T) {
+	t.Helper()
+	d.mustCLI(t, "restart")
+	d.process = restartTestProcess(t, d.process)
+	d.cmd = d.process.cmd
+	d.waitReady(t)
 }
 
 // stop kills the private process group and waits. It is safe to repeat.

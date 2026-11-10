@@ -72,7 +72,7 @@ func TestE2E_FirstRunSSHDUnitServes(t *testing.T) {
 	sshPort := freePort(t)
 	sshAddr := fmt.Sprintf("127.0.0.1:%d", sshPort)
 	d.mustCLI(t, "builtins", "set", "--service-set", fmt.Sprintf("sshd.ports.0.port=%d", sshPort))
-	d.mustCLI(t, "restart")
+	d.restart(t)
 	if err := waitSSHBanner(t, sshAddr, 30*time.Second); err != nil {
 		t.Fatalf("unpaired daemon never served ssh on %s: %v\nstdout:\n%s\nstderr:\n%s",
 			sshAddr, err, d.stdout.String(), d.stderr.String())
@@ -88,7 +88,7 @@ func TestE2E_FirstRunSSHDUnitDisableWithdraws(t *testing.T) {
 	sshAddr := fmt.Sprintf("127.0.0.1:%d", sshPort)
 	d.mustCLI(t, "builtins", "set", "--service-set", fmt.Sprintf("sshd.ports.0.port=%d", sshPort))
 	d.mustCLI(t, "builtins", "set", "--service", "sshd=off")
-	d.mustCLI(t, "restart")
+	d.restart(t)
 	// Give the daemon a moment to boot, then require silence.
 	time.Sleep(3 * time.Second)
 	if err := waitNoSSHBanner(t, sshAddr, 5*time.Second); err != nil {

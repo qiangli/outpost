@@ -101,3 +101,24 @@ func TestDaemonProcessCleanup(t *testing.T) {
 		})
 	}
 }
+
+// Exercise supervisor replacement without building or starting outpost.
+func TestDaemonProcessRestart(t *testing.T) {
+	cmd := exec.Command("/bin/sh", "-c", `test "$OUTPOST_SUPERVISED" = 1; exit $?`)
+	cmd.Env = append(os.Environ(), testServiceEnv(t)...)
+	output := &lockedTestBuffer{}
+	cmd.Stdout, cmd.Stderr = output, output
+	first := startTestProcess(t, cmd)
+	next := restartTestProcess(t, first)
+	if next == first || next.cmd.Process.Pid == first.cmd.Process.Pid {
+		t.Fatal("restart did not replace the supervised process")
+	}
+	<-next.done
+	if !first.exited() || !first.cmd.ProcessState.Success() || !next.cmd.ProcessState.Success() {
+		t.Fatalf("supervised processes did not exit successfully: %s", output.String())
+	}
+	if strings.Join(first.cmd.Environ(), "\n") != strings.Join(next.cmd.Environ(), "\n") {
+		t.Fatal("restart lost isolated service identity or environment")
+	}
+	next.stop()
+}

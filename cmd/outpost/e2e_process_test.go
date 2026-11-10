@@ -68,3 +68,20 @@ func (p *testProcess) stop() {
 		<-p.done
 	})
 }
+
+// restartTestProcess is the test-owned supervisor for an explicit restart.
+func restartTestProcess(t *testing.T, old *testProcess) *testProcess {
+	t.Helper()
+	select {
+	case <-old.done:
+	case <-time.After(10 * time.Second):
+		old.stop()
+		t.Fatal("daemon did not exit for supervised restart")
+	}
+	// Reap any remaining descendants before starting the replacement.
+	old.stop()
+	cmd := exec.Command(old.cmd.Path, old.cmd.Args[1:]...)
+	cmd.Env, cmd.Dir = old.cmd.Env, old.cmd.Dir
+	cmd.Stdout, cmd.Stderr = old.cmd.Stdout, old.cmd.Stderr
+	return startTestProcess(t, cmd)
+}

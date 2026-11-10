@@ -75,3 +75,30 @@ Service-manager follow-up (2026-11-10, review steering):
 - Rechecked executable paths using macOS proc_pidpath: zero matching test
   daemons remained. No additional processes were signaled. No real service
   manager, real-daemon E2E, Podman, VM, or full-suite run was performed.
+
+Restart regression follow-up (2026-11-10, review steering):
+
+- The SSHD tests call the MCP restart closure, which reaches execSelfStart.
+  With OUTPOST_SUPERVISED=1 this exits for a supervisor to respawn; the test
+  harness previously supplied no supervisor. This path does not invoke a
+  service manager, so injecting a launchctl fake would not restore the listener.
+- Both SSHD tests now use a test-owned restart helper: wait for the old daemon,
+  reap its group, start a replacement with the same isolated environment and
+  per-test service identity, register cleanup/watchdog, and await readiness.
+  The default hard service-manager guard remains intact.
+- Red/green: TestDaemonProcessRestart failed with "restart did not replace the
+  supervised process" before the helper implementation; it now passes using
+  harmless shell subprocesses and checks replacement, wait, and environment.
+- Targeted race gate passed with fb_archives: TestDaemonProcess.*, TestService.*,
+  TestRegisterServiceGuard, TestRegisterScriptedLegacyGate,
+  TestActivatePairedService.*, TestDeactivatePairedService.*, TestRender.*.
+  A second race gate with fb_archives,outpost_testisolated passed
+  TestIsolatedServiceAudit, TestService.*, and TestDaemonProcessRestart.
+  No actual E2E, Podman, VM, or full-suite tests were run, per host restriction;
+  the SSHD integration test itself remains for the permitted validation host.
+- Revalidated and killed one additional orphan (PID 26670, parent 1) whose
+  proc_pidpath executable was inside the host temp outpost-e2e-bin-904575739
+  directory; confirmed its executable mapping disappeared. No real host
+  service was targeted.
+- Corrected the service-isolation commit to carry only the requested Adhoc
+  trailer; this follow-up likewise uses only Adhoc.
