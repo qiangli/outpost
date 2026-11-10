@@ -14,9 +14,8 @@
 //   - $MATRIX_* are blanked so the daemon never accidentally dials a
 //     real cloudbox.
 //
-// The binary is built once in TestMain into a per-package tempdir. If
-// the build fails the whole suite skips with a clear message rather
-// than failing one-test-at-a-time.
+// The binary is built lazily on the first requireE2E call into a per-package
+// tempdir. Unit-only runs do not build it. Build failures skip E2E tests.
 package main
 
 import (
@@ -32,57 +31,48 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 )
 
-// e2eBinary is set by TestMain to the absolute path of the built
-// outpost binary used by every E2E test in this package. Empty when
-// the build failed (every test skips in that case).
-var e2eBinary string
-
-// e2eBuildErr is the error message we surface to skipping tests when
-// the build failed at suite setup. Helpful so the skip message says
-// *why* rather than just "binary unavailable".
-var e2eBuildErr string
+// Build only when an E2E test is selected. Unit tests must not build or
+// launch a real daemon as a side effect of TestMain.
+var e2eBinary, e2eBuildErr, e2eBuildDir string
+var e2eBuildOnce sync.Once
 
 func TestMain(m *testing.M) {
-	// Build once for the whole package. We do this here rather than
-	// from each test so multi-test runs amortize the ~3 s build cost.
-	dir, err := os.MkdirTemp("", "outpost-e2e-bin-")
-	if err != nil {
-		e2eBuildErr = "mktempdir: " + err.Error()
-		os.Exit(m.Run())
+	code := m.Run()
+	if e2eBuildDir != "" {
+		_ = os.RemoveAll(e2eBuildDir)
 	}
-	defer os.RemoveAll(dir)
-	bin := filepath.Join(dir, "outpost")
-	cmd := exec.Command("go", "build", "-o", bin, ".")
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		e2eBuildErr = "go build: " + err.Error()
-	} else {
-		e2eBinary = bin
-	}
-	os.Exit(m.Run())
+	os.Exit(code)
 }
 
-// requireE2E skips the calling test when the binary isn't available
-// (build failed) or when we're on a platform that can't run subprocess
-// tests in the usual way. Tests should call this as their first line.
 func requireE2E(t *testing.T) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("e2e tests are POSIX-shaped; skipping on Windows")
+	}
+	e2eBuildOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "outpost-e2e-bin-")
+		if err != nil {
+			e2eBuildErr = err.Error()
+			return
+		}
+		e2eBuildDir = dir
+		bin := filepath.Join(dir, "outpost")
+		cmd := exec.Command("go", "build", "-o", bin, ".")
+		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+		if err := cmd.Run(); err != nil {
+			e2eBuildErr = err.Error()
+			return
+		}
+		e2eBinary = bin
+	})
 	if e2eBinary == "" {
 		t.Skipf("e2e binary unavailable: %s", e2eBuildErr)
-	}
-	if runtime.GOOS == "windows" {
-		// Subprocess signaling + pidfile semantics differ on Windows;
-		// the production code handles it (see detach_windows.go) but
-		// the test harness here is POSIX-shaped. Leave Windows e2e
-		// for follow-up work.
-		t.Skip("e2e tests are POSIX-shaped; skipping on Windows")
 	}
 }
 
@@ -110,15 +100,14 @@ type daemon struct {
 	addr      string // "127.0.0.1:<port>"
 	configDir string // -> XDG_CONFIG_HOME
 	cacheDir  string // -> XDG_CACHE_HOME
-	stdout    *strings.Builder
-	stderr    *strings.Builder
-	stopped   atomic.Bool
+	stdout    *lockedTestBuffer
+	stderr    *lockedTestBuffer
+	process   *testProcess
 }
 
 // spawnDaemon starts an `outpost start` subprocess against an isolated
-// XDG layout on a random loopback port. Waits up to ~5 s for /healthz
-// to respond. Caller is responsible for d.stop() (typically via
-// t.Cleanup).
+// XDG layout on a random loopback port. Waits up to ~8 s for /healthz
+// to respond. Cleanup is installed before any readiness checks.
 func spawnDaemon(t *testing.T) *daemon {
 	t.Helper()
 	port := freePort(t)
@@ -127,8 +116,8 @@ func spawnDaemon(t *testing.T) *daemon {
 		addr:      fmt.Sprintf("127.0.0.1:%d", port),
 		configDir: filepath.Join(t.TempDir(), "config"),
 		cacheDir:  filepath.Join(t.TempDir(), "cache"),
-		stdout:    &strings.Builder{},
-		stderr:    &strings.Builder{},
+		stdout:    &lockedTestBuffer{},
+		stderr:    &lockedTestBuffer{},
 	}
 	for _, dir := range []string{d.configDir, d.cacheDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -146,15 +135,12 @@ func spawnDaemon(t *testing.T) *daemon {
 	)
 	d.cmd.Stdout = d.stdout
 	d.cmd.Stderr = d.stderr
-	if err := d.cmd.Start(); err != nil {
-		t.Fatalf("start daemon: %v", err)
-	}
-	t.Cleanup(func() { d.stop() })
+	d.process = startTestProcess(t, d.cmd)
 
 	// Wait for /healthz to flip OK.
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get("http://" + d.addr + "/healthz")
+		resp, err := e2eHTTPClient.Get("http://" + d.addr + "/healthz")
 		if err == nil {
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
@@ -164,7 +150,7 @@ func spawnDaemon(t *testing.T) *daemon {
 		}
 		// Daemon may have died early — surface that fast rather than
 		// timeout.
-		if d.cmd.ProcessState != nil {
+		if d.process.exited() {
 			t.Fatalf("daemon exited before /healthz responded.\nstdout:\n%s\nstderr:\n%s",
 				d.stdout.String(), d.stderr.String())
 		}
@@ -175,26 +161,10 @@ func spawnDaemon(t *testing.T) *daemon {
 	return nil
 }
 
-// stop sends SIGTERM and waits up to 5 s for graceful exit, then
-// SIGKILLs. Idempotent — calling twice (once from a test, once from
-// the t.Cleanup) is fine.
-func (d *daemon) stop() {
-	if d.stopped.Swap(true) {
-		return
-	}
-	if d.cmd.Process == nil {
-		return
-	}
-	_ = d.cmd.Process.Signal(syscall.SIGTERM)
-	done := make(chan error, 1)
-	go func() { done <- d.cmd.Wait() }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		_ = d.cmd.Process.Kill()
-		<-done
-	}
-}
+// stop kills the private process group and waits. It is safe to repeat.
+func (d *daemon) stop() { d.process.stop() }
+
+var e2eHTTPClient = &http.Client{Timeout: time.Second}
 
 // cli runs `outpost <args...>` against the same isolated env as the
 // daemon and returns combined stdout+stderr. Errors propagate via
@@ -267,7 +237,7 @@ func TestE2E_DaemonLifecycle(t *testing.T) {
 
 	// /healthz — already asserted by spawnDaemon, but re-check to
 	// document that the listener is genuinely up after our wait loop.
-	resp, err := http.Get("http://" + d.addr + "/healthz")
+	resp, err := e2eHTTPClient.Get("http://" + d.addr + "/healthz")
 	if err != nil || resp.StatusCode != 200 {
 		t.Fatalf("/healthz: status=%v err=%v", resp, err)
 	}
@@ -483,7 +453,7 @@ func TestE2E_StopGraceful(t *testing.T) {
 	// off the rails.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		_, err := http.Get("http://" + d.addr + "/healthz")
+		_, err := e2eHTTPClient.Get("http://" + d.addr + "/healthz")
 		if err != nil && (errors.Is(err, syscall.ECONNREFUSED) ||
 			strings.Contains(err.Error(), "connection refused")) {
 			return
@@ -548,22 +518,16 @@ func TestE2E_XDGMigrationAutoMoves(t *testing.T) {
 		"OUTPOST_ADMIN_ADDR=" + addr,
 		"PATH=" + os.Getenv("PATH"),
 	}
-	stdout := &strings.Builder{}
-	stderr := &strings.Builder{}
+	stdout := &lockedTestBuffer{}
+	stderr := &lockedTestBuffer{}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-		_ = cmd.Wait()
-	})
+	process := startTestProcess(t, cmd)
 
 	// Wait for /healthz to flip OK (means migration already ran).
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get("http://" + addr + "/healthz")
+		resp, err := e2eHTTPClient.Get("http://" + addr + "/healthz")
 		if err == nil {
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
@@ -571,7 +535,7 @@ func TestE2E_XDGMigrationAutoMoves(t *testing.T) {
 				break
 			}
 		}
-		if cmd.ProcessState != nil {
+		if process.exited() {
 			t.Fatalf("daemon exited before healthz.\nstdout:\n%s\nstderr:\n%s",
 				stdout.String(), stderr.String())
 		}
