@@ -187,16 +187,7 @@ func (s *Server) Unpair(ctx context.Context) (PairResult, error) {
 	}
 	fc.Cloudbox = nil
 	fc.Attachments = nil
-	fc.AgentName = ""
-	fc.PortalURL = ""
-	fc.ServerAddr = ""
-	fc.ServerPort = 0
-	fc.Protocol = ""
-	fc.Token = ""
-	fc.RemotePort = 0
-	fc.AccessToken = ""
-	fc.AuthURL = ""
-	fc.ClientOnly = false
+	clearLegacyPairing(fc)
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		return PairResult{}, internalErr("%s", err.Error())
 	}

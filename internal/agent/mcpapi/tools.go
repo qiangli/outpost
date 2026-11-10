@@ -24,6 +24,7 @@ func (s *Server) registerTools() {
 	// see tools_pair.go, tools_apps.go, etc. for the per-domain groups.
 	// Keeping them split makes it easy to extend without one giant file.
 	s.registerPairingTools()
+	s.registerSatelliteTools()
 	s.registerBuiltinsTools()
 	s.registerNetworkingTools()
 	s.registerAppsTools()

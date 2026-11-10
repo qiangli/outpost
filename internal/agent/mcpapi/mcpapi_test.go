@@ -121,6 +121,9 @@ func TestToolListAndStatusResource(t *testing.T) {
 	wantTools := []string{
 		"outpost_pair",
 		"outpost_unpair",
+		"outpost_satellite_list",
+		"outpost_satellite_attach",
+		"outpost_satellite_detach",
 		"outpost_set_builtins",
 		"outpost_set_networking",
 		"outpost_list_apps",

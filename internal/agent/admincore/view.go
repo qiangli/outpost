@@ -602,6 +602,9 @@ type AttachmentView struct {
 	Name        string `json:"name,omitempty"`
 	Endpoint    string `json:"endpoint"`
 	HasToken    bool   `json:"has_token"`
+	// Tunnel reports that the satellite returned a tunnel registration the
+	// daemon dials (the registration's secrets are never shown).
+	Tunnel bool `json:"tunnel"`
 }
 
 func cloudboxIdentityView(fc *conf.FileConfig) *CloudboxIdentityView {
@@ -615,7 +618,7 @@ func cloudboxIdentityView(fc *conf.FileConfig) *CloudboxIdentityView {
 func attachmentViews(fc *conf.FileConfig) []AttachmentView {
 	var out []AttachmentView
 	for _, a := range fc.Attachments {
-		out = append(out, AttachmentView{SatelliteID: a.SatelliteID, Name: a.Name, Endpoint: a.Endpoint, HasToken: a.Token != ""})
+		out = append(out, AttachmentView{SatelliteID: a.SatelliteID, Name: a.Name, Endpoint: a.Endpoint, HasToken: a.Token != "", Tunnel: a.Tunnel != nil})
 	}
 	return out
 }
