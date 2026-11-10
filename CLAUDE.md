@@ -261,6 +261,8 @@ Outbound endpoints are only registered when `core.Deps().Outbound != nil` (i.e. 
 
 `portal.Exchange(ctx, ExchangeRequest)` is the single definition of the `POST <server>/api/register/exchange` round-trip. Called by both the CLI `register` command and the admin UI's `/api/config/register` handler; keeping it in one place prevents the two callers from drifting on payload or response shape.
 
+**Pair once with cloudbox (`portal/hostpair.go`).** `register` / `outpost_pair` first POST `/api/v1/hosts/pair` (yoke `docs/cloudbox-members-attach-wire.md` §3). The cloudbox master answers `tunnel:false` + a host token; that identity is stored in `FileConfig.Cloudbox` (`cloudbox` in agent.json), NOT the top-level pairing fields, so the ~60 `fc.AccessToken`/`AgentName` gates in `start` see an unpaired host and no tunnel opens. A 404 means a satellite/standalone server and falls through to the legacy `Exchange` unchanged. Satellite credentials go in the separate `FileConfig.Attachments`. `Unpair` sends `DELETE /api/v1/hosts/self` first (401 = done; other failures keep the identity).
+
 ### matrix tunnel (`internal/agent/tunnel.go`)
 
 Embeds the underlying tunnel-client library (`github.com/fatedier/frp/client`, aliased as `tunnelclient` in the imports) directly — no config file path. Builds proxies via the in-memory `source.ConfigSource`. Important transport details:

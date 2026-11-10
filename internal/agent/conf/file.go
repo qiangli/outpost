@@ -70,6 +70,21 @@ type FileConfig struct {
 	// admin UI is the only loopback listener (for managing this row).
 	ClientOnly bool `json:"client_only,omitempty"`
 
+	// Cloudbox is this host's ONE pairing with the cloudbox master
+	// (POST /api/v1/hosts/pair, yoke docs/cloudbox-members-attach-wire.md
+	// §3): who the host is and which account owns it, nothing else. It
+	// opens no tunnel and is deliberately NOT the top-level pairing above —
+	// those fields drive the matrix tunnel and every satellite-backed
+	// subsystem, so a host with only this block runs exactly like an
+	// unpaired host plus its account record. A legacy satellite pairing in
+	// the top-level fields coexists with it until migrated.
+	Cloudbox *CloudboxPairing `json:"cloudbox,omitempty"`
+
+	// Attachments are the satellite credentials this host holds as a member
+	// of its account (filled by `outpost satellite attach`). A separate
+	// list so attaching never overwrites Cloudbox or the top-level pairing.
+	Attachments []SatelliteAttachment `json:"attachments,omitempty"`
+
 	// Apps managed through the admin UI. When this field is present (even
 	// empty), it is authoritative — the legacy MATRIX_APPS env is ignored.
 	// When absent (nil) on a config written before the admin UI shipped,

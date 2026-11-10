@@ -90,8 +90,33 @@ request body includes an optional `machine_id` (a SHA-256 digest of
 the OS machine identifier) so the server can recognise the same machine
 across re-pairs.
 
-To clear a pairing: `outpost unpair --yes` (CLI), the equivalent MCP
-tool, or wipe `agent.json` by hand.
+### Pair once with cloudbox (identity only) + satellite attachments
+
+| Field | File key | CLI | UI | MCP | Effect |
+|---|---|---|---|---|---|
+| Cloudbox identity | `cloudbox.{portal_url,host,token,scopes,owner_email,paired_at}` | `register --code` against the master | `cloudbox` in `GET /api/config` (token as `has_token`) | `outpost_pair` (`identity_only: true`) | Live (no tunnel, no restart) |
+| Satellite attachments | `attachments[].{satellite_id,name,endpoint,token,scopes,attached_at}` | `outpost satellite attach` (S606 S3) | `attachments` in `GET /api/config` (tokens as `has_token`) | — | — |
+
+`register` first POSTs `/api/v1/hosts/pair` (yoke
+`docs/cloudbox-members-attach-wire.md` §3). The cloudbox master answers
+with a host token and `tunnel: false`: the record lands in `cloudbox` and
+**nothing else changes** — no tunnel, no restart, the top-level pairing
+fields above untouched — so a host paired only this way runs like an
+unpaired host plus its account record. A server without that route (a
+satellite or standalone server, 404) is paired over the legacy
+`/api/register/exchange` exactly as before. `tunnel: true` is refused (a
+different contract). One pairing per master: pairing the same master
+under a second host name is refused until `outpost unpair`.
+
+`attachments[]` is a separate list so attaching to a satellite never
+overwrites `cloudbox` or the top-level pairing.
+
+To clear a pairing: `outpost unpair --yes` (CLI; `--dry-run` shows the
+request, `--json` for machines; edits `agent.json` directly when no
+daemon runs), the equivalent MCP tool, or wipe `agent.json` by hand.
+Unpair first sends `DELETE /api/v1/hosts/self` with the `cloudbox` host
+token (a `401` counts as done; any other failure keeps the identity), then
+clears `cloudbox`, `attachments` and the tunnel pairing.
 
 ### Built-in routes (boot-time-bound)
 

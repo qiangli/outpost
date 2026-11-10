@@ -23,6 +23,8 @@ type pairOut struct {
 	OK             bool   `json:"ok"`
 	AgentName      string `json:"agent_name"`
 	RestartPending bool   `json:"restart_pending" jsonschema:"True when the daemon will restart to apply the change; poll outpost://status until it returns configured=true"`
+	IdentityOnly   bool   `json:"identity_only,omitempty" jsonschema:"True when the server was the cloudbox master: identity record only, no tunnel, no restart"`
+	OwnerEmail     string `json:"owner_email,omitempty" jsonschema:"Account that owns this host (identity-only pairing)"`
 }
 
 type emptyIn struct{}
@@ -35,7 +37,7 @@ type unpairOut struct {
 func (s *Server) registerPairingTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "outpost_pair",
-		Description: "Pair this outpost with a cloudbox portal via a one-time code. Returns restart_pending=true; the daemon re-execs to bring up the matrix tunnel.",
+		Description: "Pair this outpost via a one-time code. Against the cloudbox master the pairing is identity-only (identity_only=true, no tunnel, no restart); against a satellite it is the legacy tunnel pairing and returns restart_pending=true.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in pairIn) (*mcp.CallToolResult, pairOut, error) {
 		res, err := s.core.Pair(ctx, admincore.PairParams{
 			Server: in.Server, Code: in.Code, Name: in.Name,
@@ -44,14 +46,14 @@ func (s *Server) registerPairingTools() {
 		if err != nil {
 			return apiErrResult[pairOut](err)
 		}
-		return nil, pairOut{OK: res.OK, AgentName: res.AgentName, RestartPending: res.RestartPending}, nil
+		return nil, pairOut{OK: res.OK, AgentName: res.AgentName, RestartPending: res.RestartPending, IdentityOnly: res.IdentityOnly, OwnerEmail: res.OwnerEmail}, nil
 	})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "outpost_unpair",
-		Description: "Clear the portal pairing (AgentName, Token, AccessToken). Apps, outbound mounts, and builtin toggles are preserved. Returns restart_pending=true.",
+		Description: "Unpair: delete this host's cloudbox identity at the master (DELETE /api/v1/hosts/self), then clear it, the satellite attachments and the tunnel pairing (AgentName, Token, AccessToken). Apps, outbound mounts, and builtin toggles are preserved. Returns restart_pending=true.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, unpairOut, error) {
-		res, err := s.core.Unpair()
+		res, err := s.core.Unpair(ctx)
 		if err != nil {
 			return apiErrResult[unpairOut](err)
 		}
