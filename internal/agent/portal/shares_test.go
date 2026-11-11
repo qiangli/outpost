@@ -75,3 +75,20 @@ func TestHostSharesContractError(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestCreateHostCircleShareBody(t *testing.T) {
+	var got map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{"share": map[string]any{"id": "c1", "host": "h", "app": "notes", "email": "", "circle": "family"}})
+	}))
+	defer server.Close()
+	share, status, err := CreateHostCircleShare(context.Background(), server.URL, "t", "h", "notes", "family")
+	if err != nil || status != 201 || share.Circle != "family" || share.Email != "" {
+		t.Fatalf("create = %+v, %d, %v", share, status, err)
+	}
+	if len(got) != 2 || got["app"] != "notes" || got["circle"] != "family" {
+		t.Fatalf("body = %v", got)
+	}
+}
