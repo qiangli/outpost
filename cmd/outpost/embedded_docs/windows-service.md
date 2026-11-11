@@ -8,8 +8,7 @@ non-obvious enough that they cost real time to discover. Read this before
 setting up a Windows host.
 
 Use `outpost service install` from the target account's elevated PowerShell
-for the default registration and no-sleep policy. Use `--keep-sleep` to preserve
-power settings. See [Boot service and verification](service.md) for the
+for the default registration; add `--power` for the no-sleep policy. See [Boot service and verification](service.md) for the
 `outpost verify --post-install [--reboot]` evidence workflow.
 
 ## The goal

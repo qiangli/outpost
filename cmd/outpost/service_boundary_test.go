@@ -153,7 +153,7 @@ func TestRegisterServiceGuard(t *testing.T) {
 func TestServicePowerGuard(t *testing.T) {
 	if os.Getenv("OUTPOST_POWER_GUARD_CHILD") == "1" {
 		cmd := serviceInstallCmd()
-		cmd.SetArgs([]string{"--user"})
+		cmd.SetArgs([]string{"--user", "--power"})
 		if err := cmd.Execute(); err != nil {
 			t.Fatal(err)
 		}

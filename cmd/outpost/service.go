@@ -171,7 +171,7 @@ func serviceInstallCmd() *cobra.Command {
 }
 
 func newServiceInstallCmd(run postinstall.Runner, install func(installOpts) error) *cobra.Command {
-	var dryRun, userMode, systemMode, force, keepSleep bool
+	var dryRun, userMode, systemMode, force, power, keepSleep bool
 	var runAs string
 	cmd := &cobra.Command{
 		Use:   "install",
@@ -183,11 +183,16 @@ regular (non-elevated) target user. Requires admin at install time — re-run wi
 sudo (macOS/Linux) or from an elevated prompt (Windows).
 
 --user: registers a per-user service. Linux enables linger; macOS and Windows
-require a login. --keep-sleep avoids the privileged power step.
+require a login.
 
-Sleep is disabled by default on AC and battery power. --keep-sleep preserves
-existing power policy. Power changes require administrator rights and failures
-are returned with the exact command to run.
+Power policy is left untouched unless --power is passed. --power disables sleep
+and hibernate system-wide so the service stays reachable: Windows sets the
+standby and hibernate timeouts to zero on AC and battery and turns hibernation
+off (powercfg); macOS sets sleep and disk sleep to zero on every power source
+and enables wake-on-LAN (pmset); Linux masks sleep.target, suspend.target,
+hibernate.target and hybrid-sleep.target (systemctl mask). The step needs
+administrator rights, is not undone by uninstall, and a failure is returned
+with the exact command to run.
 
 macOS uses a LaunchDaemon by default. Login Keychain credentials are unavailable
 before login; configure unattended credentials for agents that need them.
@@ -202,18 +207,25 @@ create two managers fighting over the pidfile — pass --force to override.`,
 			if userMode && systemMode {
 				return fmt.Errorf("--user and --system are mutually exclusive")
 			}
-			if !keepSleep {
+			if power && keepSleep {
+				return fmt.Errorf("--power and --keep-sleep are mutually exclusive")
+			}
+			if power {
 				if err := postinstall.ApplyPower(cmd.Context(), runtimeOS, run, dryRun, cmd.OutOrStdout()); err != nil {
 					return err
 				}
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "power policy unchanged (the host may still sleep); re-run with --power to disable sleep and hibernate")
 			}
 			return install(installOpts{System: !userMode, DryRun: dryRun, Force: force, RunAs: runAs})
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the service definition + the commands that would run, without applying")
-	cmd.Flags().BoolVar(&userMode, "user", false, "Per-user service: Linux enables linger; macOS/Windows start at login. Power policy still needs admin unless --keep-sleep.")
+	cmd.Flags().BoolVar(&userMode, "user", false, "Per-user service: Linux enables linger; macOS/Windows start at login")
 	cmd.Flags().BoolVar(&systemMode, "system", false, "Register a boot service (default on every OS)")
-	cmd.Flags().BoolVar(&keepSleep, "keep-sleep", false, "Preserve existing sleep settings")
+	cmd.Flags().BoolVar(&power, "power", false, "Also disable sleep and hibernate system-wide (needs admin; see the command help for what runs per OS)")
+	cmd.Flags().BoolVar(&keepSleep, "keep-sleep", false, "Preserve existing sleep settings (the default)")
+	_ = cmd.Flags().MarkDeprecated("keep-sleep", "sleep settings are preserved by default; --power opts in")
 	cmd.Flags().BoolVar(&force, "force", false, "Install even if a daemon under a launcher this command can't manage is still running")
 	cmd.Flags().StringVar(&runAs, "run-as", "", "OS user the system service runs as (default: the invoking non-root user)")
 	return cmd

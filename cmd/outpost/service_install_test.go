@@ -16,12 +16,14 @@ func TestServiceInstallPolicy(t *testing.T) {
 		args                                   []string
 		failPower, system, power, dry, wantErr bool
 	}{
-		{name: "default boot and no sleep", system: true, power: true},
+		{name: "default boot, sleep untouched", system: true},
+		{name: "power opt-in", args: []string{"--power"}, system: true, power: true},
 		{name: "keep sleep", args: []string{"--keep-sleep"}, system: true},
-		{name: "dry run", args: []string{"--dry-run"}, system: true, dry: true},
-		{name: "explicit user", args: []string{"--user", "--keep-sleep"}},
-		{name: "power denied", failPower: true, power: true, wantErr: true},
+		{name: "dry run", args: []string{"--dry-run", "--power"}, system: true, dry: true},
+		{name: "explicit user", args: []string{"--user"}},
+		{name: "power denied", args: []string{"--power"}, failPower: true, power: true, wantErr: true},
 		{name: "conflicting flags", args: []string{"--user", "--system"}, wantErr: true},
+		{name: "power conflicts with keep-sleep", args: []string{"--power", "--keep-sleep"}, wantErr: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			powerCalls, installs := 0, 0
@@ -55,6 +57,9 @@ func TestServiceInstallPolicy(t *testing.T) {
 			}
 			if tt.dry && !strings.Contains(output.String(), "# ") {
 				t.Error("missing power preview")
+			}
+			if !tt.power && !tt.dry && !strings.Contains(output.String(), "--power") {
+				t.Errorf("skipped power step not announced: %q", output.String())
 			}
 		})
 	}

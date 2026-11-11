@@ -189,5 +189,5 @@ with `outpost cluster join` when wanted.
   with the recovery code:
   `outpost register --recovery-code <CODE> --name <host>`.
 
-For boot-service defaults, the `--keep-sleep` opt-out, and
+For boot-service defaults, the `--power` opt-in, and
 `outpost verify --post-install [--reboot]`, see [service verification](service.md).

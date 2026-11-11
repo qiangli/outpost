@@ -12,7 +12,7 @@ Install from an elevated PowerShell on Windows. On macOS and Linux, use
 installing from a root session, supply `--run-as <account>`. Keep the executable
 at its permanent location and pair/configure outpost as the service account.
 
-| OS | Default registration | Restart after any exit | Power policy applied by default |
+| OS | Default registration | Restart after any exit | Power policy with `--power` |
 | --- | --- | --- | --- |
 | Windows | Task Scheduler `outpost`, at startup, S4U, limited token | Task restart backstop (999 × 1 min) | Standby and hibernate timeouts set to zero for AC and DC; hibernation disabled |
 | macOS | `/Library/LaunchDaemons/io.dhnt.outpost.plist`, RunAtLoad and KeepAlive | `KeepAlive` | Sleep and disk sleep zero for every power source; network wake enabled |
@@ -38,12 +38,14 @@ daemon back.
 supervisor keeps it down across boots until `outpost enable` clears both
 markers and starts it again (via the supervisor when one is installed).
 
-`--keep-sleep` preserves power policy. `--dry-run` prints the planned definition
-and power commands without applying them. A failed power step returns nonzero
-and prints the exact administrator command to run. Installation does not silently
-fall back to a session service. Power changes are not undone by uninstall.
+Power policy is left untouched unless `--power` is passed; without it the
+install prints one line saying so. `--dry-run` prints the planned definition
+and, with `--power`, the power commands without applying them. A failed power
+step returns nonzero and prints the exact administrator command to run.
+Installation does not silently fall back to a session service. Power changes
+are not undone by uninstall.
 
-The power commands are:
+The `--power` commands are:
 
 ```text
 Windows:
@@ -66,8 +68,8 @@ verification on the intended hardware.
 
 Linux `--user` installs a user unit and enables linger using `loginctl` so the
 user manager runs at boot and survives logout. Failure to enable or verify
-linger returns nonzero with the exact command to run. The power step still
-requires privilege unless `--keep-sleep` is supplied.
+linger returns nonzero with the exact command to run. The `--power` step still
+requires privilege.
 
 On macOS and Windows, `--user` explicitly selects a session service requiring
 login. It cannot pass the boot-service check. macOS's default LaunchDaemon cannot
