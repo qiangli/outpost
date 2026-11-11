@@ -1,11 +1,15 @@
 #!/bin/sh
 # Compatibility bootstrap: one verified bashy archive, then the product installer.
-# Existing INSTALL_DIR / DHNT_BIN_DIR / OUTPOST_VERSION / NO_SERVICE / REPO work.
+# Existing INSTALL_DIR / DHNT_BIN_DIR / OUTPOST_VERSION / SERVICE / NO_SERVICE / REPO work.
 set -eu
 REPO=${REPO:-qiangli/bashy}
 INSTALL_DIR=${INSTALL_DIR:-${DHNT_BIN_DIR:-$HOME/.local/bin}}
 release=${BASHY_VERSION:-${OUTPOST_VERSION:-}}
-service=1
+# Default: no service - outpost stays dormant until `bashy login` (the
+# `bashy self install` contract). Opt in with --service or SERVICE=1;
+# --no-service and NO_SERVICE=1 force the default.
+service=0
+[ -z "${SERVICE:-}" ] || service=1
 [ -z "${NO_SERVICE:-}" ] || service=0
 scope=
 while [ "$#" -gt 0 ]; do

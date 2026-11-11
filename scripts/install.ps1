@@ -1,5 +1,5 @@
 # Compatibility bootstrap: one verified bashy archive, then bashy self install.
-# Legacy INSTALL_DIR, OUTPOST_VERSION, NO_SERVICE, REPO environment remain valid.
+# Legacy INSTALL_DIR, OUTPOST_VERSION, SERVICE, NO_SERVICE, REPO environment remain valid.
 [CmdletBinding()]
 param(
     [string]$Dir = '', [string]$Version = '',
@@ -13,7 +13,11 @@ if ($Service -and $NoService) { throw '-Service and -NoService are mutually excl
 $repo = if ($env:REPO) { $env:REPO } else { 'qiangli/bashy' }
 if (-not $Dir) { $Dir = if ($env:INSTALL_DIR) { $env:INSTALL_DIR } elseif ($env:DHNT_BIN_DIR) { $env:DHNT_BIN_DIR } else { Join-Path $env:LOCALAPPDATA 'outpost' } }
 if (-not $Version) { $Version = if ($env:BASHY_VERSION) { $env:BASHY_VERSION } else { $env:OUTPOST_VERSION } }
-$installService = -not ($NoService -or $env:NO_SERVICE)
+# Default: no service - outpost stays dormant until `bashy login` (the
+# `bashy self install` contract). Opt in with -Service or SERVICE=1;
+# -NoService and NO_SERVICE=1 force the default.
+$installService = [bool]$env:SERVICE
+if ($NoService -or $env:NO_SERVICE) { $installService = $false }
 if ($Service) { $installService = $true }
 if (($User -or $System) -and -not $installService) { throw 'service scope requires service installation' }
 $architecture = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }

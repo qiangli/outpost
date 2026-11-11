@@ -7,7 +7,9 @@ unsigned-binary guidance are in the [outpost README](../README.md#install).
 The macOS/Linux script installer downloads the matching bashy release archive,
 verifies it against `checksums.txt`, and runs `bashy self install`. The Windows
 PowerShell installer follows the same checksum-verified flow for the Windows
-zip. Both installers can register outpost as a per-user service/task.
+zip. By default both leave outpost installed but dormant until `bashy login`;
+`--service` / `-Service` (or `SERVICE=1`) also registers outpost as a per-user
+service/task.
 
 Environment overrides supported by the compatibility scripts:
 
@@ -15,12 +17,13 @@ Environment overrides supported by the compatibility scripts:
 |----------|--------|
 | `INSTALL_DIR` | Install directory. |
 | `BASHY_VERSION` or `OUTPOST_VERSION` | Pin a release tag. |
-| `NO_SERVICE` | When set, skip service/task installation. |
+| `SERVICE` | When set, also register the outpost service/task (same as `--service` / `-Service`). |
+| `NO_SERVICE` | When set, skip service/task installation (the default; overrides `SERVICE`). |
 | `REPO` | Use an alternate bashy repository. |
 
-To install without registering a service, use `NO_SERVICE=1` with the Unix
-script or `$env:NO_SERVICE = '1'` before the PowerShell command. Linux headless
-hosts may need `loginctl enable-linger` for the user service to run after logout.
+To also register the service, pass `--service` to the Unix script or `-Service`
+to the PowerShell one (or set `SERVICE=1`). Linux headless hosts may need
+`loginctl enable-linger` for the user service to run after logout.
 
 v1.0 macOS and Windows binaries are not yet code-signed. Script and package
 manager installs do not set browser quarantine/Mark-of-the-Web; a browser
