@@ -96,3 +96,14 @@ func TestShareTargetSelection(t *testing.T) {
 		t.Fatal("incomplete attachment silently fell back")
 	}
 }
+
+func TestAppsShareRequiresExactlyOneAudience(t *testing.T) {
+	for _, args := range [][]string{{"notes"}, {"notes", "--email", "a@example.test", "--circle", "family"}} {
+		cmd := appsShareCmd()
+		cmd.SetArgs(args)
+		cmd.SilenceUsage, cmd.SilenceErrors = true, true
+		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "exactly one") {
+			t.Fatalf("args %v: err = %v", args, err)
+		}
+	}
+}

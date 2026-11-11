@@ -16,6 +16,7 @@ type AppShare struct {
 	Host      string    `json:"host"`
 	App       string    `json:"app"`
 	Email     string    `json:"email"`
+	Circle    string    `json:"circle"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -43,8 +44,16 @@ func ListHostShares(ctx context.Context, endpoint, token, host string) ([]AppSha
 // CreateHostShare returns the share and the HTTP status (201 for new, 200
 // for an existing identical grant).
 func CreateHostShare(ctx context.Context, endpoint, token, host, app, email string) (AppShare, int, error) {
-	status, body, err := do(ctx, http.MethodPost, HostSharesURL(endpoint, host), token,
-		map[string]string{"app": app, "email": email})
+	return createHostShare(ctx, endpoint, token, host, map[string]string{"app": app, "email": email})
+}
+
+// CreateHostCircleShare shares app with every member currently in circle.
+func CreateHostCircleShare(ctx context.Context, endpoint, token, host, app, circle string) (AppShare, int, error) {
+	return createHostShare(ctx, endpoint, token, host, map[string]string{"app": app, "circle": circle})
+}
+
+func createHostShare(ctx context.Context, endpoint, token, host string, req map[string]string) (AppShare, int, error) {
+	status, body, err := do(ctx, http.MethodPost, HostSharesURL(endpoint, host), token, req)
 	if err != nil {
 		return AppShare{}, status, err
 	}

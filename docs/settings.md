@@ -153,8 +153,9 @@ satellite …`; with no daemon running they edit `agent.json` directly.
   profile; `bashy llm share --satellite NAME` resolves the attachment first.
 
 **Share a published app with a mutual member:** `outpost apps share APP
---email E`; remove it with `outpost apps unshare APP --email E`; inspect
-grants with `outpost apps shares [APP]`. The same commands are available
+--email E` (or `--circle C` to share with every current member of a
+circle; exactly one); remove an email share with `outpost apps unshare APP --email E`; inspect
+grants (email and circle columns) with `outpost apps shares [APP]`. The same commands are available
 through `bashy outpost apps …`. All three accept `--json`; share and
 unshare accept `--dry-run`. They use the first attachment's endpoint and
 host token when attached, otherwise the legacy pairing's portal and

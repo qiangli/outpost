@@ -55,35 +55,52 @@ func loadShareTarget() (shareTarget, error) {
 func printShareJSON(w io.Writer, value any) error { return json.NewEncoder(w).Encode(value) }
 
 func appsShareCmd() *cobra.Command {
-	var email string
+	var email, circle string
 	var asJSON, dryRun bool
-	cmd := &cobra.Command{Use: "share APP", Short: "Share an app with a mutual member", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		if strings.TrimSpace(email) == "" {
-			return errors.New("--email is required")
+	cmd := &cobra.Command{Use: "share APP", Short: "Share an app with a mutual member or a circle", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		email, circle = strings.TrimSpace(email), strings.TrimSpace(circle)
+		if (email == "") == (circle == "") {
+			return errors.New("exactly one of --email or --circle is required")
 		}
 		t, err := loadShareTarget()
 		if err != nil {
 			return err
 		}
 		if dryRun {
-			plan := map[string]any{"dry_run": true, "method": "POST", "url": portal.HostSharesURL(t.endpoint, t.host), "app": args[0], "email": email}
+			plan := map[string]any{"dry_run": true, "method": "POST", "url": portal.HostSharesURL(t.endpoint, t.host), "app": args[0]}
+			who := email
+			if circle != "" {
+				plan["circle"], who = circle, "circle "+circle
+			} else {
+				plan["email"] = email
+			}
 			if asJSON {
 				return printShareJSON(cmd.OutOrStdout(), plan)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "would share %s with %s at %s\n", args[0], email, plan["url"])
+			fmt.Fprintf(cmd.OutOrStdout(), "would share %s with %s at %s\n", args[0], who, plan["url"])
 			return nil
 		}
-		share, _, err := portal.CreateHostShare(cmd.Context(), t.endpoint, t.token, t.host, args[0], email)
+		var share portal.AppShare
+		if circle != "" {
+			share, _, err = portal.CreateHostCircleShare(cmd.Context(), t.endpoint, t.token, t.host, args[0], circle)
+		} else {
+			share, _, err = portal.CreateHostShare(cmd.Context(), t.endpoint, t.token, t.host, args[0], email)
+		}
 		if err != nil {
 			return err
 		}
 		if asJSON {
 			return printShareJSON(cmd.OutOrStdout(), map[string]any{"share": share})
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "shared %s with %s (id %s)\n", share.App, share.Email, share.ID)
+		who := share.Email
+		if who == "" {
+			who = "circle " + share.Circle
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "shared %s with %s (id %s)\n", share.App, who, share.ID)
 		return nil
 	}}
 	cmd.Flags().StringVar(&email, "email", "", "Mutual member email")
+	cmd.Flags().StringVar(&circle, "circle", "", "Circle name (every current member of the circle)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Machine-readable output")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show the request without sending it")
 	return cmd
@@ -178,7 +195,7 @@ func appsSharesCmd() *cobra.Command {
 			return printShareJSON(cmd.OutOrStdout(), map[string]any{"shares": shares})
 		}
 		for _, s := range shares {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", s.App, s.Email, s.ID)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", s.App, s.Email, s.Circle, s.ID)
 		}
 		return nil
 	}}
