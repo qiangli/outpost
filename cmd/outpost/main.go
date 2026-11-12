@@ -1050,6 +1050,15 @@ func startCmd() *cobra.Command {
 			fmt.Fprintf(os.Stderr, "MCP endpoint: %s/mcp/  (bearer: %s)\n", adminSrv.URL(), mcpToken)
 
 			g, gctx := errgroup.WithContext(ctx)
+			// The cloud-side require_login gate judges the caller against
+			// the host-grant copy each attachment serves; until one arrives
+			// it admits the paired owner only.
+			hostGrants := agent.NewHostGrants(hostGrantOwner(fc))
+			apps.SetHostGrants(hostGrants)
+			if srcs := hostGrantSources(fc); len(srcs) > 0 {
+				grantPuller := &agent.GrantPuller{Sources: srcs, Store: hostGrants}
+				g.Go(func() error { return grantPuller.Run(gctx) })
+			}
 			if fc.AccessToken == "" {
 				bi := agent.ReadBuildInfo()
 				puller := upgrade.PullerConfig{Worker: upgradeWorker, Resolve: upgrade.GitHubSource{Platform: bi.OS + "_" + bi.Arch, Current: bi, Token: githubUpgradeToken()}.Resolve}

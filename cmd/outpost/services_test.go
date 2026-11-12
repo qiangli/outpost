@@ -103,6 +103,7 @@ func TestTrustedUnitAppReceivesVerifiableIdentity(t *testing.T) {
 	if err := r.ReloadAndReconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
+	reg.SetHostGrants(agent.NewHostGrants("owner@example.com"))
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

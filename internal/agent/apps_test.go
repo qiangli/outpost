@@ -700,9 +700,9 @@ func TestProxyTo_RequireLogin_BlocksCloudWithoutPeriscopeRole(t *testing.T) {
 	}
 }
 
-// TestProxyTo_RequireLogin_AllowsCloudWithPeriscopeRole confirms the
-// same setup proceeds normally once cloudbox has stamped X-Periscope-Role.
-func TestProxyTo_RequireLogin_AllowsCloudWithPeriscopeRole(t *testing.T) {
+// TestProxyTo_RequireLogin_AllowsCloudHostOwner confirms the same setup
+// proceeds normally when the cloud-identified caller is the host owner.
+func TestProxyTo_RequireLogin_AllowsCloudHostOwner(t *testing.T) {
 	var upstreamHit int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHit++
@@ -719,12 +719,13 @@ func TestProxyTo_RequireLogin_AllowsCloudWithPeriscopeRole(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	reg.SetHostGrants(NewHostGrants("owner@example.com"))
 	srv := httptest.NewServer(newTestRouter(reg))
 	defer srv.Close()
 
 	req, _ := http.NewRequest("GET", srv.URL+"/app/guarded/x", nil)
 	req.Header.Set("X-Forwarded-Prefix", "/matrix/h/host-a/app/guarded")
-	req.Header.Set("X-Periscope-Role", "user")
+	req.Header.Set("X-Periscope-User", "owner@example.com")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("get: %v", err)
