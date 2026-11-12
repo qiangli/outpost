@@ -1051,8 +1051,8 @@ func startCmd() *cobra.Command {
 
 			g, gctx := errgroup.WithContext(ctx)
 			// The cloud-side require_login gate judges the caller against
-			// the host-grant copy each attachment serves; until one arrives
-			// it admits the paired owner only.
+			// the host-grant copy the legacy pairing and each attachment
+			// serve; until one arrives it admits the paired owner only.
 			hostGrants := agent.NewHostGrants(hostGrantOwner(fc))
 			apps.SetHostGrants(hostGrants)
 			if srcs := hostGrantSources(fc); len(srcs) > 0 {

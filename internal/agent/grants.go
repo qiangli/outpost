@@ -98,7 +98,7 @@ func (g *GrantCopy) Admits(app, email string) bool {
 	return false
 }
 
-// HostGrants holds the newest grant copy received from any attachment.
+// HostGrants holds the newest grant copy received from any source.
 // Until a copy arrives the host grant admits the owner only — the paired
 // account email the daemon was configured with.
 type HostGrants struct {
@@ -156,14 +156,15 @@ func (h *HostGrants) Allow(app, user string) bool {
 	return c.Admits(app, user)
 }
 
-// GrantSource is one satellite attachment the copy is pulled from.
+// GrantSource is one server the copy is pulled from: the legacy pairing
+// or a satellite attachment.
 type GrantSource struct {
-	Name     string // satellite id, for logs
+	Name     string // satellite id or legacy:<host>, for logs
 	Endpoint string
 	Token    string
 }
 
-// GrantPuller pulls the host-grant copy from every attachment at startup
+// GrantPuller pulls the host-grant copy from every source at startup
 // and every Interval. A failed pull keeps the last good copy.
 type GrantPuller struct {
 	Sources  []GrantSource
@@ -199,7 +200,7 @@ func (p *GrantPuller) PullOnce(ctx context.Context) {
 	for _, s := range p.Sources {
 		c, err := p.fetch(ctx, s)
 		if err != nil {
-			slog.Warn("host grants: pull failed; keeping last copy", "satellite", s.Name, "err", err)
+			slog.Warn("host grants: pull failed; keeping last copy", "source", s.Name, "err", err)
 			continue
 		}
 		p.Store.Update(c)
