@@ -94,7 +94,7 @@ func grantSatellite(t *testing.T, token string, c *GrantCopy, fail *bool) *httpt
 	return srv
 }
 
-func TestGrantPullerNewestRevisionWins(t *testing.T) {
+func TestGrantPullerKeepsEverySource(t *testing.T) {
 	older := &GrantCopy{Owner: "o@x", Revision: 3, Members: []GrantMember{{Email: "m@x", Circle: "team"}}}
 	newer := &GrantCopy{Owner: "o@x", Revision: 7, Members: []GrantMember{{Email: "m@x", Circle: "team"}},
 		Apps: map[string][]GrantRule{"app": {{Circles: []string{"team"}}}}}
@@ -107,16 +107,19 @@ func TestGrantPullerNewestRevisionWins(t *testing.T) {
 		{Name: "a", Endpoint: a.URL, Token: "ta"},
 	}}
 	p.PullOnce(context.Background())
-	if got := store.Copy(); got == nil || got.Revision != 7 {
-		t.Fatalf("copy = %+v, want revision 7", got)
+	if got := store.Copy("b"); got == nil || got.Revision != 7 {
+		t.Fatalf("copy b = %+v, want revision 7", got)
+	}
+	if got := store.Copy("a"); got == nil || got.Revision != 3 {
+		t.Fatalf("copy a = %+v, want revision 3", got)
 	}
 	if !store.Allow("app", "m@x") {
-		t.Fatal("member not admitted by newest copy")
+		t.Fatal("member not admitted by the granting source's copy")
 	}
 	// A failed pull keeps the last good copy.
 	failNew = true
 	p.PullOnce(context.Background())
-	if got := store.Copy(); got == nil || got.Revision != 7 {
+	if got := store.Copy("b"); got == nil || got.Revision != 7 {
 		t.Fatalf("copy after failed pull = %+v, want revision 7", got)
 	}
 }
@@ -300,11 +303,59 @@ func TestAllowFreshForcesOnePullOnDenial(t *testing.T) {
 		if store.AllowFresh(ctx, "app", "m@x") {
 			t.Fatal("admitted despite failed pull")
 		}
-		if got := store.Copy(); got == nil || got.Revision != 1 {
+		if got := store.Copy("s"); got == nil || got.Revision != 1 {
 			t.Fatalf("copy = %+v, want revision 1 kept", got)
 		}
 		if n := pulls.Load(); n != 1 {
 			t.Fatalf("pulls = %d, want 1", n)
 		}
 	})
+}
+
+// TestHostGrantsRevisionIsAChangeTag: cloudbox's revision is a content
+// hash, so a later copy may carry a SMALLER revision. It must still
+// replace the held copy, or a grant, a revoke or an owner transfer that
+// happens to hash lower is ignored until the daemon restarts.
+func TestHostGrantsRevisionIsAChangeTag(t *testing.T) {
+	store := NewHostGrants("o@x")
+	ungranted := &GrantCopy{Owner: "o@x", Revision: 900, Members: []GrantMember{{Email: "m@x", Circle: "team"}}}
+	granted := &GrantCopy{Owner: "o@x", Revision: 12, Members: ungranted.Members,
+		Apps: map[string][]GrantRule{"app": {{Emails: []string{"m@x"}}}}}
+	transferred := &GrantCopy{Owner: "n@x", Revision: 5, Members: ungranted.Members, Apps: granted.Apps}
+	store.Update("s", ungranted)
+	if store.Allow("app", "m@x") {
+		t.Fatal("member admitted before the grant")
+	}
+	if !store.Update("s", granted) || !store.Allow("app", "m@x") {
+		t.Fatal("a grant with a lower revision was ignored")
+	}
+	if store.Update("s", granted) {
+		t.Fatal("an unchanged revision reported a change")
+	}
+	if !store.Update("s", transferred) || !store.Allow("app", "n@x") || store.Allow("app", "o@x") {
+		t.Fatal("an owner transfer with a lower revision was ignored")
+	}
+	if !store.Update("s", ungranted) || store.Allow("app", "m@x") {
+		t.Fatal("a revoke was ignored")
+	}
+}
+
+// TestHostGrantsSourcesJudgedIndependently: two satellites hold different
+// grants for the same attached host; neither hides the other's.
+func TestHostGrantsSourcesJudgedIndependently(t *testing.T) {
+	store := NewHostGrants("o@x")
+	members := []GrantMember{{Email: "m@x", Circle: "team"}, {Email: "k@x", Circle: "team"}}
+	store.Update("sat-a", &GrantCopy{Owner: "o@x", Revision: 1, Members: members,
+		Apps: map[string][]GrantRule{"app": {{Emails: []string{"m@x"}}}}})
+	store.Update("sat-b", &GrantCopy{Owner: "o@x", Revision: 2, Members: members})
+	if !store.Allow("app", "m@x") || !store.Allow("app", "o@x") {
+		t.Fatal("grantee or owner refused")
+	}
+	if store.Allow("app", "k@x") {
+		t.Fatal("ungranted member admitted")
+	}
+	store.Update("sat-a", &GrantCopy{Owner: "o@x", Revision: 3, Members: members})
+	if store.Allow("app", "m@x") {
+		t.Fatal("revoke on the granting satellite ignored")
+	}
 }

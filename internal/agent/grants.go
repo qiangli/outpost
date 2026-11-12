@@ -98,13 +98,23 @@ func (g *GrantCopy) Admits(app, email string) bool {
 	return false
 }
 
-// HostGrants holds the newest grant copy received from any source.
+// HostGrants holds the latest grant copy received from each source.
 // Until a copy arrives the host grant admits the owner only — the paired
 // account email the daemon was configured with.
+//
+// A copy's Revision is a change tag, not an order: cloudbox derives it
+// from the copy content (it changes whenever any input changes and is
+// stable otherwise), so a newer copy may carry a smaller number. Each
+// source's copy is therefore replaced by whatever it serves next. The
+// sources are judged independently and a caller passes when any copy
+// admits them: every satellite gates its own tunnel with its own grants
+// before a request reaches this host, so this copy is the second gate of
+// the satellite the request came through, and one satellite's grants must
+// not hide or revoke another's.
 type HostGrants struct {
-	mu    sync.RWMutex
-	copy  *GrantCopy
-	owner string
+	mu     sync.RWMutex
+	copies map[string]*GrantCopy
+	owner  string
 
 	// Forced re-pull on denial (AllowFresh): refresh pulls from every
 	// source; pulling is closed when the in-flight pull finishes.
@@ -127,29 +137,34 @@ func NewHostGrants(owner string) *HostGrants {
 	return &HostGrants{owner: strings.ToLower(strings.TrimSpace(owner))}
 }
 
-// Update keeps c when it is newer (higher revision) than the held copy.
-func (h *HostGrants) Update(c *GrantCopy) bool {
+// Update stores c as source's copy; it reports whether the copy changed
+// (a different revision than the one held for that source).
+func (h *HostGrants) Update(source string, c *GrantCopy) bool {
 	if c == nil {
 		return false
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.copy != nil && c.Revision <= h.copy.Revision {
+	if old := h.copies[source]; old != nil && old.Revision == c.Revision {
 		return false
 	}
-	h.copy = c
+	if h.copies == nil {
+		h.copies = map[string]*GrantCopy{}
+	}
+	h.copies[source] = c
 	return true
 }
 
-// Copy returns the held copy (nil when none has been received).
-func (h *HostGrants) Copy() *GrantCopy {
+// Copy returns source's held copy (nil when none has been received).
+func (h *HostGrants) Copy(source string) *GrantCopy {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	return h.copy
+	return h.copies[source]
 }
 
 // Allow is the cloud-side gate for require_login apps. A nil store admits
-// nobody.
+// nobody. With no copy the paired owner passes; otherwise a caller passes
+// when any source's copy admits them (its owner always passes there).
 func (h *HostGrants) Allow(app, user string) bool {
 	if h == nil {
 		return false
@@ -159,15 +174,19 @@ func (h *HostGrants) Allow(app, user string) bool {
 		return false
 	}
 	h.mu.RLock()
-	c, owner := h.copy, h.owner
-	h.mu.RUnlock()
-	if c != nil && c.Owner != "" {
-		owner = c.Owner
+	defer h.mu.RUnlock()
+	if len(h.copies) == 0 {
+		return h.owner != "" && strings.EqualFold(h.owner, user)
 	}
-	if owner != "" && strings.EqualFold(owner, user) {
-		return true
+	for _, c := range h.copies {
+		if c.Owner == "" && h.owner != "" && strings.EqualFold(h.owner, user) {
+			return true
+		}
+		if c.Admits(app, user) {
+			return true
+		}
 	}
-	return c.Admits(app, user)
+	return false
 }
 
 // SetRefresh installs the pull AllowFresh forces on a denial (normally
@@ -273,7 +292,7 @@ func (p *GrantPuller) Run(ctx context.Context) error {
 	}
 }
 
-// PullOnce fetches from every source and keeps the newest copy.
+// PullOnce fetches from every source and keeps each source's latest copy.
 func (p *GrantPuller) PullOnce(ctx context.Context) {
 	for _, s := range p.Sources {
 		c, err := p.fetch(ctx, s)
@@ -281,7 +300,7 @@ func (p *GrantPuller) PullOnce(ctx context.Context) {
 			slog.Warn("host grants: pull failed; keeping last copy", "source", s.Name, "err", err)
 			continue
 		}
-		p.Store.Update(c)
+		p.Store.Update(s.Name, c)
 	}
 }
 
