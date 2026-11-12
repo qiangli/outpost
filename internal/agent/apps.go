@@ -123,6 +123,9 @@ type AppRegistry struct {
 	// app is unguarded. Keyed by app name alongside the mode maps, so
 	// the guard applies to HTTP, tcp and egress apps alike.
 	expose map[string]exposeGuard
+	// hostGrants is the host-grant copy the cloud-side require_login
+	// gate judges X-Periscope-User against. Nil admits nobody.
+	hostGrants *HostGrants
 	// egress holds the destination allowlist for egress-scheme apps.
 	// Its key set is disjoint from both `proxy` and `tcp` — like TCP
 	// apps, egress apps accept a WebSocket upgrade on /app/<name>/,
@@ -245,6 +248,14 @@ func remoteNameFromEmail(s string) string {
 		return ""
 	}
 	return s[:at]
+}
+
+// SetHostGrants installs the host-grant store the cloud-side
+// require_login gate consults.
+func (r *AppRegistry) SetHostGrants(h *HostGrants) {
+	r.mu.Lock()
+	r.hostGrants = h
+	r.mu.Unlock()
 }
 
 func NewAppRegistry() *AppRegistry {
@@ -1018,6 +1029,7 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	wrap := r.proxyWrap[name]
 	guard, guarded := r.expose[name]
 	healer := r.healer
+	grants := r.hostGrants
 	r.mu.RUnlock()
 	// Expose-token guard (S487.2). Runs FIRST — before the intercepts,
 	// the reverse proxy and the tcp/egress WebSocket bridges — so a
@@ -1042,11 +1054,11 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	// the loopback main listener) are unaffected — the LAN/loopback
 	// trust boundary is what gates them.
 	if c.Request.Header.Get("X-Forwarded-Prefix") != "" {
-		// Rule 1: require_login. Cloudbox stamps X-Periscope-Role
-		// when the per-(host, app) matrix_elev cookie validates;
-		// without that header, this request hasn't proven local-OS
-		// auth and we refuse.
-		if requireLogin && c.Request.Header.Get("X-Periscope-Role") == "" {
+		// Rule 1: require_login. The outpost enforces the host grant
+		// itself: the cloud-identified caller (X-Periscope-User) must be
+		// the host owner or admitted by one of this app's rules in the
+		// host-grant copy. X-Periscope-Role is not consulted.
+		if requireLogin && !grants.Allow(name, c.Request.Header.Get("X-Periscope-User")) {
 			c.AbortWithStatus(http.StatusForbidden)
 			return
 		}
