@@ -1057,8 +1057,9 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 		// Rule 1: require_login. The outpost enforces the host grant
 		// itself: the cloud-identified caller (X-Periscope-User) must be
 		// the host owner or admitted by one of this app's rules in the
-		// host-grant copy. X-Periscope-Role is not consulted.
-		if requireLogin && !grants.Allow(name, c.Request.Header.Get("X-Periscope-User")) {
+		// host-grant copy. X-Periscope-Role is not consulted. A denial
+		// forces one re-pull first, so a just-made grant is honoured.
+		if requireLogin && !grants.AllowFresh(c.Request.Context(), name, c.Request.Header.Get("X-Periscope-User")) {
 			c.AbortWithStatus(http.StatusForbidden)
 			return
 		}

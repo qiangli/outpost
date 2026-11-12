@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
@@ -210,6 +212,99 @@ func TestRequireLoginGateUsesHostGrant(t *testing.T) {
 		}
 		if got := do(t, front, "open", "", true); got != http.StatusOK {
 			t.Fatalf("anonymous = %d, want 200", got)
+		}
+	})
+}
+
+// countingSatellite serves *c behind a bearer and counts the pulls.
+func countingSatellite(t *testing.T, c **GrantCopy, fail *bool, pulls *atomic.Int32) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pulls.Add(1)
+		if r.Header.Get("Authorization") != "Bearer tok" {
+			http.Error(w, "no", http.StatusUnauthorized)
+			return
+		}
+		if *fail {
+			http.Error(w, "down", http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(*c)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestAllowFreshForcesOnePullOnDenial(t *testing.T) {
+	ungranted := &GrantCopy{Owner: "o@x", Revision: 1, Members: []GrantMember{{Email: "m@x", Circle: "team"}}}
+	granted := &GrantCopy{Owner: "o@x", Revision: 2, Members: []GrantMember{{Email: "m@x", Circle: "team"}},
+		Apps: map[string][]GrantRule{"app": {{Circles: []string{"team"}}}}}
+	setup := func(t *testing.T) (*HostGrants, **GrantCopy, *bool, *atomic.Int32) {
+		cur, fail := ungranted, false
+		var pulls atomic.Int32
+		sat := countingSatellite(t, &cur, &fail, &pulls)
+		store := NewHostGrants("")
+		p := &GrantPuller{Store: store, Sources: []GrantSource{{Name: "s", Endpoint: sat.URL, Token: "tok"}}}
+		p.PullOnce(context.Background())
+		store.SetRefresh(p.PullOnce)
+		pulls.Store(0)
+		return store, &cur, &fail, &pulls
+	}
+	ctx := context.Background()
+
+	t.Run("grant after last pull admitted at once", func(t *testing.T) {
+		store, cur, _, pulls := setup(t)
+		*cur = granted
+		if !store.AllowFresh(ctx, "app", "m@x") {
+			t.Fatal("newly granted member refused")
+		}
+		if n := pulls.Load(); n != 1 {
+			t.Fatalf("pulls = %d, want 1", n)
+		}
+	})
+	t.Run("non-member denials pull at most once per window", func(t *testing.T) {
+		store, _, _, pulls := setup(t)
+		var wg sync.WaitGroup
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if store.AllowFresh(ctx, "app", "stranger@x") {
+					t.Error("stranger admitted")
+				}
+			}()
+		}
+		wg.Wait()
+		if store.AllowFresh(ctx, "app", "stranger@x") {
+			t.Fatal("stranger admitted")
+		}
+		if n := pulls.Load(); n != 1 {
+			t.Fatalf("pulls = %d, want 1", n)
+		}
+	})
+	t.Run("owner never pulls", func(t *testing.T) {
+		store, _, _, pulls := setup(t)
+		if !store.AllowFresh(ctx, "app", "o@x") {
+			t.Fatal("owner refused")
+		}
+		if store.AllowFresh(ctx, "app", "") {
+			t.Fatal("anonymous admitted")
+		}
+		if n := pulls.Load(); n != 0 {
+			t.Fatalf("pulls = %d, want 0", n)
+		}
+	})
+	t.Run("pull failure keeps last copy and denies", func(t *testing.T) {
+		store, cur, fail, pulls := setup(t)
+		*cur, *fail = granted, true
+		if store.AllowFresh(ctx, "app", "m@x") {
+			t.Fatal("admitted despite failed pull")
+		}
+		if got := store.Copy(); got == nil || got.Revision != 1 {
+			t.Fatalf("copy = %+v, want revision 1 kept", got)
+		}
+		if n := pulls.Load(); n != 1 {
+			t.Fatalf("pulls = %d, want 1", n)
 		}
 	})
 }

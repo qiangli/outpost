@@ -105,7 +105,21 @@ type HostGrants struct {
 	mu    sync.RWMutex
 	copy  *GrantCopy
 	owner string
+
+	// Forced re-pull on denial (AllowFresh): refresh pulls from every
+	// source; pulling is closed when the in-flight pull finishes.
+	pullMu     sync.Mutex
+	refresh    func(context.Context)
+	pulling    chan struct{}
+	lastForced time.Time
 }
+
+// A denial forces at most one re-pull per ForcedPullGap, and a denied
+// request waits at most ForcedPullWait for it.
+const (
+	ForcedPullGap  = 2 * time.Second
+	ForcedPullWait = 3 * time.Second
+)
 
 // NewHostGrants returns an empty store; owner is the host's own paired
 // account email, used only while no copy has been received.
@@ -154,6 +168,70 @@ func (h *HostGrants) Allow(app, user string) bool {
 		return true
 	}
 	return c.Admits(app, user)
+}
+
+// SetRefresh installs the pull AllowFresh forces on a denial (normally
+// GrantPuller.PullOnce). Without one AllowFresh is Allow.
+func (h *HostGrants) SetRefresh(fn func(context.Context)) {
+	h.pullMu.Lock()
+	defer h.pullMu.Unlock()
+	h.refresh = fn
+}
+
+// AllowFresh is Allow, except that a denied non-owner caller forces one
+// re-pull of the copy and is checked once more, so a grant made after the
+// last periodic pull is honoured at once. Forced pulls are rate-limited to
+// one per ForcedPullGap, concurrent denials share one pull, and the wait
+// is bounded by ForcedPullWait. Revocation is unchanged: it applies at the
+// next pull, periodic or forced.
+func (h *HostGrants) AllowFresh(ctx context.Context, app, user string) bool {
+	if h.Allow(app, user) {
+		return true
+	}
+	if strings.TrimSpace(user) == "" || !h.forcePull(ctx) {
+		return false
+	}
+	return h.Allow(app, user)
+}
+
+// forcePull starts (or joins) a forced pull and waits for it, bounded. It
+// reports false when no pull ran or was joined (no refresh, or rate-limited).
+func (h *HostGrants) forcePull(ctx context.Context) bool {
+	if h == nil {
+		return false
+	}
+	h.pullMu.Lock()
+	done := h.pulling
+	if done == nil {
+		if h.refresh == nil || time.Since(h.lastForced) < ForcedPullGap {
+			h.pullMu.Unlock()
+			return false
+		}
+		h.lastForced = time.Now()
+		done = make(chan struct{})
+		h.pulling = done
+		refresh := h.refresh
+		// Detached from the request: a caller giving up must not cancel
+		// the pull other denials are waiting on.
+		go func() {
+			pctx, cancel := context.WithTimeout(context.Background(), ForcedPullWait)
+			refresh(pctx)
+			cancel()
+			h.pullMu.Lock()
+			h.pulling = nil
+			h.pullMu.Unlock()
+			close(done)
+		}()
+	}
+	h.pullMu.Unlock()
+	t := time.NewTimer(ForcedPullWait)
+	defer t.Stop()
+	select {
+	case <-done:
+	case <-t.C:
+	case <-ctx.Done():
+	}
+	return true
 }
 
 // GrantSource is one server the copy is pulled from: the legacy pairing
