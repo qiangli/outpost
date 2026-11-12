@@ -1057,6 +1057,7 @@ func startCmd() *cobra.Command {
 			apps.SetHostGrants(hostGrants)
 			if srcs := hostGrantSources(fc); len(srcs) > 0 {
 				grantPuller := &agent.GrantPuller{Sources: srcs, Store: hostGrants}
+				hostGrants.SetRefresh(grantPuller.PullOnce)
 				g.Go(func() error { return grantPuller.Run(gctx) })
 			}
 			if fc.AccessToken == "" {
