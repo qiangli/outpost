@@ -37,3 +37,24 @@ func TestApplyAttachmentTunnel(t *testing.T) {
 		t.Fatal("overlay applied without a registration")
 	}
 }
+
+func TestTwoAttachmentsSurviveOverlayAndRestart(t *testing.T) {
+	fc := &FileConfig{Attachments: []SatelliteAttachment{
+		{SatelliteID: "one", Tunnel: &AttachmentTunnel{AgentName: "host", ServerAddr: "one.example"}},
+		{SatelliteID: "two", Tunnel: &AttachmentTunnel{AgentName: "host", ServerAddr: "two.example"}},
+	}}
+	if !fc.ApplyAttachmentTunnel() {
+		t.Fatal("overlay failed")
+	}
+	path := filepath.Join(t.TempDir(), "agent.json")
+	if err := SaveFile(path, fc); err != nil {
+		t.Fatal(err)
+	}
+	back, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.LegacyPaired() || len(back.Attachments) != 2 || back.Attachments[0].Tunnel.ServerAddr != "one.example" || back.Attachments[1].Tunnel.ServerAddr != "two.example" {
+		t.Fatalf("restart config = %+v", back)
+	}
+}

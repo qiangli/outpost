@@ -17,13 +17,13 @@ import (
 // pkg/fleet/cloudboxfake): a master serving the host-token satellite list
 // and attach/detach, plus satellites redeeming attach tokens. Like the
 // cloudbox satellite, the redeem reply carries `registration` (the
-// /api/register/exchange tunnel fields). One attachment per host.
+// /api/register/exchange tunnel fields).
 type satFake struct {
 	master   *httptest.Server
 	sats     map[string]*httptest.Server // id -> satellite
 	names    map[string]string           // id -> name
 	mu       sync.Mutex
-	attached map[string]string // host -> satellite id ("" none)
+	attached map[string]bool   // satellite id -> attached
 	pending  map[string]string // attach token -> satellite id
 	satTok   map[string]string // satellite host token -> satellite id
 	calls    []string
@@ -33,7 +33,7 @@ const fakeHostToken = "htok-studio"
 
 func newSatFake(t *testing.T, sats ...string) *satFake {
 	t.Helper()
-	f := &satFake{sats: map[string]*httptest.Server{}, names: map[string]string{}, attached: map[string]string{},
+	f := &satFake{sats: map[string]*httptest.Server{}, names: map[string]string{}, attached: map[string]bool{},
 		pending: map[string]string{}, satTok: map[string]string{}}
 	f.master = httptest.NewServer(http.HandlerFunc(f.serveMaster))
 	t.Cleanup(f.master.Close)
@@ -65,7 +65,7 @@ func (f *satFake) serveMaster(w http.ResponseWriter, r *http.Request) {
 	case p == "/api/v1/satellites" && r.Method == http.MethodGet:
 		rows := []map[string]any{}
 		for id, srv := range f.sats {
-			rows = append(rows, map[string]any{"id": id, "name": f.names[id], "endpoint": srv.URL, "state": "running", "attached": f.attached["studio"] == id})
+			rows = append(rows, map[string]any{"id": id, "name": f.names[id], "endpoint": srv.URL, "state": "running", "attached": f.attached[id]})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"satellites": rows})
 	case strings.HasPrefix(p, "/api/v1/satellites/") && strings.HasSuffix(p, "/attach"):
@@ -76,14 +76,8 @@ func (f *satFake) serveMaster(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.Method == http.MethodDelete {
-			if f.attached["studio"] == id {
-				f.attached["studio"] = ""
-			}
+			delete(f.attached, id)
 			w.WriteHeader(204)
-			return
-		}
-		if cur := f.attached["studio"]; cur != "" && cur != id {
-			fail(w, 409, "attached_elsewhere")
 			return
 		}
 		tok := "atok-" + id
@@ -121,7 +115,7 @@ func (f *satFake) serveSat(id string, w http.ResponseWriter, r *http.Request) {
 		delete(f.pending, tok)
 		st := "stok-" + id
 		f.satTok[st] = id
-		f.attached["studio"] = id
+		f.attached[id] = true
 		w.WriteHeader(201)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"host": map[string]any{"host": "studio", "attached_at": "2026-11-10T00:00:00Z"}, "token": st,
@@ -191,34 +185,34 @@ func TestSatelliteAttachListDetach(t *testing.T) {
 		}
 	}
 
-	// Re-attach to the same satellite refreshes; another one is 409.
+	// Re-attach refreshes its entry; a second satellite is added.
 	if _, err := s.SatelliteAttach(ctx, SatelliteAttachParams{Satellite: "sat_1"}); err != nil {
 		t.Errorf("re-attach: %v", err)
 	}
-	_, err = s.SatelliteAttach(ctx, SatelliteAttachParams{Satellite: "work"})
-	if ae := AsAPIError(err); ae == nil || ae.Status != 409 || !strings.Contains(ae.Msg, "attached_elsewhere") {
-		t.Fatalf("second attach err = %v, want 409 attached_elsewhere", err)
+	if _, err := s.SatelliteAttach(ctx, SatelliteAttachParams{Satellite: "work"}); err != nil {
+		t.Fatalf("second attach: %v", err)
 	}
-
-	// The master's 409 is the same contract error when local state is gone.
 	fc, _ = conf.LoadFile(s.deps.ConfigPath)
-	saved := fc.Attachments
-	fc.Attachments = nil
-	_ = conf.SaveFile(s.deps.ConfigPath, fc)
-	_, err = s.SatelliteAttach(ctx, SatelliteAttachParams{Satellite: "sat_2"})
-	if ae := AsAPIError(err); ae == nil || ae.Status != 409 || !strings.Contains(ae.Msg, "attached_elsewhere") {
-		t.Fatalf("master 409 err = %v", err)
+	if len(fc.Attachments) != 2 || fc.Attachments[0].SatelliteID != "sat_1" || fc.Attachments[1].SatelliteID != "sat_2" {
+		t.Fatalf("attachments after restart load = %+v", fc.Attachments)
 	}
-	fc.Attachments = saved
-	_ = conf.SaveFile(s.deps.ConfigPath, fc)
+	l, _ = s.SatelliteList(ctx)
+	for _, row := range l.Satellites {
+		if !row.Attached || !row.Local {
+			t.Errorf("row %+v", row)
+		}
+	}
+	if _, err := s.SatelliteDetach(ctx, SatelliteDetachParams{DryRun: true}); err == nil {
+		t.Fatal("ambiguous detach should require a satellite")
+	}
 
-	// Detach: dry run, then both DELETEs, attachment dropped.
-	dd, err := s.SatelliteDetach(ctx, SatelliteDetachParams{DryRun: true})
+	// Detach one: dry run, then both DELETEs, other attachment retained.
+	dd, err := s.SatelliteDetach(ctx, SatelliteDetachParams{Satellite: "home", DryRun: true})
 	if err != nil || len(dd.Requests) != 2 {
 		t.Fatalf("detach dry run = %+v, %v", dd, err)
 	}
 	n = len(f.calls)
-	d, err := s.SatelliteDetach(ctx, SatelliteDetachParams{})
+	d, err := s.SatelliteDetach(ctx, SatelliteDetachParams{Satellite: "sat_1"})
 	if err != nil || !d.RestartPending || len(d.Warnings) != 0 {
 		t.Fatalf("detach = %+v, %v", d, err)
 	}
@@ -227,11 +221,11 @@ func TestSatelliteAttachListDetach(t *testing.T) {
 		t.Errorf("detach calls = %s", got)
 	}
 	fc, _ = conf.LoadFile(s.deps.ConfigPath)
-	if fc.Attachments != nil || !fc.CloudboxPaired() {
+	if len(fc.Attachments) != 1 || fc.Attachments[0].SatelliteID != "sat_2" || !fc.CloudboxPaired() {
 		t.Errorf("after detach: %+v", fc)
 	}
-	if _, err := s.SatelliteAttach(ctx, SatelliteAttachParams{Satellite: "work"}); err != nil {
-		t.Errorf("attach after detach: %v", err)
+	if _, err := s.SatelliteDetach(ctx, SatelliteDetachParams{}); err != nil {
+		t.Errorf("detach remaining satellite: %v", err)
 	}
 }
 

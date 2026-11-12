@@ -82,6 +82,12 @@ func (fc *FileConfig) ApplyAttachmentTunnel() bool {
 	return true
 }
 
+// AttachmentTunnelActive reports whether top-level pairing fields came from
+// an attachment in memory rather than a legacy pairing on disk.
+func (fc *FileConfig) AttachmentTunnelActive() bool {
+	return fc != nil && fc.attachmentOverlay
+}
+
 // persistable returns fc as it should be written: with an attachment
 // overlay (ApplyAttachmentTunnel) removed again.
 func (fc *FileConfig) persistable() *FileConfig {
