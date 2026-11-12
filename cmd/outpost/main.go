@@ -229,11 +229,9 @@ func startCmd() *cobra.Command {
 			// because the errgroup ctx isn't built yet.
 			fc, _ = tryReattach(cmd.Context(), fc, cfgPath)
 
-			// A satellite attachment (`outpost satellite attach`) serves
-			// this host exactly like a legacy satellite pairing: its tunnel
-			// registration fills the top-level pairing fields in memory, so
-			// the one tunnel client below dials the satellite and publishes
-			// the local apps as today. SaveFile never persists the overlay.
+			// The first attachment supplies the host's default cloudbox
+			// identity in memory. Each attachment gets its own tunnel below.
+			// SaveFile never persists the overlay.
 			// Applied after tryReattach: an attachment has no legacy
 			// reattach row to reassert.
 			if fc.ApplyAttachmentTunnel() {
@@ -1392,12 +1390,6 @@ func startCmd() *cobra.Command {
 				}
 			}
 
-			proxies := []agent.TCPProxy{{
-				Name:       cfg.AgentName + "-http",
-				LocalIP:    "127.0.0.1",
-				LocalPort:  localPort,
-				RemotePort: cfg.RemotePort,
-			}}
 			// Kubelet routing is published from inside the k3s-agent
 			// runtime container (see internal/agent/runtime/image/
 			// entrypoint.sh, which adds a [[proxies]] block to
@@ -1406,15 +1398,28 @@ func startCmd() *cobra.Command {
 			// — different netns — so this publish lives where the
 			// kubelet does.
 
-			tunnel, err := agent.NewTunnel(agent.TunnelConfig{
-				ServerAddr: cfg.ServerAddr,
-				ServerPort: cfg.ServerPort,
-				Protocol:   cfg.Protocol,
-				Token:      cfg.Token,
-				User:       cfg.AgentName,
-			}, proxies, visitors, nil)
-			if err != nil {
-				return err
+			var tunnels []*agent.Tunnel
+			targets := hostTunnelTargets(fc, cfg)
+			for i, target := range targets {
+				proxies := []agent.TCPProxy{{Name: target.config.User + "-http", LocalIP: "127.0.0.1", LocalPort: localPort, RemotePort: target.remotePort}}
+				// The cluster visitor binds one local port and is a host
+				// singleton, even when several satellites are attached.
+				var tunnelVisitors []agent.STCPVisitor
+				if i == 0 {
+					tunnelVisitors = visitors
+				}
+				tunnel, err := agent.NewTunnel(target.config, proxies, tunnelVisitors, nil)
+				if err != nil {
+					return err
+				}
+				tunnels = append(tunnels, tunnel)
+			}
+			for i, target := range targets {
+				tunnel := tunnels[i]
+				g.Go(func() error {
+					slog.Info("matrix-agent: dialing matrix tunnel", "server", target.config.ServerAddr, "port", target.config.ServerPort, "remotePort", target.remotePort)
+					return tunnel.Run(gctx)
+				})
 			}
 
 			g.Go(func() error {
@@ -1423,10 +1428,6 @@ func startCmd() *cobra.Command {
 					return err
 				}
 				return nil
-			})
-			g.Go(func() error {
-				slog.Info("matrix-agent: dialing matrix tunnel", "server", cfg.ServerAddr, "port", cfg.ServerPort, "remotePort", cfg.RemotePort)
-				return tunnel.Run(gctx)
 			})
 
 			// LAN sshd is a service unit now (outpost.sshd): the reconciler
@@ -1766,7 +1767,9 @@ func startCmd() *cobra.Command {
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 				_ = localSrv.Shutdown(shutdownCtx)
-				tunnel.Close()
+				for _, tunnel := range tunnels {
+					tunnel.Close()
+				}
 				return nil
 			})
 			err = g.Wait()

@@ -33,7 +33,7 @@ func (s *Server) registerSatelliteTools() {
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "outpost_satellite_attach",
-		Description: "Attach this host to one satellite with its cloudbox pairing (no pairing code): master attach token -> satellite host token + tunnel registration, stored as attachments[0]. The daemon restarts and tunnels there, publishing the local apps. A second satellite while attached fails with 409 attached_elsewhere.",
+		Description: "Attach this host to a satellite with its cloudbox pairing (no pairing code): master attach token -> satellite host token + tunnel registration. The daemon restarts and tunnels to every attached satellite, publishing the local apps through each.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in satelliteAttachIn) (*mcp.CallToolResult, admincore.SatelliteResult, error) {
 		res, err := s.core.SatelliteAttach(ctx, admincore.SatelliteAttachParams{Satellite: in.Satellite, Migrate: in.Migrate, DryRun: in.DryRun})
 		if err != nil {

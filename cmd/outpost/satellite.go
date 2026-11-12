@@ -87,12 +87,11 @@ func satelliteAttachCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "attach ID|NAME",
 		Short: "Attach this host to a satellite with its cloudbox pairing (no pairing code).",
-		Long: `Attach this host to one satellite of its account: the master issues an
+		Long: `Attach this host to a satellite of its account: the master issues an
 attach token for the host token in agent.json "cloudbox", the satellite
 redeems it for a satellite host token + tunnel registration, stored as
-attachments[0]. The daemon restarts and tunnels to the satellite, publishing
-the local apps. One attachment per host: a second satellite is refused with
-409 attached_elsewhere until you detach.
+an attachment. The daemon restarts and tunnels to every attached satellite,
+publishing the local apps through each.
 
 --migrate replaces a legacy satellite pairing (top-level agent_name /
 access_token from a pairing code) with the attachment.`,

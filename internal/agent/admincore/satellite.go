@@ -3,8 +3,6 @@ package admincore
 import (
 	"context"
 	"errors"
-	"fmt"
-	"net/http"
 	"strings"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
@@ -14,10 +12,8 @@ import (
 // Satellite attach (S606 S3, yoke docs/cloudbox-members-attach-wire.md §4).
 // The host uses its ONE cloudbox pairing (FileConfig.Cloudbox) to ask the
 // master for an attach token, redeems it at the satellite, and stores the
-// satellite credential + tunnel registration as Attachments[0]. The daemon
-// then tunnels to that satellite at boot (conf.ApplyAttachmentTunnel). One
-// attachment per host is the current limit; a second is 409
-// attached_elsewhere.
+// satellite credentials and tunnel registrations in Attachments. The daemon
+// opens a tunnel to each attached satellite at boot.
 
 // SatelliteRow is one satellite the host may attach to, joined with the
 // local attachment state.
@@ -152,10 +148,8 @@ func (s *Server) resolveSatellite(ctx context.Context, fc *conf.FileConfig, ref 
 	return ref
 }
 
-// SatelliteAttach attaches this host to one satellite with its cloudbox
-// pairing — no pairing code. Re-attaching to the current satellite
-// refreshes the credential; any other satellite is 409 attached_elsewhere
-// until detached. Schedules a restart so the tunnel moves to the satellite.
+// SatelliteAttach adds or refreshes one satellite attachment and schedules a
+// restart so the daemon opens its tunnel.
 func (s *Server) SatelliteAttach(ctx context.Context, p SatelliteAttachParams) (SatelliteResult, error) {
 	ref := strings.TrimSpace(p.Satellite)
 	if ref == "" {
@@ -179,16 +173,9 @@ func (s *Server) SatelliteAttach(ctx context.Context, p SatelliteAttachParams) (
 			"POST " + portal.SatelliteAttachURL(master, id),
 			"POST <satellite endpoint>/api/v1/hosts/attach",
 		}}
-		if len(fc.Attachments) > 0 && fc.Attachments[0].SatelliteID != id {
-			res.Warnings = append(res.Warnings, fmt.Sprintf("attached_elsewhere: already attached to %s; detach first", fc.Attachments[0].SatelliteID))
-		}
 		return res, nil
 	}
 	id := s.resolveSatellite(ctx, fc, ref)
-	if len(fc.Attachments) > 0 && fc.Attachments[0].SatelliteID != id {
-		return SatelliteResult{}, &APIError{Status: http.StatusConflict, Msg: fmt.Sprintf(
-			"cloudbox: attached_elsewhere (409): host %s is attached to %s; detach first", fc.Cloudbox.Host, fc.Attachments[0].SatelliteID)}
-	}
 	grant, err := portal.RequestAttach(ctx, master, fc.Cloudbox.Token, id)
 	if err != nil {
 		return SatelliteResult{}, wireErr(err)
@@ -208,7 +195,11 @@ func (s *Server) SatelliteAttach(ctx context.Context, p SatelliteAttachParams) (
 	if migrated {
 		clearLegacyPairing(fc)
 	}
-	fc.Attachments = []conf.SatelliteAttachment{*att}
+	if i := localAttachment(fc, att.SatelliteID); i >= 0 {
+		fc.Attachments[i] = *att
+	} else {
+		fc.Attachments = append(fc.Attachments, *att)
+	}
 	if err := conf.SaveFile(s.deps.ConfigPath, fc); err != nil {
 		return SatelliteResult{}, internalErr("%s", err.Error())
 	}
