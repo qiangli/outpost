@@ -7,6 +7,10 @@ desktop, clipboard) so authenticated portal users reach them at
 `https://ai.dhnt.io/h/<host>/app/<name>/`. The HTTP server binds loopback only;
 the portal is the sole ingress.
 
+Outpost brings the apps on your own machines within reach of
+[software shaping](https://github.com/qiangli/bashy/blob/main/docs/software-shaping.md): change how an app works for you, verified and
+reversible, while everyone else keeps their version.
+
 Fully open source under the [MIT license](LICENSE) — nothing is hidden, nothing
 phones home. The wire protocol is documented inline in
 [`internal/agent/portal/`](internal/agent/portal/) (`exchange.go` is the only
