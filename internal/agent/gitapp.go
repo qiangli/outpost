@@ -106,8 +106,13 @@ func (r *AppRegistry) registerGit(name string, target *url.URL, allow []string, 
 }
 
 // gitUpstreamClient forwards git smart-HTTP exchanges. No timeout: a
-// fetch body can stream for minutes.
-var gitUpstreamClient = &http.Client{}
+// fetch body can stream for minutes. It never follows a redirect: the
+// 3xx goes back to the caller (Location only when credential-free), so
+// the host credential is never sent on to, or logged with, a URL the
+// upstream chose.
+var gitUpstreamClient = &http.Client{
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
 
 // gitResponseHeaders is the allow-list of response headers copied back
 // to the caller. Everything else (auth-ish headers, cookies, ...) is
@@ -178,7 +183,7 @@ func (g *gitApp) serve(c *gin.Context, name, rest string, fill gitCredentialFill
 
 	resp, err := gitUpstreamClient.Do(req)
 	if err != nil {
-		slog.Warn("git app upstream request failed", "app", name, "err", err)
+		slog.Warn("git app upstream request failed", "app", name, "err", redactGitSecrets(err.Error(), user, pass))
 		c.AbortWithStatus(http.StatusBadGateway)
 		return
 	}
@@ -350,6 +355,17 @@ func containsGitSecret(s, user, pass string) bool {
 		}
 	}
 	return false
+}
+
+// redactGitSecrets replaces every surface form of the credential in s
+// with "[redacted]" (for log lines built from upstream-derived text).
+func redactGitSecrets(s, user, pass string) string {
+	for _, secret := range gitSecrets(user, pass) {
+		if secret != "" {
+			s = strings.ReplaceAll(s, secret, "[redacted]")
+		}
+	}
+	return s
 }
 
 // newSecretRedactingReader streams r with every occurrence of the

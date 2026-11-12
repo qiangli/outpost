@@ -324,11 +324,29 @@ func TestGitAppNeverLeaksCredential(t *testing.T) {
 			t.Fatalf("get redir: %v", err)
 		}
 		defer resp.Body.Close()
+		// The proxy hands the 3xx back instead of following it: following
+		// would send the credential on to the upstream's chosen URL.
+		if resp.StatusCode != http.StatusFound {
+			t.Errorf("redirect status = %d, want %d (the proxy must not follow)", resp.StatusCode, http.StatusFound)
+		}
 		assertClean(t, "redirect Location", resp.Header.Get("Location"))
 		assertClean(t, "redirect headers", headersToString(resp.Header))
 	})
 
 	assertClean(t, "logs", logBuf.String())
+}
+
+func TestRedactGitSecrets(t *testing.T) {
+	const user, pass = "octocat", "top-secret-host-credential"
+	basic := base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))
+	in := `Get "https://example.com/x#Basic ` + basic + `": dial tcp: lookup example.com: no such host; ` + user + ":" + pass + " " + pass
+	out := redactGitSecrets(in, user, pass)
+	if containsGitSecret(out, user, pass) {
+		t.Fatalf("redacted text still carries the credential: %q", out)
+	}
+	if !strings.Contains(out, "lookup example.com") {
+		t.Fatalf("redaction removed more than the credential: %q", out)
+	}
 }
 
 // gitTestPktLines builds a pkt-line stream of at least total bytes:
