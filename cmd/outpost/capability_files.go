@@ -7,7 +7,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/filebrowser/filebrowser/v2/fbembed"
+	"github.com/gtsteffaniak/filebrowser/backend/fbembed"
 	"github.com/qiangli/yoke/pkg/service"
 
 	"github.com/qiangli/outpost/internal/agent"
@@ -88,10 +88,14 @@ func (c *filesCapability) Activate(ctx context.Context, cfg service.Config) erro
 		}
 		key = k
 	}
-	// The embed is stateless (no DB): scope + write mode come from the
-	// declaration and UI prefs live in the browser's localStorage.
+	// Scope + write mode come from the declaration on every boot; the engine's
+	// own state (its lone user, the file index, the preview cache, and the
+	// session key it minted when SigningKey is empty) lives under outpost's
+	// cache dir so the index survives a restart instead of rescanning the
+	// scope from zero.
 	h, closer, err := fbembed.New(fbembed.Options{
 		Scope: s.scope, AllowWrite: s.allowWrite, SigningKey: key,
+		StateDir: defaultExternalDataDir("files"),
 	})
 	if err != nil {
 		return fmt.Errorf("files: init: %w", err)

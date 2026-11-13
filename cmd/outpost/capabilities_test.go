@@ -139,6 +139,9 @@ func catalogWithUnits(t *testing.T, units ...fleet.Service) *fleet.Catalog {
 // the `files` app route with the facets no declaration can express — the
 // index path and the per-app login gate — then withdraws both on deactivate.
 func TestFilesCapabilityPublishesAndWithdraws(t *testing.T) {
+	// The embed keeps its index and state under outpost's cache dir; keep
+	// the test's copy out of the developer's real one.
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	apps := agent.NewAppRegistry()
 	scope := t.TempDir()
 	cap := &filesCapability{Apps: apps}
@@ -212,6 +215,7 @@ func TestFilesCapabilityPublishesAndWithdraws(t *testing.T) {
 // A declared port is honoured, so the File Browser's listener is checked for
 // conflicts by fleet like any other declared listener.
 func TestFilesCapabilityHonoursADeclaredPort(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	apps := agent.NewAppRegistry()
 	cap := &filesCapability{Apps: apps}
 	// Bind an ephemeral port first to learn a free one, then release it.
