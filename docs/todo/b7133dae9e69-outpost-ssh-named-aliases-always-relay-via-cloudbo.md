@@ -3,16 +3,19 @@ id: b7133dae9e69
 kind: bug
 title: 'outpost ssh: named aliases always relay via cloudbox (no mesh rung); ad-hoc path waits ~3 s on mDNS before an already-live mesh link'
 seq: 2773
-status: todo
+status: done
 priority: p0
 labels:
     - ssh
     - mesh
     - cost
 created: 2026-11-13T04:36:57.291311Z
+assignee: claude-opus5.5-s629
 sprint: 629
 sprint_id: c0fa6bb6-4b60-56b9-aac0-c267db8e1a18
 sprint_title: 'outpost ssh: same-LAN peers go peer-to-peer (mesh-direct), not via the paid cloudbox relay'
+closed: 2026-11-13T14:24:18.894249Z
+closed_by: claude-opus5.5-s629
 ---
 
 Measured 2026-11-13 dev box -> Windows test host on the same LAN (outpost peers status: same_lan; outpost reach: route=mesh, link=lan, rtt 7 ms).
