@@ -52,6 +52,8 @@ func newTestSSHServerOpts(t *testing.T, auth hostauth.Authenticator, cloudboxSta
 	if cloudboxStamps {
 		engine.Use(func(c *gin.Context) {
 			c.Request.Header.Set("X-Periscope-Role", "admin")
+			// Cloudbox stamps arrive through the tunnel ingress.
+			c.Request = c.Request.WithContext(TunnelIngressConnContext(c.Request.Context(), nil))
 			c.Next()
 		})
 	}
