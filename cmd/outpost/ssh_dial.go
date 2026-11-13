@@ -71,15 +71,39 @@ func dialSSHTargetChain(ctx context.Context, name, jumpOverride string) (*sshcli
 	}
 
 	clients := make([]*sshclient.Client, 0, len(chain))
+	// meshCleanup closes the local mesh forward when the outer leg rides the
+	// mesh; a no-op otherwise.
+	meshCleanup := func() {}
 	closeAll := func() {
 		for i := len(clients) - 1; i >= 0; i-- {
 			_ = clients[i].Close()
 		}
+		meshCleanup()
 	}
 
-	// Leg 0: cloudbox WS dial to the outermost target, OR a plain TCP
-	// dial when the target is Direct (LAN-direct path; bypasses cloudbox).
+	// Leg 0, mesh-direct first for a cloudbox-routed target: when the mesh
+	// already holds a DIRECT link to the host, the session goes peer-to-peer
+	// (cloudbox only mints the ticket) instead of through the paid relay.
 	outer := chain[0]
+	if !outer.Direct && fc != nil && fc.ServerAddr != "" && bearer != "" {
+		cookie, _ := conf.ReadSessionCookie(outer.Host)
+		if strings.TrimSpace(cookie) != "" {
+			cli, cleanup, merr := dialMeshDirect(ctx, fc, bearer, outer.Host, outer.User, cookie)
+			if merr == nil {
+				meshCleanup = cleanup
+				clients = append(clients, cli)
+				slog.Info("ssh: outer leg connected", "host", outer.Host, "route", "mesh-direct")
+				return dialSSHHops(ctx, chain, clients, closeAll, knownHostsPath)
+			}
+			if !errors.Is(merr, errMeshNotAvailable) {
+				slog.Info("ssh: mesh-direct attempt failed, falling back to cloudbox tunnel",
+					"host", outer.Host, "err", merr)
+			}
+		}
+	}
+
+	// Leg 0 otherwise: cloudbox WS dial to the outermost target, OR a plain
+	// TCP dial when the target is Direct (LAN-direct path; bypasses cloudbox).
 	var (
 		outerTransport net.Conn
 		outerAuth      []ssh.AuthMethod
@@ -151,6 +175,23 @@ func dialSSHTargetChain(ctx context.Context, name, jumpOverride string) (*sshcli
 	recordReachabilityEdge(outer, outerHandshakeStart)
 	clients = append(clients, outerCli)
 
+	return dialSSHHops(ctx, chain, clients, closeAll, knownHostsPath)
+}
+
+// dialSSHHops layers hops 1..N over the already-connected outer client
+// (clients[0]) via direct-tcpip, then returns the innermost client.
+//
+// outerClose releases what the caller opened (the outer client and, for a
+// mesh leg, its forward). The returned cleanup closes the hops innermost-first
+// and then calls outerClose, so every exit path releases everything.
+func dialSSHHops(ctx context.Context, chain []conf.SSHTarget, clients []*sshclient.Client, outerClose func(), knownHostsPath string) (*sshclient.Client, func(), error) {
+	outer := len(clients)
+	closeAll := func() {
+		for i := len(clients) - 1; i >= outer; i-- {
+			_ = clients[i].Close()
+		}
+		outerClose()
+	}
 	// Hops 1..N: direct-tcpip → SSH layer.
 	for i := 1; i < len(chain); i++ {
 		hop := chain[i]

@@ -10,6 +10,9 @@ labels:
     - mesh
     - cost
 created: 2026-11-13T04:36:57.291311Z
+sprint: 629
+sprint_id: c0fa6bb6-4b60-56b9-aac0-c267db8e1a18
+sprint_title: 'outpost ssh: same-LAN peers go peer-to-peer (mesh-direct), not via the paid cloudbox relay'
 ---
 
 Measured 2026-11-13 dev box -> Windows test host on the same LAN (outpost peers status: same_lan; outpost reach: route=mesh, link=lan, rtt 7 ms).

@@ -18,15 +18,11 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,6 +35,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/discovery"
+	"github.com/qiangli/outpost/internal/agent/peerticket"
 	"github.com/qiangli/yoke/pkg/sshclient"
 )
 
@@ -168,31 +165,15 @@ func dialPairedHost(ctx context.Context, fc *conf.FileConfig, bearer, host, user
 		}
 	}
 
-	// LAN-direct probe. mDNS browse blocks for ~3s; fine for the
-	// first connect, slightly chatty for tight loops. The probe is
-	// best-effort: any failure (no peer found, no sshws endpoint,
-	// no pubkey configured, peer-ticket exchange fails) falls back
-	// to the cloudbox-tunneled path so the command always works.
-	// Each rung's network legs carry their own budget (see the
-	// ssh*Timeout vars) so a blackholed endpoint fails into the next
-	// rung instead of hanging the dial.
 	var lanErr, meshErr error
-	if client, cleanup, err := dialLANDirect(ctx, fc, bearer, host, user, cookie); err == nil {
-		return client, cleanup, nil
-	} else if lanErr = err; !errors.Is(err, errLANNotAvailable) {
-		// Log non-trivial LAN-direct failures (e.g. peer-ticket
-		// exchange returned 5xx) so the operator can see what
-		// happened, but still fall through to the tunneled path.
-		slog.Info("ssh: LAN-direct attempt failed, falling back to cloudbox tunnel",
-			"host", host, "err", err)
-	} else {
-		lanErr = errLANNotAvailable
-	}
-
-	// Mesh-direct. The LAN rung above depends on mDNS, which is silent
-	// whenever the peer has discovery off, a router sits between us, or the
-	// network does not forward multicast — while the mesh may already hold a
-	// DIRECT connection to that very host. Measured on one site: all three
+	// Mesh-direct FIRST. An existing DIRECT mesh link is itself proof the
+	// peer is reachable peer-to-peer, and checking it is a cheap read of live
+	// state (bounded at 800ms), whereas the LAN rung's mDNS browse blocks ~3s
+	// on every call — measured at ~3.5s per command for an agent issuing dozens
+	// of small commands to a same-LAN host. LAN-direct also depends on mDNS,
+	// which is silent whenever the peer has discovery off, a router sits
+	// between us, or the network does not forward multicast — while the mesh
+	// may already hold a DIRECT connection to that very host. Measured on one site: all three
 	// host pairs held direct links and every one of them fell through to the
 	// relay. Same best-effort contract as LAN-direct: any failure falls
 	// through to the tunnel, so this rung can only add reachability.
@@ -203,6 +184,26 @@ func dialPairedHost(ctx context.Context, fc *conf.FileConfig, bearer, host, user
 			"host", host, "err", err)
 	} else {
 		meshErr = errMeshNotAvailable
+	}
+
+	// LAN-direct probe. mDNS browse blocks for ~3s; fine for the
+	// first connect, slightly chatty for tight loops. The probe is
+	// best-effort: any failure (no peer found, no sshws endpoint,
+	// no pubkey configured, peer-ticket exchange fails) falls back
+	// to the cloudbox-tunneled path so the command always works.
+	// Each rung's network legs carry their own budget (see the
+	// ssh*Timeout vars) so a blackholed endpoint fails into the next
+	// rung instead of hanging the dial.
+	if client, cleanup, err := dialLANDirect(ctx, fc, bearer, host, user, cookie); err == nil {
+		return client, cleanup, nil
+	} else if lanErr = err; !errors.Is(err, errLANNotAvailable) {
+		// Log non-trivial LAN-direct failures (e.g. peer-ticket
+		// exchange returned 5xx) so the operator can see what
+		// happened, but still fall through to the tunneled path.
+		slog.Info("ssh: LAN-direct attempt failed, falling back to cloudbox tunnel",
+			"host", host, "err", err)
+	} else {
+		lanErr = errLANNotAvailable
 	}
 
 	if client, cleanup, err := dialCloudboxTunnel(ctx, fc, bearer, host, user, cookie); err == nil {
@@ -862,119 +863,13 @@ func makeFingerprintCheckingCallback(host, advFP string) ssh.HostKeyCallback {
 	}
 }
 
-// peerTicketResponse is the wire shape of the cloudbox endpoint's
-// success response. Kept tiny on purpose — the outpost only needs the
-// ticket string itself.
-type peerTicketResponse struct {
-	Ticket string `json:"ticket"`
-}
-
-// exchangePeerTicket trades the local outpost's matrix_elev cookie at
-// cloudbox's `/api/v1/ssh/peer-ticket` for a short-lived JWT scoped to
-// `host` and `scope`. The cookie itself never leaves this exchange —
-// only the derived ticket is presented to the peer.
-//
-// This is a CONTROL-PLANE call on the DATA-PLANE path, and that is the DESIGN,
-// not a wart to engineer away. Tickets are 60s and single-use — the peer
-// replay-protects the jti — so a captured one is worthless almost immediately
-// and can never be presented twice. Minting per dial is what makes the
-// authorization CURRENT: still paired, still authorized, sharing not revoked,
-// elevation cookie still valid. A cached or long-lived ticket would answer
-// those questions with stale facts.
-//
-// Peer mobility sharpens the point rather than weakening it. Laptops move
-// between networks and the node layout changes underneath, so standing
-// authority must not travel with the device. Accepting a caller purely on its
-// libp2p peer identity — the tempting "remove the dependency" fix — would do
-// exactly that: grant durable standing to a key that moves with the hardware,
-// which cloudbox could no longer revoke. The short-lived, per-connection,
-// centrally-issued ticket is the property worth keeping.
-//
-// The accepted cost is availability: a cloudbox outage denies the direct path,
-// and since the relay fallback also needs cloudbox, both fail together. The
-// retry below is the right scope of mitigation — survive a blip without
-// weakening the check. Buying more than that belongs in cloudbox's own
-// availability, never in a longer-lived or reusable credential.
-//
-// A 404 from cloudbox (endpoint not deployed yet) is treated as
-// errLANNotAvailable so the caller can fall back to the tunnel.
+// exchangePeerTicket is peerticket.Exchange with the LAN rung's sentinel:
+// a cloudbox without the endpoint reads as errLANNotAvailable so the ladder
+// falls back to the tunnel silently.
 func exchangePeerTicket(ctx context.Context, cbBase, bearer, cookie, host, scope string) (string, error) {
-	body, _ := json.Marshal(map[string]any{
-		"host":  host,
-		"scope": []string{scope},
-	})
-	u := strings.TrimRight(cbBase, "/") + "/api/v1/ssh/peer-ticket"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+bearer)
-	req.Header.Set("Cookie", "matrix_elev="+cookie)
-
-	// A ticket is SINGLE-USE — the peer consumes its jti against a replay LRU
-	// and rejects a second presentation — so it cannot be cached, and every
-	// dial needs a fresh one. That makes this one call the point where a
-	// momentary cloudbox blip denies a path that is otherwise fully
-	// peer-to-peer. Observed live: a direct mesh link was up and idle while
-	// `mesh-direct attempt failed ... cloudbox returned 504` sent the
-	// connection to the relay.
-	//
-	// Retry the transient statuses briefly before giving up. This does not
-	// remove the dependency (see the note on exchangePeerTicket), it only
-	// stops a hiccup measured in hundreds of milliseconds from costing the
-	// direct path. 4xx is a real answer and is never retried.
-	client := &http.Client{Timeout: 15 * time.Second}
-	var (
-		resp     *http.Response
-		respBody []byte
-	)
-	backoff := []time.Duration{200 * time.Millisecond, 600 * time.Millisecond}
-	for attempt := 0; ; attempt++ {
-		if attempt > 0 {
-			// Body was consumed by the previous attempt; rebuild the request.
-			req, err = http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
-			if err != nil {
-				return "", err
-			}
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Authorization", "Bearer "+bearer)
-			req.Header.Set("Cookie", "matrix_elev="+cookie)
-		}
-		resp, err = client.Do(req)
-		if err == nil {
-			respBody, _ = io.ReadAll(resp.Body)
-			resp.Body.Close()
-		}
-		retryable := err != nil || resp.StatusCode == http.StatusBadGateway ||
-			resp.StatusCode == http.StatusServiceUnavailable ||
-			resp.StatusCode == http.StatusGatewayTimeout
-		if !retryable || attempt >= len(backoff) {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(backoff[attempt]):
-		}
-	}
-	if err != nil {
-		return "", err
-	}
-
-	if resp.StatusCode == http.StatusNotFound {
-		// Endpoint not deployed yet on cloudbox; tunnel-fallback.
+	t, err := peerticket.Exchange(ctx, cbBase, bearer, cookie, host, scope)
+	if errors.Is(err, peerticket.ErrNotDeployed) {
 		return "", errLANNotAvailable
 	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("cloudbox returned %d: %s", resp.StatusCode, bytes.TrimSpace(respBody))
-	}
-	var out peerTicketResponse
-	if err := json.Unmarshal(respBody, &out); err != nil {
-		return "", fmt.Errorf("decode peer-ticket response: %w", err)
-	}
-	if strings.TrimSpace(out.Ticket) == "" {
-		return "", errors.New("cloudbox returned empty ticket")
-	}
-	return out.Ticket, nil
+	return t, err
 }

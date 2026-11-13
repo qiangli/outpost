@@ -15,8 +15,10 @@ package admincore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -244,18 +246,25 @@ func (s *Server) dialSSHChain(ctx context.Context, name, jumpOverride string) (*
 	}
 
 	clients := make([]*sshclient.Client, 0, len(chain))
+	// closeForward tears down the local mesh forward when the outer leg
+	// rides the mesh; a no-op otherwise.
+	closeForward := func() {}
 	closeAll := func() {
 		for i := len(clients) - 1; i >= 0; i-- {
 			_ = clients[i].Close()
 		}
+		closeForward()
 	}
 
-	// Leg 0: cloudbox WS dial to the outermost target, OR a plain TCP
-	// dial when the target is Direct (LAN-direct path).
+	// Leg 0, in order: a plain TCP dial when the target is Direct
+	// (LAN-direct); else mesh-direct over an existing DIRECT mesh link
+	// (same-LAN peers, peer-to-peer); else the cloudbox WS relay. The mesh
+	// rung keeps a same-room peer's traffic off the paid relay.
 	outer := chain[0]
 	var (
 		outerTransport net.Conn
 		outerDialErr   error
+		route          = "cloudbox"
 	)
 	if outer.Direct {
 		port := outer.Port
@@ -266,12 +275,19 @@ func (s *Server) dialSSHChain(ctx context.Context, name, jumpOverride string) (*
 		if outerDialErr != nil {
 			return nil, nil, upstream("lan-direct dial %s:%d: %s", outer.Host, port, outerDialErr.Error())
 		}
+		route = "lan-direct"
+	} else if conn, fwdCleanup, merr := s.meshSSHTransport(ctx, bearer, outer.Host, sessionCookie(outer.Host)); merr == nil {
+		outerTransport, closeForward, route = conn, fwdCleanup, "mesh-direct"
 	} else {
+		if !errors.Is(merr, errMeshSSHNotAvailable) {
+			slog.Info("ssh: mesh-direct attempt failed, falling back to cloudbox tunnel",
+				"host", outer.Host, "err", merr)
+		}
 		wsURL, err := sshclient.BuildWSURL(fc.ServerAddr, fc.ServerPort, fc.Protocol, outer.Host)
 		if err != nil {
 			return nil, nil, internalErr("build ws url: %s", err.Error())
 		}
-		cookie, _ := conf.ReadSessionCookie(outer.Host)
+		cookie := sessionCookie(outer.Host)
 		dialCtx, dialCancel := context.WithTimeout(ctx, 35*time.Second)
 		wsConn, derr := sshclient.DialWS(dialCtx, sshclient.DialOptions{
 			WSURL:  wsURL,
@@ -296,6 +312,7 @@ func (s *Server) dialSSHChain(ctx context.Context, name, jumpOverride string) (*
 	hostKeyCB, err := sshclient.KnownHostsCallbackTOFU(knownHostsPath, sshclient.HostAliasForHost(outer.Host))
 	if err != nil {
 		_ = outerTransport.Close()
+		closeForward()
 		return nil, nil, internalErr("known_hosts callback: %s", err.Error())
 	}
 	outerHandshakeStart := time.Now()
@@ -306,8 +323,10 @@ func (s *Server) dialSSHChain(ctx context.Context, name, jumpOverride string) (*
 		HostKeyCallback: hostKeyCB,
 	})
 	if err != nil {
-		return nil, nil, upstream("ssh handshake (outer %s): %s", outer.Host, err.Error())
+		closeForward()
+		return nil, nil, upstream("ssh handshake (outer %s via %s): %s", outer.Host, route, err.Error())
 	}
+	slog.Info("ssh: outer leg connected", "host", outer.Host, "route", route)
 	recordEdge(outer, outerHandshakeStart)
 	clients = append(clients, cli)
 
@@ -366,4 +385,10 @@ func asEAuth(err error, target *sshclient.EAuthRequiredError) bool {
 		e = uw.Unwrap()
 	}
 	return false
+}
+
+// sessionCookie reads the cached matrix_elev cookie for host ("" if none).
+func sessionCookie(host string) string {
+	c, _ := conf.ReadSessionCookie(host)
+	return c
 }
