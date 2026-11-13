@@ -11,7 +11,6 @@ import (
 	"github.com/qiangli/yoke/pkg/service"
 
 	"github.com/qiangli/outpost/internal/agent"
-	"github.com/qiangli/outpost/internal/agent/conf"
 )
 
 // The embedded File Browser as an in-process capability (unit
@@ -56,10 +55,10 @@ func readFilesSettings(cfg service.Config) filesSettings {
 	s := filesSettings{
 		scope:      setting(cfg, "scope"),
 		allowWrite: settingBool(cfg, "allow_write"),
-		// 0 = an ephemeral loopback port, which is what the mount used
-		// before: the tunnel reaches it through the app registry, so the
-		// number is nobody's business. A declaration that pins one is
-		// honoured (and then checked for conflicts by fleet).
+		// 0 = no socket: the handler is served in-process and reached
+		// only through the app registry. A declaration that pins a port
+		// is honoured as an explicit loopback listener (and then checked
+		// for conflicts by fleet).
 		port: configPort(cfg, "", 0),
 	}
 	if s.scope == "" {
@@ -101,24 +100,35 @@ func (c *filesCapability) Activate(ctx context.Context, cfg service.Config) erro
 		_ = closer()
 		return err
 	}
-	port, err := c.srv.start(loopbackAddr(s.port), h, closer)
-	if err != nil {
-		return fmt.Errorf("files: listen: %w", err)
-	}
-	if err := c.Apps.RegisterFromConfig(conf.AppConfig{
-		Name: agent.BuiltinFiles, Scheme: "http", Host: "127.0.0.1", Port: port,
-		RequireLogin: true, IndexPath: "/", Enabled: true,
-		// No /api/users LAN-fence needed: the embed is stateless, perm and
-		// scope come from the declaration, and every write to the in-memory
-		// user no-ops — a client cannot enable write or change scope.
-	}); err != nil {
-		_ = c.srv.stop(ctx)
-		return fmt.Errorf("files: register app: %w", err)
+	meta := agent.AppMeta{RequireLogin: true, IndexPath: "/"}
+	if s.port > 0 {
+		// A declared port is the explicit opt-in to a loopback TCP listener
+		// (fleet checks it for conflicts). The File Browser has no login of
+		// its own, so say so.
+		port, err := c.srv.start(loopbackAddr(s.port), h, closer)
+		if err != nil {
+			return fmt.Errorf("files: listen: %w", err)
+		}
+		slog.Warn("files: declared port opens an unauthenticated loopback listener", "port", port)
+		err = c.Apps.RegisterWithMeta(agent.BuiltinFiles, fmt.Sprintf("http://127.0.0.1:%d", port), meta)
+		if err != nil {
+			_ = c.srv.stop(ctx)
+			return fmt.Errorf("files: register app: %w", err)
+		}
+	} else {
+		// Default: no socket at all. The handler is reachable only through
+		// the app route (tunnel ingress or the admin UI's session-gated
+		// local proxy), never by another local process.
+		dial := c.srv.startInMemory(h, closer)
+		if err := c.Apps.RegisterWithMetaDialer(agent.BuiltinFiles, "http://files.in-process", meta, dial); err != nil {
+			_ = c.srv.stop(ctx)
+			return fmt.Errorf("files: register app: %w", err)
+		}
 	}
 	c.mu.Lock()
 	c.scope, c.write, c.applied = s.scope, s.allowWrite, true
 	c.mu.Unlock()
-	slog.Info("files: serving the embedded File Browser", "scope", s.scope, "write", s.allowWrite, "port", port)
+	slog.Info("files: serving the embedded File Browser", "scope", s.scope, "write", s.allowWrite, "port", s.port)
 	return nil
 }
 
