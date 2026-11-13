@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -1214,4 +1215,86 @@ func TestTunnelIngressListenerMarksRequests(t *testing.T) {
 	if string(body) != "true" {
 		t.Errorf("request via ingress socket marked = %q, want true", body)
 	}
+}
+
+// TestProxy_BasePathThroughFakeSatellite reproduces ce971c6f8ad9 end to
+// end: a satellite forwards /matrix/h/<host>/app/vlog/* to outpost's
+// /app/vlog/* (stamping X-Forwarded-Prefix), and the app was added with
+// --url http://127.0.0.1:<console>/vlog/. The fake console mirrors the
+// yoke webconsole gate: only paths whose first segment is the public
+// "vlog" panel are served, everything else is 403. Before the fix the
+// URL path was dropped and every request hit the console root → 403.
+func TestProxy_BasePathThroughFakeSatellite(t *testing.T) {
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		first, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+		if first != "vlog" {
+			http.Error(w, "authentication required", http.StatusForbidden)
+			return
+		}
+		if r.URL.Path == "/vlog/old" {
+			http.Redirect(w, r, "/vlog/new", http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("vlog panel " + r.URL.Path + "?" + r.URL.RawQuery))
+	}))
+	defer console.Close()
+
+	cu, _ := url.Parse(console.URL)
+	reg := NewAppRegistry()
+	if err := reg.RegisterFromConfig(conf.AppConfig{
+		Name: "vlog", Scheme: "http", Host: cu.Hostname(), Port: mustAtoi(t, cu.Port()),
+		BasePath: "/vlog", Enabled: true,
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	outpost := httptest.NewServer(newTestRouter(reg))
+	defer outpost.Close()
+
+	const mount = "/matrix/h/host-a/app/vlog"
+	ou, _ := url.Parse(outpost.URL)
+	satellite := httptest.NewServer(&httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(ou)
+			pr.Out.URL.Path = "/app/vlog" + strings.TrimPrefix(pr.In.URL.Path, mount)
+			pr.Out.URL.RawPath = ""
+			pr.Out.Header.Set("X-Forwarded-Prefix", mount)
+		},
+	})
+	defer satellite.Close()
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	for _, tc := range []struct {
+		path, wantBody, wantLoc string
+		wantCode                int
+	}{
+		{path: mount + "/", wantCode: http.StatusOK, wantBody: "vlog panel /vlog/?"},
+		{path: mount + "/watch/clip-1?t=3", wantCode: http.StatusOK, wantBody: "vlog panel /vlog/watch/clip-1?t=3"},
+		{path: mount + "/old", wantCode: http.StatusFound, wantLoc: mount + "/new"},
+	} {
+		resp, err := client.Get(satellite.URL + tc.path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", tc.path, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != tc.wantCode {
+			t.Errorf("GET %s: status %d (%s), want %d", tc.path, resp.StatusCode, body, tc.wantCode)
+			continue
+		}
+		if tc.wantBody != "" && string(body) != tc.wantBody {
+			t.Errorf("GET %s: body %q, want %q", tc.path, body, tc.wantBody)
+		}
+		if loc := resp.Header.Get("Location"); loc != tc.wantLoc {
+			t.Errorf("GET %s: Location %q, want %q", tc.path, loc, tc.wantLoc)
+		}
+	}
+}
+
+func mustAtoi(t *testing.T, s string) int {
+	t.Helper()
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

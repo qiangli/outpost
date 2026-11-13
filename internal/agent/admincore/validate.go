@@ -154,6 +154,22 @@ func ValidateApp(ac *conf.AppConfig) error {
 	if ac.IndexPath != "" {
 		ac.IndexPath = normalizePathPrefix(ac.IndexPath)
 	}
+	if strings.TrimSpace(ac.BasePath) != "" {
+		if ac.Scheme != "http" && ac.Scheme != "https" {
+			return badRequest("base_path is only supported for http/https apps (scheme %q)", ac.Scheme)
+		}
+		bp := normalizePathPrefix(ac.BasePath)
+		if strings.ContainsAny(bp, " \t*") {
+			return badRequest("base_path %q must not contain whitespace or wildcards", ac.BasePath)
+		}
+		// Same rules as a --url path (no query, fragment, dot segments).
+		if _, err := conf.AppBasePathFromURL("http://base" + bp); err != nil {
+			return badRequest("base_path %q is invalid: %s", ac.BasePath, err.Error())
+		}
+		ac.BasePath = bp
+	} else {
+		ac.BasePath = ""
+	}
 	cleaned := ac.LANOnlyPaths[:0]
 	for _, p := range ac.LANOnlyPaths {
 		p = strings.TrimSpace(p)

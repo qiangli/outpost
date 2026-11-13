@@ -182,3 +182,55 @@ func TestUpsertApp_SSOSecretLifecycle(t *testing.T) {
 		t.Error("RotateSSOSecret should fail when TrustCloudIdentity is off")
 	}
 }
+
+// TestUpsertApp_URLPathBecomesBasePath guards ce971c6f8ad9: `outpost apps
+// add vlog --url http://127.0.0.1:22749/vlog/` must keep "/vlog" as the
+// upstream base path instead of silently targeting the console root, and
+// a path the scheme cannot honor is refused rather than dropped.
+func TestUpsertApp_URLPathBecomesBasePath(t *testing.T) {
+	core, cfgPath := newTestCore(t)
+	got, err := core.UpsertApp(AppUpsertParams{
+		AppConfig: conf.AppConfig{Name: "vlog", Enabled: true},
+		URL:       "http://127.0.0.1:22749/vlog/",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if got.BasePath != "/vlog" || got.Host != "127.0.0.1" || got.Port != 22749 {
+		t.Fatalf("got base_path=%q host=%q port=%d, want /vlog 127.0.0.1 22749", got.BasePath, got.Host, got.Port)
+	}
+	fc, err := conf.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fc.Apps[0].BasePath != "/vlog" {
+		t.Errorf("persisted base_path=%q, want /vlog", fc.Apps[0].BasePath)
+	}
+
+	// Re-upsert at the root clears the base path.
+	got, err = core.UpsertApp(AppUpsertParams{
+		AppConfig: conf.AppConfig{Name: "vlog", Enabled: true},
+		URL:       "http://127.0.0.1:22749/",
+	})
+	if err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	if got.BasePath != "" {
+		t.Errorf("root URL kept base_path=%q", got.BasePath)
+	}
+
+	for _, tc := range []struct {
+		name string
+		p    AppUpsertParams
+	}{
+		{"tcp path", AppUpsertParams{AppConfig: conf.AppConfig{Name: "db", Enabled: true}, URL: "tcp://127.0.0.1:5432/db"}},
+		{"query", AppUpsertParams{AppConfig: conf.AppConfig{Name: "q", Enabled: true}, URL: "http://127.0.0.1:1/x?y=1"}},
+		{"base_path on unix", AppUpsertParams{AppConfig: conf.AppConfig{Name: "s", Enabled: true, Scheme: "unix", Socket: "/tmp/s.sock", BasePath: "/x"}}},
+		{"dot segment", AppUpsertParams{AppConfig: conf.AppConfig{Name: "d", Enabled: true, Scheme: "http", Port: 1, BasePath: "/a/../b"}}},
+	} {
+		var ae *APIError
+		if _, err := core.UpsertApp(tc.p); !errors.As(err, &ae) || ae.Status != 400 {
+			t.Errorf("%s: want 400 APIError, got %v", tc.name, err)
+		}
+	}
+}

@@ -1106,6 +1106,14 @@ type AppConfig struct {
 	// cookie scope, its own RequireLogin and LANOnlyPaths.
 	IndexPath string `json:"index_path,omitempty"`
 
+	// BasePath is the upstream path prefix an http/https app is mounted
+	// under ("/vlog" for --url http://127.0.0.1:22749/vlog/). Unlike
+	// IndexPath it IS used by the proxy: /app/<name>/<rest> forwards to
+	// <BasePath>/<rest>, and upstream Location headers under BasePath
+	// are mapped back onto the public mount. Empty means the upstream
+	// root. Ignored (and refused by validation) for other schemes.
+	BasePath string `json:"base_path,omitempty"`
+
 	// Allow is the per-scheme allowlist, shared by two app kinds:
 	//
 	//   - scheme "git": repo allowlist. Entries are "owner/repo"
@@ -1369,6 +1377,39 @@ func AppTargetFromURL(raw string) (scheme, host string, port int, socket string,
 	default:
 		return "", "", 0, "", fmt.Errorf("url %q: scheme must be one of http|https|tcp|unix|npipe|egress|git+https", raw)
 	}
+}
+
+// AppBasePathFromURL returns the upstream base path carried by an app
+// URL (see AppConfig.BasePath): "/vlog" for "http://h:1/vlog/", "" for
+// a root path. Only http/https upstreams can honor a path; any other
+// scheme with a non-root path is an error rather than a silently
+// dropped path, as are a query, a fragment, or dot segments.
+// unix/npipe URLs carry the socket in the path and return "".
+func AppBasePathFromURL(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", fmt.Errorf("parse url: %w", err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme == "unix" || scheme == "npipe" {
+		return "", nil
+	}
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return "", fmt.Errorf("url %q: a query or fragment cannot be honored as an app target", raw)
+	}
+	p := strings.TrimRight(u.Path, "/")
+	if p == "" {
+		return "", nil
+	}
+	if scheme != "http" && scheme != "https" {
+		return "", fmt.Errorf("url %q: scheme %s cannot honor a path (%s); only http/https apps take a base path", raw, scheme, u.Path)
+	}
+	for _, seg := range strings.Split(p, "/")[1:] {
+		if seg == "" || seg == "." || seg == ".." {
+			return "", fmt.Errorf("url %q: path must not contain empty or dot segments", raw)
+		}
+	}
+	return p, nil
 }
 
 // NormalizeGitAllow validates and canonicalizes a git app's allowlist

@@ -542,6 +542,15 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 			if loc == prefix || strings.HasPrefix(loc, prefix+"/") {
 				return nil
 			}
+			// An upstream mounted under a base path (/vlog) redirects
+			// within it (/vlog/x); that is /app/<name>/x publicly.
+			if base := strings.TrimRight(target.Path, "/"); base != "" {
+				if loc == base {
+					loc = "/"
+				} else if strings.HasPrefix(loc, base+"/") {
+					loc = loc[len(base):]
+				}
+			}
 			resp.Header.Set("Location", prefix+loc)
 			return nil
 		},
@@ -848,7 +857,9 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 		if ac.Port <= 0 || ac.Port > 65535 {
 			return fmt.Errorf("app %q: port %d is out of range", ac.Name, ac.Port)
 		}
-		u := &url.URL{Scheme: scheme, Host: host + ":" + strconv.Itoa(ac.Port)}
+		// Path = BasePath: the proxy's SetURL joins it in front of the
+		// forwarded /app/<name>/<rest>, so the upstream sees its mount.
+		u := &url.URL{Scheme: scheme, Host: host + ":" + strconv.Itoa(ac.Port), Path: ac.BasePath}
 		err = r.register(ac.Name, u, meta, nil)
 	case "unix", "npipe":
 		sock := strings.TrimSpace(ac.Socket)

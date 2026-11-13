@@ -52,6 +52,40 @@ func TestAppTargetFromURL(t *testing.T) {
 	}
 }
 
+func TestAppBasePathFromURL(t *testing.T) {
+	for _, tc := range []struct {
+		in, want string
+		wantErr  bool
+	}{
+		{in: "http://127.0.0.1:22749/vlog/", want: "/vlog"},
+		{in: "https://h/a/b", want: "/a/b"},
+		{in: "http://h:1", want: ""},
+		{in: "http://h:1/", want: ""},
+		{in: "unix:///run/podman/podman.sock", want: ""},
+		{in: "tcp://h:5432", want: ""},
+		{in: "git+https://example.com/", want: ""},
+		{in: "egress://", want: ""},
+
+		{in: "tcp://h:5432/db", wantErr: true},
+		{in: "git+https://example.com/owner", wantErr: true},
+		{in: "http://h:1/x?y=1", wantErr: true},
+		{in: "http://h:1/x#frag", wantErr: true},
+		{in: "http://h:1/a/../b", wantErr: true},
+		{in: "http://h:1/a//b", wantErr: true},
+	} {
+		got, err := AppBasePathFromURL(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("%s: want error, got %q", tc.in, got)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("%s: got (%q, %v), want %q", tc.in, got, err, tc.want)
+		}
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

@@ -213,7 +213,7 @@ the same data the SPA renders for that host's tiles.`,
 					if a.Scheme == "egress" {
 						target = "egress://"
 					} else {
-						target = fmt.Sprintf("%s:%d", a.Host, a.Port)
+						target = fmt.Sprintf("%s:%d%s", a.Host, a.Port, a.BasePath)
 					}
 				}
 				fmt.Printf("%-20s  %-8s  %-7t  %-30s  %-26s  %s\n",
@@ -410,7 +410,7 @@ func appsAddCmd() *cobra.Command {
 			return runAppUpsertViaMCP(cmd.Context(), params, jsonOut)
 		},
 	}
-	cmd.Flags().StringVar(&url, "url", "", "Target URL (alternative to --scheme/--host/--port/--socket)")
+	cmd.Flags().StringVar(&url, "url", "", "Target URL (alternative to --scheme/--host/--port/--socket); an http(s) path is kept as the upstream base path")
 	cmd.Flags().StringVar(&target, "target", "", "Target URL (alias for --url; e.g. egress:// or git+https://example.com for git apps)")
 	cmd.Flags().StringVar(&scheme, "scheme", "", "http | https | tcp | unix | npipe | egress | git")
 	cmd.Flags().StringVar(&host, "host", "", "Target host (default 127.0.0.1 for TCP schemes; ignored for egress)")

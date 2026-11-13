@@ -25,7 +25,7 @@ func (s *Server) ListApps() ([]conf.AppConfig, error) {
 // AppUpsertParams is the wire shape for adding or updating an app. The
 // URL field is an alternative to the {Scheme, Host, Port, Socket}
 // quartet — when non-empty, it is parsed via conf.AppTargetFromURL and
-// wins over the split fields.
+// wins over the split fields; its path becomes AppConfig.BasePath.
 type AppUpsertParams struct {
 	conf.AppConfig
 	URL string `json:"url,omitempty"`
@@ -41,7 +41,12 @@ func (s *Server) UpsertApp(p AppUpsertParams) (conf.AppConfig, error) {
 		if err != nil {
 			return conf.AppConfig{}, badRequest("%s", err.Error())
 		}
+		basePath, err := conf.AppBasePathFromURL(p.URL)
+		if err != nil {
+			return conf.AppConfig{}, badRequest("%s", err.Error())
+		}
 		ac.Scheme, ac.Host, ac.Port, ac.Socket = scheme, host, port, socket
+		ac.BasePath = basePath
 	}
 	if err := ValidateApp(&ac); err != nil {
 		return conf.AppConfig{}, err
