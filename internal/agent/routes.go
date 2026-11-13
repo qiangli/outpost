@@ -245,29 +245,32 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	// mount closure carrying the upgrade.Worker. No bearer check at
 	// the route level — trusts the tunnel as auth boundary, same as
 	// /apps and /healthz. See upgrade.MountRoute for the rationale.
+	// Every cloud-driven route below trusts cloudbox's upstream gate, so it
+	// is served only through the tunnel ingress (see ingress.go).
+	tunnel := rg.Group("", tunnelOnly(apps))
 	if deps.MountUpgradeRoute != nil && deps.AccessToken != "" {
-		deps.MountUpgradeRoute(rg)
+		deps.MountUpgradeRoute(tunnel)
 	}
 
 	// Cloudbox-driven warm-serving control (POST /admin/warm). Same
 	// tunnel-as-auth-boundary model + paired-only gate as the upgrade
 	// route above.
 	if deps.MountRepairRoute != nil && deps.AccessToken != "" {
-		deps.MountRepairRoute(rg)
+		deps.MountRepairRoute(tunnel)
 	}
 	if deps.MountWarmRoute != nil && deps.AccessToken != "" {
-		deps.MountWarmRoute(rg)
+		deps.MountWarmRoute(tunnel)
 	}
 
 	// Tier-3 interactive shell. WS upgrade; the cloud also gates on
 	// RequireElevation before proxying. Disabled via the admin UI.
 	if !deps.ShellDisabled {
-		rg.GET("/shell", shellHandler())
+		tunnel.GET("/shell", shellHandler())
 	}
 
 	// Tier-3 remote desktop. Binary WS ↔ TCP 5900.
 	if !deps.DesktopDisabled {
-		rg.GET("/desktop", desktopHandler(deps.VNCAddr))
+		tunnel.GET("/desktop", desktopHandler(deps.VNCAddr))
 	}
 
 	// Tier-3 clipboard bridge. GET returns the host's clipboard text
@@ -275,8 +278,8 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	// clipboard so it works on plain-HTTP origins and works around
 	// macOS Screen Sharing's non-standard clipboard protocol.
 	if !deps.ClipboardDisabled {
-		rg.GET("/clipboard", clipboardHandler())
-		rg.POST("/clipboard", clipboardHandler())
+		tunnel.GET("/clipboard", clipboardHandler())
+		tunnel.POST("/clipboard", clipboardHandler())
 	}
 
 	// Real SSH endpoint reached over WebSocket through the matrix tunnel.
@@ -285,7 +288,9 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	// via the local `outpost ssh-proxy` ProxyCommand helper. Auth gate is
 	// the OS password (same hostauth path as /auth).
 	if !deps.SSHDisabled && deps.SSHHostKey != nil {
-		rg.GET("/ssh", sshHandler(sshHandlerDeps{
+		// Off the ingress /ssh stays reachable (ssh-proxy) but falls to
+		// the OS-password gate; a browser origin is refused.
+		rg.GET("/ssh", localOriginGuard, sshHandler(sshHandlerDeps{
 			HostKey:            deps.SSHHostKey,
 			Auth:               auth,
 			AuthURL:            deps.AuthURL,
@@ -299,9 +304,11 @@ func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 			CloudboxProtocol:   deps.CloudboxProtocol,
 			AccessToken:        deps.AccessToken,
 			SelfName:           deps.SelfName,
-			// Loopback ingress only — matrix tunnel is the sole way
-			// in, so cloudbox-stamped X-Periscope-Role is trustworthy.
+			// Trusted only on requests that arrived through the tunnel
+			// ingress (or under the escape hatch): anywhere else the
+			// header is forgeable by a local process.
 			TrustPeriscopeRole: true,
+			TrustLoopback:      apps.TrustLoopback,
 		}))
 	}
 

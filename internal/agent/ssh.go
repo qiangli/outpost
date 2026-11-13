@@ -65,6 +65,11 @@ type sshHandlerDeps struct {
 	// admin by spoofing it. The peer-ticket path (Authorization:
 	// Bearer <ticket>, verified locally) is the LAN-side substitute.
 	TrustPeriscopeRole bool
+	// TrustLoopback, when non-nil and true, honors X-Periscope-Role on
+	// requests that did not arrive through the tunnel ingress (the
+	// logged escape hatch). Otherwise the header counts only via the
+	// ingress.
+	TrustLoopback func() bool
 
 	// TicketVerifier and TicketAudience configure the peer-ticket
 	// verification path that replaces X-Periscope-Role on LAN-bound
@@ -147,7 +152,9 @@ func sshHandler(deps sshHandlerDeps) gin.HandlerFunc {
 		// Direct-loopback access bypassing both falls through to the
 		// PasswordCallback OS-password gate.
 		cloudboxVouched := false
-		if deps.TrustPeriscopeRole {
+		roleTrusted := ViaTunnelIngress(c.Request.Context()) ||
+			(deps.TrustLoopback != nil && deps.TrustLoopback())
+		if deps.TrustPeriscopeRole && roleTrusted {
 			periscopeRole := strings.TrimSpace(c.GetHeader("X-Periscope-Role"))
 			cloudboxVouched = periscopeRole == "admin" || periscopeRole == "user"
 		}
