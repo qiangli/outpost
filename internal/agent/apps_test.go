@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -29,6 +31,10 @@ import (
 func newTestRouter(reg *AppRegistry) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
+	// Simulate tunnel arrivals; local-listener refusal has its own tests.
+	r.Use(func(c *gin.Context) {
+		c.Request = c.Request.WithContext(TunnelIngressConnContext(c.Request.Context(), nil))
+	})
 	r.Any("/app/:name", reg.handler())
 	r.Any("/app/:name/*p", reg.handler())
 	return r
@@ -1121,5 +1127,91 @@ func TestRegisterFromConfig_TCPModeSwap(t *testing.T) {
 	}
 	if reg.LookupTCP("x") != "" {
 		t.Errorf("tcp target should have been cleared on http register")
+	}
+}
+
+// A login-required app is refused on the local listener (no tunnel mark):
+// any local process could forge the identity headers there. Before the
+// ingress split, this plain loopback GET reached the app.
+func TestLoginRequiredAppRefusedOffTunnelIngress(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("secret"))
+	}))
+	defer upstream.Close()
+	reg := NewAppRegistry()
+	if err := reg.RegisterWithMeta("files", upstream.URL, AppMeta{RequireLogin: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.RegisterWithMeta("kiosk", upstream.URL, AppMeta{RequireLogin: false}); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	local := gin.New()
+	local.Any("/app/:name/*p", reg.handler())
+	get := func(h http.Handler, path string, hdr map[string]string) int {
+		srv := httptest.NewServer(h)
+		defer srv.Close()
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+		for k, v := range hdr {
+			req.Header.Set(k, v)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := get(local, "/app/files/", nil); code != http.StatusForbidden {
+		t.Errorf("local GET /app/files/ = %d, want 403", code)
+	}
+	forged := map[string]string{"X-Forwarded-Prefix": "/app/files", "X-Periscope-User": "owner@example.com", "X-Periscope-Role": "admin"}
+	if code := get(local, "/app/files/", forged); code != http.StatusForbidden {
+		t.Errorf("local GET with forged cloud headers = %d, want 403", code)
+	}
+	if code := get(local, "/app/kiosk/", nil); code != http.StatusOK {
+		t.Errorf("local GET of a public app = %d, want 200", code)
+	}
+	if code := get(newTestRouter(reg), "/app/files/", nil); code != http.StatusOK {
+		t.Errorf("tunnel-ingress GET /app/files/ = %d, want 200", code)
+	}
+	reg.SetTrustLoopback(true)
+	if code := get(local, "/app/files/", nil); code != http.StatusOK {
+		t.Errorf("escape hatch: local GET /app/files/ = %d, want 200", code)
+	}
+}
+
+// The ingress socket lives in a private directory and marks its requests.
+func TestTunnelIngressListenerMarksRequests(t *testing.T) {
+	ln, path, cleanup, err := ListenTunnelIngress()
+	if err != nil {
+		t.Skipf("unix sockets unavailable: %v", err)
+	}
+	defer cleanup()
+	if runtime.GOOS != "windows" {
+		fi, err := os.Stat(filepath.Dir(path))
+		if err != nil || fi.Mode().Perm()&0o077 != 0 {
+			t.Errorf("ingress dir stat = %v, err %v; want 0700", fi, err)
+		}
+	}
+	srv := &http.Server{
+		ConnContext: TunnelIngressConnContext,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = fmt.Fprint(w, ViaTunnelIngress(r.Context()))
+		}),
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close()
+	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", path)
+	}}}
+	resp, err := client.Get("http://ingress/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "true" {
+		t.Errorf("request via ingress socket marked = %q, want true", body)
 	}
 }

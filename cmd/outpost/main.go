@@ -1375,6 +1375,29 @@ func startCmd() *cobra.Command {
 				ReadHeaderTimeout: 10 * time.Second,
 			}
 
+			// The tunnel dials a private unix-socket ingress, not the
+			// loopback listener, so login-required apps are reachable only
+			// through it (see internal/agent/ingress.go).
+			// OUTPOST_INGRESS_TRUST_LOOPBACK=1 is the logged escape hatch.
+			var ingressLn net.Listener
+			var ingressPath string
+			if os.Getenv(agent.TrustLoopbackEnv) == "1" {
+				slog.Warn("ingress: trusting the loopback listener for login-required apps (escape hatch set)", "env", agent.TrustLoopbackEnv)
+				apps.SetTrustLoopback(true)
+			} else {
+				var cleanup func()
+				ingressLn, ingressPath, cleanup, err = agent.ListenTunnelIngress()
+				if err != nil {
+					return fmt.Errorf("tunnel ingress listen: %w (set %s=1 to fall back to the loopback listener)", err, agent.TrustLoopbackEnv)
+				}
+				defer cleanup()
+			}
+			ingressSrv := &http.Server{
+				Handler:           engine,
+				ReadHeaderTimeout: 10 * time.Second,
+				ConnContext:       agent.TunnelIngressConnContext,
+			}
+
 			// When cluster mode is on AND Mode="agent", register an
 			// STCP visitor for the cloudbox-side apiserver publisher
 			// (see hub/internal/tunnel/serverdial.go). This opens a
@@ -1411,7 +1434,7 @@ func startCmd() *cobra.Command {
 			var tunnels []*agent.Tunnel
 			targets := hostTunnelTargets(fc, cfg)
 			for i, target := range targets {
-				proxies := []agent.TCPProxy{{Name: target.config.User + "-http", LocalIP: "127.0.0.1", LocalPort: localPort, RemotePort: target.remotePort}}
+				proxies := []agent.TCPProxy{{Name: target.config.User + "-http", LocalIP: "127.0.0.1", LocalPort: localPort, RemotePort: target.remotePort, UnixPath: ingressPath}}
 				// The cluster visitor binds one local port and is a host
 				// singleton, even when several satellites are attached.
 				var tunnelVisitors []agent.STCPVisitor
@@ -1439,6 +1462,15 @@ func startCmd() *cobra.Command {
 				}
 				return nil
 			})
+			if ingressLn != nil {
+				g.Go(func() error {
+					slog.Info("matrix-agent: tunnel ingress listening", "socket", ingressPath)
+					if err := ingressSrv.Serve(ingressLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+						return err
+					}
+					return nil
+				})
+			}
 
 			// LAN sshd is a service unit now (outpost.sshd): the reconciler
 			// drives its listener from the declaration. The WS-mounted
@@ -1777,6 +1809,7 @@ func startCmd() *cobra.Command {
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 				_ = localSrv.Shutdown(shutdownCtx)
+				_ = ingressSrv.Shutdown(shutdownCtx)
 				for _, tunnel := range tunnels {
 					tunnel.Close()
 				}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/qiangli/yoke/pkg/fleet"
 	"github.com/qiangli/yoke/pkg/service"
 
@@ -151,8 +152,8 @@ func TestFilesCapabilityPublishesAndWithdraws(t *testing.T) {
 	if target == nil {
 		t.Fatal("the files app route was not published")
 	}
-	if !strings.HasPrefix(target.Host, "127.0.0.1:") {
-		t.Errorf("files target = %s, want a loopback listener", target)
+	if target.Host != "files.in-process" {
+		t.Errorf("files target = %s, want the in-process listener (no socket)", target)
 	}
 	var entry agent.AppEntry
 	for _, e := range apps.Entries() {
@@ -169,12 +170,33 @@ func TestFilesCapabilityPublishesAndWithdraws(t *testing.T) {
 	if err := cap.Health(context.Background()); err != nil {
 		t.Errorf("Health on an active mount: %v", err)
 	}
-	// The handler actually answers on the bound port.
-	resp, err := http.Get("http://" + target.Host + "/")
+	// The handler answers through the app route, and an unauthenticated
+	// local GET of /app/files/ (no tunnel ingress) is refused.
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	tunnel := engine.Group("/", func(c *gin.Context) {
+		c.Request = c.Request.WithContext(agent.TunnelIngressConnContext(c.Request.Context(), nil))
+	})
+	tunnel.Any("/tunnel/:name/*p", func(c *gin.Context) { apps.ProxyTo(c, c.Param("name"), c.Param("p")) })
+	agent.RegisterRoutes(engine.Group("/"), agent.Deps{Apps: apps})
+	srv := httptest.NewServer(engine)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/tunnel/files/")
 	if err != nil {
 		t.Fatalf("GET the mount: %v", err)
 	}
 	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET the mount via the app route = %d, want 200", resp.StatusCode)
+	}
+	resp, err = http.Get(srv.URL + "/app/files/api/resources/")
+	if err != nil {
+		t.Fatalf("local GET: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("unauthenticated local GET /app/files/ = %d, want 403", resp.StatusCode)
+	}
 
 	if err := cap.Deactivate(context.Background()); err != nil {
 		t.Fatalf("Deactivate: %v", err)

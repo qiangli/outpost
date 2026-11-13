@@ -78,9 +78,13 @@ type AppCapabilities struct {
 // DialContext dials the local socket; the URL host is a synthetic "socket"
 // placeholder that the upstream daemon ignores.
 type AppRegistry struct {
-	mu    sync.RWMutex
-	apps  map[string]*url.URL
-	proxy map[string]*httputil.ReverseProxy
+	mu sync.RWMutex
+	// trustLoopback restores the pre-ingress model (see ingress.go): a
+	// login-required app is also served on the local listener. Set only
+	// through the logged OUTPOST_INGRESS_TRUST_LOOPBACK escape hatch.
+	trustLoopback bool
+	apps          map[string]*url.URL
+	proxy         map[string]*httputil.ReverseProxy
 	// Per-app access-control + display metadata. All keyed by app
 	// name; entries kept in lockstep with `apps`/`proxy`/`tcp` by
 	// register/registerTCP/Unregister.
@@ -997,10 +1001,30 @@ func socketTransport(scheme, socket string) http.RoundTripper {
 // handler returns a gin handler that proxies `/app/:name/*p` to the
 // registered app's local URL, stripping the `/app/:name` prefix so the
 // app sees its native paths.
+//
+// A login-required app is served only to requests that arrived through the
+// tunnel ingress: on the local listener its caller identity headers are
+// forgeable by any local process (see ingress.go).
 func (r *AppRegistry) handler() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		r.ProxyTo(c, c.Param("name"), c.Param("p"))
+		name := c.Param("name")
+		r.mu.RLock()
+		requireLogin, trust := r.requireLogin[name], r.trustLoopback
+		r.mu.RUnlock()
+		if requireLogin && !trust && !ViaTunnelIngress(c.Request.Context()) {
+			c.String(http.StatusForbidden, "login required: use the outpost admin UI or the cloud tunnel\n")
+			c.Abort()
+			return
+		}
+		r.ProxyTo(c, name, c.Param("p"))
 	}
+}
+
+// SetTrustLoopback switches the escape hatch on or off.
+func (r *AppRegistry) SetTrustLoopback(on bool) {
+	r.mu.Lock()
+	r.trustLoopback = on
+	r.mu.Unlock()
 }
 
 // ProxyTo is the gin-param-free entry point used by both the standard

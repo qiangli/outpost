@@ -44,6 +44,11 @@ type TCPProxy struct {
 	LocalIP    string
 	LocalPort  int
 	RemotePort int
+	// UnixPath, when set, delivers tunnel connections to this unix socket
+	// (byte-for-byte, via the tunnel's unix_domain_socket plugin) instead
+	// of LocalIP:LocalPort. outpost uses it so cloud-arrived requests reach
+	// a private ingress no other local process can connect to.
+	UnixPath string
 }
 
 // STCPProxy PUBLISHES a local service as frp's "secret TCP" — the
@@ -197,6 +202,12 @@ func newTunnelService(tc TunnelConfig, proxies []TCPProxy, visitors []STCPVisito
 				},
 			},
 			RemotePort: p.RemotePort,
+		}
+		if p.UnixPath != "" {
+			pc.Plugin = v1.TypedClientPluginOptions{
+				Type:                v1.PluginUnixDomainSocket,
+				ClientPluginOptions: &v1.UnixDomainSocketPluginOptions{Type: v1.PluginUnixDomainSocket, UnixPath: p.UnixPath},
+			}
 		}
 		configurers = append(configurers, pc)
 	}

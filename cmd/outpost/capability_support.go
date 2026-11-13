@@ -144,11 +144,29 @@ func (r *httpServerRunner) start(addr string, h http.Handler, closers ...func() 
 		}
 		return 0, err
 	}
+	return r.serve(ln, h, closers...), nil
+}
+
+// startInMemory serves h on an in-process listener with no socket at all and
+// returns the dialer that reaches it. Nothing outside this process can
+// connect, so the handler needs no auth of its own.
+func (r *httpServerRunner) startInMemory(h http.Handler, closers ...func() error) func(context.Context, string, string) (net.Conn, error) {
+	ln := newMemListener()
+	r.serve(ln, h, closers...)
+	return ln.DialContext
+}
+
+// serve runs h on ln until stop. It returns the TCP port, 0 for a non-TCP
+// listener.
+func (r *httpServerRunner) serve(ln net.Listener, h http.Handler, closers ...func() error) int {
 	srv := &http.Server{Handler: h}
 	errc := make(chan error, 1)
 	r.mu.Lock()
 	r.srv, r.ln, r.closers, r.errc, r.runErr = srv, ln, closers, errc, nil
-	r.port = ln.Addr().(*net.TCPAddr).Port
+	r.port = 0
+	if a, ok := ln.Addr().(*net.TCPAddr); ok {
+		r.port = a.Port
+	}
 	port := r.port
 	r.mu.Unlock()
 	go func() {
@@ -159,8 +177,57 @@ func (r *httpServerRunner) start(addr string, h http.Handler, closers ...func() 
 		errc <- err
 		close(errc)
 	}()
-	return port, nil
+	return port
 }
+
+// memListener is a net.Listener whose connections are in-process pipes.
+type memListener struct {
+	conns chan net.Conn
+	done  chan struct{}
+	once  sync.Once
+}
+
+func newMemListener() *memListener {
+	return &memListener{conns: make(chan net.Conn), done: make(chan struct{})}
+}
+
+func (l *memListener) Accept() (net.Conn, error) {
+	select {
+	case c := <-l.conns:
+		return c, nil
+	case <-l.done:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *memListener) Close() error {
+	l.once.Do(func() { close(l.done) })
+	return nil
+}
+
+func (l *memListener) Addr() net.Addr { return memAddr{} }
+
+// DialContext hands the server one end of a fresh pipe.
+func (l *memListener) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
+	client, server := net.Pipe()
+	select {
+	case l.conns <- server:
+		return client, nil
+	case <-l.done:
+	case <-ctx.Done():
+	}
+	_ = client.Close()
+	_ = server.Close()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return nil, net.ErrClosed
+}
+
+type memAddr struct{}
+
+func (memAddr) Network() string { return "memory" }
+func (memAddr) String() string  { return "in-process" }
 
 // stop shuts the server down and runs the closers. Idempotent.
 func (r *httpServerRunner) stop(ctx context.Context) error {
