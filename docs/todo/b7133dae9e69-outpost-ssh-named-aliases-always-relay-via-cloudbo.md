@@ -4,7 +4,7 @@ kind: bug
 title: 'outpost ssh: named aliases always relay via cloudbox (no mesh rung); ad-hoc path waits ~3 s on mDNS before an already-live mesh link'
 seq: 2773
 status: todo
-priority: p1
+priority: p0
 labels:
     - ssh
     - mesh
