@@ -31,9 +31,7 @@ func TestKeepAlivePingsAndUpdatesCookie(t *testing.T) {
 	// don't pollute the developer's real ~/.cache/outpost/sessions/.
 	tmp := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", tmp)
-	if err := os.Setenv("HOME", tmp); err != nil {
-		t.Fatalf("set HOME: %v", err)
-	}
+	t.Setenv("HOME", tmp)
 
 	var pings atomic.Int32
 	host := "testhost"
@@ -135,7 +133,7 @@ func TestKeepAliveExitsOn401(t *testing.T) {
 
 	tmp := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", tmp)
-	os.Setenv("HOME", tmp)
+	t.Setenv("HOME", tmp)
 
 	host := "expirhost"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
