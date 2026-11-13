@@ -71,11 +71,17 @@ func dialSSHTargetChain(ctx context.Context, name, jumpOverride string) (*sshcli
 	}
 
 	clients := make([]*sshclient.Client, 0, len(chain))
-	// meshCleanup closes the local mesh forward when the outer leg rides the
-	// mesh; a no-op otherwise.
+	// meshCleanup closes the outer mesh client AND its forward (dialMeshDirect's
+	// cleanup), so closeAll skips clients[0] when it is set — each is closed
+	// exactly once.
 	meshCleanup := func() {}
+	meshOuter := false
 	closeAll := func() {
-		for i := len(clients) - 1; i >= 0; i-- {
+		last := 0
+		if meshOuter {
+			last = 1
+		}
+		for i := len(clients) - 1; i >= last; i-- {
 			_ = clients[i].Close()
 		}
 		meshCleanup()
@@ -90,7 +96,7 @@ func dialSSHTargetChain(ctx context.Context, name, jumpOverride string) (*sshcli
 		if strings.TrimSpace(cookie) != "" {
 			cli, cleanup, merr := dialMeshDirect(ctx, fc, bearer, outer.Host, outer.User, cookie)
 			if merr == nil {
-				meshCleanup = cleanup
+				meshCleanup, meshOuter = cleanup, true
 				clients = append(clients, cli)
 				slog.Info("ssh: outer leg connected", "host", outer.Host, "route", "mesh-direct")
 				return dialSSHHops(ctx, chain, clients, closeAll, knownHostsPath)

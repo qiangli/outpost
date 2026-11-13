@@ -168,8 +168,10 @@ func dialPairedHost(ctx context.Context, fc *conf.FileConfig, bearer, host, user
 	var lanErr, meshErr error
 	// Mesh-direct FIRST. An existing DIRECT mesh link is itself proof the
 	// peer is reachable peer-to-peer, and checking it is a cheap read of live
-	// state (bounded at 800ms), whereas the LAN rung's mDNS browse blocks ~3s
-	// on every call — measured at ~3.5s per command for an agent issuing dozens
+	// state: when no direct link exists the rung bows out within 800ms, and
+	// when one does, every later step (resolve, forward, ticket, dial,
+	// handshake) carries its own bound. The LAN rung's mDNS browse, by
+	// contrast, blocks ~3s on every call — measured at ~3.5s per command for an agent issuing dozens
 	// of small commands to a same-LAN host. LAN-direct also depends on mDNS,
 	// which is silent whenever the peer has discovery off, a router sits
 	// between us, or the network does not forward multicast — while the mesh
@@ -252,6 +254,7 @@ var (
 	sshLANDialTimeout         = 10 * time.Second
 	sshLANHandshakeTimeout    = 15 * time.Second
 	sshMeshDialTimeout        = 10 * time.Second
+	sshMeshTicketTimeout      = 4 * time.Second
 	sshMeshHandshakeTimeout   = 15 * time.Second
 	sshTunnelDialTimeout      = 30 * time.Second
 	sshTunnelHandshakeTimeout = 30 * time.Second
@@ -407,7 +410,11 @@ func dialMeshDirect(
 		}{Addr: fwd.Addr}, &struct{}{})
 	}
 
-	ticket, err := exchangePeerTicket(ctx, cbBase, bearer, cookie, host, "ssh")
+	// Bound the ticket call: with mesh tried first, a slow control plane must
+	// not hold up the LAN and relay rungs behind it.
+	ticketCtx, ticketCancel := context.WithTimeout(ctx, sshMeshTicketTimeout)
+	ticket, err := exchangePeerTicket(ticketCtx, cbBase, bearer, cookie, host, "ssh")
+	ticketCancel()
 	if err != nil {
 		closeForward()
 		return nil, nil, fmt.Errorf("peer-ticket exchange: %w", err)

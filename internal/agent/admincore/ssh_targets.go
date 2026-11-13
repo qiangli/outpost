@@ -266,6 +266,8 @@ func (s *Server) dialSSHChain(ctx context.Context, name, jumpOverride string) (*
 		outerDialErr   error
 		route          = "cloudbox"
 	)
+	var cli *sshclient.Client
+	outerHandshakeStart := time.Now()
 	if outer.Direct {
 		port := outer.Port
 		if port <= 0 {
@@ -276,13 +278,20 @@ func (s *Server) dialSSHChain(ctx context.Context, name, jumpOverride string) (*
 			return nil, nil, upstream("lan-direct dial %s:%d: %s", outer.Host, port, outerDialErr.Error())
 		}
 		route = "lan-direct"
-	} else if conn, fwdCleanup, merr := s.meshSSHTransport(ctx, bearer, outer.Host, sessionCookie(outer.Host)); merr == nil {
-		outerTransport, closeForward, route = conn, fwdCleanup, "mesh-direct"
 	} else {
-		if !errors.Is(merr, errMeshSSHNotAvailable) {
+		// Mesh-direct first. The rung includes the ssh handshake, so a mesh
+		// leg that fails at ANY step (link, forward, ticket, WS dial or
+		// handshake) falls through to the relay below instead of failing
+		// the exec.
+		mcli, fwdCleanup, merr := s.meshSSHClient(ctx, bearer, outer.Host, outer.User, sessionCookie(outer.Host), knownHostsPath)
+		if merr == nil {
+			cli, closeForward, route = mcli, fwdCleanup, "mesh-direct"
+		} else if !errors.Is(merr, errMeshSSHNotAvailable) {
 			slog.Info("ssh: mesh-direct attempt failed, falling back to cloudbox tunnel",
 				"host", outer.Host, "err", merr)
 		}
+	}
+	if cli == nil && !outer.Direct {
 		wsURL, err := sshclient.BuildWSURL(fc.ServerAddr, fc.ServerPort, fc.Protocol, outer.Host)
 		if err != nil {
 			return nil, nil, internalErr("build ws url: %s", err.Error())
@@ -309,22 +318,22 @@ func (s *Server) dialSSHChain(ctx context.Context, name, jumpOverride string) (*
 		outerTransport = sshclient.AsNetConn(ctx, wsConn)
 	}
 
-	hostKeyCB, err := sshclient.KnownHostsCallbackTOFU(knownHostsPath, sshclient.HostAliasForHost(outer.Host))
-	if err != nil {
-		_ = outerTransport.Close()
-		closeForward()
-		return nil, nil, internalErr("known_hosts callback: %s", err.Error())
-	}
-	outerHandshakeStart := time.Now()
-	cli, err := sshclient.Dial(ctx, sshclient.Config{
-		Transport:       outerTransport,
-		HostAlias:       sshclient.HostAliasForHost(outer.Host),
-		User:            outer.User,
-		HostKeyCallback: hostKeyCB,
-	})
-	if err != nil {
-		closeForward()
-		return nil, nil, upstream("ssh handshake (outer %s via %s): %s", outer.Host, route, err.Error())
+	if cli == nil {
+		hostKeyCB, err := sshclient.KnownHostsCallbackTOFU(knownHostsPath, sshclient.HostAliasForHost(outer.Host))
+		if err != nil {
+			_ = outerTransport.Close()
+			return nil, nil, internalErr("known_hosts callback: %s", err.Error())
+		}
+		outerHandshakeStart = time.Now()
+		cli, err = sshclient.Dial(ctx, sshclient.Config{
+			Transport:       outerTransport,
+			HostAlias:       sshclient.HostAliasForHost(outer.Host),
+			User:            outer.User,
+			HostKeyCallback: hostKeyCB,
+		})
+		if err != nil {
+			return nil, nil, upstream("ssh handshake (outer %s via %s): %s", outer.Host, route, err.Error())
+		}
 	}
 	slog.Info("ssh: outer leg connected", "host", outer.Host, "route", route)
 	recordEdge(outer, outerHandshakeStart)

@@ -16,8 +16,16 @@ import (
 // its sshws endpoint (cmd/outpost MeshServiceSSH).
 const meshSSHService = "ssh"
 
-// meshSSHDialTimeout bounds the WS dial over the local mesh forward.
-const meshSSHDialTimeout = 10 * time.Second
+// Per-step budgets for the mesh rung. They keep a degraded control plane
+// (slow registry or ticket endpoint) or a stalled peer from delaying the
+// relay fallback: the rung gives up within seconds and the exec proceeds
+// through the tunnel as it did before the rung existed.
+const (
+	meshSSHResolveTimeout   = 2 * time.Second
+	meshSSHTicketTimeout    = 4 * time.Second
+	meshSSHDialTimeout      = 10 * time.Second
+	meshSSHHandshakeTimeout = 15 * time.Second
+)
 
 // errMeshSSHNotAvailable means mesh-direct does not apply to this host (mesh
 // off, no DIRECT link, the peer publishes no ssh, or cloudbox has no ticket
@@ -46,7 +54,7 @@ func (s *Server) meshSSHTransport(ctx context.Context, bearer, host, cookie stri
 	// Confirm the target publishes ssh before opening a forward: Listen binds
 	// eagerly and connects lazily, so a peer that serves nothing would only
 	// fail after a wasted forward and ticket round-trip.
-	peers, err := s.MeshResolve(meshSSHService)
+	peers, err := s.meshResolveWithin(meshSSHService, meshSSHResolveTimeout)
 	if err != nil {
 		return nil, nil, errMeshSSHNotAvailable
 	}
@@ -66,7 +74,9 @@ func (s *Server) meshSSHTransport(ctx context.Context, bearer, host, cookie stri
 	}
 	closeForward := func() { _ = s.MeshCloseListen(addr) }
 
-	ticket, err := peerticket.Exchange(ctx, s.deps.CloudboxBase, bearer, cookie, host, "ssh")
+	ticketCtx, ticketCancel := context.WithTimeout(ctx, meshSSHTicketTimeout)
+	ticket, err := peerticket.Exchange(ticketCtx, s.deps.CloudboxBase, bearer, cookie, host, "ssh")
+	ticketCancel()
 	if err != nil {
 		closeForward()
 		if errors.Is(err, peerticket.ErrNotDeployed) {
@@ -85,4 +95,55 @@ func (s *Server) meshSSHTransport(ctx context.Context, bearer, host, cookie stri
 		return nil, nil, fmt.Errorf("mesh-direct dial %s: %w", host, err)
 	}
 	return sshclient.AsNetConn(ctx, wsConn), closeForward, nil
+}
+
+// meshSSHClient is the whole mesh rung: transport AND ssh handshake. Doing the
+// handshake here (not in the caller's shared code) is what lets a mesh leg
+// that fails late — a stream that dies, a peer that rejects the ticket — fall
+// back to the relay instead of failing the exec. The returned cleanup closes
+// the local forward; the caller owns the client.
+func (s *Server) meshSSHClient(ctx context.Context, bearer, host, user, cookie, knownHostsPath string) (*sshclient.Client, func(), error) {
+	conn, closeForward, err := s.meshSSHTransport(ctx, bearer, host, cookie)
+	if err != nil {
+		return nil, nil, err
+	}
+	hostKeyCB, err := sshclient.KnownHostsCallbackTOFU(knownHostsPath, sshclient.HostAliasForHost(host))
+	if err != nil {
+		_ = conn.Close()
+		closeForward()
+		return nil, nil, fmt.Errorf("known_hosts callback: %w", err)
+	}
+	cli, err := sshclient.Dial(ctx, sshclient.Config{
+		Transport:        conn,
+		HostAlias:        sshclient.HostAliasForHost(host),
+		User:             user,
+		HostKeyCallback:  hostKeyCB,
+		HandshakeTimeout: meshSSHHandshakeTimeout,
+	})
+	if err != nil {
+		closeForward()
+		return nil, nil, fmt.Errorf("ssh handshake to %s (mesh-direct): %w", host, err)
+	}
+	return cli, closeForward, nil
+}
+
+// meshResolveWithin bounds the registry lookup (a cloudbox call that takes no
+// context) so a slow control plane cannot hold up the relay fallback. On
+// timeout the lookup finishes in the background and its result is dropped.
+func (s *Server) meshResolveWithin(service string, d time.Duration) ([]MeshResolvedPeer, error) {
+	type result struct {
+		peers []MeshResolvedPeer
+		err   error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		peers, err := s.MeshResolve(service)
+		ch <- result{peers, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.peers, r.err
+	case <-time.After(d):
+		return nil, fmt.Errorf("mesh resolve %q: timed out after %s", service, d)
+	}
 }

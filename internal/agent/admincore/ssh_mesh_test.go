@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // fakeMeshForward records Listen/CloseListen so a test can tell whether the
@@ -120,5 +121,42 @@ func TestMeshSSHTransportDirectPublishedPeerTakesMeshAndReleasesOnFailure(t *tes
 	}
 	if fwd.closes.Load() != 1 {
 		t.Fatalf("failed mesh dial closed %d forwards, want 1 (no leaked listener)", fwd.closes.Load())
+	}
+}
+
+// A registry lookup that hangs (slow or degraded cloudbox) must not hold up
+// the relay fallback: the rung bows out within its resolve budget.
+func TestMeshSSHTransportSlowResolveBowsOutWithinBudget(t *testing.T) {
+	s, fwd, tickets := meshTestServer(t, true, nil)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	s.deps.MeshResolver = func(string) ([]MeshResolvedPeer, error) {
+		<-release
+		return nil, nil
+	}
+	start := time.Now()
+	_, _, err := s.meshSSHTransport(context.Background(), "bearer", "peer-host", "cookie")
+	if !errors.Is(err, errMeshSSHNotAvailable) {
+		t.Fatalf("hung resolve: err = %v, want errMeshSSHNotAvailable", err)
+	}
+	if took := time.Since(start); took > meshSSHResolveTimeout+time.Second {
+		t.Fatalf("hung resolve held the rung for %s, budget %s", took, meshSSHResolveTimeout)
+	}
+	if fwd.listens.Load() != 0 || tickets.Load() != 0 {
+		t.Fatalf("hung resolve opened %d forwards and %d tickets, want 0/0", fwd.listens.Load(), tickets.Load())
+	}
+}
+
+// The full rung (transport + handshake) must return a real error — never a
+// half-open client — when the mesh leg fails, so dialSSHChain falls back to
+// the relay; the forward is released.
+func TestMeshSSHClientFailureReleasesForwardForRelayFallback(t *testing.T) {
+	s, fwd, _ := meshTestServer(t, true, []MeshResolvedPeer{{Host: "peer-host", PeerID: "p1"}})
+	cli, cleanup, err := s.meshSSHClient(context.Background(), "bearer", "peer-host", "user", "cookie", t.TempDir()+"/known_hosts")
+	if err == nil || cli != nil || cleanup != nil {
+		t.Fatalf("failed mesh leg returned cli=%v cleanup=%v err=%v; want nil, nil, error", cli, cleanup != nil, err)
+	}
+	if fwd.closes.Load() != 1 {
+		t.Fatalf("failed mesh leg closed %d forwards, want 1", fwd.closes.Load())
 	}
 }
