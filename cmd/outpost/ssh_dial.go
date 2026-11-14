@@ -25,6 +25,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/qiangli/outpost/internal/agent"
+	"github.com/qiangli/outpost/internal/agent/attachsel"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/discovery"
 	"github.com/qiangli/yoke/pkg/sshclient"
@@ -55,7 +56,7 @@ func dialSSHTargetChain(ctx context.Context, name, jumpOverride string) (*sshcli
 	// the WS branch below.
 	var fc *conf.FileConfig
 	if cfgPath, cerr := conf.DefaultConfigPath(); cerr == nil && cfgPath != "" {
-		fc, _ = conf.LoadClientFile(cfgPath)
+		fc, _ = attachsel.LoadFor(ctx, cfgPath, chain[0].Host)
 	}
 	bearer := strings.TrimSpace(os.Getenv("OUTPOST_SESSION_JWT"))
 	if bearer == "" && fc != nil {

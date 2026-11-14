@@ -33,6 +33,7 @@ import (
 
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/admincore"
+	"github.com/qiangli/outpost/internal/agent/attachsel"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/discovery"
 	"github.com/qiangli/outpost/internal/agent/peerticket"
@@ -94,7 +95,7 @@ func dialOutpostHost(ctx context.Context, host, user string, port int) (*sshclie
 
 	var fc *conf.FileConfig
 	if cfgPath, _ := conf.DefaultConfigPath(); cfgPath != "" {
-		fc, _ = conf.LoadClientFile(cfgPath)
+		fc, _ = attachsel.LoadFor(ctx, cfgPath, host)
 	}
 	bearer := strings.TrimSpace(os.Getenv("OUTPOST_SESSION_JWT"))
 	if bearer == "" && fc != nil {

@@ -55,11 +55,16 @@ func (fc *FileConfig) LegacyPaired() bool {
 // top-level pairing wins (it is left untouched) and an attachment without a
 // registration overlays nothing. SaveFile strips the overlay again, so the
 // attachment never turns into a persisted legacy pairing.
-func (fc *FileConfig) ApplyAttachmentTunnel() bool {
-	if fc == nil || fc.LegacyPaired() || len(fc.Attachments) == 0 {
+func (fc *FileConfig) ApplyAttachmentTunnel() bool { return fc.ApplyAttachmentTunnelAt(0) }
+
+// ApplyAttachmentTunnelAt is ApplyAttachmentTunnel for attachment i: a
+// client command targeting a host on the i-th attached satellite overlays
+// that satellite instead of the first (Sprint 630 S15b).
+func (fc *FileConfig) ApplyAttachmentTunnelAt(i int) bool {
+	if fc == nil || fc.LegacyPaired() || i < 0 || i >= len(fc.Attachments) {
 		return false
 	}
-	a := fc.Attachments[0]
+	a := fc.Attachments[i]
 	t := a.Tunnel
 	if t == nil || t.ServerAddr == "" || t.AgentName == "" {
 		return false

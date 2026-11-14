@@ -101,7 +101,10 @@ func (f *satFake) serveSat(id string, w http.ResponseWriter, r *http.Request) {
 			fail(w, 401, "invalid_attach_token")
 			return
 		}
-		var body struct{ Host, Hostname, OS, Arch string }
+		var body struct {
+			Host, Hostname, OS, Arch string
+			OSUser                   string `json:"os_user"`
+		}
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&body); err != nil {

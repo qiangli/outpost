@@ -24,6 +24,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/qiangli/outpost/internal/agent/attachsel"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 )
@@ -115,7 +116,7 @@ func runCookieOnlyKeepAlive(ctx context.Context, host string) error {
 	if err != nil {
 		return fmt.Errorf("locate config: %w", err)
 	}
-	fc, err := conf.LoadClientFile(cfgPath)
+	fc, err := attachsel.LoadFor(ctx, cfgPath, host)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}

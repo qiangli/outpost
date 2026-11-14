@@ -21,6 +21,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/spf13/cobra"
 
+	"github.com/qiangli/outpost/internal/agent/attachsel"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"github.com/qiangli/yoke/pkg/sshclient"
@@ -290,7 +291,7 @@ func runSSHProxyRelay(ctx context.Context, host string, stdin io.Reader, stdout 
 	if err != nil {
 		return fmt.Errorf("locate config: %w", err)
 	}
-	fc, err := conf.LoadClientFile(cfgPath)
+	fc, err := attachsel.LoadFor(ctx, cfgPath, host)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}

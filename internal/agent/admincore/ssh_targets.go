@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/qiangli/outpost/internal/agent/attachsel"
 	"github.com/qiangli/outpost/internal/agent/conf"
 	"github.com/qiangli/yoke/pkg/sshclient"
 )
@@ -225,14 +226,16 @@ func (s *Server) dialSSHChain(ctx context.Context, name, jumpOverride string) (*
 		}
 	}
 
-	fc, err := s.loadConfig()
+	// A pair-once host dials through the attached satellite that knows the
+	// outer target (Sprint 630 S15a/S15b); the first attachment is the
+	// fallback. Nothing here is saved.
+	fc, err := attachsel.LoadFor(ctx, s.deps.ConfigPath, chain[0].Host)
 	if err != nil {
 		return nil, nil, internalErr("load config: %s", err.Error())
 	}
-	// A pair-once host dials through its attached satellite: overlay the
-	// attachment tunnel on this in-memory copy, as `start` does for the
-	// daemon's own tunnel (Sprint 630 S15a). Nothing here is saved.
-	fc.ApplyAttachmentTunnel()
+	if fc == nil {
+		fc = &conf.FileConfig{}
+	}
 	if fc.ServerAddr == "" {
 		return nil, nil, unavailable("local outpost is not paired with cloudbox yet")
 	}
