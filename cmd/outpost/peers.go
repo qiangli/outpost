@@ -129,7 +129,7 @@ func fetchPeersStatus(ctx context.Context) ([]peerstatus.Peer, error) {
 	if err != nil {
 		return nil, err
 	}
-	fc, err := conf.LoadFile(cfgPath)
+	fc, err := conf.LoadClientFile(cfgPath)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}

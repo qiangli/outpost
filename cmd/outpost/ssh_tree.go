@@ -344,7 +344,7 @@ func resolveRemoteOSUser(ctx context.Context, host string) (string, bool, error)
 	if err != nil {
 		return "", false, err
 	}
-	fc, err := conf.LoadFile(cfgPath)
+	fc, err := conf.LoadClientFile(cfgPath)
 	if err != nil || fc == nil {
 		return "", false, err
 	}

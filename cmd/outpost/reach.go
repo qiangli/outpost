@@ -271,7 +271,7 @@ func meshAliasFor(ctx context.Context, host string) string {
 	if err != nil {
 		return ""
 	}
-	fc, err := conf.LoadFile(cfgPath)
+	fc, err := conf.LoadClientFile(cfgPath)
 	if err != nil || fc == nil || fc.AccessToken == "" {
 		return ""
 	}
@@ -310,7 +310,7 @@ func probeCloudbox(ctx context.Context, host string) (rttMs int64, endpoint stri
 	if perr != nil {
 		return 0, "", fmt.Errorf("locate config: %w", perr)
 	}
-	fc, lerr := conf.LoadFile(cfgPath)
+	fc, lerr := conf.LoadClientFile(cfgPath)
 	if lerr != nil {
 		return 0, "", fmt.Errorf("load config: %w", lerr)
 	}

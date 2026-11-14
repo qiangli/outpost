@@ -141,7 +141,7 @@ func ensureUserKubeconfig(ctx context.Context, refresh bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	fc, err := conf.LoadFile(cfgPath)
+	fc, err := conf.LoadClientFile(cfgPath)
 	if err != nil {
 		return "", fmt.Errorf("load %s: %w", cfgPath, err)
 	}

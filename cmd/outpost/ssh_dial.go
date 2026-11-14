@@ -55,7 +55,7 @@ func dialSSHTargetChain(ctx context.Context, name, jumpOverride string) (*sshcli
 	// the WS branch below.
 	var fc *conf.FileConfig
 	if cfgPath, cerr := conf.DefaultConfigPath(); cerr == nil && cfgPath != "" {
-		fc, _ = conf.LoadFile(cfgPath)
+		fc, _ = conf.LoadClientFile(cfgPath)
 	}
 	bearer := strings.TrimSpace(os.Getenv("OUTPOST_SESSION_JWT"))
 	if bearer == "" && fc != nil {

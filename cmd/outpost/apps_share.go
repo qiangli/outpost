@@ -45,7 +45,7 @@ func loadShareTarget() (shareTarget, error) {
 	if err != nil {
 		return shareTarget{}, err
 	}
-	fc, err := conf.LoadFile(path)
+	fc, err := conf.LoadClientFile(path)
 	if err != nil {
 		return shareTarget{}, err
 	}

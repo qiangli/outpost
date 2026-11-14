@@ -229,6 +229,10 @@ func (s *Server) dialSSHChain(ctx context.Context, name, jumpOverride string) (*
 	if err != nil {
 		return nil, nil, internalErr("load config: %s", err.Error())
 	}
+	// A pair-once host dials through its attached satellite: overlay the
+	// attachment tunnel on this in-memory copy, as `start` does for the
+	// daemon's own tunnel (Sprint 630 S15a). Nothing here is saved.
+	fc.ApplyAttachmentTunnel()
 	if fc.ServerAddr == "" {
 		return nil, nil, unavailable("local outpost is not paired with cloudbox yet")
 	}

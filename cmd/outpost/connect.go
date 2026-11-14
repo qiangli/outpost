@@ -115,7 +115,7 @@ func runCookieOnlyKeepAlive(ctx context.Context, host string) error {
 	if err != nil {
 		return fmt.Errorf("locate config: %w", err)
 	}
-	fc, err := conf.LoadFile(cfgPath)
+	fc, err := conf.LoadClientFile(cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
@@ -152,7 +152,7 @@ func runConnect(ctx context.Context, host, userFlag string, fromStdin, keepAlive
 	if err != nil {
 		return fmt.Errorf("locate config: %w", err)
 	}
-	fc, err := conf.LoadFile(cfgPath)
+	fc, err := conf.LoadClientFile(cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}

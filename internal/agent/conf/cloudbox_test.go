@@ -58,3 +58,35 @@ func TestTwoAttachmentsSurviveOverlayAndRestart(t *testing.T) {
 		t.Fatalf("restart config = %+v", back)
 	}
 }
+
+// LoadClientFile reads a pair-once host with attachments as paired (the
+// overlay a client command needs), and never persists that overlay.
+func TestLoadClientFileAppliesAttachmentOverlay(t *testing.T) {
+	att := SatelliteAttachment{SatelliteID: "sat_1", Endpoint: "https://sat.example.com", Token: "stok",
+		Tunnel: &AttachmentTunnel{AgentName: "studio", ServerAddr: "sat.example.com", ServerPort: 443, Protocol: "wss", Token: "m", RemotePort: 7001}}
+	path := t.TempDir() + "/agent.json"
+	if err := SaveFile(path, &FileConfig{Attachments: []SatelliteAttachment{att}}); err != nil {
+		t.Fatal(err)
+	}
+	plain, err := LoadFile(path)
+	if err != nil || plain == nil || plain.LegacyPaired() || plain.ServerAddr != "" {
+		t.Fatalf("LoadFile must stay overlay-free: %+v %v", plain, err)
+	}
+	fc, err := LoadClientFile(path)
+	if err != nil || fc == nil {
+		t.Fatalf("LoadClientFile: %v", err)
+	}
+	if fc.ServerAddr != "sat.example.com" || fc.AgentName != "studio" || fc.AccessToken != "stok" || !fc.AttachmentTunnelActive() {
+		t.Fatalf("overlay not applied: %+v", fc)
+	}
+	if err := SaveFile(path, fc); err != nil {
+		t.Fatal(err)
+	}
+	back, err := LoadFile(path)
+	if err != nil || back.LegacyPaired() || back.ServerAddr != "" {
+		t.Fatalf("overlay leaked into the file: %+v %v", back, err)
+	}
+	if missing, err := LoadClientFile(t.TempDir() + "/none.json"); err != nil || missing != nil {
+		t.Fatalf("missing file: %v %v", missing, err)
+	}
+}

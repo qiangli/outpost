@@ -109,3 +109,18 @@ func (fc *FileConfig) persistable() *FileConfig {
 func (fc *FileConfig) CloudboxPaired() bool {
 	return fc != nil && fc.Cloudbox != nil && fc.Cloudbox.Token != ""
 }
+
+// LoadClientFile is LoadFile for CLIENT-side commands (ssh, connect, peers,
+// reach, kubectl, ...): it applies the attachment tunnel overlay so a host
+// that paired once with the master and attached to satellites reads as
+// paired, the way `outpost start` already sees it. `start` keeps calling
+// LoadFile + ApplyAttachmentTunnel itself, after tryReattach. The overlay
+// is in-memory only; SaveFile strips it (Sprint 630 S15a).
+func LoadClientFile(path string) (*FileConfig, error) {
+	fc, err := LoadFile(path)
+	if err != nil || fc == nil {
+		return fc, err
+	}
+	fc.ApplyAttachmentTunnel()
+	return fc, nil
+}

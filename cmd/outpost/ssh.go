@@ -290,7 +290,7 @@ func runSSHProxyRelay(ctx context.Context, host string, stdin io.Reader, stdout 
 	if err != nil {
 		return fmt.Errorf("locate config: %w", err)
 	}
-	fc, err := conf.LoadFile(cfgPath)
+	fc, err := conf.LoadClientFile(cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
@@ -460,7 +460,7 @@ func runSSHConfig(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	fc, err := conf.LoadFile(cfgPath)
+	fc, err := conf.LoadClientFile(cfgPath)
 	if err != nil {
 		return err
 	}

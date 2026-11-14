@@ -94,7 +94,7 @@ func dialOutpostHost(ctx context.Context, host, user string, port int) (*sshclie
 
 	var fc *conf.FileConfig
 	if cfgPath, _ := conf.DefaultConfigPath(); cfgPath != "" {
-		fc, _ = conf.LoadFile(cfgPath)
+		fc, _ = conf.LoadClientFile(cfgPath)
 	}
 	bearer := strings.TrimSpace(os.Getenv("OUTPOST_SESSION_JWT"))
 	if bearer == "" && fc != nil {

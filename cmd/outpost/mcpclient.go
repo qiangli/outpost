@@ -136,7 +136,7 @@ func resolveMCPTarget() (endpoint, token, source string, err error) {
 		if err != nil {
 			return "", "", "", fmt.Errorf("locate config path: %w", err)
 		}
-		fc, err := conf.LoadFile(cfgPath)
+		fc, err := conf.LoadClientFile(cfgPath)
 		if err != nil {
 			return "", "", "", fmt.Errorf("read config: %w", err)
 		}

@@ -32,7 +32,7 @@ func tokenPrintCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fc, err := conf.LoadFile(cfgPath)
+			fc, err := conf.LoadClientFile(cfgPath)
 			if err != nil {
 				return fmt.Errorf("read %s: %w", cfgPath, err)
 			}

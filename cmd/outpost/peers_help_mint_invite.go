@@ -106,7 +106,7 @@ func runPeersHelpMintInvite(ctx context.Context, brokenName string, jsonOut, yes
 	if err != nil {
 		return fmt.Errorf("config path: %w", err)
 	}
-	fc, err := conf.LoadFile(cfgPath)
+	fc, err := conf.LoadClientFile(cfgPath)
 	if err != nil || fc == nil {
 		return fmt.Errorf("load %s: %w (run `outpost register` first)", cfgPath, err)
 	}
