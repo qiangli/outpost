@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"io"
 	"log/slog"
 	"net/http"
@@ -141,6 +142,7 @@ var errAuthRevoked = errors.New("heartbeat: 401 from cloudbox; pairing was pulle
 func (w *Worker) postOne(ctx context.Context) error {
 	body := map[string]any{
 		"agent_name":    w.cfg.AgentName,
+		"os_user":       osUserForHeartbeat(),
 		"build_commit":  w.cfg.BuildCommit,
 		"build_version": w.cfg.BuildVersion,
 	}
@@ -180,4 +182,11 @@ func (w *Worker) postOne(ctx context.Context) error {
 		return fmt.Errorf("heartbeat: cloudbox returned %d: %s",
 			resp.StatusCode, bytes.TrimSpace(respBody))
 	}
+}
+
+// osUserForHeartbeat reports the account this outpost runs as, so a host
+// row attached without os_user heals on the next heartbeat (Sprint 630 S20).
+func osUserForHeartbeat() string {
+	u, _ := hostauth.CurrentUser()
+	return u
 }

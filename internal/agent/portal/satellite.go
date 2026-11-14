@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"io"
 	"net/http"
 	"net/url"
@@ -127,7 +128,11 @@ func RequestAttach(ctx context.Context, master, hostToken, satelliteID string) (
 // safe for the caller to retry.
 func RedeemAttach(ctx context.Context, g *AttachGrant, host string) (*conf.SatelliteAttachment, error) {
 	hostname, _ := os.Hostname()
-	body := map[string]string{"host": host, "hostname": hostname, "os": runtime.GOOS, "arch": runtime.GOARCH}
+	// os_user: the account this outpost runs as. `outpost connect` elevates
+	// as the host's reported os_user, so the attach must carry it like the
+	// legacy exchange does (Sprint 630 S20).
+	osUser, _ := hostauth.CurrentUser()
+	body := map[string]string{"host": host, "hostname": hostname, "os": runtime.GOOS, "arch": runtime.GOARCH, "os_user": osUser}
 	_, b, err := do(ctx, http.MethodPost, HostAttachURL(g.Satellite.Endpoint), g.AttachToken, body)
 	if err != nil {
 		return nil, err
