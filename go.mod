@@ -14,13 +14,14 @@ require (
 	github.com/fatedier/frp v0.68.1
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/gtsteffaniak/filebrowser/backend v0.0.0-20261113140828-88b90a50350d
 	github.com/hashicorp/mdns v1.0.6
 	github.com/libp2p/go-libp2p v0.48.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/pkg/sftp v1.13.10
-	github.com/qiangli/yoke v0.0.0-20261115081128-47f221c3b21b
+	github.com/qiangli/yoke v0.0.0-20261115152505-514b209f5284
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.53.0
 	github.com/spf13/cobra v1.10.2
@@ -136,7 +137,6 @@ require (
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
-	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/gtsteffaniak/go-cache v1.1.0 // indirect
 	github.com/gtsteffaniak/go-ffmpeg v1.4.0 // indirect
