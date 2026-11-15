@@ -63,17 +63,26 @@ func TestLoadForPicksTheSatelliteThatKnowsTheHost(t *testing.T) {
 	}
 }
 
-func TestLoadForFallsBackToTheFirstAttachment(t *testing.T) {
+func TestLoadForRefusesAHostNoSatelliteServes(t *testing.T) {
 	_, a1, p1 := fakeSatellite(t, "alpha")
 	_, a2, p2 := fakeSatellite(t, "beta")
 	path := writeConfig(t, att("sat-1", a1, p1, "tok1"), att("sat-2", a2, p2, "tok2"))
 	fc, err := LoadFor(context.Background(), path, "nowhere")
-	if err != nil || fc.ServerPort != p1 {
-		t.Fatalf("unknown host must fall back to attachments[0]: %+v %v", fc, err)
+	if err == nil || fc != nil || !strings.Contains(err.Error(), "sat-1, sat-2") || !strings.Contains(err.Error(), `"nowhere"`) {
+		t.Fatalf("a host no answering satellite serves must be an error naming them, got %+v %v", fc, err)
 	}
 	fc, err = LoadFor(context.Background(), path, "")
 	if err != nil || fc.ServerPort != p1 {
 		t.Fatalf("empty host must behave like LoadClientFile: %+v %v", fc, err)
+	}
+}
+
+func TestLoadForFallsBackWhenNoSatelliteAnswers(t *testing.T) {
+	// unreachable satellites: the first attachment is the fallback, as before
+	path := writeConfig(t, att("sat-1", "127.0.0.1", 1, "tok1"), att("sat-2", "127.0.0.1", 2, "tok2"))
+	fc, err := LoadFor(context.Background(), path, "nowhere")
+	if err != nil || fc == nil || fc.ServerPort != 1 {
+		t.Fatalf("with no satellite answering the first attachment stays the fallback: %+v %v", fc, err)
 	}
 }
 

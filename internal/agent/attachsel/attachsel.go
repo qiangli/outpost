@@ -25,9 +25,11 @@ var HTTPClient = &http.Client{Timeout: 8 * time.Second}
 // LoadFor loads agent.json for a client command targeting host. A legacy
 // pairing, a single attachment, or an empty host keep the LoadClientFile
 // behaviour. With several attachments each satellite's /api/v1/ssh/hosts is
-// asked in order and the first one listing host is overlaid; when none
-// does (or every call fails) the first attachment is the fallback, exactly
-// as before, so the caller's error stays "unknown host" at the satellite.
+// asked in order and the first one listing host is overlaid. When the
+// satellites answered and none lists the host, that is the error (naming
+// them), not a silent dial of attachments[0]; only when every call failed
+// (no satellite reachable) is the first attachment the fallback, so the
+// caller's error stays "unknown host" at the satellite.
 func LoadFor(ctx context.Context, cfgPath, host string) (*conf.FileConfig, error) {
 	fc, err := conf.LoadFile(cfgPath)
 	if err != nil || fc == nil {
@@ -38,6 +40,7 @@ func LoadFor(ctx context.Context, cfgPath, host string) (*conf.FileConfig, error
 		fc.ApplyAttachmentTunnel()
 		return fc, nil
 	}
+	var asked []string
 	for i := range fc.Attachments {
 		cand, lerr := conf.LoadFile(cfgPath)
 		if lerr != nil || cand == nil || !cand.ApplyAttachmentTunnelAt(i) {
@@ -50,9 +53,16 @@ func LoadFor(ctx context.Context, cfgPath, host string) (*conf.FileConfig, error
 		if bearer == "" {
 			continue
 		}
-		if knows, kerr := satelliteKnowsHost(ctx, cand.ServerAddr, cand.ServerPort, cand.Protocol, bearer, host); kerr == nil && knows {
+		knows, kerr := satelliteKnowsHost(ctx, cand.ServerAddr, cand.ServerPort, cand.Protocol, bearer, host)
+		if kerr == nil && knows {
 			return cand, nil
 		}
+		if kerr == nil {
+			asked = append(asked, fc.Attachments[i].SatelliteID)
+		}
+	}
+	if len(asked) > 0 {
+		return nil, fmt.Errorf("none of the attached satellites that answered (%s) serves host %q", strings.Join(asked, ", "), host)
 	}
 	fc.ApplyAttachmentTunnel()
 	return fc, nil

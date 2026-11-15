@@ -153,7 +153,12 @@ func runConnect(ctx context.Context, host, userFlag string, fromStdin, keepAlive
 	if err != nil {
 		return fmt.Errorf("locate config: %w", err)
 	}
-	fc, err := conf.LoadClientFile(cfgPath)
+	// The attachment whose satellite serves <host>, not attachments[0]
+	// (Sprint 630 S15b): the cookie-only path already did this; the
+	// password path still loaded the first attachment and a host living
+	// only on a later satellite answered "unknown host" (fleet suite
+	// user-connect).
+	fc, err := attachsel.LoadFor(ctx, cfgPath, host)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
