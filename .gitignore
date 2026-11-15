@@ -10,3 +10,6 @@
 .claude/
 .aider*
 .gfy-out
+
+# macOS Finder metadata
+.DS_Store
