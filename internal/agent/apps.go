@@ -1052,6 +1052,13 @@ func (r *AppRegistry) SetTrustLoopback(on bool) {
 // the upstream is the per-request ?dst=host:port gated by the app's
 // allowlist (see serveEgressBridge).
 func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
+	// The MCP gateway is tunnel-only even through the admin UI's direct
+	// ProxyTo entry point and the legacy loopback escape hatch.
+	if name == "bashy-mcp" && !ViaTunnelIngress(c.Request.Context()) {
+		c.AbortWithStatus(http.StatusForbidden)
+		return
+	}
+
 	r.mu.RLock()
 	rp := r.proxy[name]
 	tcpAddr := r.tcp[name]
@@ -1365,7 +1372,7 @@ func egressResolveAndCheck(ctx context.Context, host string) (string, bool) {
 }
 
 // egressIPForbidden is the always-on destination screen: loopback,
-// link-local (including 169.254.169.254) and unspecified addresses are
+// link-local (including cloud metadata) and unspecified addresses are
 // refused even when the allowlist names them. There is no opt-out in
 // production; the test hook only relaxes loopback for the registry's
 // own loopback echo-server tests.
