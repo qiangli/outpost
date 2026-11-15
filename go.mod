@@ -20,7 +20,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/pkg/sftp v1.13.10
-	github.com/qiangli/yoke v0.0.0-20261115032416-b7fe043915ad
+	github.com/qiangli/yoke v0.0.0-20261115042953-d160182c8479
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.53.0
 	github.com/spf13/cobra v1.10.2
@@ -139,7 +139,7 @@ require (
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/gtsteffaniak/go-cache v1.1.0 // indirect
-	github.com/gtsteffaniak/go-ffmpeg v0.5.2 // indirect
+	github.com/gtsteffaniak/go-ffmpeg v1.4.0 // indirect
 	github.com/gtsteffaniak/go-logger v1.1.0 // indirect
 	github.com/hashicorp/yamux v0.1.1 // indirect
 	github.com/huin/goupnp v1.3.0 // indirect
