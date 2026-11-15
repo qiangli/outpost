@@ -88,6 +88,9 @@ func (s *Server) handleLogout(c *gin.Context) {
 	if cookie, err := c.Cookie(cookieName); err == nil {
 		s.sessions.Revoke(cookie)
 	}
+	if s.pages != nil {
+		s.pages.ClosePrincipal(s.pagePrincipal(c))
+	}
 	c.SetCookie(cookieName, "", -1, "/", "", false, true)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

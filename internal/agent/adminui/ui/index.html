@@ -217,12 +217,30 @@
 </style>
 </head>
 <body>
+<style>
+#page-content.shape-only :is(button,a,nav,summary,[role="button"],select,input[type="checkbox"],input[type="radio"]) { visibility: hidden !important; pointer-events: none !important; }
+#shape-button { position: fixed; right: 1rem; bottom: 1rem; z-index: 1000; }
+#shape-dialog { max-width: 28rem; border-radius: .7rem; padding: 1.5rem; }
+</style>
+<div id="page-content">
 <header class="app-header">
   <h1>outpost admin</h1>
   <div id="header-actions" class="actions"></div>
 </header>
 <div id="msg-host"></div>
 <div id="app">Loading…</div>
+</div>
+<button id="shape-button" type="button" hidden aria-label="Shape page">Shape</button>
+<dialog id="shape-dialog">
+<h2>Shape page</h2>
+<p>Choose how to use this page. Your agent can also update its networking fields through Outpost.</p>
+<button id="shape-toggle" type="button">Show only Shape</button>
+<label>Go to <select id="shape-navigation"><option value="pair">Pair host</option><option value="inbound">Inbound</option><option value="outbound">Outbound</option><option value="update">Update</option><option value="backup">Backup</option></select></label>
+<p>Use your system's dictation to enter text when available.</p>
+<button id="shape-close" type="button">Close</button>
+</dialog>
+<script src="page-control.js"></script>
+<script src="page-ui.js"></script>
 
 <script>
 const $ = sel => document.querySelector(sel);
@@ -468,6 +486,7 @@ async function render() {
 }
 
 function renderFatal(e) {
+  OutpostPage.reset();
   $('#app').innerHTML = '';
   $('#app').append(el('div', {class: 'msg err'}, 'Failed to load: ' + (e.message || e)));
 }
@@ -526,6 +545,7 @@ function renderRestartBanner() {
 }
 
 function renderLogin() {
+  OutpostPage.reset();
   const app = $('#app');
   app.innerHTML = '';
   // No Restart/Sign out before login.
@@ -789,27 +809,42 @@ function buildAdvancedSettingsSection(cfg) {
     el('label', {for: 'admin_addr'}, 'admin_addr'), adminAddrIn,
   );
   const netBtn = el('button', {type: 'button'}, 'Save networking');
-  netBtn.addEventListener('click', async () => {
-    // Pointer-string semantics on the wire: empty input means
-    // "clear to default", non-empty means "set to this value".
-    // We send all three explicitly because the operator may have
-    // intended an empty value (revert) as well as a new value.
-    const payload = {
-      local_addr: localAddrIn.value.trim(),
-      vnc_addr: vncAddrIn.value.trim(),
-      admin_addr: adminAddrIn.value.trim(),
-    };
+  const networkingFields = {local_addr: localAddrIn, vnc_addr: vncAddrIn, admin_addr: adminAddrIn};
+  for (const [name, field] of Object.entries(networkingFields)) { field.id = name; field.setAttribute('aria-label', name); }
+  function getNetworking() {
+    return Object.fromEntries(Object.entries(networkingFields).map(([name, field]) => [name, field.value.trim()]));
+  }
+  function draftNetworking(values) {
+    if (!values || typeof values !== 'object' || Array.isArray(values)) throw new Error('Expected networking fields');
+    for (const [name, value] of Object.entries(values)) {
+      if (!Object.hasOwn(networkingFields, name) || typeof value !== 'string') throw new Error('Unknown or invalid networking field: ' + name);
+    }
+    for (const [name, value] of Object.entries(values)) networkingFields[name].value = value;
+    return getNetworking();
+  }
+  let networkingPending = false;
+  async function submitNetworking() {
+    if (networkingPending) throw new Error('Networking save already in progress');
+    networkingPending = true;
     netBtn.disabled = true;
     try {
-      const res = await api('POST', 'api/config/networking', payload);
+      const res = await api('POST', 'api/config/networking', getNetworking());
       msg('ok', 'Networking saved.');
       noteRestartPending(res);
+      return res;
     } catch (e) {
       msg('err', e.message || 'Save failed');
+      throw e;
     } finally {
+      networkingPending = false;
       netBtn.disabled = false;
     }
-  });
+  }
+  netBtn.addEventListener('click', () => submitNetworking().catch(() => {}));
+  netForm.addEventListener('submit', event => { event.preventDefault(); submitNetworking().catch(() => {}); });
+  OutpostPage.register('outpost.networking.get', 'Read the current networking draft', getNetworking);
+  OutpostPage.register('outpost.networking.draft', 'Set local_addr, vnc_addr or admin_addr draft strings; empty resets to default on submit', draftNetworking);
+  OutpostPage.register('outpost.networking.submit', 'Save the draft through config/networking; may restart daemon; never retry an unknown outcome', submitNetworking);
 
   // --- Cluster LLM (intra-home distributed inference) ----------------------
   const cl = cfg.cluster_llm || {};
@@ -2364,6 +2399,7 @@ function buildCloudSection(cfg) {
 }
 
 function renderMain(status, cfg) {
+  OutpostPage.begin();
   const app = $('#app');
   app.innerHTML = '';
   // Banner is re-mounted on every render; renderRestartBanner is a
@@ -2406,6 +2442,7 @@ function renderMain(status, cfg) {
     tabs.append(b);
   }
   function activate(key) {
+    if (!tabDefs.some(([name]) => name === key)) throw new Error("Unknown navigation destination");
     for (const [k] of tabDefs) {
       tabBtns[k].classList.toggle('active', k === key);
     }
@@ -2416,6 +2453,7 @@ function renderMain(status, cfg) {
     panelBackup.classList.toggle('hidden', key !== 'backup');
     try { localStorage.setItem(TAB_KEY, key); } catch (_) {}
   }
+  OutpostPage.register("outpost.navigate", "Navigate: pair, inbound, outbound, update, backup", key => { activate(key); return {tab: key}; });
   activate(active);
 
   app.append(tabs, panels);
@@ -3048,6 +3086,7 @@ function renderMain(status, cfg) {
       catch (e) { msg('err', e.message); }
     }}, 'Sign out'),
   );
+  OutpostPage.connect();
 }
 
 async function pollUntilUp() {

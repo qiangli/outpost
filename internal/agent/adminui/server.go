@@ -32,6 +32,7 @@ import (
 	"github.com/qiangli/outpost/internal/agent"
 	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
+	"github.com/qiangli/yoke/pkg/pagecontrol"
 )
 
 // DefaultAdminAddr is the loopback listener address the admin UI binds
@@ -124,6 +125,7 @@ type Server struct {
 	deps   Deps
 	core   *admincore.Server
 	engine *gin.Engine
+	pages  *pagecontrol.Hub
 
 	listener net.Listener
 	sessions *sessionStore
@@ -293,6 +295,9 @@ func (s *Server) Serve(ctx context.Context) error {
 		// Notify any held-open subsystems first (MCP closes its
 		// protocol sessions cleanly so clients see end-of-stream
 		// rather than a torn TCP socket).
+		if s.pages != nil {
+			s.pages.Close()
+		}
 		if s.deps.OnShutdown != nil {
 			s.deps.OnShutdown()
 		}
@@ -337,6 +342,7 @@ func (s *Server) registerRoutes() {
 	s.engine.POST("/api/login", s.handleLogin)
 
 	api := s.engine.Group("/api", s.requireSession())
+	s.mountPageControl(api)
 	api.GET("/status", s.handleStatus)
 	api.POST("/logout", s.handleLogout)
 	api.GET("/config", s.handleGetConfig)

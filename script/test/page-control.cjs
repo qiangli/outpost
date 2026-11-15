@@ -1,0 +1,52 @@
+// Run with node script/test/page-control.cjs. Exercises the shipped page handlers
+// against a minimal DOM surface, without an installed daemon or credential.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const path = require('node:path');
+const ui = path.resolve(__dirname, '../../internal/agent/adminui/ui');
+const html = fs.readFileSync(path.join(ui, 'index.html'), 'utf8');
+const handlers = new Map();
+const elements = new Map();
+function node() { return {value:'',hidden:false,readOnly:false,open:false,children:[],events:{},classList:{toggle(){}},append(...v){this.children.push(...v)},setAttribute(){},addEventListener(n,f){this.events[n]=f},showModal(){this.open=true},close(){this.open=false},querySelectorAll(){return this.children}}; }
+const root=node(); const field=node(); const readonly=node();readonly.readOnly=true;root.children=[field,readonly];
+elements.set('page-content',root);
+const calls=[]; let socketURL, stopped=0;
+const context={console,URL,Map,Object,Array,Error,Promise,window:{},document:{baseURI:'https://host.test/host/',getElementById(id){if(!elements.has(id))elements.set(id,node());return elements.get(id)}},MutationObserver:class{observe(){}},BashyPage:{register(name,action){handlers.set(name,action);return()=>handlers.delete(name)},invoke(name,input){return handlers.get(name).run(input)},connect({url}){socketURL=url;return()=>stopped++}}};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync(path.join(ui,'page-ui.js'),'utf8'),context);
+const page=context.window.OutpostPage;page.begin();page.connect();
+assert.equal(socketURL,'wss://host.test/host/api/page/events');
+context.BashyPage.invoke('outpost.shape-only',true);
+assert.equal(root.inert,true);assert.equal(field.readOnly,true);
+context.BashyPage.invoke('outpost.shape-only',false);
+assert.equal(root.inert,false);assert.equal(field.readOnly,false);assert.equal(readonly.readOnly,true);
+assert.throws(()=>context.BashyPage.invoke('outpost.shape-only','yes'));
+context.OutpostPage=page;
+context.cfg={defaults:{},local_addr:'127.0.0.1:0'};
+context.el=(tag,attrs={},...children)=>Object.assign(node(),attrs,{children});
+context.api=async(method,url,payload)=>{calls.push({method,url,payload});return {restart_pending:true}};
+context.msg=()=>{};context.noteRestartPending=()=>{};
+const start=html.indexOf("  const netForm = el('form'");
+const end=html.indexOf('  // --- Cluster LLM',start);
+vm.runInContext(html.slice(start,end)+'\nglobalThis.form=netForm;globalThis.button=netBtn;',context);
+(async()=>{
+ const invoke=context.BashyPage.invoke;
+ invoke('outpost.networking.draft',{admin_addr:'127.0.0.1:17778'});
+ assert.equal(invoke('outpost.networking.get').admin_addr,'127.0.0.1:17778');
+ assert.throws(()=>invoke('outpost.networking.draft',{admin_addr:'bad',secret:'x'}));
+ assert.equal(invoke('outpost.networking.get').admin_addr,'127.0.0.1:17778');
+ assert.equal(calls.length,0,'draft cannot persist');
+ await invoke('outpost.networking.submit');
+ assert.equal(calls.length,1);assert.equal(calls[0].url,'api/config/networking');
+ assert.equal(calls[0].payload.admin_addr,'127.0.0.1:17778');
+ context.button.events.click();await new Promise(setImmediate);
+ assert.equal(calls.length,2,'human and agent use same submit');
+ assert.deepEqual(calls[0],calls[1]);
+ let finish;context.api=()=>new Promise(resolve=>{finish=resolve});
+ const pending=invoke('outpost.networking.submit');
+ await assert.rejects(invoke('outpost.networking.submit'),/already in progress/);
+ finish({});await pending;
+ page.reset();assert.equal(handlers.size,0);assert.equal(root.inert,false);assert.equal(stopped,1);
+ console.log('Outpost page handler tests passed');
+})().catch(error=>{console.error(error);process.exitCode=1});

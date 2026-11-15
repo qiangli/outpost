@@ -140,9 +140,11 @@ func outboundSuggestCmd() *cobra.Command {
 // as a typed error (errLoginRequired) so callers can print a helpful
 // hint instead of a raw "Unauthorized".
 type adminClient struct {
-	base   string
-	cookie string
-	http   *http.Client
+	strictStatus bool // live-page commands reject every non-2xx response
+	base         string
+	cookie       string
+	token        string // optional existing MCP bearer, used by the live-page client
+	http         *http.Client
 }
 
 var errLoginRequired = errors.New("not logged in — run `outpost outbound login` first")
@@ -191,6 +193,9 @@ func (a *adminClient) do(ctx context.Context, method, path string, body any) ([]
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	if a.token != "" {
+		req.Header.Set("Authorization", "Bearer "+a.token)
+	}
 	if a.cookie != "" {
 		req.AddCookie(&http.Cookie{Name: "outpost_admin", Value: a.cookie})
 	}
@@ -209,7 +214,7 @@ func (a *adminClient) do(ctx context.Context, method, path string, body any) ([]
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, errLoginRequired
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= 400 || (a.strictStatus && (resp.StatusCode < 200 || resp.StatusCode >= 300)) {
 		// Try to surface the server's JSON error message; fall back to status.
 		var e struct{ Error string }
 		if json.Unmarshal(respBody, &e) == nil && e.Error != "" {

@@ -127,7 +127,7 @@ func newRootCmd(version string) *cobra.Command {
 		outboundCmd(), jobsCmd(), fgCmd(), bgCmd(), killCmd(), runCmd(),
 		clusterCmd(), departCmd(), poolCmd(), kubectlCmd(), moveCmd(),
 		// MCP-client CLI parity (Phase 1.5):
-		appsCmd(), builtinsCmd(), configCmd(), statusCmd(), servicesCmd(), unpairCmd(), satelliteCmd(), restartCmd(), mcpCmd(), tokenCmd(),
+		appsCmd(), builtinsCmd(), configCmd(), pageCmd(), statusCmd(), servicesCmd(), unpairCmd(), satelliteCmd(), restartCmd(), mcpCmd(), tokenCmd(),
 		remoteCmd(), meshCmd(), mirrorCmd(), shardCmd(), bundleCmd(), appstoreCmd(),
 		docsCmd(), gitCmd(), shellCmd(), versionCmd(), upgradeCmd(), rollbackCmd(), buildCmd(), bashyCmd(),
 		supervisordCmd(), serviceCmd(), doctorCmd(), verifyCmd(),
