@@ -450,6 +450,37 @@ func TestProxy_IdentityHeaders_Gated(t *testing.T) {
 		})
 	}
 
+	t.Run("toggle on + local listener: forged prefix gets no identity or signature", func(t *testing.T) {
+		reg := NewAppRegistry()
+		if err := reg.RegisterFromConfig(conf.AppConfig{
+			Name: "app", Scheme: "http", Host: uhost, Port: uport, Enabled: true,
+			TrustCloudIdentity: true, SSOSecret: "test-secret-32-bytes-of-entropy-xx",
+		}); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		// The real local listener: no tunnel ingress mark.
+		gin.SetMode(gin.TestMode)
+		local := gin.New()
+		local.Any("/app/:name/*p", reg.handler())
+		front := httptest.NewServer(local)
+		t.Cleanup(front.Close)
+
+		req, _ := http.NewRequest("GET", front.URL+"/app/app/ping", nil)
+		req.Header.Set("X-Forwarded-Prefix", "/matrix/h/host-a/app/app")
+		req.Header.Set("X-Periscope-User", "victim@example.com")
+		req.Header.Set("X-Periscope-Role", "admin")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		_ = resp.Body.Close()
+		got := read(t)
+		if got.periscopeUser != "" || got.remoteUser != "" || got.remoteEmail != "" ||
+			got.group != "" || got.sig != "" || got.ts != "" {
+			t.Errorf("local forgery was vouched: %+v", got)
+		}
+	})
+
 	t.Run("toggle on + sso_secret: HMAC signature stamped and verifiable", func(t *testing.T) {
 		const secret = "test-secret-32-bytes-of-entropy-xx"
 		reg := NewAppRegistry()

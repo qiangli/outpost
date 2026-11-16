@@ -607,10 +607,16 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 			}
 			// Re-emit identity only when (a) the app opted in via
 			// TrustCloudIdentity, and (b) the request came through the
-			// matrix tunnel (X-Forwarded-Prefix present). Cloudbox is
-			// the only entity allowed to source these values; loopback
-			// requests carry no cloudbox vouch.
-			if trustIdentity && pr.In.Header.Get("X-Forwarded-Prefix") != "" {
+			// matrix tunnel: the tunnel ingress mark (or the logged
+			// trust-loopback escape hatch) plus X-Forwarded-Prefix.
+			// Cloudbox is the only entity allowed to source these values.
+			// The prefix header alone is forgeable on the local listener,
+			// which still serves public apps, so it never suffices: a
+			// local process must not get a signed identity for any email.
+			r.mu.RLock()
+			viaTunnel := r.trustLoopback || ViaTunnelIngress(pr.In.Context())
+			r.mu.RUnlock()
+			if trustIdentity && viaTunnel && pr.In.Header.Get("X-Forwarded-Prefix") != "" {
 				user := pr.In.Header.Get("X-Periscope-User")
 				role := pr.In.Header.Get("X-Periscope-Role")
 				if user != "" {
