@@ -326,3 +326,23 @@ func TestSeededBuiltinInternalAndCustomShareOneMachinery(t *testing.T) {
 		t.Fatalf("the internal capability was deactivated %d times, want 1", cap.deactived)
 	}
 }
+
+// The admin Services list is All(), which comes from the yoke catalog
+// compiled into this binary: browser-hub (a loopback unit with no exposure)
+// must be in it. Todo 5c22dec5: a host running an outpost built before yoke
+// 68a20e27 lacked the unit; this pins the embedded baseline so it cannot
+// silently drop out again.
+func TestAllListsTheEmbeddedBrowserHub(t *testing.T) {
+	root := t.TempDir()
+	st := &Store{Catalog: fleet.New(fleet.WithRoot(root), fleet.WithoutCloudOverlay())}
+	units, err := st.All()
+	if err != nil {
+		t.Fatalf("all: %v", err)
+	}
+	for _, u := range units {
+		if u.Name == "browser-hub" {
+			return
+		}
+	}
+	t.Fatalf("browser-hub missing from the admin service list: %v", unitNames(units))
+}
