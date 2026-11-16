@@ -138,9 +138,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
-	github.com/gtsteffaniak/go-cache v1.1.0 // indirect
 	github.com/gtsteffaniak/go-ffmpeg v1.4.0 // indirect
-	github.com/gtsteffaniak/go-logger v1.1.0 // indirect
 	github.com/hashicorp/yamux v0.1.1 // indirect
 	github.com/huin/goupnp v1.3.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
@@ -350,4 +348,4 @@ replace github.com/go-git/go-billy/v5 => github.com/qiangli/yoke/external/go-bil
 
 replace github.com/libp2p/go-yamux/v5 => github.com/qiangli/yamux/v5 v5.0.0
 
-replace github.com/gtsteffaniak/filebrowser/backend => github.com/qiangli/filebrowser-quantum/backend v0.0.0-20261113140828-88b90a50350d
+replace github.com/gtsteffaniak/filebrowser/backend => github.com/qiangli/filebrowser-quantum/backend v0.0.0-20261115042727-40f3c84d55a9
