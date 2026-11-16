@@ -110,7 +110,11 @@ func TestTrustedUnitAppReceivesVerifiableIdentity(t *testing.T) {
 	router.Any("/app/:name/*p", func(c *gin.Context) {
 		reg.ProxyTo(c, c.Param("name"), c.Param("p"))
 	})
-	proxy := httptest.NewServer(router)
+	proxy := httptest.NewUnstartedServer(router)
+	// Cloud requests arrive through the tunnel ingress; only those carry
+	// a vouched identity (a forged prefix on the local listener does not).
+	proxy.Config.ConnContext = agent.TunnelIngressConnContext
+	proxy.Start()
 	defer proxy.Close()
 
 	req, err := http.NewRequest(http.MethodGet, proxy.URL+"/app/rooms/api/rooms", nil)
