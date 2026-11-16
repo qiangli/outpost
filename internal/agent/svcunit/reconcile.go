@@ -441,7 +441,13 @@ func (r *Reconciler) applyInternal(ctx context.Context, u fleet.Service, desired
 	if st.State == service.Active {
 		st.Health = "ok"
 	}
-	if monitorUp {
+	// Report only a unit this process hosts: one its declaration enables,
+	// or one it was running and just stopped. A second outpost on the same
+	// monitor (an outpost-profile instance) declares the shared units
+	// disabled in its own store; reporting them "inactive" every pass made
+	// the monitor read the main daemon's live unit as its owner going
+	// away, cycling it until the start limit latched it.
+	if monitorUp && (u.Enabled || cur.State != service.Inactive) {
 		rep := st
 		rep.Enabled = wanted
 		r.report(rep)

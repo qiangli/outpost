@@ -345,3 +345,26 @@ func TestShutdownReportsInternalUnitsInactive(t *testing.T) {
 		t.Fatal("capability not deactivated on shutdown")
 	}
 }
+
+// A unit this process declares disabled and does not run belongs to another
+// owner on the same monitor (outpost-profile instances share the main
+// daemon's monitor). Reporting it would tell the monitor the live unit's
+// owner went inactive, so the monitor would cycle it until it latched.
+func TestDisabledUnitNotHostedHereIsNotReported(t *testing.T) {
+	mon := newFakeMonitor(t)
+	cap := &recordingCap{}
+	r, _, _, _ := ownerReconciler(t, mon, cap, false)
+	mon.setWant("registry", true) // the main daemon's live unit
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if err := r.ReloadAndReconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cap.activated != 0 {
+		t.Fatalf("disabled unit activated %d times", cap.activated)
+	}
+	if st, ok := mon.report("registry"); ok {
+		t.Fatalf("reported a unit this process does not host: %+v", st)
+	}
+}
