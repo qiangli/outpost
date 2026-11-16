@@ -101,6 +101,11 @@ type Reconciler struct {
 	// reported tracks which internal units this process has told the
 	// monitor about, so shutdown can report them inactive.
 	reported map[string]bool
+	// reportErrs is the last refused report per unit. A monitor refuses
+	// reports for units it is not running; keyed per unit, an unchanged
+	// refusal is logged once instead of alternating with the other units'
+	// refusals (and the link note) on every pass.
+	reportErrs map[string]string
 }
 
 // noteActivateFailure records an activation outcome and reports whether it
@@ -135,6 +140,7 @@ func New(deps Deps) *Reconciler {
 		applied:      map[string]string{},
 		activateErrs: map[string]string{},
 		reported:     map[string]bool{},
+		reportErrs:   map[string]string{},
 	}
 }
 
@@ -490,11 +496,22 @@ func (r *Reconciler) readDesired(units []fleet.Service) (map[string]bool, bool) 
 // lost every report, and the next pass is what re-adopts the units.
 func (r *Reconciler) report(st service.Status) {
 	if err := r.deps.Owner.Report(st); err != nil {
-		r.noteLink(err)
+		if errors.Is(err, service.ErrNoMonitor) {
+			r.noteLink(err)
+			return
+		}
+		r.mu.Lock()
+		changed := r.reportErrs[st.Unit] != err.Error()
+		r.reportErrs[st.Unit] = err.Error()
+		r.mu.Unlock()
+		if changed {
+			r.log.Warn("service monitor refused a report", "unit", st.Unit, "err", err)
+		}
 		return
 	}
 	r.mu.Lock()
 	r.reported[st.Unit] = true
+	delete(r.reportErrs, st.Unit)
 	r.mu.Unlock()
 }
 

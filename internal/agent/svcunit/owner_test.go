@@ -2,11 +2,14 @@ package svcunit
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -27,6 +30,7 @@ type fakeMonitor struct {
 	want     map[string]bool
 	reports  map[string]service.Status
 	reported int
+	refuse   map[string]string // unit -> refusal, like a monitor not running it
 }
 
 func newFakeMonitor(t *testing.T) *fakeMonitor {
@@ -104,6 +108,10 @@ func (m *fakeMonitor) serve(c net.Conn) {
 		}
 		resp["units"] = units
 	case "report":
+		if msg, ok := m.refuse[req.Status.Unit]; ok {
+			resp = map[string]any{"ok": false, "error": msg}
+			break
+		}
 		m.reports[req.Status.Unit] = req.Status
 		m.reported++
 	default:
@@ -366,5 +374,36 @@ func TestDisabledUnitNotHostedHereIsNotReported(t *testing.T) {
 	}
 	if st, ok := mon.report("registry"); ok {
 		t.Fatalf("reported a unit this process does not host: %+v", st)
+	}
+}
+
+// A monitor refuses reports for units it is not running. Each refusal is
+// logged once per unit, not on every pass: alternating refusals for several
+// units used to defeat the single last-message dedupe and flood the log.
+func TestRefusedReportsAreLoggedOncePerUnit(t *testing.T) {
+	mon := newFakeMonitor(t)
+	mon.refuse = map[string]string{
+		"a": "service: a is not activated by this monitor",
+		"b": "service: b is not activated by this monitor",
+	}
+	internal, err := Hosted(map[string]service.Capability{"outpost.a": &recordingCap{}, "outpost.b": &recordingCap{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	src := &fakeSource{units: []fleet.Service{internalUnit("a", "outpost.a", true), internalUnit("b", "outpost.b", true)}}
+	r := New(Deps{Source: src, Apps: newFakeApps(), Mesh: newFakeMesh(), Internal: internal, Secrets: fixedSecrets{"k"},
+		Owner: service.Client{Socket: mon.path, Timeout: time.Second}, Log: slog.New(slog.NewTextHandler(&buf, nil))})
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		if err := r.ReloadAndReconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := strings.Count(buf.String(), "refused a report"); n != 2 {
+		t.Fatalf("refused-report warnings = %d, want 2 (one per unit):\n%s", n, buf.String())
+	}
+	if n := strings.Count(buf.String(), "link up"); n > 1 {
+		t.Fatalf("link-up notes = %d across steady passes, want at most 1", n)
 	}
 }
