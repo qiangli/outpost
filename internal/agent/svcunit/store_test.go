@@ -232,6 +232,9 @@ func TestSeededBuiltinInternalAndCustomShareOneMachinery(t *testing.T) {
 	defaultOn := map[string]bool{
 		"ollama": true, "ollama-pool": true, "shard": true, "apps": true,
 		"meet": true, "otel": true, "otel-stack": true, "warm": true, "files": true, "podman": true,
+		// Default-on since yoke 514b209f (Sprint 646 O0): the MCP gateway's sync
+		// route needs it on every host. It is tunnel-only and login-gated.
+		"bashy-mcp": true,
 	}
 	seededAll, err := st.Units(context.Background())
 	if err != nil {
