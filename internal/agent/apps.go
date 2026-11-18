@@ -238,6 +238,26 @@ var identityHeaders = []string{
 	"Remote-Groups",
 	"X-Outpost-Identity-Sig",
 	"X-Outpost-Identity-Ts",
+	"X-Outpost-Relationship",
+	"X-Outpost-Circle",
+	"X-Outpost-Groups",
+	"X-Outpost-Visitor",
+	"X-Outpost-Relationship-Sig",
+}
+
+// visitorPseudonym is the stable stand-in for a signed-in caller who is not
+// the owner's member: keyed by the app's own SSO secret, so it is stable for
+// one app and unlinkable across apps, and the owner never learns the address.
+func visitorPseudonym(secret, app, user string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte("visitor\n" + app + "\n" + strings.ToLower(strings.TrimSpace(user))))
+	return hex.EncodeToString(mac.Sum(nil))[:32]
+}
+
+// relationshipPayload is what X-Outpost-Relationship-Sig signs (version 2 of
+// the identity contract; version 1, X-Outpost-Identity-Sig, is unchanged).
+func relationshipPayload(kind, circle, groups, visitor, user, prefix, ts string) string {
+	return "v2\n" + kind + "\n" + circle + "\n" + groups + "\n" + visitor + "\n" + user + "\n" + prefix + "\n" + ts
 }
 
 // remoteNameFromEmail derives a Remote-Name value from an email-shaped
@@ -619,6 +639,26 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 			if trustIdentity && viaTunnel && pr.In.Header.Get("X-Forwarded-Prefix") != "" {
 				user := pr.In.Header.Get("X-Periscope-User")
 				role := pr.In.Header.Get("X-Periscope-Role")
+				r.mu.RLock()
+				secret := r.ssoSecrets[name]
+				grants := r.hostGrants
+				r.mu.RUnlock()
+				// Relationship to the host owner. A signed-in caller who
+				// is neither the owner nor a member is a stranger: the
+				// owner's app gets a pseudonym, never the address. A
+				// registry without a grant store (no relationships known)
+				// keeps the legacy identity stamp unchanged.
+				var rel Relationship
+				if grants != nil {
+					rel = grants.Relationship(user)
+				}
+				visitor := ""
+				if rel.Kind == RelSignedIn {
+					if secret != "" {
+						visitor = visitorPseudonym(secret, name, user)
+					}
+					user, role = "", ""
+				}
 				if user != "" {
 					// Pass through the existing Periscope names so apps
 					// written against the cooperative-web-apps doc keep
@@ -647,18 +687,34 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 				// bootstrapped yet (operator runs `outpost apps secret
 				// <name>` and pastes the value into the app's config),
 				// in which case the app will refuse to honor identity
-				// headers anyway. Read under RLock so a concurrent
-				// rotate is safe.
-				r.mu.RLock()
-				secret := r.ssoSecrets[name]
-				r.mu.RUnlock()
+				// headers anyway. The secret was read under RLock above
+				// so a concurrent rotate is safe.
+				groups := strings.Join(rel.Groups, ",")
+				if rel.Kind != "" {
+					pr.Out.Header.Set("X-Outpost-Relationship", rel.Kind)
+				}
+				if rel.Circle != "" {
+					pr.Out.Header.Set("X-Outpost-Circle", rel.Circle)
+				}
+				if groups != "" {
+					pr.Out.Header.Set("X-Outpost-Groups", groups)
+				}
+				if visitor != "" {
+					pr.Out.Header.Set("X-Outpost-Visitor", visitor)
+				}
 				if secret != "" {
 					ts := strconv.FormatInt(time.Now().Unix(), 10)
-					payload := user + "\n" + role + "\n" + pr.Out.Header.Get("X-Forwarded-Prefix") + "\n" + ts
+					prefix := pr.Out.Header.Get("X-Forwarded-Prefix")
+					payload := user + "\n" + role + "\n" + prefix + "\n" + ts
 					mac := hmac.New(sha256.New, []byte(secret))
 					_, _ = mac.Write([]byte(payload))
 					pr.Out.Header.Set("X-Outpost-Identity-Sig", hex.EncodeToString(mac.Sum(nil)))
 					pr.Out.Header.Set("X-Outpost-Identity-Ts", ts)
+					if rel.Kind != "" {
+						rmac := hmac.New(sha256.New, []byte(secret))
+						_, _ = rmac.Write([]byte(relationshipPayload(rel.Kind, rel.Circle, groups, visitor, user, prefix, ts)))
+						pr.Out.Header.Set("X-Outpost-Relationship-Sig", hex.EncodeToString(rmac.Sum(nil)))
+					}
 				}
 			}
 			// Preserve the W3C trace context across the outpost-to-app

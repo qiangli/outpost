@@ -268,6 +268,49 @@ function verifyOutpost(req, secret) {
 }
 ```
 
+## The caller's relationship to the host owner
+
+When the host holds a grant copy (any paired host), outpost also tells a
+trust-identity app how the caller relates to the host owner:
+
+| Header                       | Value                                                    |
+| ---------------------------- | -------------------------------------------------------- |
+| `X-Outpost-Relationship`     | `owner`, `member` or `signed-in`; absent for anonymous    |
+| `X-Outpost-Circle`           | the member's circle (members only), e.g. `recruiter`     |
+| `X-Outpost-Groups`           | the owner's groups the member is in, comma-separated     |
+| `X-Outpost-Visitor`          | a pseudonym for a `signed-in` caller (32 hex chars)      |
+| `X-Outpost-Relationship-Sig` | `<hex sha256-hmac>` over the version-2 payload below     |
+
+**A signed-in caller who is neither the owner nor an active mutual member
+never reaches the app as an address.** Outpost drops `Remote-User`,
+`Remote-Email`, `Remote-Name` and `X-Periscope-User` for that caller and
+stamps `X-Outpost-Visitor` instead: `HMAC-SHA256(sso_secret,
+"visitor\n" + app + "\n" + lowercase(email))`, truncated to 32 hex
+characters. It is stable for one app, unlinkable across apps, and changes
+when the app's secret is rotated. Apps use it to count or remember a
+visitor, never to identify one.
+
+The circle is the owner's private label for the relationship: an app may
+use it to decide what to show, never display it to the member.
+
+The relationship signature uses the same secret and timestamp as the
+identity pair, over (newline-separated, no trailing newline):
+
+```
+v2
+<X-Outpost-Relationship>
+<X-Outpost-Circle>
+<X-Outpost-Groups>
+<X-Outpost-Visitor>
+<Remote-User>          (empty for signed-in callers)
+<X-Forwarded-Prefix>
+<X-Outpost-Identity-Ts>
+```
+
+Inbound copies of every header in this section are stripped, like the
+identity headers. A host without a grant store stamps none of them and
+keeps the identity contract above unchanged.
+
 ## Choosing an integration pattern
 
 There are five recurring patterns. Pick whichever matches your app's

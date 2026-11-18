@@ -189,6 +189,65 @@ func (h *HostGrants) Allow(app, user string) bool {
 	return false
 }
 
+// Relationship kinds a caller can have to the host owner.
+const (
+	RelOwner    = "owner"
+	RelMember   = "member"
+	RelSignedIn = "signed-in"
+)
+
+// Relationship is how a vouched caller relates to the host owner: the owner,
+// an active mutual member (with the circle the owner placed them in and the
+// owner's groups they belong to), or merely signed in to cloudbox.
+type Relationship struct {
+	Kind   string
+	Circle string
+	Groups []string
+}
+
+// Relationship resolves user against the held copies. It fails closed: a nil
+// store or an unknown caller is RelSignedIn, which callers treat as a
+// stranger whose address the owner must not learn. An empty user has no
+// relationship (Kind "").
+func (h *HostGrants) Relationship(user string) Relationship {
+	user = strings.ToLower(strings.TrimSpace(user))
+	if user == "" {
+		return Relationship{}
+	}
+	if h == nil {
+		return Relationship{Kind: RelSignedIn}
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.owner != "" && strings.EqualFold(h.owner, user) {
+		return Relationship{Kind: RelOwner}
+	}
+	for _, c := range h.copies {
+		if c != nil && strings.EqualFold(c.Owner, user) {
+			return Relationship{Kind: RelOwner}
+		}
+	}
+	for _, c := range h.copies {
+		if c == nil {
+			continue
+		}
+		for _, m := range c.Members {
+			if !strings.EqualFold(m.Email, user) {
+				continue
+			}
+			var groups []string
+			for name, emails := range c.Groups {
+				if slices.ContainsFunc(emails, func(e string) bool { return strings.EqualFold(e, user) }) {
+					groups = append(groups, name)
+				}
+			}
+			slices.Sort(groups)
+			return Relationship{Kind: RelMember, Circle: m.Circle, Groups: groups}
+		}
+	}
+	return Relationship{Kind: RelSignedIn}
+}
+
 // SetRefresh installs the pull AllowFresh forces on a denial (normally
 // GrantPuller.PullOnce). Without one AllowFresh is Allow.
 func (h *HostGrants) SetRefresh(fn func(context.Context)) {
