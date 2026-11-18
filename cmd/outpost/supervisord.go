@@ -86,6 +86,9 @@ container's PID 1 with --pid1.`,
 var initSelf string
 
 func runSupervisord(ctx context.Context) error {
+	if err := protectDaemonLogs(); err != nil {
+		return err
+	}
 	if err := claimSupervisordPidFile(); err != nil {
 		return err
 	}

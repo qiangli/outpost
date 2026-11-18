@@ -1704,6 +1704,7 @@ type MeshConsume struct {
 // (truncated mid-write, accidental SaveFile of empty struct, etc.) can
 // be recovered by RestoreLatestValid at boot.
 func SaveFile(path string, fc *FileConfig) error {
+	fc.registerLogSecrets()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -1836,6 +1837,7 @@ func RestoreLatestValid(path string) (int, error) {
 // uses it. Centralizing the load-or-create here lets main.go thread it
 // into adminui.Deps without duplicating the IO dance.
 func EnsureAdminSessionKey(path string, fc *FileConfig) ([]byte, error) {
+	defer fc.registerLogSecrets()
 	if fc == nil {
 		return nil, fmt.Errorf("nil FileConfig")
 	}
@@ -1862,6 +1864,7 @@ func EnsureAdminSessionKey(path string, fc *FileConfig) ([]byte, error) {
 // secret that must outlive the process — keeping its session JWTs valid
 // across daemon restarts.
 func EnsureFilesSigningKey(path string, fc *FileConfig) ([]byte, error) {
+	defer fc.registerLogSecrets()
 	if fc == nil {
 		return nil, fmt.Errorf("nil FileConfig")
 	}
@@ -1887,6 +1890,7 @@ func EnsureFilesSigningKey(path string, fc *FileConfig) ([]byte, error) {
 // MCP token is hex (not raw bytes) so it can be pasted into a
 // .mcp.json file verbatim.
 func EnsureMCPBearerToken(path string, fc *FileConfig) (string, error) {
+	defer fc.registerLogSecrets()
 	if fc == nil {
 		return "", fmt.Errorf("nil FileConfig")
 	}
@@ -1917,6 +1921,7 @@ func EnsureMCPBearerToken(path string, fc *FileConfig) (string, error) {
 // default. An operator pre-seeding the same token across hosts still can —
 // this only ever fills a blank.
 func EnsureClusterTunnelToken(path string, fc *FileConfig) (string, error) {
+	defer fc.registerLogSecrets()
 	if fc == nil || fc.Cluster == nil {
 		return "", fmt.Errorf("nil cluster config")
 	}
@@ -1948,6 +1953,7 @@ func EnsureClusterTunnelToken(path string, fc *FileConfig) (string, error) {
 // Only ever fills a blank — a cloudbox-issued secret on a host that later
 // becomes its own control plane is left exactly as it is.
 func EnsureControlPlaneSTCPSecret(path string, fc *FileConfig) (string, error) {
+	defer fc.registerLogSecrets()
 	if fc == nil || fc.Cluster == nil {
 		return "", fmt.Errorf("nil cluster config")
 	}
@@ -1982,6 +1988,7 @@ func EnsureControlPlaneSTCPSecret(path string, fc *FileConfig) (string, error) {
 // HMAC because the secret is empty is a real LAN-spoof exposure
 // (host-a's `kg` tile was the trigger for adding this).
 func EnsureAppSSOSecrets(path string, fc *FileConfig) ([]string, error) {
+	defer fc.registerLogSecrets()
 	if fc == nil {
 		return nil, fmt.Errorf("nil FileConfig")
 	}
@@ -2023,6 +2030,7 @@ func EnsureAppSSOSecrets(path string, fc *FileConfig) ([]string, error) {
 // It is persisted so the key survives a restart: a fresh key would silently
 // invalidate every signature the upstream had learned.
 func EnsureServiceSSOSecret(path string, fc *FileConfig, app string) (string, error) {
+	defer fc.registerLogSecrets()
 	if fc == nil {
 		return "", fmt.Errorf("nil FileConfig")
 	}
@@ -2063,6 +2071,7 @@ func newSSOSecret(name string) (string, error) {
 // must surface the new value so the operator can update their
 // .mcp.json before the next call.
 func RotateMCPBearerToken(path string, fc *FileConfig) (string, error) {
+	defer fc.registerLogSecrets()
 	if fc == nil {
 		return "", fmt.Errorf("nil FileConfig")
 	}
@@ -2094,6 +2103,7 @@ func LoadFile(path string) (*FileConfig, error) {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	migrateLegacyRole(&fc)
+	fc.registerLogSecrets()
 	return &fc, nil
 }
 

@@ -271,6 +271,10 @@ func TestE2E_DaemonLifecycle(t *testing.T) {
 		t.Errorf("expected mcp_bearer_token (32+ hex chars), got %q", tok)
 	}
 
+	if tok != "" && (strings.Contains(d.stdout.String(), tok) || strings.Contains(d.stderr.String(), tok)) {
+		t.Error("MCP credential leaked into startup output")
+	}
+
 	// /mcp/* unauthenticated → 401.
 	r, err := http.Post("http://"+d.addr+"/mcp/", "application/json", strings.NewReader("{}"))
 	if err != nil {

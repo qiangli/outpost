@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/yoke/pkg/secrets"
 )
 
 // emitStartupTrace appends one best-effort line to cli-trace.log
@@ -34,7 +35,7 @@ func emitStartupTrace() {
 	if err != nil {
 		return
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := protectDaemonLogs(); err != nil {
 		return
 	}
 	f, err := os.OpenFile(filepath.Join(dir, "cli-trace.log"),
@@ -48,7 +49,7 @@ func emitStartupTrace() {
 	// Single Write call so the line lands atomically in the kernel
 	// page cache — survives SIGKILL of this process even if the
 	// deferred Close never runs.
-	_, _ = fmt.Fprintf(f,
+	line := fmt.Sprintf(
 		"%s pid=%d ppid=%d wd=%q argv0=%q argv=%q path=%q\n",
 		time.Now().Format(time.RFC3339Nano),
 		os.Getpid(),
@@ -58,4 +59,5 @@ func emitStartupTrace() {
 		strings.Join(os.Args[1:], " "),
 		os.Getenv("PATH"),
 	)
+	_, _ = f.Write([]byte(secrets.RedactKnownValues(line)))
 }

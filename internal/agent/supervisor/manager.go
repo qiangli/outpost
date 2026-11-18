@@ -111,28 +111,55 @@ func (m *Manager) superviseOne(ctx context.Context, p *Program) error {
 		cmd.Env = p.env()
 		// Graceful shutdown: on ctx cancel, os/exec calls Cancel (the
 		// platform stop signal), then force-kills after WaitDelay if the
-		// child is still alive. Stdout/Stderr go to a real file (or the
-		// supervisor's), so there's no pipe-copier holding WaitDelay open.
+		// child is still alive. Owned output pipes keep redaction draining
+		// separately, so a descendant cannot extend the child wait.
 		cmd.Cancel = func() error { return stopSignal(cmd.Process) }
 		cmd.WaitDelay = m.grace
 
 		var logf *os.File
+		var sinks []*childLogOutput
+		closeSinks := func() {
+			for _, sink := range sinks {
+				sink.close()
+			}
+			if logf != nil {
+				_ = logf.Close()
+			}
+		}
 		if p.LogPath != "" {
 			if f, err := os.OpenFile(p.LogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
 				logf = f
-				cmd.Stdout, cmd.Stderr = f, f
 			}
 		}
-		if cmd.Stdout == nil {
-			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		outDest := os.Stdout
+		if logf != nil {
+			outDest = logf
+		}
+		out, err := newChildLogOutput(outDest)
+		if err != nil {
+			closeSinks()
+			stopChild()
+			return err
+		}
+		sinks = append(sinks, out)
+		cmd.Stdout = out.write
+		if logf != nil {
+			cmd.Stderr = out.write
+		} else {
+			errOut, err := newChildLogOutput(os.Stderr)
+			if err != nil {
+				closeSinks()
+				stopChild()
+				return err
+			}
+			sinks = append(sinks, errOut)
+			cmd.Stderr = errOut.write
 		}
 
 		startedAt := time.Now()
 		if err := cmd.Start(); err != nil {
 			stopChild()
-			if logf != nil {
-				_ = logf.Close()
-			}
+			closeSinks()
 			m.setExited(p.Name, err)
 			slog.Warn("supervisor: start failed", "program", p.Name, "err", err, "backoff", backoff)
 			if !sleep(ctx, backoff) {
@@ -141,14 +168,15 @@ func (m *Manager) superviseOne(ctx context.Context, p *Program) error {
 			backoff = jitter.Backoff(backoff, p.minBackoff(), p.maxBackoff())
 			continue
 		}
+		for _, sink := range sinks {
+			_ = sink.write.Close()
+		}
 		m.setRunning(p.Name, cmd.Process.Pid)
 		slog.Info("supervisor: started", "program", p.Name, "pid", cmd.Process.Pid)
 
 		waitErr := waitForChild(cmd, p, stopChild)
 		stopChild()
-		if logf != nil {
-			_ = logf.Close()
-		}
+		closeSinks()
 		ranFor := time.Since(startedAt)
 		m.setExited(p.Name, waitErr)
 

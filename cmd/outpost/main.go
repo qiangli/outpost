@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"maps"
 	"net"
@@ -29,6 +30,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/qiangli/yoke/pkg/secrets"
 	"github.com/qiangli/yoke/pkg/service"
 
 	"github.com/qiangli/outpost/internal/agent"
@@ -73,10 +75,12 @@ import (
 const defaultPortal = "https://ai.dhnt.io"
 
 func main() {
+	// Redact records in this process without inserting pipes into detached children.
+	log.SetOutput(secrets.NewHostRecordWriter(log.Writer()))
 	if code, handled := vknode.RunNativeProcessHelper(os.Args); handled {
 		os.Exit(code)
 	}
-	// First instruction of main: record this invocation to a durable
+	// Record this invocation early to a durable
 	// file so we have post-mortem evidence even if a sandbox/hook
 	// kills us before any normal logging fires. See trace.go.
 	emitStartupTrace()
@@ -165,6 +169,9 @@ func startCmd() *cobra.Command {
 			}
 			if _, err := conf.ResolveCacheDir(); err != nil {
 				return fmt.Errorf("resolve cache dir: %w", err)
+			}
+			if err := protectDaemonLogs(); err != nil {
+				return err
 			}
 
 			// A persistent `outpost disable` beats an explicit `start`:
@@ -1047,7 +1054,7 @@ func startCmd() *cobra.Command {
 			// Backfill the endpoint URL on the SPA-facing closure now
 			// that the listener address is known.
 			adminSrv.SetMCPEndpoint(adminSrv.URL() + "/mcp/")
-			fmt.Fprintf(os.Stderr, "MCP endpoint: %s/mcp/  (bearer: %s)\n", adminSrv.URL(), mcpToken)
+			fmt.Fprintf(os.Stderr, "MCP endpoint: %s/mcp/\n", adminSrv.URL())
 
 			g, gctx := errgroup.WithContext(ctx)
 			// The cloud-side require_login gate judges the caller against
@@ -4107,7 +4114,7 @@ func outpostLogPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := protectDaemonLogs(); err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, "outpost.log"), nil

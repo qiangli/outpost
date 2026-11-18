@@ -128,7 +128,7 @@ The listener is *never* advertised through the matrix tunnel — it is local-mac
 
 After the listener is up `start` looks at the merged config:
 
-- **Unconfigured** (`AgentName == ""`): print the admin URL + MCP endpoint + bearer token, block on signal/restart. No matrix tunnel, no main loopback server. The user opens the admin URL (or uses MCP / CLI / `outpost register`) to pair; the operation triggers a self-restart.
+- **Unconfigured** (`AgentName == ""`): print the admin URL and MCP endpoint without credentials, block on signal/restart. No matrix tunnel, no main loopback server. The user opens the admin URL (or uses MCP / CLI / `outpost register`) to pair; the operation triggers a self-restart.
 - **Configured**: continue as before — bind a random loopback port for the main `gin.Engine` (`agent.RegisterRoutes`), build an embedded matrix-tunnel client (`agent.NewTunnel`) and dial `cfg.ServerAddr:ServerPort` with one TCP proxy pointing at the loopback port. All three (admin listener, main server, matrix tunnel) run in the same `errgroup`; cancelling the context shuts them all down.
 
 `start` refuses to boot if another outpost owns the pidfile at `<UserCacheDir>/outpost/outpost.pid` (the matrix-tunnel `RemotePort` is fixed, so two instances would fight over the same slot). `stop` reads that pidfile, SIGTERMs, then SIGKILLs after 5 s.
