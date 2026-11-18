@@ -21,7 +21,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/pkg/sftp v1.13.10
-	github.com/qiangli/yoke v0.0.0-20261117061719-e2a09279929e
+	github.com/qiangli/yoke v0.0.0-20261118041247-79fe8f90bb05
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.53.0
 	github.com/spf13/cobra v1.10.2
@@ -224,7 +224,7 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
-	github.com/qiangli/coreutils v0.0.0-20261112194059-6dd7a3ee1858 // indirect
+	github.com/qiangli/coreutils v0.0.0-20261118041055-ababb9f1c79a // indirect
 	github.com/qiangli/gfy v0.0.0-20261013004914-30d38f086034 // indirect
 	github.com/qiangli/yamux v0.2.0 // indirect
 	github.com/qiangli/yoke/pkg/provider v0.0.0-20261111080334-d0ba2a1100d7 // indirect
@@ -312,14 +312,12 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 	modernc.org/sqlite v1.59.0 // indirect
-	mvdan.cc/sh/v3 v3.13.1 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace mvdan.cc/sh/v3 => github.com/qiangli/sh/v3 v3.0.0-20261112194059-a4141771a3dc
 
 replace github.com/hashicorp/yamux => github.com/qiangli/yamux v0.1.0
 
