@@ -181,6 +181,22 @@ func superviseOnce(ctx context.Context, self string) (bool, error) {
 // makes that invariant inexpensive to test and prevents future callers from
 // slipping individual service units back under outpost's init.
 func supervisordPrograms(self, bashy, daemonLogPath, bashyLogPath string) []*supervisor.Program {
+	// The service monitor passes this inherited value to the Apps console.
+	// Only the host's authenticated pairing may name a remote operator.
+	env := os.Environ()
+	appEnv := make([]string, 0, len(env)+1)
+	for _, item := range env {
+		if !strings.HasPrefix(item, "BASHY_APP_OPERATOR=") {
+			appEnv = append(appEnv, item)
+		}
+	}
+	if path, err := conf.DefaultConfigPath(); err == nil {
+		if fc, err := conf.LoadFile(path); err == nil && fc.CloudboxPaired() {
+			if owner := strings.TrimSpace(fc.Cloudbox.OwnerEmail); owner != "" {
+				appEnv = append(appEnv, "BASHY_APP_OPERATOR="+owner)
+			}
+		}
+	}
 	return []*supervisor.Program{
 		{
 			Name:    "outpost",
@@ -196,7 +212,7 @@ func supervisordPrograms(self, bashy, daemonLogPath, bashyLogPath string) []*sup
 			Name:    "bashy-supervisord",
 			Path:    bashy,
 			Args:    []string{"supervisord"},
-			Env:     os.Environ(),
+			Env:     appEnv,
 			LogPath: bashyLogPath,
 		},
 	}
