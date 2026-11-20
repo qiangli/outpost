@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/qiangli/yoke/pkg/fleet"
 	"github.com/qiangli/yoke/pkg/service"
 
 	"github.com/qiangli/outpost/internal/agent"
@@ -54,6 +55,66 @@ func TestPodmanAbsentSocketStaysQuietThenActivates(t *testing.T) {
 	}
 	if len(apps.Names()) == 0 {
 		t.Error("podman app not published after the socket appeared")
+	}
+}
+
+// TestPodmanAbsentSocketRestsInactiveThroughProvider is the
+// 9deb591a regression at the layer operators read: driven through
+// service.Internal (what the daemon's owner loop reports from), an
+// absent podman socket must rest Inactive with the unavailable
+// reason — never Active/health ok, which hid a 39 h outage — and
+// recover to Active on the Activate after the socket appears.
+func TestPodmanAbsentSocketRestsInactiveThroughProvider(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "pm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	sock := filepath.Join(dir, "p.sock")
+
+	target := agent.BuiltinTarget{Name: "podman", Scheme: "unix", Socket: sock}
+	apps := agent.NewAppRegistry()
+	c := &podmanCapability{Apps: apps, Detect: func() agent.BuiltinTarget { return target }}
+	reg := service.NewRegistry()
+	if err := reg.Register(capPodman, c); err != nil {
+		t.Fatal(err)
+	}
+	p := service.NewInternal("outpost", reg)
+	unit := fleet.Service{Name: "podman", Kind: fleet.KindService, Provider: fleet.ServiceProviderInternal,
+		Capability: capPodman, Owner: "outpost", Enabled: true}
+	ctx := context.Background()
+
+	if err := p.Activate(ctx, unit, service.Runtime{}); err != nil {
+		t.Fatalf("absent socket must not fail activation: %v", err)
+	}
+	st := p.Status("podman")
+	if st.State != service.Inactive || st.State.Exposed() {
+		t.Fatalf("status = %+v, want resting Inactive (was Active before the fix)", st)
+	}
+	if !service.IsUnavailableReason(st.Reason) || !strings.Contains(st.Reason, sock) {
+		t.Fatalf("reason = %q, want unavailable naming the probed socket", st.Reason)
+	}
+	if err := p.Health(ctx, "podman"); err == nil || !strings.Contains(err.Error(), "no podman socket detected") {
+		t.Fatalf("provider health while absent = %v, want the unavailable reason", err)
+	}
+
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	target.Available = true
+	if err := p.Activate(ctx, unit, service.Runtime{}); err != nil {
+		t.Fatalf("activate after socket appeared: %v", err)
+	}
+	if st := p.Status("podman"); st.State != service.Active || st.Reason != "" {
+		t.Fatalf("status after socket appeared = %+v, want Active", st)
+	}
+	if len(apps.Names()) == 0 {
+		t.Error("podman app not published after the socket appeared")
+	}
+	if err := p.Health(ctx, "podman"); err != nil {
+		t.Fatalf("provider health after socket appeared: %v", err)
 	}
 }
 
