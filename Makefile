@@ -1,47 +1,74 @@
-# outpost — conventional Makefile entrypoint.
-#
-# outpost's build logic lives in scripts/*.sh (each "Replaces `make <x>`"); this
-# Makefile is the thin, conventional front door that delegates to them, so
-# `make build` / `make test` work like the sibling repos (cloudbox, bashy). The
-# scripts remain the source of truth for ldflags/cross-compile/sibling-bootstrap.
-#
-# An agent-first equivalent lives alongside in DAG.md (`bashy dag build`, …).
+###########################################################################
+##  GENERATED FILE — DO NOT EDIT.                                        ##
+##  Produced from dag.md by `bashy dag --makefile`. Edit dag.md instead, ##
+##  then regenerate; manual changes are overwritten and fail --check.    ##
+###########################################################################
+# Tasks live in dag.md (a bashy dag file); this Makefile only forwards.
+#   bashy dag <target>           run a target (its dependencies first)
+#   bashy dag --list             list targets
+#   bashy dag --dry-run <target> print the plan, run nothing
+#   bashy dag --skill DIR        export these tasks as an Agent Skill
+# Regenerate with: bashy dag --makefile  (verify: bashy dag --makefile --check)
 
-.PHONY: help build build-all test test-headless tidy fmtcheck hooks clean install
+# List the dag targets, then how to run them natively.
+help: FORCE
+	@command -v bashy >/dev/null || { echo "requires bashy: https://github.com/qiangli/bashy"; exit 127; }; bashy dag --list; echo "Run: bashy dag <target> | skill: bashy dag --skill DIR | more: bashy help"
 
-.DEFAULT_GOAL := help
+# Build outpost for the current platform into ./bin.
+build: FORCE
+	@command -v bashy >/dev/null || { echo "requires bashy: https://github.com/qiangli/bashy"; exit 127; }; bashy dag build
 
-help:  ## Show this help
-	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | \
-	  awk 'BEGIN{FS=":.*## "}{printf "  \033[36m%-13s\033[0m %s\n", $$1, $$2}'
+# Cross-compile outpost for every release platform into ./bin.
+build-all: FORCE
+	@command -v bashy >/dev/null || { echo "requires bashy: https://github.com/qiangli/bashy"; exit 127; }; bashy dag build-all
 
-build:  ## Build outpost for the current platform into ./bin (bootstraps ../sh sibling)
-	@./scripts/build.sh
+# Run Go tests in short mode, with the release build tags (`-tags fb_archives`, as the old Makefile passed — a bare `go test ./...` builds untagged and fails the…
+test: FORCE
+	@command -v bashy >/dev/null || { echo "requires bashy: https://github.com/qiangli/bashy"; exit 127; }; bashy dag test
 
-build-all:  ## Cross-compile every release platform into ./bin
-	@./scripts/build-all.sh
+# Short tests minus internal/agent/shell — safe in a TTY-less environment.
+test-headless: FORCE
+	@command -v bashy >/dev/null || { echo "requires bashy: https://github.com/qiangli/bashy"; exit 127; }; bashy dag test-headless
 
-# -tags fb_archives matches what outpost ships (GO_TAGS in scripts/lib.sh).
-# A bare `go test ./...` runs the UNTAGGED build and fails
-# TestFolderDownloadFormatCoverage on purpose — use these targets.
-test:  ## Run Go tests in short mode (internal/agent/shell needs a real TTY)
-	@go test -tags fb_archives -short ./...
+# go mod tidy + go fmt + go vet.
+tidy: FORCE
+	@command -v bashy >/dev/null || { echo "requires bashy: https://github.com/qiangli/bashy"; exit 127; }; bashy dag tidy
 
-test-headless:  ## Short tests minus internal/agent/shell (safe without a controlling TTY)
-	@go test -tags fb_archives -short $$(go list ./... | grep -v internal/agent/shell)
+# The gofmt gate (reports unformatted files, never rewrites them), plus a check that the generated Makefile still matches this file — regenerate with `bashy dag…
+fmtcheck: FORCE
+	@command -v bashy >/dev/null || { echo "requires bashy: https://github.com/qiangli/bashy"; exit 127; }; bashy dag fmtcheck
 
-tidy:  ## go mod tidy + go fmt + go vet (APPLIES fixes — not a gate)
-	@./scripts/tidy.sh
+# Install the pre-push gates (gofmt + standalone module graph).
+hooks: FORCE
+	@command -v bashy >/dev/null || { echo "requires bashy: https://github.com/qiangli/bashy"; exit 127; }; bashy dag hooks
 
-fmtcheck:  ## gofmt gate — reports unformatted files, never rewrites them
-	@./scripts/fmtcheck.sh
+# Build then install the binary into `$DHNT_BIN_DIR` (default `~/.local/bin`).
+install: FORCE
+	@command -v bashy >/dev/null || { echo "requires bashy: https://github.com/qiangli/bashy"; exit 127; }; bashy dag install
 
-hooks:  ## install the pre-push gates (gofmt + standalone module graph)
-	@git config core.hooksPath scripts/hooks
-	@echo "hooks installed: core.hooksPath=scripts/hooks"
+# Remove build artifacts.
+clean: FORCE
+	@command -v bashy >/dev/null || { echo "requires bashy: https://github.com/qiangli/bashy"; exit 127; }; bashy dag clean
 
-install:  ## Build + install into $$DHNT_BIN_DIR (default $$HOME/.local/bin)
-	@./scripts/install-bin.sh
+# O4 managed-service sshd proof (Story 1537): given a bashy+outpost pair, install it via `bashy self install --service`, serve sshd from the managed daemon, log…
+o4-sshd-service: FORCE
+	@command -v bashy >/dev/null || { echo "requires bashy: https://github.com/qiangli/bashy"; exit 127; }; bashy dag o4-sshd-service
 
-clean:  ## Remove build artifacts
-	@./scripts/clean.sh
+# Verify a *published* release build (no source build, no Go — only bashy, which self-provisions git/coreutils).
+qa: FORCE
+	@command -v bashy >/dev/null || { echo "requires bashy: https://github.com/qiangli/bashy"; exit 127; }; bashy dag qa
+
+# Drive every required-OS QA lane NOW, instead of waiting for a standing poller to notice the newest `-dev` tag on its own timer.
+qa-lanes: FORCE
+	@command -v bashy >/dev/null || { echo "requires bashy: https://github.com/qiangli/bashy"; exit 127; }; bashy dag qa-lanes
+
+# Drive the LAST step of the two-tag release flow: check that every required-OS QA lane has attested the newest `vX.Y.Z-dev`, then create the bare `vX.Y.Z` tag —…
+promote: FORCE
+	@command -v bashy >/dev/null || { echo "requires bashy: https://github.com/qiangli/bashy"; exit 127; }; bashy dag promote
+
+.DEFAULT: ; @command -v bashy >/dev/null || { echo "requires bashy: https://github.com/qiangli/bashy"; exit 127; }; bashy dag $@
+
+# FORCE names no file and has no recipe: as the one prerequisite it
+# keeps every forward running even when a file or directory on disk
+# shares a target's name. Dependency order stays in dag, not here.
+FORCE:

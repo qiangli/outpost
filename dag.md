@@ -1,13 +1,14 @@
 ---
 name: outpost
-description: Build/test/lint targets for outpost as a bashy dag pipeline (dogfood of the new Makefile)
+description: Build/test/lint targets for outpost as a bashy dag pipeline (agent-first; the Makefile is generated from this file and only forwards here)
 type: dag
 ---
 
 # outpost — DAG task file
 
-The agent-first equivalent of this repo's `Makefile` (itself a thin wrapper over
-`scripts/*.sh`), runnable with `bashy dag`:
+The Makefile in this directory is GENERATED from this file (`bashy dag --makefile`)
+and only forwards to the targets below — do not edit it. This DAG file is the
+agent-first task list, runnable with `bashy dag`:
 
 ```bash
 bashy dag --list            # available targets
@@ -48,14 +49,16 @@ Effects: write, net
 ```
 
 ### test
-Run Go tests in short mode. NOTE: internal/agent/shell drives ergochat/readline
-against a PTY and hangs without a controlling TTY — use `test-headless` in a
-headless run.
+Run Go tests in short mode, with the release build tags (`-tags fb_archives`,
+as the old Makefile passed — a bare `go test ./...` builds untagged and fails
+the files-builtin coverage test on purpose). NOTE:
+internal/agent/shell drives ergochat/readline against a PTY and hangs without
+a controlling TTY — use `test-headless` in a headless run.
 Effects: read, net
 
 ```bash
 BASHY_EXE="${BASHY:-bashy}"
-"$BASHY_EXE" go test -short ./...
+"$BASHY_EXE" go test -tags fb_archives -short ./...
 ```
 
 ### test-headless
@@ -64,7 +67,7 @@ Effects: read, net
 
 ```bash
 BASHY_EXE="${BASHY:-bashy}"
-"$BASHY_EXE" go test -short $("$BASHY_EXE" go list ./... | grep -v internal/agent/shell)
+"$BASHY_EXE" go test -tags fb_archives -short $("$BASHY_EXE" go list ./... | grep -v internal/agent/shell)
 ```
 
 ### tidy
@@ -73,6 +76,27 @@ Effects: write, net
 
 ```bash
 ./scripts/tidy.sh
+```
+
+### fmtcheck
+The gofmt gate (reports unformatted files, never rewrites them), plus a check
+that the generated Makefile still matches this file — regenerate with
+`bashy dag --makefile` instead of editing it.
+Effects: exec,read
+
+```bash
+set -e
+./scripts/fmtcheck.sh
+bashy dag --makefile --check
+```
+
+### hooks
+Install the pre-push gates (gofmt + standalone module graph).
+Effects: exec,write
+
+```bash
+git config core.hooksPath scripts/hooks
+echo "hooks installed: core.hooksPath=scripts/hooks"
 ```
 
 ### install
