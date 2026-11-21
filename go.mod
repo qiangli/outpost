@@ -5,6 +5,7 @@ go 1.27.0
 toolchain go1.27.4
 
 require (
+	github.com/godbus/dbus/v5 v5.2.2
 	filippo.io/age v1.3.1
 	github.com/GehirnInc/crypt v0.0.0-20230320061759-8cc1b52080c5
 	github.com/Microsoft/go-winio v0.6.2

@@ -54,6 +54,13 @@ type Config struct {
 	// SelfcheckStatusFn returns "ok", "warn", or "fail". Optional.
 	SelfcheckStatusFn func() string
 
+	// ReachabilityFn reads current local service observations without probing
+	// the cloud tunnel. Optional for legacy and client-only hosts.
+	ReachabilityFn func() Reachability
+
+	// PowerEvents is optional; on suspend/resume try an immediate heartbeat.
+	PowerEvents <-chan PowerObservation
+
 	// OnAcknowledged runs after the paired server accepts a heartbeat (HTTP 200).
 	OnAcknowledged func(context.Context)
 
@@ -64,9 +71,25 @@ type Config struct {
 	Client *http.Client
 }
 
+// Reachability is the optional host-side health on the public heartbeat wire.
+type Reachability struct {
+	LANSSH  string    `json:"lan_ssh,omitempty"`
+	Apps    string    `json:"apps,omitempty"`
+	Power   string    `json:"power,omitempty"`
+	PowerAt time.Time `json:"power_observed_at,omitzero"`
+}
+
+type PowerObservation struct {
+	State     string
+	At        time.Time
+	sendBy    time.Time
+	completed chan struct{}
+}
+
 // Worker is the lifecycle handle. Run blocks until ctx is done.
 type Worker struct {
-	cfg Config
+	cfg   Config
+	power PowerObservation
 }
 
 func New(cfg Config) *Worker {
@@ -96,12 +119,23 @@ func (w *Worker) Run(ctx context.Context) error {
 	backoff := 10 * time.Second
 	const backoffMax = 5 * time.Minute
 	authRevokedQuietUntil := time.Time{}
+	powerEvents := w.cfg.PowerEvents
 
 	for {
+		var event PowerObservation
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-timer.C:
+		case observation, ok := <-powerEvents:
+			if !ok {
+				powerEvents = nil
+				w.power = PowerObservation{}
+				continue
+			}
+			event = observation
+			w.power = PowerObservation{State: event.State, At: event.At}
+			timer.Stop()
 		}
 
 		next := w.cfg.Interval
@@ -110,10 +144,22 @@ func (w *Worker) Run(ctx context.Context) error {
 			// loop must still tick so a daemon restart picks up
 			// the new credential. We just skip the POST.
 			timer.Reset(next)
+			if event.completed != nil {
+				close(event.completed)
+			}
 			continue
 		}
 
-		err := w.postOne(ctx)
+		sendCtx := ctx
+		cancel := func() {}
+		if !event.sendBy.IsZero() {
+			sendCtx, cancel = context.WithDeadline(ctx, event.sendBy)
+		}
+		err := w.postOne(sendCtx)
+		cancel()
+		if event.completed != nil {
+			close(event.completed)
+		}
 		switch {
 		case err == nil:
 			backoff = 10 * time.Second
@@ -151,6 +197,14 @@ func (w *Worker) postOne(ctx context.Context) error {
 	}
 	if w.cfg.SelfcheckStatusFn != nil {
 		body["selfcheck_status"] = w.cfg.SelfcheckStatusFn()
+	}
+	if w.cfg.ReachabilityFn != nil || w.power.State != "" {
+		var observed Reachability
+		if w.cfg.ReachabilityFn != nil {
+			observed = w.cfg.ReachabilityFn()
+		}
+		observed.Power, observed.PowerAt = w.power.State, w.power.At
+		body["reachability"] = observed
 	}
 	buf, _ := json.Marshal(body)
 	url := strings.TrimRight(w.cfg.CloudboxBase, "/") + "/api/v1/host/heartbeat"
