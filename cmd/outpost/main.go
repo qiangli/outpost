@@ -1685,6 +1685,11 @@ func startCmd() *cobra.Command {
 						BuildCommit:       agent.ReadBuildInfo().Short(),
 						BuildVersion:      agent.ReadBuildInfo().Short(),
 						SelfcheckStatusFn: scheck.LastStatus,
+						PowerEvents:       heartbeat.WatchPower(gctx),
+						ReachabilityFn: func() heartbeat.Reachability {
+							view, _ := core.ServiceStatus()
+							return heartbeatHealth(view, time.Now().UTC())
+						},
 						OnAcknowledged: func(ctx context.Context) {
 							if err := rebootObserver.Acknowledge(ctx); err != nil {
 								slog.Warn("post-install server acknowledgement", "err", err)

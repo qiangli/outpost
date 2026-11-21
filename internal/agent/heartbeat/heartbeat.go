@@ -54,6 +54,13 @@ type Config struct {
 	// SelfcheckStatusFn returns "ok", "warn", or "fail". Optional.
 	SelfcheckStatusFn func() string
 
+	// ReachabilityFn reads current local service observations without probing
+	// the cloud tunnel. Optional for legacy and client-only hosts.
+	ReachabilityFn func() Reachability
+
+	// PowerEvents is optional; on suspend/resume try an immediate heartbeat.
+	PowerEvents <-chan PowerObservation
+
 	// OnAcknowledged runs after the paired server accepts a heartbeat (HTTP 200).
 	OnAcknowledged func(context.Context)
 
@@ -64,9 +71,23 @@ type Config struct {
 	Client *http.Client
 }
 
+// Reachability is the optional host-side health on the public heartbeat wire.
+type Reachability struct {
+	LANSSH  string    `json:"lan_ssh,omitempty"`
+	Apps    string    `json:"apps,omitempty"`
+	Power   string    `json:"power,omitempty"`
+	PowerAt time.Time `json:"power_observed_at,omitzero"`
+}
+
+type PowerObservation struct {
+	State string
+	At    time.Time
+}
+
 // Worker is the lifecycle handle. Run blocks until ctx is done.
 type Worker struct {
-	cfg Config
+	cfg   Config
+	power PowerObservation
 }
 
 func New(cfg Config) *Worker {
@@ -96,12 +117,20 @@ func (w *Worker) Run(ctx context.Context) error {
 	backoff := 10 * time.Second
 	const backoffMax = 5 * time.Minute
 	authRevokedQuietUntil := time.Time{}
+	powerEvents := w.cfg.PowerEvents
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-timer.C:
+		case event, ok := <-powerEvents:
+			if !ok {
+				powerEvents = nil
+				continue
+			}
+			w.power = event
+			timer.Stop()
 		}
 
 		next := w.cfg.Interval
@@ -151,6 +180,13 @@ func (w *Worker) postOne(ctx context.Context) error {
 	}
 	if w.cfg.SelfcheckStatusFn != nil {
 		body["selfcheck_status"] = w.cfg.SelfcheckStatusFn()
+	}
+	if w.cfg.ReachabilityFn != nil {
+		observed := w.cfg.ReachabilityFn()
+		if w.power.State == "sleeping" {
+			observed.Power, observed.PowerAt = w.power.State, w.power.At
+		}
+		body["reachability"] = observed
 	}
 	buf, _ := json.Marshal(body)
 	url := strings.TrimRight(w.cfg.CloudboxBase, "/") + "/api/v1/host/heartbeat"
