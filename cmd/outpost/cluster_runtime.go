@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -14,6 +15,12 @@ import (
 	"github.com/qiangli/outpost/internal/agent"
 	agentruntime "github.com/qiangli/outpost/internal/agent/runtime"
 )
+
+// errNoPodmanMachine marks a host where podman is installed (or provided by
+// bashy) but `podman machine init` has never been run. Neither cluster mode
+// nor `outpost.podman` (`settings.autostart_machine`) ever provisions a VM
+// implicitly.
+var errNoPodmanMachine = errors.New("no podman machine exists — run `podman machine init` once to provision one")
 
 // ensurePodmanRuntime resolves a reachable podman socket, starting the podman
 // machine when one exists but isn't running.
@@ -119,7 +126,7 @@ func podmanMachineToStart(ctx context.Context, podman []string) (string, error) 
 		return "", fmt.Errorf("podman machine list: parse output: %w", err)
 	}
 	if len(machines) == 0 {
-		return "", errors.New("no podman machine exists — run `podman machine init` once to provision one")
+		return "", errNoPodmanMachine
 	}
 	for _, m := range machines {
 		if m.Default {
@@ -131,8 +138,55 @@ func podmanMachineToStart(ctx context.Context, podman []string) (string, error) 
 
 func runPodman(ctx context.Context, podman []string, args ...string) (string, error) {
 	argv := append(append([]string{}, podman...), args...)
-	out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = podmanCommandEnv(runtime.GOOS, os.Environ())
+	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// podmanCommandEnv ensures `%SystemRoot%\System32` is present on PATH when
+// outpost runs under a Windows Task Scheduler `-AtStartup` S4U task: Task
+// Scheduler spawns daemons with a minimal PATH that omits System32 (see
+// docs/windows-service.md), whereas `podman machine start` invokes `wsl.exe`
+// by name on PATH.
+func podmanCommandEnv(goos string, baseEnv []string) []string {
+	env := append([]string{}, baseEnv...)
+	if goos != "windows" {
+		return env
+	}
+	sysRoot := `C:\Windows`
+	pathIdx := -1
+	pathVal := ""
+	for i, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		switch {
+		case strings.EqualFold(k, "SystemRoot") && strings.TrimSpace(v) != "":
+			sysRoot = strings.TrimSpace(v)
+		case strings.EqualFold(k, "PATH") && pathIdx < 0:
+			pathIdx = i
+			pathVal = v
+		}
+	}
+	sys32 := strings.TrimRight(sysRoot, `\/`) + `\System32`
+	for _, entry := range strings.Split(pathVal, ";") {
+		entry = strings.TrimRight(strings.TrimSpace(entry), `\/`)
+		if strings.EqualFold(entry, sys32) {
+			return env
+		}
+	}
+	if pathIdx < 0 {
+		return append(env, "PATH="+sys32)
+	}
+	key, _, _ := strings.Cut(env[pathIdx], "=")
+	if strings.TrimSpace(pathVal) == "" {
+		env[pathIdx] = key + "=" + sys32
+	} else {
+		env[pathIdx] = key + "=" + pathVal + ";" + sys32
+	}
+	return env
 }
 
 // firstLine trims a command's output to its first line — enough to identify a

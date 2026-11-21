@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -43,28 +45,95 @@ import (
 type podmanCapability struct {
 	Apps   *agent.AppRegistry
 	Detect func() agent.BuiltinTarget
+	// EnsureMachine starts an existing stopped podman machine when
+	// `settings.autostart_machine` is true (defaults to ensurePodmanRuntime).
+	// Never runs `podman machine init`.
+	EnsureMachine func(context.Context) (string, error)
+	Now           func() time.Time
+	BackoffBase   time.Duration
 
 	idleState
-	mu     sync.Mutex
-	socket string
+	mu      sync.Mutex
+	socket  string
+	readyAt string
+
+	startCancel context.CancelFunc
+	starting    bool
+	nextTry     time.Time
+	failures    int
+	noMachine   bool
+	lastErr     string
+}
+
+const (
+	defaultPodmanAutostartBackoff  = 15 * time.Second
+	maxPodmanAutostartBackoff      = 5 * time.Minute
+	noPodmanMachineRecheckInterval = 5 * time.Minute
+)
+
+func (c *podmanCapability) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
+}
+
+func (c *podmanCapability) backoff(failures int) time.Duration {
+	base := c.BackoffBase
+	if base <= 0 {
+		base = defaultPodmanAutostartBackoff
+	}
+	d := base
+	for i := 1; i < failures && d < maxPodmanAutostartBackoff; i++ {
+		d *= 2
+	}
+	if d > maxPodmanAutostartBackoff {
+		d = maxPodmanAutostartBackoff
+	}
+	return d
 }
 
 // Activate registers the mount. A host with no podman socket is not a
 // failure: the capability goes idle (nothing published, reason in
 // Unavailable) and Health re-probes until a socket appears.
+//
+// When `settings.autostart_machine` is true on a host with an existing
+// stopped podman machine, Activate remains non-blocking (never stalling
+// daemon boot or burning the upgrade confirm window): it rests Inactive with
+// `unavailable: starting podman machine...` and kicks off a single-flight
+// background start with backoff.
 func (c *podmanCapability) Activate(ctx context.Context, cfg service.Config) error {
 	if c.Apps == nil {
 		return fmt.Errorf("podman: no app registry on this host")
 	}
+	autostart := settingBoolDefault(cfg, "autostart_machine", false)
+	if !autostart {
+		c.stopAutostart()
+	}
+	readyTCP := strings.TrimSpace(setting(cfg, "ready_tcp"))
 	bt, err := c.resolve(cfg)
 	if err != nil {
 		if isAbsent(err) {
-			_ = c.Deactivate(ctx)
+			c.withdrawApp()
+			if autostart {
+				reason := c.triggerAutostart(cfg)
+				c.set("podman", cfg, reason)
+				return nil
+			}
 			c.set("podman", cfg, err.Error())
 			return nil
 		}
 		return err
 	}
+	if readyTCP != "" && !probeTCPAddr(readyTCP, 2*time.Second) {
+		c.withdrawApp()
+		c.set("podman", cfg, fmt.Sprintf("unavailable: podman socket %s is up, waiting for %s", bt.Socket, readyTCP))
+		return nil
+	}
+	c.mu.Lock()
+	c.failures, c.noMachine, c.lastErr, c.nextTry = 0, false, "", time.Time{}
+	c.socket, c.readyAt = bt.Socket, readyTCP
+	c.mu.Unlock()
 	c.clear()
 	if err := c.Apps.RegisterFromConfig(conf.AppConfig{
 		// Scheme comes from the detector, never a literal: on Windows
@@ -80,11 +149,100 @@ func (c *podmanCapability) Activate(ctx context.Context, cfg service.Config) err
 	}); err != nil {
 		return fmt.Errorf("podman: register app: %w", err)
 	}
-	c.mu.Lock()
-	c.socket = bt.Socket
-	c.mu.Unlock()
 	slog.Info("podman: proxying the libpod socket", "socket", bt.Socket, "scheme", bt.Scheme)
 	return nil
+}
+
+func (c *podmanCapability) triggerAutostart(cfg service.Config) string {
+	c.mu.Lock()
+	now := c.now()
+	if c.starting {
+		c.mu.Unlock()
+		return "unavailable: starting podman machine..."
+	}
+	if c.noMachine && now.Before(c.nextTry) {
+		msg := "unavailable: " + c.lastErr
+		c.mu.Unlock()
+		return msg
+	}
+	if c.failures > 0 && now.Before(c.nextTry) {
+		wait := c.nextTry.Sub(now).Round(time.Second)
+		msg := fmt.Sprintf("unavailable: podman machine start backoff (%s remaining): %s", wait, c.lastErr)
+		c.mu.Unlock()
+		return msg
+	}
+	ensureFn := c.EnsureMachine
+	if ensureFn == nil {
+		ensureFn = ensurePodmanRuntime
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	c.starting = true
+	c.startCancel = cancel
+	c.mu.Unlock()
+
+	go func() {
+		_, err := ensureFn(runCtx)
+		cancelled := runCtx.Err() != nil
+		cancel()
+
+		c.mu.Lock()
+		c.starting = false
+		c.startCancel = nil
+		if cancelled {
+			c.mu.Unlock()
+			return
+		}
+		finished := c.now()
+		var nextReason string
+		switch {
+		case err == nil:
+			c.failures, c.noMachine, c.lastErr, c.nextTry = 0, false, "", time.Time{}
+			nextReason = "unavailable: podman machine started, awaiting socket probe"
+		case errors.Is(err, errNoPodmanMachine):
+			c.noMachine = true
+			c.lastErr = err.Error()
+			c.nextTry = finished.Add(noPodmanMachineRecheckInterval)
+			nextReason = "unavailable: " + err.Error()
+			slog.Warn("podman: autostart skipped because no podman machine exists", "err", err)
+		default:
+			c.failures++
+			delay := c.backoff(c.failures)
+			c.lastErr = err.Error()
+			c.nextTry = finished.Add(delay)
+			nextReason = fmt.Sprintf("unavailable: podman machine start failed (retry in %s): %s", delay, err.Error())
+			slog.Warn("podman: autostart failed; will retry after backoff", "attempt", c.failures, "backoff", delay, "err", err)
+		}
+		c.mu.Unlock()
+
+		if prevCfg, idle := c.pending(); idle {
+			c.set("podman", prevCfg, nextReason)
+		} else {
+			c.set("podman", cfg, nextReason)
+		}
+	}()
+	return "unavailable: starting podman machine..."
+}
+
+func (c *podmanCapability) withdrawApp() {
+	c.mu.Lock()
+	had := c.socket != ""
+	c.socket, c.readyAt = "", ""
+	c.mu.Unlock()
+	if had && c.Apps != nil {
+		c.Apps.Unregister(agent.BuiltinPodman)
+	}
+}
+
+func (c *podmanCapability) stopAutostart() {
+	c.mu.Lock()
+	cancel := c.startCancel
+	c.startCancel = nil
+	c.starting = false
+	c.failures, c.noMachine, c.lastErr, c.nextTry = 0, false, "", time.Time{}
+	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // Configure re-resolves the socket and re-registers, which is the whole of
@@ -94,13 +252,9 @@ func (c *podmanCapability) Configure(ctx context.Context, cfg service.Config) er
 }
 
 func (c *podmanCapability) Deactivate(context.Context) error {
-	c.mu.Lock()
-	had := c.socket != ""
-	c.socket = ""
-	c.mu.Unlock()
-	if had && c.Apps != nil {
-		c.Apps.Unregister(agent.BuiltinPodman)
-	}
+	c.stopAutostart()
+	c.clear()
+	c.withdrawApp()
 	return nil
 }
 
@@ -112,8 +266,24 @@ func (c *podmanCapability) Health(ctx context.Context) error {
 	}
 	c.mu.Lock()
 	socket := c.socket
+	readyAt := c.readyAt
 	c.mu.Unlock()
-	return probePodmanSocket("podman", socket)
+	if err := probePodmanSocket("podman", socket); err != nil {
+		return err
+	}
+	if readyAt != "" && !probeTCPAddr(readyAt, 2*time.Second) {
+		return fmt.Errorf("podman: ready_tcp endpoint %s is no longer reachable", readyAt)
+	}
+	return nil
+}
+
+func probeTCPAddr(addr string, timeout time.Duration) bool {
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func (c *podmanCapability) resolve(cfg service.Config) (agent.BuiltinTarget, error) {
