@@ -41,8 +41,7 @@ try {
     $installArgs = @('self', 'install', '--dir', $Dir)
     if ($installService) {
         $installArgs += '--service'
-        $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
-        if ($User -or (-not $System -and -not $isAdmin)) { $installArgs += '--user' } elseif ($System) { $installArgs += '--system' }
+        if ($User) { $installArgs += '--user' } else { $installArgs += '--system' }
     }
     & (Join-Path $temp 'bashy.exe') @installArgs
     if ($LASTEXITCODE -ne 0) { throw "bashy self install failed ($LASTEXITCODE)" }

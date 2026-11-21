@@ -23,6 +23,10 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 if [ "$service" = 0 ] && [ -n "$scope" ]; then echo 'service scope requires service installation' >&2; exit 2; fi
+if [ "$service" = 1 ] && [ "$(id -u)" = 0 ]; then
+    echo 'Run the installer as the regular account that will run Outpost.' >&2
+    exit 1
+fi
 case "$(uname -s)" in Darwin) os=darwin ;; Linux) os=linux ;; *) echo 'unsupported OS; Windows uses install.ps1' >&2; exit 1 ;; esac
 case "$(uname -m)" in x86_64|amd64) arch=amd64 ;; arm64|aarch64) arch=arm64 ;; *) echo 'unsupported architecture' >&2; exit 1 ;; esac
 if command -v curl >/dev/null 2>&1; then
@@ -47,9 +51,14 @@ if command -v sha256sum >/dev/null 2>&1; then actual=$(sha256sum "$tmpdir/$asset
 [ "$actual" = "$expected" ] || { echo 'archive sha256 mismatch' >&2; exit 1; }
 tar -xzf "$tmpdir/$asset" -C "$tmpdir" bashy outpost bash sh
 set -- self install --dir "$INSTALL_DIR"
-if [ "$service" = 1 ]; then
-    set -- "$@" --service
-    if [ -n "$scope" ]; then set -- "$@" "$scope"; elif [ "$(id -u)" != 0 ]; then set -- "$@" --user; fi
+if [ "$scope" = --user ]; then
+    set -- "$@" --service --user
 fi
 "$tmpdir/bashy" "$@"
+if [ "$service" = 1 ] && [ "$scope" != --user ]; then
+    # Register the installed executable via sudo, including with older releases
+    # whose self install command does not elevate system service registration.
+    installed_dir=$(CDPATH= cd -- "$INSTALL_DIR" && pwd -P)
+    sudo -- "$installed_dir/outpost" service install --system
+fi
 case ":$PATH:" in *":$INSTALL_DIR:"*) ;; *) printf 'Add %s to PATH.\n' "$INSTALL_DIR" ;; esac

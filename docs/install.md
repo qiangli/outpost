@@ -8,8 +8,9 @@ The macOS/Linux script installer downloads the matching bashy release archive,
 verifies it against `checksums.txt`, and runs `bashy self install`. The Windows
 PowerShell installer follows the same checksum-verified flow for the Windows
 zip. By default both leave outpost installed but dormant until `bashy login`;
-`--service` / `-Service` (or `SERVICE=1`) also registers outpost as a per-user
-service/task.
+`--service` / `-Service` (or `SERVICE=1`) also registers the Outpost supervisor
+to start at boot. The OS starts it after a reboot without a user login and
+restarts it if it exits.
 
 Environment overrides supported by the compatibility scripts:
 
@@ -21,9 +22,15 @@ Environment overrides supported by the compatibility scripts:
 | `NO_SERVICE` | When set, skip service/task installation (the default; overrides `SERVICE`). |
 | `REPO` | Use an alternate bashy repository. |
 
-To also register the service, pass `--service` to the Unix script or `-Service`
-to the PowerShell one (or set `SERVICE=1`). Linux headless hosts may need
-`loginctl enable-linger` for the user service to run after logout.
+On macOS and Linux, run the installer as the intended service account.
+Only boot registration uses `sudo`. On Windows, run the installer from an
+elevated PowerShell under the intended service account. After bootstrap,
+`outpost doctor` reports `service: boot` and confirms daemon health once the
+daemon starts.
+
+To explicitly select user scope, pass `--service --user` or `-Service -User`.
+User scope requires a login on macOS and Windows. On Linux, Outpost enables
+linger so the user service can start at boot.
 
 v1.0 macOS and Windows binaries are not yet code-signed. Script and package
 manager installs do not set browser quarantine/Mark-of-the-Web; a browser
