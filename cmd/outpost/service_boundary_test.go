@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -144,6 +145,21 @@ func TestRegisterServiceGuard(t *testing.T) {
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestRegisterServiceGuard$")
 	cmd.Env = append(os.Environ(), "OUTPOST_REGISTER_GUARD_CHILD=1")
+	if runtime.GOOS == "linux" {
+		// Satisfy the executable lookup even in an image without systemd.
+		// The service runner must reject the call before this file is run.
+		bin := t.TempDir()
+		systemctl := filepath.Join(bin, "systemctl")
+		if err := os.WriteFile(systemctl, []byte("#!/bin/sh\n: > \"$0.invoked\"\nexit 99\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		cmd.Env = append(cmd.Env, "PATH="+bin)
+		t.Cleanup(func() {
+			if _, err := os.Stat(systemctl + ".invoked"); !os.IsNotExist(err) {
+				t.Errorf("systemctl sentinel should never run; marker stat: %v", err)
+			}
+		})
+	}
 	out, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "host service command") {
 		t.Fatalf("expected registration takeover to fail closed: %v\n%s", err, out)
