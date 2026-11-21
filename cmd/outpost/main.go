@@ -1688,7 +1688,7 @@ func startCmd() *cobra.Command {
 						PowerEvents:       heartbeat.WatchPower(gctx),
 						ReachabilityFn: func() heartbeat.Reachability {
 							view, _ := core.ServiceStatus()
-							return heartbeatHealth(view, time.Now().UTC())
+							return heartbeatHealth(view)
 						},
 						OnAcknowledged: func(ctx context.Context) {
 							if err := rebootObserver.Acknowledge(ctx); err != nil {

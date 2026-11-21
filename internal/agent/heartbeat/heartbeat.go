@@ -80,8 +80,10 @@ type Reachability struct {
 }
 
 type PowerObservation struct {
-	State string
-	At    time.Time
+	State     string
+	At        time.Time
+	sendBy    time.Time
+	completed chan struct{}
 }
 
 // Worker is the lifecycle handle. Run blocks until ctx is done.
@@ -120,16 +122,19 @@ func (w *Worker) Run(ctx context.Context) error {
 	powerEvents := w.cfg.PowerEvents
 
 	for {
+		var event PowerObservation
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-timer.C:
-		case event, ok := <-powerEvents:
+		case observation, ok := <-powerEvents:
 			if !ok {
 				powerEvents = nil
+				w.power = PowerObservation{}
 				continue
 			}
-			w.power = event
+			event = observation
+			w.power = PowerObservation{State: event.State, At: event.At}
 			timer.Stop()
 		}
 
@@ -139,10 +144,22 @@ func (w *Worker) Run(ctx context.Context) error {
 			// loop must still tick so a daemon restart picks up
 			// the new credential. We just skip the POST.
 			timer.Reset(next)
+			if event.completed != nil {
+				close(event.completed)
+			}
 			continue
 		}
 
-		err := w.postOne(ctx)
+		sendCtx := ctx
+		cancel := func() {}
+		if !event.sendBy.IsZero() {
+			sendCtx, cancel = context.WithDeadline(ctx, event.sendBy)
+		}
+		err := w.postOne(sendCtx)
+		cancel()
+		if event.completed != nil {
+			close(event.completed)
+		}
 		switch {
 		case err == nil:
 			backoff = 10 * time.Second
@@ -181,11 +198,12 @@ func (w *Worker) postOne(ctx context.Context) error {
 	if w.cfg.SelfcheckStatusFn != nil {
 		body["selfcheck_status"] = w.cfg.SelfcheckStatusFn()
 	}
-	if w.cfg.ReachabilityFn != nil {
-		observed := w.cfg.ReachabilityFn()
-		if w.power.State == "sleeping" {
-			observed.Power, observed.PowerAt = w.power.State, w.power.At
+	if w.cfg.ReachabilityFn != nil || w.power.State != "" {
+		var observed Reachability
+		if w.cfg.ReachabilityFn != nil {
+			observed = w.cfg.ReachabilityFn()
 		}
+		observed.Power, observed.PowerAt = w.power.State, w.power.At
 		body["reachability"] = observed
 	}
 	buf, _ := json.Marshal(body)

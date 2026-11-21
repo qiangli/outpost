@@ -53,7 +53,7 @@ func TestPowerEventsTriggerImmediateHeartbeat(t *testing.T) {
 	worker := New(Config{
 		CloudboxBase: srv.URL, AgentName: "fixture", AccessToken: "fixture-token",
 		PowerEvents:    events,
-		ReachabilityFn: func() Reachability { return Reachability{LANSSH: "up", Power: "awake", PowerAt: time.Now().UTC()} },
+		ReachabilityFn: func() Reachability { return Reachability{LANSSH: "up"} },
 	})
 	go func() {
 		defer close(done)
@@ -67,7 +67,7 @@ func TestPowerEventsTriggerImmediateHeartbeat(t *testing.T) {
 		events <- PowerObservation{State: want, At: at}
 		select {
 		case observation := <-got:
-			if observation.Power != want || observation.LANSSH != "up" || observation.PowerAt.Before(at) {
+			if observation.Power != want || observation.LANSSH != "up" || !observation.PowerAt.Equal(at) {
 				t.Fatalf("power event %s: %+v", want, observation)
 			}
 		case <-time.After(time.Second):
@@ -76,4 +76,27 @@ func TestPowerEventsTriggerImmediateHeartbeat(t *testing.T) {
 	}
 	read("sleeping", time.Now().UTC())
 	read("awake", time.Now().UTC())
+}
+
+func TestHeartbeatOmitsPowerWithoutObservation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Reachability map[string]any `json:"reachability"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		_, state := body.Reachability["power"]
+		_, stamp := body.Reachability["power_observed_at"]
+		if state || stamp || body.Reachability["lan_ssh"] != "up" {
+			t.Errorf("unexpected wire health: %v", body.Reachability)
+		}
+	}))
+	defer srv.Close()
+	worker := New(Config{CloudboxBase: srv.URL, AgentName: "fixture", AccessToken: "fixture-token",
+		ReachabilityFn: func() Reachability { return Reachability{LANSSH: "up"} }})
+	if err := worker.postOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 }

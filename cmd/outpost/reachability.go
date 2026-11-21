@@ -1,14 +1,12 @@
 package main
 
 import (
-	"time"
-
 	"github.com/qiangli/outpost/internal/agent/admincore"
 	"github.com/qiangli/outpost/internal/agent/heartbeat"
 )
 
-func heartbeatHealth(view admincore.ServiceStatusView, now time.Time) heartbeat.Reachability {
-	health := heartbeat.Reachability{LANSSH: "unknown", Apps: "unknown", Power: "awake", PowerAt: now}
+func heartbeatHealth(view admincore.ServiceStatusView) heartbeat.Reachability {
+	health := heartbeat.Reachability{LANSSH: "unknown", Apps: "unknown"}
 	if !view.MonitorReachable {
 		return health
 	}
