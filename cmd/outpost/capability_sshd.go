@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -20,7 +21,9 @@ import (
 	"github.com/qiangli/outpost/internal/agent/discovery"
 	"github.com/qiangli/outpost/internal/agent/hostauth"
 	"github.com/qiangli/outpost/internal/agent/peerhosts"
+	"github.com/qiangli/outpost/internal/agent/recovery"
 	"github.com/qiangli/outpost/internal/agent/svcunit"
+	"github.com/qiangli/outpost/internal/jitter"
 )
 
 // The LAN sshd as an in-process capability (unit `provider: internal`,
@@ -62,14 +65,19 @@ type sshdCapability struct {
 	// all interfaces; tests pin 127.0.0.1.
 	BindHost string
 
-	mu       sync.Mutex
-	ln       net.Listener
-	cancel   context.CancelFunc
-	serveErr chan error
-	adv      sshdAdvertiser
-	applied  string
-	fwErr    error
-	port     int
+	mu             sync.Mutex
+	ln             net.Listener
+	cancel         context.CancelFunc
+	serveErr       chan error
+	adv            sshdAdvertiser
+	applied        string
+	fwErr          error
+	port           int
+	retryKey       string
+	retryErr       error
+	retryAt        time.Time
+	retryDelay     time.Duration
+	recoveryReason string
 }
 
 // sshdDaemonDeps are the daemon boot objects the LAN listener serves with.
@@ -153,11 +161,19 @@ func (c *sshdCapability) Activate(ctx context.Context, cfg service.Config) error
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	key := st.key()
+	if c.retryKey != key {
+		c.retryKey = key
+		c.retryErr, c.retryDelay = nil, 0
+	}
+	if c.retryErr != nil && time.Now().Before(c.retryAt) {
+		return c.retryErr
+	}
 	// Idempotent re-activation: when the same declaration is already
 	// serving, only re-probe the firewall — never rebind a working
 	// listener. A still-failing firewall is recorded for Health, not
 	// returned (see the note at the end of Activate).
-	if c.ln != nil && c.applied == st.key() {
+	if c.ln != nil && c.applied == key {
 		if ferr := c.ensureFirewallLocked(st.Port); ferr != nil {
 			c.fwErr = svcunit.NewDegraded(ferr.Error())
 		} else {
@@ -182,7 +198,16 @@ func (c *sshdCapability) Activate(ctx context.Context, cfg service.Config) error
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", st.Port))
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("sshd: listen on %s: %w", addr, err)
+		if c.retryErr == nil {
+			recovery.Record("lan_sshd", "down", "bind_failed")
+		}
+		if c.recoveryReason == "" {
+			c.recoveryReason = "bind_failed"
+		}
+		c.retryDelay = jitter.Backoff(c.retryDelay, 2*time.Second, 30*time.Second)
+		c.retryAt = time.Now().Add(c.retryDelay)
+		c.retryErr = fmt.Errorf("sshd: listen on %s: %w", addr, err)
+		return c.retryErr
 	}
 	boundPort := ln.Addr().(*net.TCPAddr).Port
 
@@ -215,7 +240,12 @@ func (c *sshdCapability) Activate(ctx context.Context, cfg service.Config) error
 	}()
 
 	c.ln, c.cancel, c.serveErr = ln, cancel, errc
-	c.applied, c.port = st.key(), boundPort
+	c.applied, c.port = key, boundPort
+	c.retryErr, c.retryDelay = nil, 0
+	if c.recoveryReason != "" {
+		recovery.Record("lan_sshd", "recovered", c.recoveryReason)
+		c.recoveryReason = ""
+	}
 	slog.Info("sshd: listening", "addr", ln.Addr().String(), "authorized_keys", ak)
 
 	// Firewall: best-effort gate, never fatal to the listener. A failure
@@ -353,6 +383,10 @@ func (c *sshdCapability) Health(context.Context) error {
 	}
 	select {
 	case err, ok := <-c.serveErr:
+		if c.recoveryReason == "" {
+			c.recoveryReason = "listener_exit"
+			recovery.Record("lan_sshd", "down", c.recoveryReason)
+		}
 		if !ok {
 			return fmt.Errorf("sshd: listener stopped serving")
 		}

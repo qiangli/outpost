@@ -183,6 +183,9 @@ func (m *Manager) superviseOne(ctx context.Context, p *Program) error {
 		if ctx.Err() != nil {
 			return nil // shutdown, not a crash
 		}
+		if p.OnUnexpectedExit != nil && (p.ShouldRun == nil || p.ShouldRun()) {
+			p.OnUnexpectedExit()
+		}
 		if ranFor >= p.startSecs() {
 			backoff = p.minBackoff() // healthy run → reset
 		}

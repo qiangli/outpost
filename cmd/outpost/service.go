@@ -249,10 +249,9 @@ func serviceStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Report whether the outpost supervisor service is registered + running",
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if verbose {
-				runDoctor() // full boot-readiness diagnostic
-				return nil
+				return runDoctor(cmd.OutOrStdout(), false, false)
 			}
 			return statusService(installOpts{System: !userMode})
 		},

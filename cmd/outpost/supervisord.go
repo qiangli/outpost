@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/agent/recovery"
 	"github.com/qiangli/outpost/internal/agent/supervisor"
 	"github.com/qiangli/outpost/internal/agent/svcunit"
 	"github.com/qiangli/outpost/internal/agent/upgrade"
@@ -122,7 +123,10 @@ func runSupervisord(ctx context.Context) error {
 	// code forever and never brought bashy supervisord up.
 	return runInitLoop(ctx, func(ctx context.Context) (bool, error) {
 		return superviseOnce(ctx, self)
-	}, reexecInit)
+	}, func() error {
+		recovery.Record("daemon", "restarting", "upgrade_reexec")
+		return reexecInit()
+	})
 }
 
 // attachWatchdog arms the auto-rollback watchdog on the daemon program:
@@ -206,7 +210,8 @@ func supervisordPrograms(self, bashy, daemonLogPath, bashyLogPath string) []*sup
 			LogPath: daemonLogPath,
 			// Only an explicit stop/disable intent parks the
 			// daemon; a kill -9 or crash restarts with backoff.
-			ShouldRun: daemonShouldRun,
+			ShouldRun:        daemonShouldRun,
+			OnUnexpectedExit: func() { recovery.Record("daemon", "down", "process_exit_unknown") },
 		},
 		{
 			Name:    "bashy-supervisord",

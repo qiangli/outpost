@@ -2,18 +2,22 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
+	"syscall"
 	"time"
 
 	tunnelclient "github.com/fatedier/frp/client"
+	"github.com/fatedier/frp/client/proxy"
 	tunnelconfig "github.com/fatedier/frp/pkg/config"
 	"github.com/fatedier/frp/pkg/config/source"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/samber/lo"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/agent/recovery"
 	"github.com/qiangli/outpost/internal/jitter"
 )
 
@@ -267,41 +271,108 @@ func newTunnelService(tc TunnelConfig, proxies []TCPProxy, visitors []STCPVisito
 // cancellation terminates the loop.
 func (t *Tunnel) Run(ctx context.Context) error {
 	backoff := reconnectInitialBackoff
+	var state tunnelRecovery
+	proxyName := t.recoveryProxy()
 	for {
 		t.mu.Lock()
 		svc := t.svc
 		t.mu.Unlock()
 
+		observeCtx, stopObserving := context.WithCancel(ctx)
+		observed := make(chan struct{})
+		go func() {
+			defer close(observed)
+			state.observe(observeCtx, svc.StatusExporter(), proxyName)
+		}()
 		runErr := svc.Run(ctx)
+		stopObserving()
+		<-observed
 		if ctx.Err() != nil {
 			return nil
 		}
+		reason := "tunnel_service_exit"
+		if errors.Is(runErr, syscall.ENETDOWN) || errors.Is(runErr, syscall.ENETUNREACH) {
+			reason = "network_unreachable"
+		}
+		state.down(reason)
 		if runErr != nil {
 			slog.Warn("matrix-tunnel exited; reconnecting", "err", runErr, "backoff", backoff)
 		} else {
 			slog.Warn("matrix-tunnel exited unexpectedly; reconnecting", "backoff", backoff)
 		}
 
+		rebuildFailed := false
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(backoff):
+			}
+			next, err := newTunnelService(t.cfg, t.proxies, t.visitors, t.stcps)
+			backoff = jitter.Backoff(backoff, reconnectInitialBackoff, reconnectMaxBackoff)
+			if err != nil {
+				if !rebuildFailed {
+					slog.Error("matrix-tunnel rebuild failed", "err", err)
+					recovery.Record("tunnel", "down", "tunnel_rebuild_failed")
+					rebuildFailed = true
+				}
+				continue // Keep rebuilding rather than rerunning the spent FRP service.
+			}
+			t.mu.Lock()
+			t.svc = next
+			t.mu.Unlock()
+			break
+		}
+	}
+}
+
+func (t *Tunnel) recoveryProxy() string {
+	if len(t.proxies) > 0 {
+		return t.proxies[0].Name
+	}
+	if len(t.stcps) > 0 {
+		return t.stcps[0].Name
+	}
+	return ""
+}
+
+type tunnelRecovery struct {
+	wasRunning bool
+	reason     string
+}
+
+func (s *tunnelRecovery) down(reason string) {
+	if s.reason == "" {
+		s.reason = reason
+		recovery.Record("tunnel", "down", reason)
+	}
+}
+
+func (s *tunnelRecovery) observe(ctx context.Context, exporter tunnelclient.StatusExporter, name string) {
+	if name == "" {
+		return
+	}
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
 		select {
 		case <-ctx.Done():
-			return nil
-		case <-time.After(backoff):
+			return
+		case <-tick.C:
+			if ctx.Err() != nil {
+				return
+			}
+			status, ok := exporter.GetProxyStatus(name)
+			if ok && status.Phase == proxy.ProxyPhaseRunning {
+				s.wasRunning = true
+				if s.reason != "" {
+					recovery.Record("tunnel", "recovered", s.reason)
+					s.reason = ""
+				}
+			} else if s.wasRunning {
+				s.down("transport_lost")
+			}
 		}
-
-		next, err := newTunnelService(t.cfg, t.proxies, t.visitors, t.stcps)
-		if err != nil {
-			// A rebuild failure here means our config is fundamentally
-			// rejected (bad proxy spec, etc.) — there's no point thrashing.
-			// Back off to the cap and keep trying; an operator fix can
-			// land via a restart.
-			slog.Error("matrix-tunnel rebuild failed", "err", err)
-			backoff = jitter.Backoff(backoff, reconnectInitialBackoff, reconnectMaxBackoff)
-			continue
-		}
-		t.mu.Lock()
-		t.svc = next
-		t.mu.Unlock()
-		backoff = jitter.Backoff(backoff, reconnectInitialBackoff, reconnectMaxBackoff)
 	}
 }
 

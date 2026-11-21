@@ -89,16 +89,31 @@ environment as that service:
 
 ```text
 outpost doctor
+outpost doctor --always-on --json
 outpost verify --post-install
 outpost verify --post-install --reboot
 ```
 
-Doctor reports `sleep: disabled|enabled` and `service: boot|session|none`.
+Doctor reports `sleep: disabled|enabled|unknown` and `service: boot|session|none`.
+Pass `--always-on` to check whether the power policy could interrupt an
+always-on host. Doctor only reads the policy.
 Disabled/boot are reported only when the readbacks establish them. Missing tools,
 permission errors, malformed output, and incomplete settings fail verification;
 inspect the raw JSON for the reason. Windows checks both AC/DC indices and the
 hibernate-enabled registry value; macOS checks every `pmset -g custom` power
 source; Linux requires persistent masks (runtime masks do not count).
+
+`outpost doctor --json` includes the human-readable checks and a `recovery`
+array. Each event contains `at` in UTC, `component`, `state`, and `reason`.
+The local journal is `recovery.json` under the Outpost cache directory and
+retains up to 64 recent events and 16 KiB. Writes use one bounded staging
+file and a lock. Event codes describe what Outpost observed, such as a LAN
+listener exit, mesh disconnection, tunnel transport loss or an explicit
+expired-elevation response at the client. `transport_lost` indicates that a
+previously running proxy became unavailable. It does not identify an adapter
+or a hardware cause. Client authorization events describe the local client.
+Keep them local when daemon-side events are added to the public heartbeat
+protocol in a later change.
 
 Ordinary verification runs the same six checks on macOS, Linux and
 Windows: the service is installed + enabled at boot, the supervisor is

@@ -14,7 +14,33 @@ import (
 
 	"github.com/qiangli/outpost/internal/agent/peerplane"
 	"github.com/qiangli/outpost/internal/agent/peerstatus"
+	"github.com/qiangli/outpost/internal/agent/recovery"
 )
+
+func TestPeerRecoveryOnlyRecordsPreviouslyConnectedPeer(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	rendezvous := &Rendezvous{}
+	peers := map[string]string{"fixture": "peer-id"}
+	connected := false
+	status := func(string) bool { return connected }
+	rendezvous.observePeerLinks(peers, status)
+	connected = true
+	rendezvous.observePeerLinks(peers, status)
+	connected = false
+	rendezvous.observePeerLinks(peers, status)
+	rendezvous.observePeerLinks(peers, status)
+	connected = true
+	rendezvous.observePeerLinks(peers, status)
+	events, err := recovery.Read()
+	if err != nil || len(events) != 2 || events[0].State != "down" || events[1].State != "recovered" {
+		t.Fatalf("peer recovery events = %+v, error = %v", events, err)
+	}
+	for _, event := range events {
+		if event.Component != "mesh" || event.Reason != "peer_disconnected" {
+			t.Fatalf("unexpected peer event %+v", event)
+		}
+	}
+}
 
 // TestPeersToRedial verifies the sweep selects exactly the known owned/shared
 // peers that libp2p reports NOT connected, skips connected ones and blank

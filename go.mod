@@ -21,6 +21,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/pkg/sftp v1.13.10
+	github.com/qiangli/coreutils v0.0.0-20261118041055-ababb9f1c79a
 	github.com/qiangli/yoke v0.0.0-20261120215422-1d08d92f556d
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.53.0
@@ -277,7 +278,6 @@ require (
 	github.com/prometheus/statsd_exporter v0.29.0 // indirect
 	github.com/qiangli/bash v0.0.0-20261117235306-adb3b4e0c28d // indirect
 	github.com/qiangli/bonsai v0.0.0-20261103194740-24dd0f47247e // indirect
-	github.com/qiangli/coreutils v0.0.0-20261118041055-ababb9f1c79a // indirect
 	github.com/qiangli/gfy v0.0.0-20261013004914-30d38f086034 // indirect
 	github.com/qiangli/yamux v0.2.0 // indirect
 	github.com/qiangli/yoke/pkg/llmgw v0.0.0-00010101000000-000000000000 // indirect

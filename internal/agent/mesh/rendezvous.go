@@ -18,6 +18,7 @@ import (
 
 	"github.com/qiangli/outpost/internal/agent/peerplane"
 	"github.com/qiangli/outpost/internal/agent/peerstatus"
+	"github.com/qiangli/outpost/internal/agent/recovery"
 )
 
 // Rendezvous wires the mesh Host to cloudbox's peer-signal surface — the SOLE
@@ -63,6 +64,8 @@ type Rendezvous struct {
 	// mesh peer set stabilizes. Guarded by its own mutex, separate from mu.
 	dialMu    sync.Mutex
 	dialState map[peer.ID]*peerDial
+	// observedLinks is owned by the reconnect sweep. Keep only known peers.
+	observedLinks map[string]bool
 
 	// extraCandidates, when set, supplies the peer-plane prober's "ip:port"
 	// candidates so THIS announce carries them too. The mesh and the prober
@@ -401,6 +404,7 @@ func (r *Rendezvous) snapshotHostPeers() map[string]string {
 // error just logs and continues — a sweep must never disturb healthy links.
 func (r *Rendezvous) sweepOnce(ctx context.Context) {
 	snapshot := r.snapshotHostPeers()
+	r.observePeerLinks(snapshot, r.connectedByID)
 	if len(snapshot) == 0 {
 		return
 	}
@@ -412,6 +416,30 @@ func (r *Rendezvous) sweepOnce(ctx context.Context) {
 		}
 		r.redialPeer(ctx, t)
 	}
+}
+
+func (r *Rendezvous) observePeerLinks(peers map[string]string, connected func(string) bool) {
+	now := make(map[string]bool, len(peers))
+	for _, id := range peers {
+		if id == "" {
+			continue
+		}
+		if _, seen := now[id]; seen {
+			continue
+		}
+		previous, known := r.observedLinks[id]
+		current := connected(id)
+		if !known && !current {
+			continue // First discovery has yet to establish a link.
+		}
+		if known && previous && !current {
+			recovery.Record("mesh", "down", "peer_disconnected")
+		} else if known && !previous && current {
+			recovery.Record("mesh", "recovered", "peer_disconnected")
+		}
+		now[id] = current
+	}
+	r.observedLinks = now
 }
 
 // redialPeer re-resolves fresh candidate addrs for one disconnected peer via

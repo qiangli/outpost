@@ -63,6 +63,8 @@ type Program struct {
 	// any other exit (kill -9, crash) restarts with backoff. Nil =
 	// always run.
 	ShouldRun func() bool
+	// OnUnexpectedExit observes an exit while this program is still wanted.
+	OnUnexpectedExit func()
 
 	// StartSecs: a child that stays up at least this long is a healthy
 	// start and resets the restart backoff. Zero = DefaultStartSecs.

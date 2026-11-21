@@ -14,11 +14,16 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/qiangli/outpost/internal/agent/recovery"
 )
 
 // ErrNotDeployed reports that cloudbox has no peer-ticket endpoint (404):
 // the direct path does not apply and the caller falls back to the tunnel.
 var ErrNotDeployed = errors.New("peer-ticket endpoint not available")
+
+// ErrElevationExpired describes the local client's authorization state.
+var ErrElevationExpired = errors.New("client elevation expired; run outpost connect again")
 
 // response is the wire shape of the cloudbox endpoint's
 // success response. Kept tiny on purpose — the outpost only needs the
@@ -124,6 +129,10 @@ func Exchange(ctx context.Context, cbBase, bearer, cookie, host, scope string) (
 		// Endpoint not deployed yet on cloudbox; tunnel-fallback.
 		return "", ErrNotDeployed
 	}
+	if resp.StatusCode == http.StatusUnauthorized && expiredElevation(respBody) {
+		recovery.Record("ssh_client", "blocked", "client_elevation_expired")
+		return "", ErrElevationExpired
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("cloudbox returned %d: %s", resp.StatusCode, bytes.TrimSpace(respBody))
 	}
@@ -135,4 +144,15 @@ func Exchange(ctx context.Context, cbBase, bearer, cookie, host, scope string) (
 		return "", errors.New("cloudbox returned empty ticket")
 	}
 	return out.Ticket, nil
+}
+
+func expiredElevation(body []byte) bool {
+	var failure struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &failure) != nil {
+		return false
+	}
+	message := strings.ToLower(failure.Error)
+	return strings.HasPrefix(message, "invalid elevation cookie:") && strings.HasSuffix(message, "token is expired")
 }

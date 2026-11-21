@@ -160,64 +160,99 @@ func Read(ctx context.Context, platform, user, home string, run Runner) Report {
 var hexIndex = regexp.MustCompile(`(?mi):\s*(0x[0-9a-f]+)\s*$`)
 
 func PowerDisabled(platform string, raw map[string]Readback) bool {
+	return SleepPolicy(platform, raw) == "disabled"
+}
+
+// SleepPolicy distinguishes a setting that permits sleep from a failed readback.
+func SleepPolicy(platform string, raw map[string]Readback) string {
 	switch platform {
 	case "windows":
+		unknown := false
 		for _, key := range []string{"standby", "hibernate"} {
-			r, ok := raw[key]
-			if !ok || !r.OK() {
-				return false
-			}
-			// /qh for ONE setting ends in exactly two hex indices, AC then DC.
-			// Do not match localized English labels or an unrelated zero elsewhere.
+			r := raw[key]
+			// /qh for one setting ends in exactly two hex indices (AC and DC).
 			indexes := hexIndex.FindAllStringSubmatch(r.Output, -1)
-			if len(indexes) != 2 {
-				return false
+			if !r.OK() || len(indexes) != 2 {
+				unknown = true
+				continue
 			}
 			for _, m := range indexes {
-				n, e := strconv.ParseUint(m[1][2:], 16, 32)
-				if e != nil || n != 0 {
-					return false
+				n, err := strconv.ParseUint(m[1][2:], 16, 32)
+				if err != nil {
+					unknown = true
+				} else if n != 0 {
+					return "enabled"
 				}
 			}
 		}
-		h, ok := raw["hibernate_enabled"]
-		return ok && h.OK() && h.Value() == "0"
-	case "darwin":
-		r, ok := raw["power"]
-		if !ok || !r.OK() {
-			return false
+		h := raw["hibernate_enabled"]
+		if h.OK() && h.Value() == "1" {
+			return "enabled"
 		}
+		if !unknown && h.OK() && h.Value() == "0" {
+			return "disabled"
+		}
+	case "darwin":
+		r := raw["power"]
+		if !r.OK() {
+			break
+		}
+		known := true
 		sources := 0
-		settings := map[string]string{}
-		valid := func() bool {
-			return settings["sleep"] == "0" && settings["disksleep"] == "0" && settings["womp"] == "1"
+		var settings map[string]string
+		check := func() bool {
+			if settings == nil {
+				return false
+			}
+			for _, key := range []string{"sleep", "disksleep", "womp"} {
+				if _, err := strconv.Atoi(settings[key]); err != nil {
+					known = false
+					return false
+				}
+			}
+			return settings["sleep"] != "0" || settings["disksleep"] != "0" || settings["womp"] != "1"
 		}
 		for _, line := range strings.Split(r.Output, "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasSuffix(line, ":") {
-				if sources > 0 && !valid() {
-					return false
+				if check() {
+					return "enabled"
 				}
 				sources++
 				settings = map[string]string{}
 				continue
 			}
-			f := strings.Fields(line)
-			if len(f) >= 2 {
-				settings[f[0]] = f[1]
+			if fields := strings.Fields(line); settings != nil && len(fields) >= 2 {
+				settings[fields[0]] = fields[1]
 			}
 		}
-		return sources > 0 && valid()
+		if check() {
+			return "enabled"
+		}
+		if known && sources > 0 {
+			return "disabled"
+		}
 	case "linux":
-		for _, s := range sleepTargets {
-			r, ok := raw[s]
-			if !ok || r.Value() != "masked" || (r.ExitCode != 0 && r.ExitCode != 1) {
-				return false
+		unknown := false
+		for _, target := range sleepTargets {
+			r := raw[target]
+			if r.ExitCode != 0 && r.ExitCode != 1 {
+				unknown = true
+				continue
+			}
+			switch r.Value() {
+			case "masked":
+			case "enabled", "enabled-runtime", "static", "disabled", "indirect", "generated", "alias", "linked", "linked-runtime":
+				return "enabled"
+			default:
+				unknown = true
 			}
 		}
-		return true
+		if !unknown {
+			return "disabled"
+		}
 	}
-	return false
+	return "unknown"
 }
 
 func ServiceState(platform string, raw map[string]Readback) string {

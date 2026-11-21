@@ -101,14 +101,27 @@ func verifyCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&reboot, "reboot", false, "Schedule a reboot in one minute and record unattended server reconnection on next startup")
 	return cmd
 }
-func serviceDoctor() []doctorCheck {
+func serviceDoctor(alwaysOn bool) []doctorCheck {
 	r := postInstallRead(context.Background())
-	sleepStatus, serviceStatus := "warn", "warn"
-	if r.Sleep == "disabled" {
-		sleepStatus = "ok"
-	}
+	sleep := doctorSleepCheck(postinstall.SleepPolicy(runtimeOS, r.Raw), alwaysOn)
+	serviceStatus := "warn"
 	if r.Service == "boot" {
 		serviceStatus = "ok"
 	}
-	return []doctorCheck{{"sleep:", sleepStatus, r.Sleep}, {"service:", serviceStatus, r.Service}}
+	return []doctorCheck{sleep, {"service:", serviceStatus, r.Service}}
+}
+
+func doctorSleepCheck(policy string, alwaysOn bool) doctorCheck {
+	check := doctorCheck{"sleep:", "warn", policy}
+	switch policy {
+	case "disabled":
+		check.Status = "ok"
+	case "enabled":
+		if alwaysOn {
+			check.Detail = "enabled. The power policy may interrupt an always-on host."
+		}
+	default:
+		check.Detail = "unknown. Could not verify the power policy."
+	}
+	return check
 }
