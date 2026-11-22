@@ -156,6 +156,12 @@ func (r *bashyBinaryResolver) reconcile(ctx context.Context, path string) string
 	if have == "" || sameBashyVersion(have, want) {
 		return "" // couldn't read it, or already matched — leave it alone
 	}
+	if isDevBashyBuild(have) {
+		// A local untagged build is the operator's explicit choice; rolling it
+		// to the paired release silently downgraded every developer install.
+		slog.Info("bashy is a local development build; auto-roll leaves it alone", "path", path, "want", want)
+		return ""
+	}
 	if !r.lastFetch.IsZero() && time.Since(r.lastFetch) < bashyAutoInstallBackoff {
 		return ""
 	}
@@ -255,6 +261,12 @@ func sameBashyVersion(have, want string) bool {
 		return strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(v), "v"), "-dev")
 	}
 	return normalize(have) == normalize(want)
+}
+
+// isDevBashyBuild reports whether an installed bashy is an untagged local
+// build (banner "-bashy-dev"), which the fleet auto-roll never replaces.
+func isDevBashyBuild(have string) bool {
+	return strings.EqualFold(strings.TrimSpace(have), "dev")
 }
 
 // sibling returns the paired executable beside this outpost, following install links.
