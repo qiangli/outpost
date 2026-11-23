@@ -22,8 +22,8 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/pkg/sftp v1.13.10
-	github.com/qiangli/coreutils v0.0.0-20261118041055-ababb9f1c79a
-	github.com/qiangli/yoke v0.0.0-20261120215422-1d08d92f556d
+	github.com/qiangli/coreutils v0.0.0-20261122134330-47dbc82478bc
+	github.com/qiangli/yoke v0.0.0-20261123172121-abae5390d798
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.53.0
 	github.com/spf13/cobra v1.10.2
@@ -68,7 +68,7 @@ require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2 // indirect
 	github.com/KyleBanks/depth v1.2.1 // indirect
 	github.com/Masterminds/semver/v3 v3.5.0 // indirect
-	github.com/ProtonMail/go-crypto v1.4.0 // indirect
+	github.com/ProtonMail/go-crypto v1.4.1 // indirect
 	github.com/RoaringBitmap/roaring/v2 v2.4.5 // indirect
 	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5 // indirect
 	github.com/asdine/storm/v3 v3.2.1 // indirect
@@ -277,9 +277,9 @@ require (
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
 	github.com/prometheus/statsd_exporter v0.29.0 // indirect
-	github.com/qiangli/bash v0.0.0-20261117235306-adb3b4e0c28d // indirect
-	github.com/qiangli/bonsai v0.0.0-20261103194740-24dd0f47247e // indirect
-	github.com/qiangli/gfy v0.0.0-20261013004914-30d38f086034 // indirect
+	github.com/qiangli/bash v0.0.0-20261122134408-5c52281f7136 // indirect
+	github.com/qiangli/bonsai v0.0.0-20261121101804-e25a870a0d4a // indirect
+	github.com/qiangli/gfy v0.0.0-20261121101804-aab4f6fad5be // indirect
 	github.com/qiangli/yamux v0.2.0 // indirect
 	github.com/qiangli/yoke/pkg/llmgw v0.0.0-00010101000000-000000000000 // indirect
 	github.com/qiangli/yoke/pkg/provider v0.0.0-20261111080334-d0ba2a1100d7 // indirect
@@ -340,7 +340,7 @@ require (
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0 // indirect
-	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.40.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.44.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.45.0 // indirect
 	go.opentelemetry.io/otel/metric v1.45.0 // indirect
 	go.uber.org/dig v1.19.0 // indirect
@@ -351,7 +351,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/arch v0.27.0 // indirect
-	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
+	golang.org/x/exp v0.0.0-20260603202125-055de637280b // indirect
 	golang.org/x/image v0.46.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
@@ -391,7 +391,7 @@ replace github.com/hashicorp/yamux => github.com/qiangli/yamux v0.1.0
 // coreutils' own replace does not reach this module. Same pin bashy carries.
 replace github.com/benhoyt/goawk => github.com/qiangli/coreutils/third_party/goawk v0.0.0-20261112194059-6dd7a3ee1858
 
-replace github.com/odvcencio/gotreesitter => github.com/qiangli/gotreesitter v0.0.0-20261103194740-9471d547a17c
+replace github.com/odvcencio/gotreesitter => github.com/qiangli/gotreesitter v0.0.0-20261121101804-5522e72a297d
 
 replace github.com/ergochat/readline => github.com/qiangli/readline v0.1.4-0.20261013004858-df59d4e258e4
 
@@ -399,13 +399,13 @@ replace github.com/ollama/ollama => github.com/qiangli/ollama v0.0.0-20261010173
 
 replace go.podman.io/podman/v6 => github.com/qiangli/podman/v6 v6.0.0-20261009064533-4a9784029284
 
-replace github.com/qiangli/yoke/pkg/llmgw => github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261111080334-d0ba2a1100d7
+replace github.com/qiangli/yoke/pkg/llmgw => github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261123172121-abae5390d798
 
 replace github.com/qiangli/yoke/pkg/oci => github.com/qiangli/yoke/pkg/oci v0.0.0-20261111080334-d0ba2a1100d7
 
 replace modernc.org/sqlite => github.com/qiangli/sqlite v1.50.2-0.20261018085128-5fb52bf328cb
 
-replace github.com/qiangli/yoke/pkg/provider => github.com/qiangli/yoke/pkg/provider v0.0.0-20261111080334-d0ba2a1100d7
+replace github.com/qiangli/yoke/pkg/provider => github.com/qiangli/yoke/pkg/provider v0.0.0-20261123172121-abae5390d798
 
 replace github.com/go-git/go-billy/v5 => github.com/qiangli/yoke/external/go-billy v0.0.0-20261111080334-d0ba2a1100d7
 
