@@ -84,3 +84,34 @@ func TestSignatureDirectoryOnRootAndSiteMount(t *testing.T) {
 		}
 	}
 }
+
+// The signed authority is the Host unless the cloud front (X-Forwarded-Prefix)
+// names a forwarded host, and never anything that could break line framing.
+func TestSignatureDirectoryAuthority(t *testing.T) {
+	for _, tc := range []struct {
+		host, fwdHost, prefix, want string
+		ok                          bool
+	}{
+		{"127.0.0.1:8080", "", "", "127.0.0.1:8080", true},
+		{"127.0.0.1:8080", "evil.example", "", "127.0.0.1:8080", true},
+		{"127.0.0.1:8080", "Site.Example", "/h/host-a/app/site", "site.example", true},
+		{"127.0.0.1:8080", "a.example, b.example", "/h/x", "a.example", true},
+		{"[::1]:8080", "", "", "[::1]:8080", true},
+		{"127.0.0.1", "evil.example\n\"@method\": GET", "/h/x", "", false},
+		{"bad host", "", "", "", false},
+		{"", "", "", "", false},
+	} {
+		r := httptest.NewRequest(http.MethodGet, "http://placeholder"+signatureDirectoryPath, nil)
+		r.Host = tc.host
+		if tc.fwdHost != "" {
+			r.Header["X-Forwarded-Host"] = []string{tc.fwdHost}
+		}
+		if tc.prefix != "" {
+			r.Header.Set("X-Forwarded-Prefix", tc.prefix)
+		}
+		got, ok := directoryAuthority(r)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("host %q fwd %q prefix %q: got %q %v, want %q %v", tc.host, tc.fwdHost, tc.prefix, got, ok, tc.want, tc.ok)
+		}
+	}
+}

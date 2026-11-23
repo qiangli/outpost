@@ -70,11 +70,13 @@ func serveSignatureDirectory(c *gin.Context) {
 	body, _ := json.Marshal(gin.H{"keys": []gin.H{{
 		"kty": "OKP", "crv": "Ed25519", "x": base64.RawURLEncoding.EncodeToString(pub), "kid": kid,
 	}}})
-	authority := c.Request.Header.Get("X-Forwarded-Host")
-	if authority == "" {
-		authority = c.Request.Host
+	c.Header("Cache-Control", "public, max-age=300")
+	authority, ok := directoryAuthority(c.Request)
+	if !ok {
+		// An authority that cannot be framed safely is served unsigned.
+		c.Data(http.StatusOK, signatureDirectoryMediaType, body)
+		return
 	}
-	authority = strings.ToLower(strings.TrimSpace(strings.Split(authority, ",")[0]))
 	created := time.Now().Unix()
 	params := `("@authority");created=` + strconv.FormatInt(created, 10) +
 		";expires=" + strconv.FormatInt(created+int64(signatureDirectoryTTL/time.Second), 10) +
@@ -85,6 +87,28 @@ func serveSignatureDirectory(c *gin.Context) {
 		c.Header("Signature-Input", "binding0="+params)
 		c.Header("Signature", "binding0=:"+base64.StdEncoding.EncodeToString(sig.Blob)+":")
 	}
-	c.Header("Cache-Control", "public, max-age=300")
 	c.Data(http.StatusOK, signatureDirectoryMediaType, body)
+}
+
+// directoryAuthority is the @authority the directory response is signed
+// over: the request Host, or X-Forwarded-Host only behind the cloud front
+// (which sets X-Forwarded-Prefix). It must be a plain host[:port] so no
+// client-supplied byte can break the signature base's line framing.
+func directoryAuthority(r *http.Request) (string, bool) {
+	authority := r.Host
+	if r.Header.Get("X-Forwarded-Prefix") != "" {
+		if fwd := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Host"), ",")[0]); fwd != "" {
+			authority = fwd
+		}
+	}
+	authority = strings.ToLower(strings.TrimSpace(authority))
+	if authority == "" || len(authority) > 255 {
+		return "", false
+	}
+	for _, ch := range authority {
+		if !(ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' || strings.ContainsRune(".-:[]", ch)) {
+			return "", false
+		}
+	}
+	return authority, true
 }
