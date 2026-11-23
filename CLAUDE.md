@@ -213,6 +213,7 @@ Current topics: `settings` (full inventory of every persisted field), `mcp` (set
 
 All mounted at root:
 - `GET /healthz`
+- `GET /.well-known/http-message-signatures-directory` — the host key's public half as a Web Bot Auth JWK Set (kid = RFC 7638 thumbprint), response signed over `@authority`; also served on every site app mount (`/app/<name>/...`, public like the MCP metadata) so the owner's signed bashy agent has a same-origin `Signature-Agent` URL (`internal/agent/sigdir.go`).
 - `GET /apps` — returns `{agent, apps:[AppEntry...], builtins:{shell,desktop,clipboard,ssh,sftp}}`. Each `AppEntry` is `{name, scheme, require_login, index_path}`. The `builtins` map tells cloudbox which built-in routes this outpost actually mounted, so the portal can hide disabled tiles. `sftp` is the per-toggle SFTP-subsystem entry (it's nested under the `/ssh` server but advertised separately so cloudbox can show "scp/sftp supported" independently). Older outposts omit `builtins`; cloudbox treats that as legacy "all on".
 - `POST /auth` — credential check (see Auth below)
 - `GET /shell` — WebSocket PTY (binary frames = bytes, text frame `{"type":"size",...}` = resize)

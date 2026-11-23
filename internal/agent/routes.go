@@ -172,6 +172,8 @@ type Deps struct {
 // reached from cloudbox through the matrix tunnel.
 func RegisterRoutes(rg *gin.RouterGroup, deps Deps) {
 	rg.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
+	rg.GET(signatureDirectoryPath, serveSignatureDirectory)
+	rg.HEAD(signatureDirectoryPath, serveSignatureDirectory)
 
 	// Build provenance is captured once at startup — the binary's identity
 	// doesn't change at runtime.

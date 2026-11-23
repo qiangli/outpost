@@ -1185,6 +1185,12 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 		serveSiteMCPMetadata(c, name)
 		return
 	}
+	// So is the owner's signature key directory (Web Bot Auth): a site
+	// verifying the owner's signed agent requests fetches it pre-session.
+	if mcp != nil && rest == signatureDirectoryPath {
+		serveSignatureDirectory(c)
+		return
+	}
 	if c.Request.Header.Get("X-Forwarded-Prefix") != "" {
 		// Rule 1: require_login. The outpost enforces the host grant
 		// itself: the cloud-identified caller (X-Periscope-User) must be
