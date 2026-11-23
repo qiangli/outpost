@@ -170,6 +170,14 @@ func ValidateApp(ac *conf.AppConfig) error {
 	} else {
 		ac.BasePath = ""
 	}
+	if ac.MCPPort != 0 {
+		if ac.Scheme != "http" && ac.Scheme != "https" {
+			return badRequest("mcp_port is only supported for http/https apps (scheme %q)", ac.Scheme)
+		}
+		if ac.MCPPort < 1 || ac.MCPPort > 65535 {
+			return badRequest("mcp_port %d is out of range", ac.MCPPort)
+		}
+	}
 	cleaned := ac.LANOnlyPaths[:0]
 	for _, p := range ac.LANOnlyPaths {
 		p = strings.TrimSpace(p)

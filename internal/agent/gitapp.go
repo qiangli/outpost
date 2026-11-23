@@ -91,6 +91,7 @@ func (r *AppRegistry) registerGit(name string, target *url.URL, allow []string, 
 	defer r.mu.Unlock()
 	// A name is one of http/tcp/egress/git at a time; clear the other modes.
 	delete(r.proxy, name)
+	delete(r.siteMCP, name)
 	delete(r.tcp, name)
 	delete(r.egress, name)
 	r.apps[name] = target

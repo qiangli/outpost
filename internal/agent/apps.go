@@ -146,6 +146,11 @@ type AppRegistry struct {
 	// so tests can fake it without touching a credential store.
 	gitCredentialFill gitCredentialFillFunc
 	healer            *AppHealer
+	// siteMCP holds the same-origin MCP proxy of an http app registered
+	// with MCPPort: /app/<name>/mcp forwards to the owner's `bashy mcp
+	// serve --tools site` on that loopback port, stamped exactly as the
+	// pages are (see site_mcp.go). Kept in lockstep with `proxy`.
+	siteMCP map[string]*httputil.ReverseProxy
 }
 
 // exposeTokenHeader is the header `bashy dks relay` (and any other
@@ -301,6 +306,7 @@ func NewAppRegistry() *AppRegistry {
 		git:                map[string]*gitApp{},
 		gitCredentialFill:  gitCredentialFill,
 		expose:             map[string]exposeGuard{},
+		siteMCP:            map[string]*httputil.ReverseProxy{},
 	}
 }
 
@@ -447,6 +453,9 @@ type AppMeta struct {
 	// app unguarded.
 	ExposeTokenSHA256 string
 	ExposeExpires     string
+	// MCPPort, when set on an http app, mounts its site MCP endpoint
+	// (see conf.AppConfig.MCPPort).
+	MCPPort int
 }
 
 // Register adds (or replaces) an app entry with the default
@@ -729,9 +738,15 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 			telemetry.PreserveTraceContext(pr.Out, pr.In)
 		},
 	}
+	mcp := siteMCPProxy(rp, meta.MCPPort)
 	r.mu.Lock()
 	r.apps[name] = target
 	r.proxy[name] = rp
+	if mcp != nil {
+		r.siteMCP[name] = mcp
+	} else {
+		delete(r.siteMCP, name)
+	}
 	r.requireLogin[name] = meta.RequireLogin
 	r.elevationRequired[name] = meta.ElevationRequired
 	r.lanOnly[name] = append([]string(nil), meta.LANOnlyPaths...)
@@ -859,6 +874,7 @@ func (r *AppRegistry) Unregister(name string) {
 	r.mu.Lock()
 	delete(r.apps, name)
 	delete(r.proxy, name)
+	delete(r.siteMCP, name)
 	delete(r.requireLogin, name)
 	delete(r.elevationRequired, name)
 	delete(r.lanOnly, name)
@@ -906,6 +922,9 @@ func (r *AppRegistry) RegisterFromConfig(ac conf.AppConfig) error {
 		ExposeExpires:      ac.ExposeExpires,
 	}
 	scheme := strings.ToLower(strings.TrimSpace(ac.Scheme))
+	if scheme == "" || scheme == "http" || scheme == "https" {
+		meta.MCPPort = ac.MCPPort
+	}
 	if scheme == "" {
 		scheme = "http"
 	}
@@ -985,6 +1004,7 @@ func (r *AppRegistry) registerTCP(name, addr string, meta AppMeta) error {
 	// Same name can't be in two modes at once.
 	delete(r.apps, name)
 	delete(r.proxy, name)
+	delete(r.siteMCP, name)
 	delete(r.egress, name)
 	delete(r.git, name)
 	r.tcp[name] = addr
@@ -1017,6 +1037,7 @@ func (r *AppRegistry) registerEgress(name string, allow []string, meta AppMeta) 
 	// Same name can't be in two modes at once.
 	delete(r.apps, name)
 	delete(r.proxy, name)
+	delete(r.siteMCP, name)
 	delete(r.tcp, name)
 	delete(r.git, name)
 	r.egress[name] = append([]string(nil), allow...)
@@ -1134,6 +1155,7 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	guard, guarded := r.expose[name]
 	healer := r.healer
 	grants := r.hostGrants
+	mcp := r.siteMCP[name]
 	r.mu.RUnlock()
 	// Expose-token guard (S487.2). Runs FIRST — before the intercepts,
 	// the reverse proxy and the tcp/egress WebSocket bridges — so a
@@ -1157,6 +1179,12 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 	// Direct loopback hits (admin UI subpath, local /app/<name>/* via
 	// the loopback main listener) are unaffected — the LAN/loopback
 	// trust boundary is what gates them.
+	// The site MCP authorization metadata is public by design: a client
+	// reads it before it has a session, to find the site's sign-in.
+	if mcp != nil && isSiteMCPMetadataPath(rest) {
+		serveSiteMCPMetadata(c, name)
+		return
+	}
 	if c.Request.Header.Get("X-Forwarded-Prefix") != "" {
 		// Rule 1: require_login. The outpost enforces the host grant
 		// itself: the cloud-identified caller (X-Periscope-User) must be
@@ -1164,6 +1192,10 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 		// host-grant copy. X-Periscope-Role is not consulted. A denial
 		// forces one re-pull first, so a just-made grant is honoured.
 		if requireLogin && !grants.AllowFresh(c.Request.Context(), name, c.Request.Header.Get("X-Periscope-User")) {
+			if mcp != nil && rest == siteMCPPath {
+				challengeSiteMCP(c, name)
+				return
+			}
 			c.AbortWithStatus(http.StatusForbidden)
 			return
 		}
@@ -1188,6 +1220,11 @@ func (r *AppRegistry) ProxyTo(c *gin.Context, name, rest string) {
 		}
 		c.Header("Cache-Control", "no-store")
 		c.JSON(http.StatusOK, healer.Status(name))
+		return
+	}
+	if mcp != nil && rest == siteMCPPath {
+		c.Request.URL.Path, c.Request.URL.RawPath = siteMCPPath, ""
+		mcp.ServeHTTP(c.Writer, c.Request)
 		return
 	}
 	if h := matchIntercept(intercepts, rest); h != nil {

@@ -31,6 +31,7 @@ type upsertAppIn struct {
 	TrustCloudIdentity bool     `json:"trust_cloud_identity,omitempty" jsonschema:"Forward cloudbox-vouched identity as Remote-User / Remote-Email"`
 	ExposeTokenSHA256  string   `json:"expose_token_sha256,omitempty" jsonschema:"Hex sha256 (64 chars) of the bearer every caller must send as X-Dhnt-Expose-Token. Set together with expose_expires."`
 	ExposeExpires      string   `json:"expose_expires,omitempty" jsonschema:"RFC3339 instant the expose token lapses; enforced per request. Set together with expose_token_sha256."`
+	MCPPort            int      `json:"mcp_port,omitempty" jsonschema:"http/https site apps: loopback port of the owner's bashy mcp serve --tools site; mounts <app>/mcp on the same origin"`
 }
 
 type listAppsOut struct {
@@ -140,6 +141,7 @@ func (s *Server) registerAppsTools() {
 				TrustCloudIdentity: in.TrustCloudIdentity,
 				ExposeTokenSHA256:  in.ExposeTokenSHA256,
 				ExposeExpires:      in.ExposeExpires,
+				MCPPort:            in.MCPPort,
 			},
 			URL: in.URL,
 		}

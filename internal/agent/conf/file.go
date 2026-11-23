@@ -1114,6 +1114,15 @@ type AppConfig struct {
 	// root. Ignored (and refused by validation) for other schemes.
 	BasePath string `json:"base_path,omitempty"`
 
+	// MCPPort marks an http/https app as a site with an MCP engine: the
+	// loopback port of the owner's `bashy mcp serve --transport http
+	// --tools site --site-app <name> --outpost`. When set, <app-mount>/mcp
+	// is reverse-proxied to it on the same origin as the pages (same
+	// require_login gate, same signed identity stamp, SSE unbuffered) and
+	// <app-mount>/.well-known/oauth-protected-resource names the site's
+	// sign-in. Zero leaves the app without an MCP endpoint.
+	MCPPort int `json:"mcp_port,omitempty"`
+
 	// Allow is the per-scheme allowlist, shared by two app kinds:
 	//
 	//   - scheme "git": repo allowlist. Entries are "owner/repo"
