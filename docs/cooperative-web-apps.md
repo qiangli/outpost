@@ -23,11 +23,14 @@ shelf trusted-header SSO apps already accept:
 | `Remote-User`         | `alice@example.com`                          | Authelia/oauth2-proxy standard |
 | `Remote-Email`        | `alice@example.com`                          | Same                           |
 | `Remote-Name`         | `alice`                                      | Display name (email local-part fallback) |
-| `Remote-Groups`       | `admin` or `user`                            | Mirrors `X-Periscope-Role`     |
+| `Remote-Groups`       | `admin` or `user`                            | OS elevation; mirrors `X-Periscope-Role` |
 | `X-Periscope-User`    | `alice@example.com`                          | Back-compat with earlier docs  |
-| `X-Periscope-Role`    | `admin` or `user`                            | Back-compat                    |
+| `X-Periscope-Role`    | `admin` or `user`                            | OS elevation; back-compat      |
 
-Outpost also rewrites absolute-path `Location` headers (`/admin/login →
+`Remote-Groups` (`admin` or `user`) and `X-Periscope-Role` record how the OS
+user elevated on the host (OS password cleared as admin or user), never the
+caller's relationship to the host owner — use `X-Outpost-Relationship` for
+that. Outpost also rewrites absolute-path `Location` headers (`/admin/login →
 {prefix}/admin/login`) as a safety net. Everything else is on the app.
 
 ### Trust boundary guarantee
@@ -56,7 +59,7 @@ the upstream port to the LAN with no auth of its own).
    webhook registrations, anything stored.
 3. **Scope cookies**: `Set-Cookie: ...; Path={prefix}/` or omit `Path`
    entirely. Without this, login cookies land at the wrong scope and the
-   user appears logged-out on every navigation.
+   caller appears logged-out on every navigation.
 4. **Validate `Origin` against `X-Forwarded-Host`**, not against `Host`.
    Incoming `Origin` is the public host; `Host` is whatever the proxy
    forwarded.
@@ -101,7 +104,7 @@ support this with one config flag:
 enabled = true
 header_name = Remote-User
 header_property = email
-auto_sign_up = true     # JIT-creates the Grafana user on first hit
+auto_sign_up = true     # JIT-creates the Grafana account on first hit
 whitelist =             # leave empty; outpost only stamps for paired callers
 ```
 
@@ -143,9 +146,10 @@ that came through the matrix tunnel.
 
 ### What `Remote-Groups: admin` actually means
 
-When an app reads `Remote-Groups`, the semantic is *"this caller cleared
-cloudbox's OAuth + elevation gate at admin tier"* — not *"this caller is
-an admin in your app."* The two layers can diverge:
+When an app reads `Remote-Groups`, the semantic is *"the OS user cleared
+cloudbox's OAuth + OS elevation gate at admin tier"* — not *"this caller is
+an admin in your app,"* and not the caller's relationship to the host owner
+(for that, read `X-Outpost-Relationship`). The two layers can diverge:
 
 - Cloudbox today stamps `admin` for every caller who clears elevation —
   owner and shared member alike. Under the binary share model, any
@@ -275,13 +279,13 @@ trust-identity app how the caller relates to the host owner:
 
 | Header                       | Value                                                    |
 | ---------------------------- | -------------------------------------------------------- |
-| `X-Outpost-Relationship`     | `owner`, `member` or `signed-in`; absent for anonymous    |
+| `X-Outpost-Relationship`     | `owner`, `member` or `account` (`signed-in` accepted as a one-release alias during Sprint 706 R1); absent for anonymous |
 | `X-Outpost-Circle`           | the member's circle (members only), e.g. `recruiter`     |
 | `X-Outpost-Groups`           | the owner's groups the member is in, comma-separated     |
-| `X-Outpost-Visitor`          | a pseudonym for a `signed-in` caller (32 hex chars)      |
+| `X-Outpost-Visitor`          | a pseudonym for an `account` caller (32 hex chars)       |
 | `X-Outpost-Relationship-Sig` | `<hex sha256-hmac>` over the version-2 payload below     |
 
-**A signed-in caller who is neither the owner nor an active mutual member
+**An `account` caller who is neither the owner nor an active mutual member
 never reaches the app as an address.** Outpost drops `Remote-User`,
 `Remote-Email`, `Remote-Name` and `X-Periscope-User` for that caller and
 stamps `X-Outpost-Visitor` instead: `HMAC-SHA256(sso_secret,
@@ -302,14 +306,16 @@ v2
 <X-Outpost-Circle>
 <X-Outpost-Groups>
 <X-Outpost-Visitor>
-<Remote-User>          (empty for signed-in callers)
+<Remote-User>          (empty for account callers)
 <X-Forwarded-Prefix>
 <X-Outpost-Identity-Ts>
 ```
 
-Inbound copies of every header in this section are stripped, like the
-identity headers. A host without a grant store stamps none of them and
-keeps the identity contract above unchanged.
+Keep these distinct from `Remote-Groups: admin|user` and `X-Periscope-Role`,
+which report how the OS user elevated on the host (never the caller's
+relationship). Inbound copies of every header in this section are stripped,
+like the identity headers. A host without a grant store stamps none of them
+and keeps the identity contract above unchanged.
 
 ## Choosing an integration pattern
 
@@ -319,7 +325,7 @@ identity model; the admin-UI knobs (`require_login`, `lan_only_paths`,
 
 ### A. Bring your own auth (multi-role)
 
-Your app has its own user list and login UI; cloudbox is just transport.
+Your app has its own account list and login UI; cloudbox is just transport.
 Examples: Plex, Home Assistant, NextCloud, classgo.
 
 - `require_login`: false for the public surface, true for the admin
@@ -333,7 +339,7 @@ Examples: Plex, Home Assistant, NextCloud, classgo.
 
 ### B. Trust the cloud completely (JIT-provisioned SSO)
 
-Your app provisions users from the cloud-vouched email and never asks
+Your app provisions accounts from the cloud-vouched email and never asks
 for credentials. Examples: a custom dashboard, a personal wiki.
 
 - `require_login`: true.
@@ -341,7 +347,7 @@ for credentials. Examples: a custom dashboard, a personal wiki.
 - `lan_only_paths`: empty or just the routes you actively want to LAN-
   fence.
 - Implement the verification recipe above before granting any session.
-- Decide upfront: on unknown email, do you JIT-create a user, or 403?
+- Decide upfront: on unknown email, do you JIT-create an account, or 403?
   See "Unknown-email miss policy" below.
 
 ### C. No internal auth (cloudbox is the only gate)
@@ -395,8 +401,8 @@ Before wiring an app into outpost, answer these:
    new email the app's roster doesn't know:
    - JIT-create (most home-lab apps, vendor SSO apps like Grafana).
    - Fall through to local login (apps with their own pre-existing
-     user list — classgo does this).
-   - Hard 403 (multi-tenant apps where every user is provisioned
+     account list — classgo does this).
+   - Hard 403 (multi-tenant apps where every account is provisioned
      out-of-band).
    The default in most off-the-shelf SSO integrations is JIT — fine for
    single-owner deployments, possibly wrong for multi-tenant.
@@ -408,11 +414,11 @@ Before wiring an app into outpost, answer these:
    physically dangerous from off-LAN; the fence catches operator
    mistakes and a future cloudbox bug both."
 
-## Bottom-up user provisioning
+## Bottom-up account provisioning
 
-For the app's tile to appear on a cloudbox user's dashboard, cloudbox
-needs to know that user has access. The app's admin is the source of
-truth for "who's allowed in" — when they create a user, the app pushes
+For the app's tile to appear on a cloudbox account's dashboard, cloudbox
+needs to know that account has access. The app's admin is the source of
+truth for "who's allowed in" — when they create an account, the app pushes
 the grant up to cloudbox through outpost's relay:
 
 ```
@@ -461,7 +467,7 @@ GET    /_periscope/apps/<name>/users
   once. Apps can safely re-sync on startup.
 - **Pending grants.** When the email doesn't yet have a cloudbox
   account, cloudbox stores the grant by email; the tile appears on the
-  user's dashboard the moment they register/log in with that email.
+  account's dashboard the moment they register/log in with that email.
 - **Outpost does not persist grants.** Restart drops the in-memory
   cache; cloudbox is the source of truth. The 30 s GET cache is
   opportunistic.
@@ -473,7 +479,7 @@ GET    /_periscope/apps/<name>/users
 
 1. Admin UI → Apps → enable **Trust cloudbox identity** for the app.
 2. Copy the displayed provisioning bearer (Reveal/Copy buttons).
-3. Configure the app to call the loopback endpoint on user create/delete.
+3. Configure the app to call the loopback endpoint on account create/delete.
    Most off-the-shelf apps need a webhook plugin; for code you control,
    the snippet above (Node, but any HTTP client works) is the whole
    surface.
