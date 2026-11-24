@@ -191,14 +191,15 @@ func (h *HostGrants) Allow(app, user string) bool {
 
 // Relationship kinds a caller can have to the host owner.
 const (
-	RelOwner    = "owner"
-	RelMember   = "member"
-	RelSignedIn = "signed-in"
+	RelOwner   = "owner"
+	RelMember  = "member"
+	RelAccount = "account"
 )
 
 // Relationship is how a vouched caller relates to the host owner: the owner,
 // an active mutual member (with the circle the owner placed them in and the
-// owner's groups they belong to), or merely signed in to cloudbox.
+// owner's groups they belong to), or a logged-in cloudbox account holder who
+// is not a member.
 type Relationship struct {
 	Kind   string
 	Circle string
@@ -206,16 +207,16 @@ type Relationship struct {
 }
 
 // Relationship resolves user against the held copies. It fails closed: a nil
-// store or an unknown caller is RelSignedIn, which callers treat as a
-// stranger whose address the owner must not learn. An empty user has no
-// relationship (Kind "").
+// store or an unknown caller is RelAccount, which callers treat as a stranger
+// whose address the owner must not learn. An empty user has no relationship
+// (Kind "").
 func (h *HostGrants) Relationship(user string) Relationship {
 	user = strings.ToLower(strings.TrimSpace(user))
 	if user == "" {
 		return Relationship{}
 	}
 	if h == nil {
-		return Relationship{Kind: RelSignedIn}
+		return Relationship{Kind: RelAccount}
 	}
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -245,7 +246,7 @@ func (h *HostGrants) Relationship(user string) Relationship {
 			return Relationship{Kind: RelMember, Circle: m.Circle, Groups: groups}
 		}
 	}
-	return Relationship{Kind: RelSignedIn}
+	return Relationship{Kind: RelAccount}
 }
 
 // SetRefresh installs the pull AllowFresh forces on a denial (normally

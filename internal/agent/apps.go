@@ -250,9 +250,10 @@ var identityHeaders = []string{
 	"X-Outpost-Relationship-Sig",
 }
 
-// visitorPseudonym is the stable stand-in for a signed-in caller who is not
-// the owner's member: keyed by the app's own SSO secret, so it is stable for
-// one app and unlinkable across apps, and the owner never learns the address.
+// visitorPseudonym is the stable stand-in for a logged-in cloudbox account
+// holder who is not the owner's member: keyed by the app's own SSO secret, so
+// it is stable for one app and unlinkable across apps, and the owner never
+// learns the address.
 func visitorPseudonym(secret, app, user string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte("visitor\n" + app + "\n" + strings.ToLower(strings.TrimSpace(user))))
@@ -652,8 +653,8 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 				secret := r.ssoSecrets[name]
 				grants := r.hostGrants
 				r.mu.RUnlock()
-				// Relationship to the host owner. A signed-in caller who
-				// is neither the owner nor a member is a stranger: the
+				// Relationship to the host owner. A logged-in account holder
+				// who is neither the owner nor a member is a stranger: the
 				// owner's app gets a pseudonym, never the address. A
 				// registry without a grant store (no relationships known)
 				// keeps the legacy identity stamp unchanged.
@@ -662,7 +663,7 @@ func (r *AppRegistry) register(name string, target *url.URL, meta AppMeta, trans
 					rel = grants.Relationship(user)
 				}
 				visitor := ""
-				if rel.Kind == RelSignedIn {
+				if rel.Kind == RelAccount {
 					if secret != "" {
 						visitor = visitorPseudonym(secret, name, user)
 					}

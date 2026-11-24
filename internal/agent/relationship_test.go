@@ -19,6 +19,9 @@ func TestHostGrantsRelationship(t *testing.T) {
 		Members: []GrantMember{{Email: "rec@example.com", Circle: "recruiter"}},
 		Groups:  map[string][]string{"hiring": {"REC@example.com"}, "chess": {"x@example.com"}},
 	})
+	if RelAccount != "account" {
+		t.Fatalf("RelAccount = %q, want %q", RelAccount, "account")
+	}
 	for _, tc := range []struct {
 		user   string
 		kind   string
@@ -28,7 +31,7 @@ func TestHostGrantsRelationship(t *testing.T) {
 		{"", "", "", 0},
 		{"Owner@Example.com", RelOwner, "", 0},
 		{"rec@example.com", RelMember, "recruiter", 1},
-		{"stranger@example.com", RelSignedIn, "", 0},
+		{"stranger@example.com", RelAccount, "", 0},
 	} {
 		got := h.Relationship(tc.user)
 		if got.Kind != tc.kind || got.Circle != tc.circle || len(got.Groups) != tc.groups {
@@ -36,14 +39,14 @@ func TestHostGrantsRelationship(t *testing.T) {
 		}
 	}
 	var nilStore *HostGrants
-	if got := nilStore.Relationship("a@example.com"); got.Kind != RelSignedIn {
+	if got := nilStore.Relationship("a@example.com"); got.Kind != RelAccount {
 		t.Errorf("nil store must fail closed, got %+v", got)
 	}
 }
 
 // A trust-identity app behind a host that knows its relationships gets the
-// caller's relationship stamped and signed; a signed-in stranger reaches it
-// as a pseudonym only, never as an address.
+// caller's relationship stamped and signed; a logged-in account holder who is
+// not a member reaches it as a pseudonym only, never as an address.
 func TestProxy_RelationshipStamp(t *testing.T) {
 	type seen struct {
 		user, email, rel, circle, groups, visitor, sig, ts, prefix string
@@ -132,8 +135,8 @@ func TestProxy_RelationshipStamp(t *testing.T) {
 	})
 	t.Run("stranger gets a pseudonym, never the address", func(t *testing.T) {
 		got := get(t, "stranger@example.com", nil)
-		if got.rel != RelSignedIn || got.user != "" || got.email != "" || got.circle != "" {
-			t.Errorf("stranger stamp leaked identity: %+v", got)
+		if got.rel != RelAccount || got.user != "" || got.email != "" || got.circle != "" {
+			t.Errorf("stranger stamp leaked identity or wrong wire kind: %+v", got)
 		}
 		if got.visitor != visitorPseudonym(secret, "site", "stranger@example.com") || len(got.visitor) != 32 {
 			t.Errorf("visitor = %q", got.visitor)
