@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,126 +53,110 @@ func loadShareTarget() (shareTarget, error) {
 
 func printShareJSON(w io.Writer, value any) error { return json.NewEncoder(w).Encode(value) }
 
+func trimShareAudience(values []string) []string {
+	trimmed := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			trimmed = append(trimmed, value)
+		}
+	}
+	return trimmed
+}
+
 func appsShareCmd() *cobra.Command {
-	var email, circle string
+	var circles, groups, emails []string
 	var asJSON, dryRun bool
-	cmd := &cobra.Command{Use: "share APP", Short: "Share an app with a mutual member or a circle", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		email, circle = strings.TrimSpace(email), strings.TrimSpace(circle)
-		if (email == "") == (circle == "") {
-			return errors.New("exactly one of --email or --circle is required")
+	cmd := &cobra.Command{Use: "share APP", Short: "Add one audience rule to an app", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		rule := portal.HostShareRule{
+			App:     args[0],
+			Circles: trimShareAudience(circles),
+			Groups:  trimShareAudience(groups),
+			Emails:  trimShareAudience(emails),
+		}
+		if len(rule.Circles)+len(rule.Groups)+len(rule.Emails) == 0 {
+			return errors.New("at least one of --circle, --group, or --email is required")
+		}
+		for _, audience := range []struct {
+			flag   string
+			values []string
+		}{{"circle", rule.Circles}, {"group", rule.Groups}, {"email", rule.Emails}} {
+			if cmd.Flags().Changed(audience.flag) && len(audience.values) == 0 {
+				return fmt.Errorf("--%s requires a non-empty value", audience.flag)
+			}
 		}
 		t, err := loadShareTarget()
 		if err != nil {
 			return err
 		}
 		if dryRun {
-			plan := map[string]any{"dry_run": true, "method": "POST", "url": portal.HostSharesURL(t.endpoint, t.host), "app": args[0]}
-			who := email
-			if circle != "" {
-				plan["circle"], who = circle, "circle "+circle
-			} else {
-				plan["email"] = email
-			}
+			endpoint := portal.HostSharesURL(t.endpoint, t.host)
 			if asJSON {
-				return printShareJSON(cmd.OutOrStdout(), plan)
+				return printShareJSON(cmd.OutOrStdout(), struct {
+					DryRun bool   `json:"dry_run"`
+					Method string `json:"method"`
+					URL    string `json:"url"`
+					portal.HostShareRule
+				}{DryRun: true, Method: "POST", URL: endpoint, HostShareRule: rule})
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "would share %s with %s at %s\n", args[0], who, plan["url"])
+			fmt.Fprintf(cmd.OutOrStdout(), "would share %s with circles %v, groups %v, emails %v at %s\n",
+				rule.App, rule.Circles, rule.Groups, rule.Emails, endpoint)
 			return nil
 		}
-		var share portal.AppShare
-		if circle != "" {
-			share, _, err = portal.CreateHostCircleShare(cmd.Context(), t.endpoint, t.token, t.host, args[0], circle)
-		} else {
-			share, _, err = portal.CreateHostShare(cmd.Context(), t.endpoint, t.token, t.host, args[0], email)
-		}
+		share, _, err := portal.CreateHostShare(cmd.Context(), t.endpoint, t.token, t.host, rule)
 		if err != nil {
 			return err
 		}
 		if asJSON {
 			return printShareJSON(cmd.OutOrStdout(), map[string]any{"share": share})
 		}
-		who := share.Email
-		if who == "" {
-			who = "circle " + share.Circle
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "shared %s with %s (id %s)\n", share.App, who, share.ID)
+		fmt.Fprintf(cmd.OutOrStdout(), "shared %s with circles %v, groups %v, emails %v (id %s)\n",
+			share.App, share.Circles, share.Groups, share.Emails, share.ID)
 		return nil
 	}}
-	cmd.Flags().StringVar(&email, "email", "", "Mutual member email")
-	cmd.Flags().StringVar(&circle, "circle", "", "Circle name (every current member of the circle)")
+	cmd.Flags().StringSliceVar(&circles, "circle", nil, "Member circle (repeatable)")
+	cmd.Flags().StringSliceVar(&groups, "group", nil, "Owner group (repeatable)")
+	cmd.Flags().StringSliceVar(&emails, "email", nil, "Mutual member email (repeatable)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Machine-readable output")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show the request without sending it")
 	return cmd
 }
 
-func findShare(ctx context.Context, t shareTarget, app, email string) (*portal.AppShare, error) {
-	shares, err := portal.ListHostShares(ctx, t.endpoint, t.token, t.host)
-	if err != nil {
-		return nil, err
-	}
-	for _, share := range shares {
-		if share.App == app && strings.EqualFold(share.Email, email) {
-			return &share, nil
-		}
-	}
-	return nil, nil
-}
-
 func appsUnshareCmd() *cobra.Command {
-	var email string
 	var asJSON, dryRun bool
-	cmd := &cobra.Command{Use: "unshare APP", Short: "Remove an app share for a member", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		if strings.TrimSpace(email) == "" {
-			return errors.New("--email is required")
+	cmd := &cobra.Command{Use: "unshare SHARE_ID", Short: "Remove an app grant rule by ID", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		id := strings.TrimSpace(args[0])
+		if id == "" {
+			return errors.New("SHARE_ID is required")
 		}
 		t, err := loadShareTarget()
 		if err != nil {
 			return err
 		}
-		share, err := findShare(cmd.Context(), t, args[0], email)
-		if err != nil {
-			return err
-		}
-		id := ""
-		if share != nil {
-			id = share.ID
-		}
 		if dryRun {
-			plan := map[string]any{"dry_run": true, "app": args[0], "email": email, "id": id}
-			if id != "" {
-				plan["method"] = "DELETE"
-				plan["url"] = portal.HostSharesURL(t.endpoint, t.host) + "/" + url.PathEscape(id)
-			}
+			endpoint := portal.HostSharesURL(t.endpoint, t.host) + "/" + url.PathEscape(id)
 			if asJSON {
-				return printShareJSON(cmd.OutOrStdout(), plan)
+				return printShareJSON(cmd.OutOrStdout(), map[string]any{"dry_run": true, "id": id, "method": "DELETE", "url": endpoint})
 			}
-			if id == "" {
-				fmt.Fprintln(cmd.OutOrStdout(), "already unshared")
-			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "would delete share %s\n", id)
-			}
+			fmt.Fprintf(cmd.OutOrStdout(), "would delete share %s at %s\n", id, endpoint)
 			return nil
 		}
-		if id != "" {
-			if err := portal.DeleteHostShare(cmd.Context(), t.endpoint, t.token, t.host, id); err != nil {
-				return err
-			}
+		if err := portal.DeleteHostShare(cmd.Context(), t.endpoint, t.token, t.host, id); err != nil {
+			return err
 		}
 		if asJSON {
 			return printShareJSON(cmd.OutOrStdout(), map[string]any{"ok": true, "id": id})
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "unshared %s from %s\n", args[0], email)
+		fmt.Fprintf(cmd.OutOrStdout(), "removed share %s\n", id)
 		return nil
 	}}
-	cmd.Flags().StringVar(&email, "email", "", "Mutual member email")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Machine-readable output")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Resolve the share without deleting it")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show the request without sending it")
 	return cmd
 }
 
 func appsSharesCmd() *cobra.Command {
 	var asJSON bool
-	cmd := &cobra.Command{Use: "shares [APP]", Short: "List app shares", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "shares [APP]", Short: "List app grant rules", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		t, err := loadShareTarget()
 		if err != nil {
 			return err
@@ -195,7 +178,8 @@ func appsSharesCmd() *cobra.Command {
 			return printShareJSON(cmd.OutOrStdout(), map[string]any{"shares": shares})
 		}
 		for _, s := range shares {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", s.App, s.Email, s.Circle, s.ID)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\n", s.App,
+				strings.Join(s.Circles, ","), strings.Join(s.Groups, ","), strings.Join(s.Emails, ","), s.ID)
 		}
 		return nil
 	}}

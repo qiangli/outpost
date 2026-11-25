@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 )
 
@@ -19,12 +20,17 @@ func TestHostSharesWire(t *testing.T) {
 		}
 		switch r.Method {
 		case http.MethodGet:
-			json.NewEncoder(w).Encode(map[string]any{"shares": []any{map[string]any{"id": "id/1", "host": "my host", "app": "notes", "email": "member@example.test", "created_at": "2026-01-02T03:04:05Z"}}})
+			json.NewEncoder(w).Encode(map[string]any{"shares": []any{map[string]any{"id": "id/1", "host": "my host", "app": "notes", "circles": []string{}, "groups": []string{}, "emails": []string{"member@example.test"}, "created": "2026-01-02T03:04:05Z"}}})
 		case http.MethodPost:
 			posts++
-			var body map[string]string
-			json.NewDecoder(r.Body).Decode(&body)
-			if body["app"] != "notes" || body["email"] != "member@example.test" {
+			var body HostShareRule
+			dec := json.NewDecoder(r.Body)
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&body); err != nil {
+				t.Errorf("decode request: %v", err)
+			}
+			want := HostShareRule{App: "notes", Circles: []string{}, Groups: []string{}, Emails: []string{"member@example.test"}}
+			if !reflect.DeepEqual(body, want) {
 				t.Errorf("body = %#v", body)
 			}
 			if posts == 1 {
@@ -32,7 +38,7 @@ func TestHostSharesWire(t *testing.T) {
 			} else {
 				w.WriteHeader(http.StatusOK)
 			}
-			json.NewEncoder(w).Encode(map[string]any{"share": map[string]any{"id": "id/1", "host": "my host", "app": "notes", "email": "member@example.test", "created_at": "2026-01-02T03:04:05Z"}})
+			json.NewEncoder(w).Encode(map[string]any{"share": map[string]any{"id": "id/1", "host": "my host", "app": "notes", "circles": []string{}, "groups": []string{}, "emails": []string{"member@example.test"}, "created": "2026-01-02T03:04:05Z"}})
 		case http.MethodDelete:
 			deletes++
 			w.WriteHeader(http.StatusNoContent)
@@ -44,11 +50,12 @@ func TestHostSharesWire(t *testing.T) {
 	if err != nil || len(shares) != 1 || shares[0].ID != "id/1" {
 		t.Fatalf("list = %+v, %v", shares, err)
 	}
-	share, status, err := CreateHostShare(ctx, server.URL, "own-token", "my host", "notes", "member@example.test")
+	rule := HostShareRule{App: "notes", Emails: []string{"member@example.test"}}
+	share, status, err := CreateHostShare(ctx, server.URL, "own-token", "my host", rule)
 	if err != nil || status != 201 || share.ID != "id/1" {
 		t.Fatalf("create = %+v, %d, %v", share, status, err)
 	}
-	_, status, err = CreateHostShare(ctx, server.URL, "own-token", "my host", "notes", "member@example.test")
+	_, status, err = CreateHostShare(ctx, server.URL, "own-token", "my host", rule)
 	if err != nil || status != 200 {
 		t.Fatalf("idempotent create status=%d err=%v", status, err)
 	}
@@ -66,29 +73,12 @@ func TestHostSharesContractError(t *testing.T) {
 		w.Write([]byte(`{"code":"not_mutual_member","error":"not a mutual member"}`))
 	}))
 	defer server.Close()
-	_, status, err := CreateHostShare(context.Background(), server.URL, "token", "h", "app", "outsider@example.test")
+	_, status, err := CreateHostShare(context.Background(), server.URL, "token", "h", HostShareRule{App: "app", Emails: []string{"outsider@example.test"}})
 	if status != 422 {
 		t.Fatalf("status=%d", status)
 	}
 	apiErr, ok := err.(*APIError)
 	if !ok || apiErr.Code != "not_mutual_member" {
 		t.Fatalf("error = %v", err)
-	}
-}
-
-func TestCreateHostCircleShareBody(t *testing.T) {
-	var got map[string]string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&got)
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]any{"share": map[string]any{"id": "c1", "host": "h", "app": "notes", "email": "", "circle": "family"}})
-	}))
-	defer server.Close()
-	share, status, err := CreateHostCircleShare(context.Background(), server.URL, "t", "h", "notes", "family")
-	if err != nil || status != 201 || share.Circle != "family" || share.Email != "" {
-		t.Fatalf("create = %+v, %d, %v", share, status, err)
-	}
-	if len(got) != 2 || got["app"] != "notes" || got["circle"] != "family" {
-		t.Fatalf("body = %v", got)
 	}
 }

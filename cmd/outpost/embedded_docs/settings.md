@@ -152,16 +152,17 @@ satellite …`; with no daemon running they edit `agent.json` directly.
   `outpost satellite attach ID` on the host's main daemon, then remove the
   profile; `bashy llm share --satellite NAME` resolves the attachment first.
 
-**Share a published app with a mutual member:** `outpost apps share APP
---email E` (or `--circle C` to share with every current member of a
-circle; exactly one); remove an email share with `outpost apps unshare APP --email E`; inspect
-grants (email and circle columns) with `outpost apps shares [APP]`. The same commands are available
-through `bashy outpost apps …`. All three accept `--json`; share and
-unshare accept `--dry-run`. They use the first attachment's endpoint and
-host token when attached, otherwise the legacy pairing's portal and
-access token. A cloudbox pairing alone is an identity record and cannot
-publish or share an app. Unshare resolves the grant ID through the host's
-share list before deleting it; an already absent grant is complete.
+**Share a published app:** `outpost apps share APP --circle family` adds one
+audience rule. Use repeatable `--circle`, `--group`, and `--email` flags to
+combine audiences in that rule. An active mutual member must match one of the
+specified circles (if any) and one of the specified groups or emails (if any).
+Use `outpost apps shares [APP]` to see the app, circles, groups, emails, and
+rule ID. Remove a rule with `outpost apps unshare SHARE_ID`. The same commands
+are available through `bashy outpost apps …`. All three accept `--json`, and
+share and unshare accept `--dry-run`. They use the first attachment's endpoint
+and host token when attached, otherwise the legacy pairing's portal and access
+token. A cloudbox pairing alone is an identity record and cannot publish or
+share an app.
 
 To clear a pairing: `outpost unpair --yes` (CLI; `--dry-run` shows the
 request, `--json` for machines; edits `agent.json` directly when no
@@ -954,7 +955,7 @@ The command reads it through a container exec and prints it to **stdout only**,
 never to the daemon log, so it pipes cleanly:
 
 ```bash
-outpost cluster token | ssh worker outpost cluster join 10.0.0.5 --token-stdin
+outpost cluster token | ssh worker outpost cluster join 192.0.2.5 --token-stdin
 ```
 
 `cluster control-plane vk-credential` mints (idempotently) the
@@ -1073,7 +1074,7 @@ Five behaviours worth knowing:
   outpost cluster token                 # k3s node token
 
   # on the worker
-  outpost cluster join 10.0.0.5:7000 --token T --stcp-secret S --node-token K10…
+  outpost cluster join 192.0.2.5:7000 --token T --stcp-secret S --node-token K10…
   ```
 
   A worker given a subset authenticates and then fails to reach the apiserver
@@ -1100,7 +1101,7 @@ Five behaviours worth knowing:
   outpost cluster control-plane vk-credential --namespace workloads
 
   # agent + a vk-podman node on the joined plane
-  outpost cluster join 10.0.0.5:7000 --token T --stcp-secret S --node-token K10… \
+  outpost cluster join 192.0.2.5:7000 --token T --stcp-secret S --node-token K10… \
       --vk-bundle outpost-vk1.… --cluster-virtual vk-podman
 
   # vk only, no k3s agent
@@ -1169,7 +1170,7 @@ To keep secrets out of argv and shell history, every credential has an
 environment fallback and the join token can be read from stdin:
 
 ```bash
-outpost cluster token | ssh worker outpost cluster join 10.0.0.5 --token-stdin
+outpost cluster token | ssh worker outpost cluster join 192.0.2.5 --token-stdin
 ```
 
 `--offline` writes `agent.json` directly for installer scripts that provision

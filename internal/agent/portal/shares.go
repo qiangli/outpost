@@ -10,14 +10,20 @@ import (
 	"time"
 )
 
-// AppShare is one cloudbox app grant for a member.
+// HostShareRule is the audience for one cloudbox host app grant.
+type HostShareRule struct {
+	App     string   `json:"app"`
+	Circles []string `json:"circles"`
+	Groups  []string `json:"groups"`
+	Emails  []string `json:"emails"`
+}
+
+// AppShare is one stored host app grant rule.
 type AppShare struct {
-	ID        string    `json:"id"`
-	Host      string    `json:"host"`
-	App       string    `json:"app"`
-	Email     string    `json:"email"`
-	Circle    string    `json:"circle"`
-	CreatedAt time.Time `json:"created_at"`
+	ID   string `json:"id"`
+	Host string `json:"host"`
+	HostShareRule
+	Created time.Time `json:"created"`
 }
 
 func HostSharesURL(endpoint, host string) string {
@@ -41,19 +47,13 @@ func ListHostShares(ctx context.Context, endpoint, token, host string) ([]AppSha
 	return out.Shares, nil
 }
 
-// CreateHostShare returns the share and the HTTP status (201 for new, 200
-// for an existing identical grant).
-func CreateHostShare(ctx context.Context, endpoint, token, host, app, email string) (AppShare, int, error) {
-	return createHostShare(ctx, endpoint, token, host, map[string]string{"app": app, "email": email})
-}
-
-// CreateHostCircleShare shares app with every member currently in circle.
-func CreateHostCircleShare(ctx context.Context, endpoint, token, host, app, circle string) (AppShare, int, error) {
-	return createHostShare(ctx, endpoint, token, host, map[string]string{"app": app, "circle": circle})
-}
-
-func createHostShare(ctx context.Context, endpoint, token, host string, req map[string]string) (AppShare, int, error) {
-	status, body, err := do(ctx, http.MethodPost, HostSharesURL(endpoint, host), token, req)
+// CreateHostShare posts one grant rule and returns the stored row and HTTP status.
+func CreateHostShare(ctx context.Context, endpoint, token, host string, rule HostShareRule) (AppShare, int, error) {
+	// The wire represents unused audiences as empty arrays.
+	rule.Circles = append([]string{}, rule.Circles...)
+	rule.Groups = append([]string{}, rule.Groups...)
+	rule.Emails = append([]string{}, rule.Emails...)
+	status, body, err := do(ctx, http.MethodPost, HostSharesURL(endpoint, host), token, rule)
 	if err != nil {
 		return AppShare{}, status, err
 	}
