@@ -23,7 +23,7 @@ require (
 	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/pkg/sftp v1.13.10
 	github.com/qiangli/coreutils v0.0.0-20261124121700-f9833f726fac
-	github.com/qiangli/yoke v0.0.0-20261125065834-c78fb76d9cd1
+	github.com/qiangli/yoke v0.0.0-20261125101800-57ea4c79abad
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.53.0
 	github.com/spf13/cobra v1.10.2
@@ -281,8 +281,8 @@ require (
 	github.com/qiangli/bonsai v0.0.0-20261123172747-32d78887eb27 // indirect
 	github.com/qiangli/gfy v0.0.0-20261121101804-aab4f6fad5be // indirect
 	github.com/qiangli/yamux v0.2.0 // indirect
-	github.com/qiangli/yoke/pkg/llmgw v0.0.0-00010101000000-000000000000 // indirect
-	github.com/qiangli/yoke/pkg/provider v0.0.0-20261111080334-d0ba2a1100d7 // indirect
+	github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261125101800-57ea4c79abad // indirect
+	github.com/qiangli/yoke/pkg/provider v0.0.0-20261125101800-57ea4c79abad // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.60.0 // indirect
 	github.com/quic-go/webtransport-go v0.11.1 // indirect
