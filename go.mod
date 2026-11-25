@@ -30,7 +30,7 @@ require (
 	github.com/virtual-kubelet/virtual-kubelet v1.12.0
 	github.com/vishvananda/netlink v1.3.1
 	go.opentelemetry.io/contrib/bridges/otelslog v0.21.0
-	go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin v0.72.0
+	go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin v0.69.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.23.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.47.0
@@ -285,7 +285,7 @@ require (
 	github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261125101800-57ea4c79abad // indirect
 	github.com/qiangli/yoke/pkg/provider v0.0.0-20261125101800-57ea4c79abad // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
-	github.com/quic-go/quic-go v0.63.0 // indirect
+	github.com/quic-go/quic-go v0.60.0 // indirect
 	github.com/quic-go/webtransport-go v0.11.1 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/richardlehane/mscfb v1.0.8 // indirect
