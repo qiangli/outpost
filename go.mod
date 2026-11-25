@@ -399,13 +399,13 @@ replace github.com/ollama/ollama => github.com/qiangli/ollama v0.0.0-20261010173
 
 replace go.podman.io/podman/v6 => github.com/qiangli/podman/v6 v6.0.0-20261009064533-4a9784029284
 
-replace github.com/qiangli/yoke/pkg/llmgw => github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261125065834-c78fb76d9cd1
+replace github.com/qiangli/yoke/pkg/llmgw => github.com/qiangli/yoke/pkg/llmgw v0.0.0-20261125101800-57ea4c79abad
 
 replace github.com/qiangli/yoke/pkg/oci => github.com/qiangli/yoke/pkg/oci v0.0.0-20261111080334-d0ba2a1100d7
 
 replace modernc.org/sqlite => github.com/qiangli/sqlite v1.50.2-0.20261018085128-5fb52bf328cb
 
-replace github.com/qiangli/yoke/pkg/provider => github.com/qiangli/yoke/pkg/provider v0.0.0-20261125065834-c78fb76d9cd1
+replace github.com/qiangli/yoke/pkg/provider => github.com/qiangli/yoke/pkg/provider v0.0.0-20261125101800-57ea4c79abad
 
 replace github.com/go-git/go-billy/v5 => github.com/qiangli/yoke/external/go-billy v0.0.0-20261111080334-d0ba2a1100d7
 
