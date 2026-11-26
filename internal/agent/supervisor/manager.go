@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -116,7 +117,7 @@ func (m *Manager) superviseOne(ctx context.Context, p *Program) error {
 		cmd.Cancel = func() error { return stopSignal(cmd.Process) }
 		cmd.WaitDelay = m.grace
 
-		var logf *os.File
+		var logf *boundedLog
 		var sinks []*childLogOutput
 		closeSinks := func() {
 			for _, sink := range sinks {
@@ -127,11 +128,13 @@ func (m *Manager) superviseOne(ctx context.Context, p *Program) error {
 			}
 		}
 		if p.LogPath != "" {
-			if f, err := os.OpenFile(p.LogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+			if f, err := openBoundedLog(p.LogPath, childLogMaxBytes); err == nil {
 				logf = f
+			} else {
+				slog.Warn("supervisor: child log unavailable", "program", p.Name, "err", err)
 			}
 		}
-		outDest := os.Stdout
+		var outDest io.Writer = os.Stdout
 		if logf != nil {
 			outDest = logf
 		}
