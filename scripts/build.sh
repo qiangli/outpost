@@ -11,8 +11,10 @@ cd "$ROOT"
 # shellcheck source=lib.sh
 . "$ROOT/scripts/lib.sh"
 
-# Measure cache capacity in the build's namespace before starting a WSL job.
-if [[ -n "${WSL_DISTRO_NAME:-}" || -n "${GO_CACHE_VOLUME_MAX_BYTES:-}" ]]; then
+# WSL can omit its usual environment variables under services or containers.
+# Require the same bounded cache mount for those build invocations.
+if [[ -n "${WSL_DISTRO_NAME:-}${WSL_INTEROP:-}${GO_CACHE_VOLUME_ROOT:-}${GO_CACHE_VOLUME_MAX_BYTES:-}" ]] ||
+   { [[ -r /proc/sys/kernel/osrelease ]] && grep -qi microsoft /proc/sys/kernel/osrelease; }; then
     "$ROOT/scripts/check-go-cache-space.sh"
 fi
 

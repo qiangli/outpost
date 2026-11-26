@@ -7,7 +7,7 @@
 | Outpost recovery and post-install evidence | The recovery journal retains up to 64 events and 16 KiB. Post-install evidence uses three names with a 1 MiB limit each and one shared 1 MiB temporary slot. |
 | Node collector audit ledger | At 16 MiB the ledger stops accepting writes. The collector checks room for a durable record before each deletion and keeps existing records for its restart-safe budget. |
 | Yoke telemetry spool | The current writer compacts in place at 64 MiB. It refuses new records at the 128 MiB hard limit. |
-| Go build and module caches | Keep both caches on owner-provisioned storage. The WSL build checks headroom before writing. It refuses admission at 95% use or when the backing volume exceeds the configured ceiling. |
+| Go build and module caches | Keep both caches inside a dedicated persistent mount. The WSL build requires the declared mount and byte ceiling, checks 95% headroom before starting, and leaves runtime capacity enforcement to the filesystem. |
 
 [Service diagnostics](service.md#paired-host-disk-pressure) describes
 how to verify the cache volume ceiling and read the paired-host disk status.

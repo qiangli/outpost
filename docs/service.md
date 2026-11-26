@@ -193,13 +193,20 @@ threshold re-arms that threshold. Repeated heartbeats retain the same alert.
 | Standalone daemon and supervisor output, CLI trace, upgrade and scheduler history | Each file has a 16 MiB cap. On pressure the writer keeps recent complete lines from at most the newest 8 MiB, then appends. |
 | Recovery journal | Up to 64 events and 16 KiB of recovery history. |
 | Post-install evidence | Three fixed reports, each at most 1 MiB, with one shared temporary slot of at most 1 MiB. An oversized report leaves the prior report intact. |
-| Persistent Go build and module caches | Retain on the owner's provisioned cache volume. Configure its hard size ceiling and pass the byte limit in `GO_CACHE_VOLUME_MAX_BYTES` to cache-writing WSL jobs. Jobs run `scripts/check-go-cache-space.sh` before populating the caches. It refuses at 95% usage of either backing filesystem and when a filesystem exceeds the configured ceiling. The WSL Outpost build invokes the check automatically. |
+| Persistent Go build and module caches | The WSL Outpost build requires both caches on a dedicated mounted filesystem with a declared byte ceiling. The filesystem enforces its capacity during writes. Admission also refuses jobs at 95% usage. |
 
-The cache check reads each job's actual Go cache paths and performs no cleanup.
-A build already in progress can continue allocating until the filesystem limit.
-Without a configured byte ceiling the check provides only the 95% admission
-threshold. Go's own build-cache trimming runs periodically on old unused
-entries. Go's module cache retains modules until explicitly cleaned.
+Set `GO_CACHE_VOLUME_ROOT` to the persistent filesystem's mount point and
+`GO_CACHE_VOLUME_MAX_BYTES` to its positive capacity ceiling in bytes. Place
+`GOCACHE` and `GOMODCACHE` inside this mount. The guard checks actual device
+identity and capacity, including when a cache path resolves through a symlink.
+Missing configuration, a shared root filesystem, or an oversized filesystem
+prevents the build from starting. Existing caches stay in place.
+
+The capacity fixture uses a disposable 8 MiB mount and writes through the
+normal build wrapper until the kernel returns a storage-capacity error. Live
+provisioning is verified separately against the host's persistent cache mount.
+Go's build cache periodically trims unused entries. Its module cache keeps
+downloaded modules until explicitly cleaned.
 
 Yoke incident `e385262ac250` recorded approximately 1.324 TB of abandoned
 telemetry rotation scratch on the full Windows backing disk and an active spool
