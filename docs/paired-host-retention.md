@@ -1,41 +1,18 @@
 # Paired-host local retention
 
-This inventory records limits verified in source, not a claim that every local
-writer is bounded. Limits apply per host and per independently named store.
+| Store | Limit and behavior |
+| --- | --- |
+| Supervised child output | Outpost redacts output before storage. Each child gets an 8 MiB active log and one 8 MiB previous log. Rollover closes the active file first. A write failure drops output with a warning and lets the child continue. |
+| Detached service output, CLI trace, upgrade and scheduler logs | Each file has a 16 MiB cap. The writer compacts in place under a file lock and keeps complete recent lines. |
+| Outpost recovery and post-install evidence | The recovery journal retains up to 64 events and 16 KiB. Post-install evidence uses three names with a 1 MiB limit each and one shared 1 MiB temporary slot. |
+| Node collector audit ledger | At 16 MiB the ledger stops accepting writes. The collector checks room for a durable record before each deletion and keeps existing records for its restart-safe budget. |
+| Yoke telemetry spool | The current writer compacts in place at 64 MiB. It refuses new records at the 128 MiB hard limit. |
+| Go build and module caches | Keep both caches on owner-provisioned storage. The WSL build checks headroom before writing. It refuses admission at 95% use or when the backing volume exceeds the configured ceiling. |
 
-* Supervised child output (`daemon.log` and `bashy-supervisord.log`) is redacted
-  before storage. Each active log and its `.1` predecessor is at most 8 MiB
-  (16 MiB per child total). Rotation closes the active handle before renaming;
-  oldest output is discarded. A pre-existing oversized active log is truncated
-  on opening and an oversized `.1` is removed. Legacy data is not retroactively
-  redacted. If opening fails, output falls back to the supervisor's standard
-  streams; if rotation or writing fails, output is dropped with a warning so
-  the child can continue. Limits require exclusive ownership of the paths and
-  successful filesystem operations; failures may leave legacy oversized files.
-* Yoke telemetry spool at `d1a8a0a1` defaults to 64 MiB, with bounded
-  admission and in-place compaction (`pkg/telemetry/spool.go`). This describes
-  that version, not an assertion that every installed producer has upgraded.
-* Outpost's recovery journal retains at most 64 events and 16 KiB
-  (`internal/agent/recovery/journal.go`). At this candidate, post-install
-  reports replace named JSON files (`internal/agent/postinstall/postinstall.go`)
-  without an explicit byte limit; interrupted temporary files are not a
-  retention guarantee.
-* At this candidate, `upgrade.log` and `nodegc.log` are append-only without a
-  size or age cap. The independent disk worker's capped diagnostic logs and
-  named report evidence require verification against its exact candidate and
-  must not be confused with the supervisor's per-child limit above.
-* The manager's separate nodegc candidate `7dd01bcd06e1a7e2bd5a6700d9d36cda20f4ef24`
-  limits its audit ledger to 16 MiB and fails closed on deletion admission when
-  insufficient room remains for a record. It preserves existing records used
-  by the restart-safe deletion budget. This is candidate-specific, not a claim
-  about this checkout or an integrated release; pre-existing oversized ledgers
-  are not reduced by that admission limit.
-* Persistent Go build and module caches are intentionally preserved. No size
-  or age cap is established by these Outpost sources; monitor their volume and
-  manage capacity according to host policy, without deleting them automatically.
+[Service diagnostics](service.md#paired-host-disk-pressure) describes
+how to verify the cache volume ceiling and read the paired-host disk status.
 
-Umbrella story `a37801b63b47` records a 9.8 GB `daemon.log` on a full Windows
-system drive. The supervisor's former append-only file open explains its
-unbounded growth; the specific source of the high output volume remains
-unconfirmed. This is distinct from the earlier OTel rotation scratch incident
-recorded in Yoke story `e385262ac250`, addressed by Yoke `d1a8a0a1`.
+Umbrella story `a37801b63b47` records a separate 9.8 GB service log incident.
+The former append-only supervisor writer explains why the file could grow.
+The source of that output volume remains unconfirmed. Yoke story
+`e385262ac250` records the earlier telemetry rotation scratch incident.
