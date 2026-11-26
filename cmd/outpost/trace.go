@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/qiangli/outpost/internal/agent/conf"
+	"github.com/qiangli/outpost/internal/boundedlog"
 	"github.com/qiangli/yoke/pkg/secrets"
 )
 
@@ -38,12 +39,7 @@ func emitStartupTrace() {
 	if err := protectDaemonLogs(); err != nil {
 		return
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "cli-trace.log"),
-		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return
-	}
-	defer f.Close()
+	f := boundedlog.Writer{Path: filepath.Join(dir, "cli-trace.log")}
 
 	wd, _ := os.Getwd()
 	// Single Write call so the line lands atomically in the kernel

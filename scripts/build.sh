@@ -11,6 +11,11 @@ cd "$ROOT"
 # shellcheck source=lib.sh
 . "$ROOT/scripts/lib.sh"
 
+# Measure cache capacity in the build's namespace before starting a WSL job.
+if [[ -n "${WSL_DISTRO_NAME:-}" || -n "${GO_CACHE_VOLUME_MAX_BYTES:-}" ]]; then
+    "$ROOT/scripts/check-go-cache-space.sh"
+fi
+
 mkdir -p "$OUT_DIR"
 
 OUT="$OUT_DIR/$BIN"

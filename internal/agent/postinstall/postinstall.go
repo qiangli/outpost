@@ -5,6 +5,7 @@ package postinstall
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/rogpeppe/go-internal/lockedfile"
 )
 
 type Command []string
@@ -398,6 +401,7 @@ func (r *Report) Evaluate() {
 	}
 }
 
+const maxReportBytes = 1 << 20
 const ReportName = "post-install.json"
 const RebootReportName = "post-install-reboot.json"
 const PendingName = "post-install-reboot.pending.json"
@@ -411,7 +415,26 @@ func Write(dir, name string, r Report) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(dir, ".post-install-*")
+	if len(b)+1 > maxReportBytes {
+		return fmt.Errorf("post-install evidence exceeds %d bytes", maxReportBytes)
+	}
+	switch name {
+	case ReportName, RebootReportName, PendingName:
+	default:
+		return errors.New("unknown post-install report")
+	}
+	unlock, err := lockedfile.MutexAt(filepath.Join(dir, ".post-install.lock")).Lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	// One scratch slot across all three reports, even if the process died
+	// before publishing. O_EXCL avoids following a pre-existing link.
+	tmp := filepath.Join(dir, ".post-install.next")
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return err
 	}

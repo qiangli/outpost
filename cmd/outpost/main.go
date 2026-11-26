@@ -75,6 +75,12 @@ import (
 const defaultPortal = "https://ai.dhnt.io"
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == logSinkArg {
+		if runLogSink(os.Args[2]) != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	// Redact records in this process without inserting pipes into detached children.
 	log.SetOutput(secrets.NewHostRecordWriter(log.Writer()))
 	if code, handled := vknode.RunNativeProcessHelper(os.Args); handled {
@@ -4043,7 +4049,7 @@ func execSelfStart() error {
 	if err != nil {
 		return fmt.Errorf("prepare log dir: %w", err)
 	}
-	logF, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	logF, err := detachedLogPipe(filepath.Base(logPath))
 	if err != nil {
 		return fmt.Errorf("open log: %w", err)
 	}

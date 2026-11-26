@@ -167,3 +167,44 @@ Command references: [Microsoft powercfg](https://learn.microsoft.com/en-us/windo
 [systemd enablement](https://www.freedesktop.org/software/systemd/man/latest/systemctl),
 [loginctl linger](https://www.freedesktop.org/software/systemd/man/252/loginctl.html),
 [Apple pmset source](https://github.com/apple-oss-distributions/PowerManagement/blob/main/pmset/pmset.m).
+
+## Paired-host disk pressure
+
+Use `bashy paired-host reachability disk-pressure HOST` for the latest owner
+status. Add `--json` for the observation time, used and total bytes, current
+growers and the growers captured at each crossing. Available volume space is
+total minus used. Windows fixed volumes carry their drive or volume identifier.
+Running WSL distributions report their name and root or filesystem identifier.
+Outpost leaves stopped distributions asleep. A missing observation leaves the
+last measurement and its timestamp in owner status.
+
+The authenticated heartbeat reports up to 32 volumes and up to three positive
+changes per volume, ordered by byte growth. The labels are `otel`, `logs`,
+`evidence`, `go-build` and `go-mod`. A directory needs two completed measurements
+before it can rank. A persistent larger directory with no change contributes
+zero. Each volume crosses 80%, 90% and 95% independently. Falling below a
+threshold re-arms that threshold. Repeated heartbeats retain the same alert.
+
+### Storage limits
+
+| Store | Retention on the paired host |
+| --- | --- |
+| Yoke active OTel spool | Default soft compaction at 64 MiB and hard write admission at 128 MiB per spool. Compaction rewrites the active file in place under a cross-process lock. |
+| Standalone daemon and supervisor output, CLI trace, upgrade and scheduler history | Each file has a 16 MiB cap. On pressure the writer keeps recent complete lines from at most the newest 8 MiB, then appends. |
+| Recovery journal | Up to 64 events and 16 KiB of recovery history. |
+| Post-install evidence | Three fixed reports, each at most 1 MiB, with one shared temporary slot of at most 1 MiB. An oversized report leaves the prior report intact. |
+| Persistent Go build and module caches | Retain on the owner's provisioned cache volume. Configure its hard size ceiling and pass the byte limit in `GO_CACHE_VOLUME_MAX_BYTES` to cache-writing WSL jobs. Jobs run `scripts/check-go-cache-space.sh` before populating the caches. It refuses at 95% usage of either backing filesystem and when a filesystem exceeds the configured ceiling. The WSL Outpost build invokes the check automatically. |
+
+The cache check reads each job's actual Go cache paths and performs no cleanup.
+A build already in progress can continue allocating until the filesystem limit.
+Without a configured byte ceiling the check provides only the 95% admission
+threshold. Go's own build-cache trimming runs periodically on old unused
+entries. Go's module cache retains modules until explicitly cleaned.
+
+Yoke incident `e385262ac250` recorded approximately 1.324 TB of abandoned
+telemetry rotation scratch on the full Windows backing disk and an active spool
+over 584 MB. The affected writer copied part of the file to scratch and used
+process-local locking around rotation. The surviving evidence does not identify
+the precise interruption or filesystem error that orphaned an individual file.
+Coreutils `b069850` records an earlier writer fix. Yoke `d1a8a0a1` contains the
+bounded in-place repair in the dependency used by this Outpost build.

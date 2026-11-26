@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/qiangli/outpost/internal/boundedlog"
 )
 
 // Step names emitted by the wrap-fn in scheduler.go. Kept as
@@ -33,7 +35,7 @@ type LedgerEntry struct {
 	Detail     string    `json:"detail,omitempty"`
 }
 
-// Ledger is an append-only JSONL writer + bounded tail-reader. Path
+// Ledger writes capped JSONL history and supports tail reads. Path
 // is fixed at construction; concurrent appends serialize through mu.
 // An empty path disables writes silently (returns nil from Append).
 type Ledger struct {
@@ -75,12 +77,7 @@ func (l *Ledger) Append(entry LedgerEntry) error {
 	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(l.path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = f.Write(line)
+	_, err = (boundedlog.Writer{Path: l.path}).Write(line)
 	return err
 }
 

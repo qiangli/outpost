@@ -25,6 +25,7 @@ require (
 	github.com/qiangli/coreutils v0.0.0-20261124121700-f9833f726fac
 	github.com/qiangli/yoke v0.0.0-20261126041417-ada7e452af17
 	github.com/robfig/cron/v3 v3.0.1
+	github.com/rogpeppe/go-internal v1.16.0
 	github.com/samber/lo v1.53.0
 	github.com/spf13/cobra v1.10.2
 	github.com/virtual-kubelet/virtual-kubelet v1.12.0

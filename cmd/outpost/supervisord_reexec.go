@@ -366,12 +366,12 @@ func spawnInit(binary string) error {
 		return err
 	}
 	c := exec.Command(binary, "supervisord")
-	if dir, err := conf.DefaultCacheDir(); err == nil {
-		if f, err := os.OpenFile(filepath.Join(dir, "supervisord.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
-			defer f.Close()
-			c.Stdout, c.Stderr = f, f
-		}
+	f, err := detachedLogPipe("supervisord.log")
+	if err != nil {
+		return err
 	}
+	defer f.Close()
+	c.Stdout, c.Stderr = f, f
 	detach(c)
 	if err := c.Start(); err != nil {
 		return err

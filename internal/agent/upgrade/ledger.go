@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/qiangli/outpost/internal/boundedlog"
 )
 
 // LedgerEntry is one JSON line in the upgrade history file. Each
@@ -28,7 +30,7 @@ type LedgerEntry struct {
 	Error     string    `json:"error,omitempty"`
 }
 
-// Ledger is an append-only JSONL writer + bounded tail-reader. Path
+// Ledger writes capped JSONL history and supports tail reads. Path
 // is fixed at construction; concurrent appends serialize through mu.
 type Ledger struct {
 	path string
@@ -45,11 +47,8 @@ func NewLedger(path string) *Ledger {
 func (l *Ledger) Path() string { return l.path }
 
 // Append writes one entry as a single JSON line. If `entry.At` is
-// zero, it is filled with the current time. The file is opened
-// O_APPEND so concurrent writers from a future fan-out don't have
-// to coordinate seek positions — the OS handles atomic byte appends
-// on POSIX up to PIPE_BUF, and a single JSON line never exceeds that
-// for our shape.
+// zero, it is filled with the current time. Each entry is written
+// under the shared size cap, preserving complete entries within a generation.
 //
 // Errors writing the ledger are NOT fatal to the upgrade — we'd
 // rather complete an upgrade than abort it because we couldn't
@@ -72,23 +71,13 @@ func (l *Ledger) Append(entry LedgerEntry) error {
 	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(l.path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = f.Write(line)
+	_, err = (boundedlog.Writer{Path: l.path}).Write(line)
 	return err
 }
 
 // Tail returns up to the last `n` ledger entries, newest last. A
 // missing ledger file returns an empty slice without error — a host
 // that has never been upgraded simply has no history.
-//
-// Implementation reads the whole file (the ledger is unbounded in
-// principle but bounded in practice: one entry per upgrade attempt,
-// which is rare enough that even a year of activity stays well under
-// a megabyte). When we cross some real threshold we can rotate.
 func (l *Ledger) Tail(n int) ([]LedgerEntry, error) {
 	if l == nil || l.path == "" {
 		return nil, nil
