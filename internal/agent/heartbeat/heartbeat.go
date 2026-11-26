@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -88,6 +89,7 @@ type PowerObservation struct {
 
 // Worker is the lifecycle handle. Run blocks until ctx is done.
 type Worker struct {
+	disks atomic.Pointer[diskReport]
 	cfg   Config
 	power PowerObservation
 }
@@ -111,6 +113,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		<-ctx.Done()
 		return nil
 	}
+	go w.sampleDisks(ctx)
 	// First heartbeat after a short jitter so newly-paired outposts
 	// don't all fire at the same instant.
 	timer := time.NewTimer(2 * time.Second)
@@ -191,6 +194,9 @@ func (w *Worker) postOne(ctx context.Context) error {
 		"os_user":       osUserForHeartbeat(),
 		"build_commit":  w.cfg.BuildCommit,
 		"build_version": w.cfg.BuildVersion,
+	}
+	if d := w.disks.Load(); d != nil && len(d.Volumes) > 0 {
+		body["disk"] = d
 	}
 	if w.cfg.ClusterStatusFn != nil {
 		body["cluster_status"] = w.cfg.ClusterStatusFn()
