@@ -16,14 +16,20 @@ writer is bounded. Limits apply per host and per independently named store.
   admission and in-place compaction (`pkg/telemetry/spool.go`). This describes
   that version, not an assertion that every installed producer has upgraded.
 * Outpost's recovery journal retains at most 64 events and 16 KiB
-  (`internal/agent/recovery/journal.go`). Post-install reports replace named
-  JSON files (`internal/agent/postinstall/postinstall.go`); that writer has no
-  explicit byte limit, and interrupted temporary files are not a retention
-  guarantee.
-* `upgrade.log` and `nodegc.log` are append-only and have no size or age cap
-  (`internal/agent/upgrade/ledger.go`, `internal/agent/nodegc/ledger.go`). The
-  latter also stores the restart-safe deletion budget. These need a separate
-  bounded retention design before claiming all diagnostic evidence is bounded.
+  (`internal/agent/recovery/journal.go`). At this candidate, post-install
+  reports replace named JSON files (`internal/agent/postinstall/postinstall.go`)
+  without an explicit byte limit; interrupted temporary files are not a
+  retention guarantee.
+* At this candidate, `upgrade.log` and `nodegc.log` are append-only without a
+  size or age cap. The independent disk worker's capped diagnostic logs and
+  named report evidence require verification against its exact candidate and
+  must not be confused with the supervisor's per-child limit above.
+* The manager's separate nodegc candidate `7dd01bcd06e1a7e2bd5a6700d9d36cda20f4ef24`
+  limits its audit ledger to 16 MiB and fails closed on deletion admission when
+  insufficient room remains for a record. It preserves existing records used
+  by the restart-safe deletion budget. This is candidate-specific, not a claim
+  about this checkout or an integrated release; pre-existing oversized ledgers
+  are not reduced by that admission limit.
 * Persistent Go build and module caches are intentionally preserved. No size
   or age cap is established by these Outpost sources; monitor their volume and
   manage capacity according to host policy, without deleting them automatically.
