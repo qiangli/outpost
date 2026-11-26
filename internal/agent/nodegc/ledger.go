@@ -45,6 +45,11 @@ type LedgerEntry struct {
 	Detail        string    `json:"detail,omitempty"`
 }
 
+const ledgerMaxBytes = 16 << 20
+const ledgerRecordMaxBytes = 16 << 10
+
+var errLedgerFull = errors.New("nodegc ledger capacity exhausted")
+
 // Ledger is an append-only JSONL writer at a fixed path, mirroring
 // internal/agent/upgrade.Ledger. A nil Ledger (or empty path) is a
 // valid no-op sink — but note Collector treats "no ledger" as "no
@@ -92,6 +97,9 @@ func (l *Ledger) Append(entry LedgerEntry) error {
 		return err
 	}
 	line = append(line, '\n')
+	if len(line) > ledgerRecordMaxBytes {
+		return errors.New("nodegc ledger entry exceeds record limit")
+	}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -103,8 +111,35 @@ func (l *Ledger) Append(entry LedgerEntry) error {
 		return err
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() > ledgerMaxBytes-int64(len(line)) {
+		return errLedgerFull
+	}
 	_, err = f.Write(line)
 	return err
+}
+
+// checkDeleteAdmission keeps room for the durable deletion record. The
+// collector is the single writer and calls this before touching the cluster.
+// Existing records continue to count against the restart-safe delete budget.
+func (l *Ledger) checkDeleteAdmission() error {
+	if l.Path() == "" {
+		return errLedgerFull
+	}
+	info, err := os.Stat(l.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Size() > ledgerMaxBytes-ledgerRecordMaxBytes {
+		return errLedgerFull
+	}
+	return nil
 }
 
 // CountDeletesSince returns how many real deletions (EventDeleted)

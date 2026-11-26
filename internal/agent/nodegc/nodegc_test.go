@@ -815,3 +815,38 @@ func TestLedgerSkipsMalformedLines(t *testing.T) {
 		t.Fatalf("count with garbage line = %d, %v; want 2", n, err)
 	}
 }
+
+func TestFullLedgerKeepsCollectorReadOnly(t *testing.T) {
+	objects := readyFleet("fixture", 10)
+	objects = append(objects, staleAgentNode("fixture-stale", "fixture", "stale", 3*DefaultGrace))
+	client := fake.NewClientset(objects...)
+	c := collector(t, client)
+	path := c.Ledger.Path()
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := strings.Repeat(" ", 8<<10-1) + "\n"
+	for written := 0; written < ledgerMaxBytes; written += len(line) {
+		if _, err := file.WriteString(line); err != nil {
+			file.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Once(context.Background()); !errors.Is(err, errLedgerFull) {
+		t.Fatalf("collector result = %v, want ledger capacity error", err)
+	}
+	if len(deletedNames(client)) != 0 {
+		t.Fatal("collector deleted a node with a full audit ledger")
+	}
+	if err := c.Ledger.Append(LedgerEntry{Event: EventRefusedClockSkew}); !errors.Is(err, errLedgerFull) {
+		t.Fatalf("append result = %v, want ledger capacity error", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Size() != ledgerMaxBytes {
+		t.Fatalf("ledger size changed at cap: %v, %v", info, err)
+	}
+}

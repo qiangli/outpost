@@ -565,7 +565,7 @@ func (c *Collector) Once(ctx context.Context) error {
 	// unattended code must not silently degrade its own rate limiter: no
 	// ledger, no deletions. Dry run needs no budget (it never deletes) and
 	// is allowed through to log/ledger what a real pass would do.
-	if !c.DryRun && c.Ledger == nil {
+	if !c.DryRun && c.Ledger.Path() == "" {
 		log.Error("nodegc: read-only pass — no durable delete ledger configured (fail closed)",
 			"candidates", len(stale))
 		return nil
@@ -631,6 +631,9 @@ func (c *Collector) Once(ctx context.Context) error {
 			continue
 		}
 
+		if err := c.Ledger.checkDeleteAdmission(); err != nil {
+			return fmt.Errorf("nodegc: admit deletion record: %w", err)
+		}
 		uid := fresh.UID
 		delCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		err = c.Client.CoreV1().Nodes().Delete(delCtx, cand.name, metav1.DeleteOptions{
