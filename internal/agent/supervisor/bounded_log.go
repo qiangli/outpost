@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 )
@@ -39,22 +40,28 @@ func openBoundedLog(path string, max int64) (*boundedLog, error) {
 			b.file.Close()
 			return nil, err
 		}
+		if _, err := b.file.Seek(0, io.SeekStart); err != nil {
+			b.file.Close()
+			return nil, err
+		}
 		b.size = 0
 	}
 	return b, nil
 }
 
 func (b *boundedLog) open() error {
-	f, err := os.OpenFile(b.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	// This sink owns the file. An append-only Windows handle cannot truncate
+	// an oversized log left by an earlier version.
+	f, err := os.OpenFile(b.path, os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
-	info, err := f.Stat()
+	size, err := f.Seek(0, io.SeekEnd)
 	if err != nil {
 		f.Close()
 		return err
 	}
-	b.file, b.size = f, info.Size()
+	b.file, b.size = f, size
 	return nil
 }
 
