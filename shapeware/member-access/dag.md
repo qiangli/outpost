@@ -31,14 +31,16 @@ printf 'implementation: %s\n' "$impl"
 ```
 
 ### build
-Build in the resolved implementation or supplied work copy, on the gate host.
-Effects: read, write, exec
+Build outpost from the resolved implementation or supplied work copy, on the gate host, the way `scripts/build.sh` does (tag `fb_archives`, no cgo), into the implementation's `bin/outpost`.
+Effects: read, write, exec, net, priv
 Band: unmeasured
 
 ```bash
 set -eu
 impl=${IMPL:-$(cat .shapeware/impl)}
-(cd "$impl" && GOWORK=off ./scripts/build.sh)
+mkdir -p "$impl/bin"
+(cd "$impl" && GOWORK=off CGO_ENABLED=0 go build -tags fb_archives -trimpath -o bin/outpost ./cmd/outpost)
+"$impl/bin/outpost" version 2>&1 | head -1
 ```
 
 ### test
@@ -70,4 +72,55 @@ Band: unmeasured
 set -eu
 impl=${IMPL:-$(cat .shapeware/impl)}
 "$impl/bin/outpost" apps --help
+```
+
+### check
+Static lint of this folder and, inside the repository, of every surface (the format §5b).
+Effects: read
+Band: none
+
+```bash
+set -eu
+bashy conform spec check .
+top=$(git rev-parse --show-toplevel 2>/dev/null || true)
+if [ -n "$top" ] && [ -f "$top/shapeware/index.bsh" ]; then (cd "$top" && bashy --bashsharp shapeware/index.bsh check); fi
+```
+
+### cert
+Certify the built implementation (3 runs, fresh HOME). `CANDIDATE=<outpost binary>` evaluates another implementation against the reference. On the gate host.
+Effects: read, write, exec, net
+Band: none
+
+```bash
+set -eu
+impl=${IMPL:-$(cat .shapeware/impl)}
+ref="$impl/bin/outpost"
+mkdir -p evidence
+bashy conform cert --contract CONTRACT.md --reference-cmd "$ref" --candidate-cmd "${CANDIDATE:-$ref}" --bin outpost --runs 3 --dir "$(pwd -P)" --fresh-home --timeout 120s --out evidence/cert.json
+```
+
+### mutate
+Mutation-test the contract against the built implementation: ten assertions, about twenty mutants at about one probe run each (minutes). On the gate host.
+Effects: read, write, exec, net
+Band: none
+
+```bash
+set -eu
+impl=${IMPL:-$(cat .shapeware/impl)}
+mkdir -p evidence
+bashy conform mutate CONTRACT.md --path "$impl/bin" --dir "$(pwd -P)" --fresh-home --timeout 120s | tee evidence/mutate.log
+```
+
+### alone
+The mechanical half of the folder-alone check: copy this folder outside any checkout and run its own source, build and test there. On the gate host.
+Effects: read, write, exec, net, priv
+Band: none
+
+```bash
+set -eu
+tmp=$(mktemp -d)
+cp -R "$(pwd -P)" "$tmp/member-access"
+rm -rf "$tmp/member-access/.shapeware" "$tmp/member-access/evidence"
+cd "$tmp/member-access"
+bashy dag -f dag.md source && bashy dag -f dag.md build && bashy dag -f dag.md test
 ```

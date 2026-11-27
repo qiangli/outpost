@@ -1,0 +1,138 @@
+{
+  "conform_version": "0.1.1",
+  "contract_sha256": "b14d8560fc30d561b0caa2dd4954c4ff430050a2657709d663d6dcbcd34cfb24",
+  "candidate": {
+    "name": "outpost",
+    "digest": "sha256:c514c21becbbac6b1257c2df17a6f5436f353d2dc4c565ce9935457f14d40033"
+  },
+  "reference": {
+    "name": "outpost",
+    "digest": "sha256:c514c21becbbac6b1257c2df17a6f5436f353d2dc4c565ce9935457f14d40033"
+  },
+  "environment": {
+    "os": "linux",
+    "arch": "amd64",
+    "go_version": "go1.27.4",
+    "shell": "sh"
+  },
+  "baseline": {
+    "runs": 3,
+    "noisy": [],
+    "reference_runs": [
+      {
+        "A-01": "PASS",
+        "A-02": "PASS",
+        "A-03": "PASS",
+        "A-04": "PASS",
+        "A-05": "PASS",
+        "A-06": "PASS",
+        "A-07": "PASS",
+        "A-08": "PASS",
+        "A-09": "PASS",
+        "A-10": "PASS"
+      },
+      {
+        "A-01": "PASS",
+        "A-02": "PASS",
+        "A-03": "PASS",
+        "A-04": "PASS",
+        "A-05": "PASS",
+        "A-06": "PASS",
+        "A-07": "PASS",
+        "A-08": "PASS",
+        "A-09": "PASS",
+        "A-10": "PASS"
+      },
+      {
+        "A-01": "PASS",
+        "A-02": "PASS",
+        "A-03": "PASS",
+        "A-04": "PASS",
+        "A-05": "PASS",
+        "A-06": "PASS",
+        "A-07": "PASS",
+        "A-08": "PASS",
+        "A-09": "PASS",
+        "A-10": "PASS"
+      }
+    ]
+  },
+  "layers": {
+    "cli": "PASS"
+  },
+  "verdict": "PASS",
+  "results": [
+    {
+      "layer": "cli",
+      "name": "A-01",
+      "status": "PASS",
+      "detail": "ok",
+      "freshness": "fresh"
+    },
+    {
+      "layer": "cli",
+      "name": "A-02",
+      "status": "PASS",
+      "detail": "ok",
+      "freshness": "fresh"
+    },
+    {
+      "layer": "cli",
+      "name": "A-03",
+      "status": "PASS",
+      "detail": "ok",
+      "freshness": "fresh"
+    },
+    {
+      "layer": "cli",
+      "name": "A-04",
+      "status": "PASS",
+      "detail": "ok",
+      "freshness": "fresh"
+    },
+    {
+      "layer": "cli",
+      "name": "A-05",
+      "status": "PASS",
+      "detail": "ok",
+      "freshness": "fresh"
+    },
+    {
+      "layer": "cli",
+      "name": "A-06",
+      "status": "PASS",
+      "detail": "ok",
+      "freshness": "fresh"
+    },
+    {
+      "layer": "cli",
+      "name": "A-07",
+      "status": "PASS",
+      "detail": "ok",
+      "freshness": "fresh"
+    },
+    {
+      "layer": "cli",
+      "name": "A-08",
+      "status": "PASS",
+      "detail": "ok",
+      "freshness": "fresh"
+    },
+    {
+      "layer": "cli",
+      "name": "A-09",
+      "status": "PASS",
+      "detail": "ok",
+      "freshness": "fresh"
+    },
+    {
+      "layer": "cli",
+      "name": "A-10",
+      "status": "PASS",
+      "detail": "ok",
+      "freshness": "fresh"
+    }
+  ],
+  "timestamp": "2026-11-27T19:49:44Z",
+  "seal": "d577585cdfa10526b2fbcb353ae450f66f2a6b499db374ef9cf6903b4c578a22"
+}

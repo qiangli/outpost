@@ -1,6 +1,6 @@
 # Member access contract
 
-This contract describes only the public wire protocol to the coordination service and the observable behaviour at `/app/<name>`. Reference runs use a synthetic loopback fake grants server (the fake grants server pattern from bashy `tests/group-shaping-e2e`: a loopback HTTP server serving a canned grant copy, a throwaway HOME/TMPDIR, and `OUTPOST_INGRESS_TRUST_LOOPBACK=1`), never a live service. The reference is commit 791fd29dac401492acfe597875846073bc48d33e. Evidence below was captured from the installed binary `a32ccba`, which differs from the pin in one labelled place; certification of the pin on the gate host remains outstanding.
+This contract describes only the public wire protocol to the coordination service and the observable behaviour at `/app/<name>`. Reference runs use a synthetic loopback fake grants server (the fake grants server pattern from bashy `tests/group-shaping-e2e`: a loopback HTTP server serving a canned grant copy, a throwaway HOME/TMPDIR, and `OUTPOST_INGRESS_TRUST_LOOPBACK=1`), never a live service. The reference is commit 791fd29dac401492acfe597875846073bc48d33e. Evidence below was captured from outpost built from that commit on the gate host.
 
 ## Rules
 
@@ -14,23 +14,86 @@ For an app opting into trusted identity, outpost strips client-supplied identity
 
 ## Assertions from real runs
 
-On 2026-11-27 the installed outpost `a32ccba` (not the pinned commit) was run with a throwaway HOME, a loopback fake serving `examples/grants.json`, and no live service. Each line is an exact probe result; failure exits nonzero. The relay was unreachable throughout, and the fake grant server was stopped before the last request. The probe independently recomputes both HMACs above and requires them to match. It accepts both `signed-in` (observed on this older binary) and `account` (source-derived at the pin) as the account relationship label, verifying the signature over whichever label was stamped; this difference requires gate verification and must not be treated as a certified identity rule.
+On 2026-11-27 outpost built from the reference commit was run on the gate host with a throwaway HOME (its XDG directories inside it), a loopback fake serving `examples/grants.json`, and no live service. Every run of the probe starts one daemon and checks every case below in order; it exits nonzero if any case fails, and prints only the line of the case it is given. The relay is unreachable throughout, and the fake grant server is stopped before the last case. The probe recomputes both HMACs above and requires them to match; the account relationship label is `account`.
 
 ### A-01
 
 ```console
-$ python3 probe.py outpost examples/grants.json
+$ python3 probe.py outpost examples/grants.json owner
 owner: 200
+```
+exit: 0
+
+### A-02
+
+```console
+$ python3 probe.py outpost examples/grants.json member
 member: 200
+```
+exit: 0
+
+### A-03
+
+```console
+$ python3 probe.py outpost examples/grants.json member-outside-circle
 member-outside-circle: 403
+```
+exit: 0
+
+### A-04
+
+```console
+$ python3 probe.py outpost examples/grants.json member-outside-group
 member-outside-group: 403
+```
+exit: 0
+
+### A-05
+
+```console
+$ python3 probe.py outpost examples/grants.json account
 account: 403
+```
+exit: 0
+
+### A-06
+
+```console
+$ python3 probe.py outpost examples/grants.json anonymous
 anonymous: 403
+```
+exit: 0
+
+### A-07
+
+```console
+$ python3 probe.py outpost examples/grants.json public
 public: 200
+```
+exit: 0
+
+### A-08
+
+```console
+$ python3 probe.py outpost examples/grants.json member-identity
 member identity: signed and verified (member/company/support)
-account identity: pseudonym and signature verified; address withheld
+```
+exit: 0
+
+### A-09
+
+```console
+$ python3 probe.py outpost examples/grants.json account-identity
+account identity: account, pseudonym and signature verified; address withheld
+```
+exit: 0
+
+### A-10
+
+```console
+$ python3 probe.py outpost examples/grants.json relay-unavailable
 relay unavailable: daemon running, member allowed
 ```
 exit: 0
 
-Pairing state beyond the pre-copy owner rule, and a forced refresh after a denial, are not independently exercised by this probe; they remain unverified until the gate-host run against the pinned build.
+Pairing state beyond the pre-copy owner rule, and a forced refresh after a denial, are not exercised by this probe (see the known issues).

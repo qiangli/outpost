@@ -1,0 +1,4 @@
+==> cert
+PASS evidence/cert.json
+dag: 1 target(s) ok
+cert rc=0 secs=768

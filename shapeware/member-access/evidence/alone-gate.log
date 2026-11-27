@@ -1,0 +1,23 @@
+==> alone
+dag: effect cap: target "alone": "rm" needs destroy not in Effects: exec,net,priv,read,write
+==> source
+implementation: /tmp/tmp.mfaO1M6F0Y/member-access/.shapeware/src
+dag: 1 target(s) ok
+==> build
+dag: effect cap: target "build": "outpost" needs unknown not in Effects: exec,net,priv,read,write
+dag: 1 target(s) ok
+==> test
+dag: effect cap: target "test": "python3" needs unknown not in Effects: exec,read,write
+owner: 200
+member: 200
+member-outside-circle: 403
+member-outside-group: 403
+account: 403
+anonymous: 403
+public: 200
+member identity: signed and verified (member/company/support)
+account identity: account, pseudonym and signature verified; address withheld
+relay unavailable: daemon running, member allowed
+dag: 1 target(s) ok
+dag: 1 target(s) ok
+alone rc=0 secs=34

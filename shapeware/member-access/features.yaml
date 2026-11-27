@@ -7,7 +7,7 @@
     - outpost status --json => pairing and connection state
     - before any grant copy arrives => configured paired owner alone admitted (examples/grants.json)
 - id: app-grants
-  status: tbd
+  status: verified
   critical: true
   effort: 5
   intent: Gate login-required app access by owner and member grants while allowing public apps.
@@ -20,7 +20,7 @@
     - GET /app/demo/ as anonymous => 403 (examples/grants.json)
     - GET /app/public/ as anonymous => upstream response (examples/grants.json)
 - id: relationship-identity
-  status: tbd
+  status: verified
   critical: true
   effort: 5
   intent: Give opted-in upstreams a signed relationship identity while hiding stranger addresses.
@@ -28,7 +28,7 @@
     - GET /app/demo/ as a member => X-Outpost-Relationship-Sig present and HMAC-verifiable (examples/grants.json)
     - GET /app/public/ as an account => signed account pseudonym, address withheld (examples/grants.json)
 - id: relay-unreachable
-  status: tbd
+  status: verified
   critical: false
   effort: 3
   intent: Retain last received grants while a coordination endpoint is unavailable.
