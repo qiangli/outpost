@@ -1,0 +1,1 @@
+{"host":"test-host","owner":"owner@example.test","revision":1,"members":[{"email":"member@example.test","circle":"company"}],"groups":{"support":["member@example.test"]},"apps":{"demo":[{"circles":["company"],"groups":["support"],"emails":[]}]}}

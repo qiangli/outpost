@@ -13,3 +13,5 @@
 
 # macOS Finder metadata
 .DS_Store
+
+.shapeware/

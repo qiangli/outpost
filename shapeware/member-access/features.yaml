@@ -1,0 +1,29 @@
+- id: pairing-state
+  status: tbd
+  critical: true
+  effort: 3
+  intent: Expose whether the host is paired and whether its relay is reachable.
+  acceptance:
+    - outpost status --json => pairing and connection state
+- id: app-grants
+  status: tbd
+  critical: true
+  effort: 5
+  intent: Gate login-required app access by owner and member grants while allowing public apps.
+  acceptance:
+    - GET /app/demo/ as a granted member => upstream response
+    - GET /app/demo/ as an ungranted account => 403
+- id: relationship-identity
+  status: tbd
+  critical: true
+  effort: 5
+  intent: Give opted-in upstreams a signed relationship identity while hiding stranger addresses.
+  acceptance:
+    - GET /app/demo/ as an account => signed account pseudonym
+- id: relay-unreachable
+  status: tbd
+  critical: false
+  effort: 3
+  intent: Retain last received grants while a coordination endpoint is unavailable.
+  acceptance:
+    - failed grant refresh => last successful copy remains effective
