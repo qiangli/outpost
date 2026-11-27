@@ -22,7 +22,7 @@ The reference commit is the intended reference; it has not yet been certified.
 
 **Show**: Read `features.yaml` and `CONTRACT.md` for the surface and its present evidence.
 
-**Check**: On an approved disposable gate host, run `bashy dag -f dag.md source`, then `bashy dag -f dag.md build` and `bashy dag -f dag.md test`. The current test step deliberately fails: executable reference assertions are not yet supplied.
+**Check**: On an approved disposable gate host, run `bashy dag -f dag.md source`, then `bashy dag -f dag.md build` and `bashy dag -f dag.md test`. The test step runs the synthetic loopback probe. Its result is not certification; see the evidence limits in the contract.
 
 **Build**: Stop for a critical feature or an unmet or unknown declared band. Resolve source, make a fresh clone or worktree of the implementation under `.shapeware/work/`, change only the necessary implementation files, and grade it with `IMPL` set to that work copy using this folder's build and test steps. Do not edit this folder's contract, features, checks or examples in that work copy. Offer the result to the owner; do not approve it.
 

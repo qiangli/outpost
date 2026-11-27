@@ -42,13 +42,14 @@ impl=${IMPL:-$(cat .shapeware/impl)}
 ```
 
 ### test
-The reference harness and executable assertions are outstanding; do not mistake lint for a behavioral pass.
-Effects: read, exec
-Band: none
+Run the loopback probe against the built implementation.
+Effects: read, write, exec
+Band: unmeasured
 
 ```bash
-printf '%s\n' 'FAIL member-access reference harness and assertions not yet implemented'
-exit 1
+set -eu
+impl=${IMPL:-$(cat .shapeware/impl)}
+python3 probe.py "$impl/bin/outpost" examples/grants.json
 ```
 
 ### install

@@ -1,6 +1,6 @@
 # Member access contract (draft)
 
-This is a source-derived draft, not certified behavior. No assertions have yet been captured from a reference run. The test lifecycle fails until a sandbox harness supplies those assertions. The reference is commit 791fd29dac401492acfe597875846073bc48d33e.
+This is a source-derived draft, not certified behavior. The executable probe below was captured from the installed binary, which differs from the pinned reference; certification of the pinned commit remains outstanding. The reference is commit 791fd29dac401492acfe597875846073bc48d33e.
 
 ## Rules
 
@@ -14,4 +14,20 @@ For an app opting into trusted identity, outpost strips client-supplied identity
 
 ## Assertions from real runs
 
-Outstanding: create a disposable fake-server harness, capture observable commands and outputs, and certify the pinned reference. These source-derived rules are not evidence of a passing reference run.
+On 2026-11-27 the installed outpost `a32ccba` (not the pinned commit) was run with a throwaway HOME, a loopback fake and no live service. Each line is an exact probe result; failure exits nonzero. The relay was unreachable throughout. The fake grant server was stopped before the last request. The probe accepts both `signed-in` (observed on this older binary) and `account` (source-derived at the pin); this difference requires gate verification and must not be treated as a certified identity rule.
+
+### A-01
+
+```console
+$ python3 probe.py outpost examples/grants.json
+owner: 200
+member: 200
+account: 403
+anonymous: 403
+public: 200
+account identity: pseudonym and signature; address withheld
+relay unavailable: daemon running, member allowed
+```
+exit: 0
+
+The probe checks that a signature is present, not that it verifies, and does not independently exercise pairing state, circle and group boundaries, or a refresh after the server stops. Those remain unverified. The installed binary reported `signed-in` for the account relationship, whereas the inspected pin specifies `account`.
