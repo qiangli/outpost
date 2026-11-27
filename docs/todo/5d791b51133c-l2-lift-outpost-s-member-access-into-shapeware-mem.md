@@ -3,12 +3,15 @@ id: 5d791b51133c
 kind: task
 title: L2 lift outpost's member access into shapeware/member-access/
 seq: 2782
-status: todo
+status: done
 priority: p1
 created: 2026-11-27T16:53:33.640713Z
+assignee: muse-wonder
 sprint: 737
 sprint_id: c5dc4786-3303-5f7b-8f04-1207027a550f
 sprint_title: 'Lift bashy, outpost and cloudbox into shapeware (first surfaces, beacon: 2027 positioning)'
+closed: 2026-11-27T22:18:02.941008Z
+closed_by: claude-opus5.5
 ---
 
 Lift outpost's member access surface. Surface: pairing state, app exposure under /app/<name> with grants (owner, member by circle or group, account, anonymous), the signed relationship identity, and behaviour when the relay is unreachable. Folder: shapeware/member-access/. Describe only the public wire protocol to the coordination service; reference runs use the fake grants server pattern from bashy tests/group-shaping-e2e, never a live service.
