@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Loopback-only synthetic grant server and upstream for a disposable reference run."""
-import json, os, pathlib, socket, subprocess, sys, tempfile, threading, time
+import hashlib, hmac, json, os, pathlib, socket, subprocess, sys, tempfile, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
@@ -8,11 +8,23 @@ from urllib.error import HTTPError
 binary, fixture = sys.argv[1:]
 data = pathlib.Path(fixture).read_bytes()
 fetched = threading.Event()
+SECRET = b'synthetic-secret'
+def mac(payload): return hmac.new(SECRET, payload.encode(), hashlib.sha256).hexdigest()
+def verify_rel(h, app, user):
+    kind = h.get('X-Outpost-Relationship', '')
+    ts = h.get('X-Outpost-Identity-Ts', '')
+    sig = h.get('X-Outpost-Relationship-Sig', '')
+    visitor = h.get('X-Outpost-Visitor', '')
+    payload = f"v2\n{kind}\n{h.get('X-Outpost-Circle','')}\n{h.get('X-Outpost-Groups','')}\n{visitor}\n{user}\n/app/{app}\n{ts}"
+    if not kind or not ts or not sig or not hmac.compare_digest(mac(payload), sig):
+        raise AssertionError(f'relationship signature does not verify: {h}')
+    return kind, visitor
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_GET(self):
         if self.path == '/api/v1/hosts/self/grants':
-            if self.headers.get('Authorization') != 'Bearer synthetic-token':
+            if self.headers.get('Authorization') != 'Bearer ' + 'synthetic-token':
                 self.send_error(401); return
             body = data; fetched.set()
         else:
@@ -33,20 +45,31 @@ with tempfile.TemporaryDirectory(prefix='member-access-') as tmp:
     env = dict(os.environ, HOME=tmp, TMPDIR=tmp, OUTPOST_ADMIN_ADDR=f'127.0.0.1:{admin}', OUTPOST_INGRESS_TRUST_LOOPBACK='1')
     proc = subprocess.Popen([binary, 'start'], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        if not fetched.wait(20): raise RuntimeError('grant copy not fetched')
+        if not fetched.wait(60): raise RuntimeError('grant copy not fetched from examples/grants.json fixture')
         def request(app, user):
             hdr = {'X-Forwarded-Prefix':'/app/'+app}
             if user: hdr['X-Periscope-User'] = user
             try:
                 with urlopen(Request(f'http://127.0.0.1:{front}/app/{app}/', headers=hdr), timeout=8) as resp: return resp.status, json.loads(resp.read())
             except HTTPError as e: return e.code, {}
-        for label, app, user, expected in [('owner','demo','owner@example.test',200),('member','demo','member@example.test',200),('account','demo','account@example.test',403),('anonymous','demo',None,403),('public','public',None,200)]:
+        cases = [('owner','demo','owner@example.test',200),('member','demo','member@example.test',200),('member-outside-circle','demo','outsider@example.test',403),('member-outside-group','demo','nogroup@example.test',403),('account','demo','account@example.test',403),('anonymous','demo',None,403),('public','public',None,200)]
+        for label, app, user, expected in cases:
             status, headers = request(app, user)
             if status != expected: raise AssertionError(f'{label}: expected {expected}, got {status}')
             print(f'{label}: {status}', flush=True)
-        status, headers = request('public', 'account@example.test')
-        if status != 200 or headers.get('X-Outpost-Relationship') not in ('account', 'signed-in') or headers.get('X-Periscope-User') or not headers.get('X-Outpost-Relationship-Sig') or not headers.get('X-Outpost-Visitor'): raise AssertionError(f'identity: {status} {headers}')
-        print('account identity: pseudonym and signature; address withheld', flush=True)
+        # Member identity: signed, verifiable, address present.
+        status, h = request('demo', 'member@example.test')
+        kind, visitor = verify_rel(h, 'demo', 'member@example.test')
+        if kind != 'member' or h.get('X-Outpost-Circle') != 'company' or h.get('X-Outpost-Groups') != 'support' or h.get('X-Periscope-User') != 'member@example.test' or visitor:
+            raise AssertionError(f'member identity: {h}')
+        print('member identity: signed and verified (member/company/support)', flush=True)
+        # Account identity on public app: pseudonym, address withheld, signature verifies.
+        status, h = request('public', 'account@example.test')
+        kind, visitor = verify_rel(h, 'public', '')
+        want_visitor = mac('visitor\npublic\naccount@example.test')[:32]
+        if status != 200 or kind not in ('account', 'signed-in') or h.get('X-Periscope-User') or h.get('Remote-User') or visitor != want_visitor:
+            raise AssertionError(f'account identity: {status} {h}')
+        print('account identity: pseudonym and signature verified; address withheld', flush=True)
         fixture_server.shutdown()
         status, _ = request('demo', 'member@example.test')
         if status != 200 or proc.poll() is not None: raise AssertionError('offline copy or daemon failed')

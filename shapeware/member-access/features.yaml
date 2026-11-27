@@ -5,25 +5,33 @@
   intent: Expose whether the host is paired and whether its relay is reachable.
   acceptance:
     - outpost status --json => pairing and connection state
+    - before any grant copy arrives => configured paired owner alone admitted (examples/grants.json)
 - id: app-grants
   status: tbd
   critical: true
   effort: 5
   intent: Gate login-required app access by owner and member grants while allowing public apps.
   acceptance:
-    - GET /app/demo/ as a granted member => upstream response
-    - GET /app/demo/ as an ungranted account => 403
+    - GET /app/demo/ as owner => upstream response (examples/grants.json)
+    - GET /app/demo/ as member in granted circle and group => upstream response (examples/grants.json)
+    - GET /app/demo/ as member outside granted circle => 403 (examples/grants.json)
+    - GET /app/demo/ as member outside granted group => 403 (examples/grants.json)
+    - GET /app/demo/ as ungranted account => 403 (examples/grants.json)
+    - GET /app/demo/ as anonymous => 403 (examples/grants.json)
+    - GET /app/public/ as anonymous => upstream response (examples/grants.json)
 - id: relationship-identity
   status: tbd
   critical: true
   effort: 5
   intent: Give opted-in upstreams a signed relationship identity while hiding stranger addresses.
   acceptance:
-    - GET /app/demo/ as an account => signed account pseudonym
+    - GET /app/demo/ as a member => X-Outpost-Relationship-Sig present and HMAC-verifiable (examples/grants.json)
+    - GET /app/public/ as an account => signed account pseudonym, address withheld (examples/grants.json)
 - id: relay-unreachable
   status: tbd
   critical: false
   effort: 3
   intent: Retain last received grants while a coordination endpoint is unavailable.
   acceptance:
-    - failed grant refresh => last successful copy remains effective
+    - failed grant refresh => last successful copy remains effective (examples/grants.json)
+    - relay unreachable => daemon stays running and granted member still allowed (examples/grants.json)
